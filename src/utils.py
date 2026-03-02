@@ -1,3 +1,4 @@
+import logging
 import os
 import numpy as np
 from pydrake.all import(
@@ -15,10 +16,42 @@ from pydrake.all import(
     RotationMatrix,
     AutoDiffXd,
     RollPitchYaw_,
+    StartMeshcat,
 )
 
 def RepoDir():
     return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+class HiddenPrints:
+    def __enter__(self):
+        # Silence Python loggers (root and ikflow)
+        self._loggers = [logging.getLogger(), logging.getLogger("ikflow")]
+        self._saved_levels = {lg: lg.level for lg in self._loggers}
+        for lg in self._loggers:
+            lg.setLevel(logging.CRITICAL)
+
+        # Save original fds
+        self._stdout_fd = os.dup(1)
+        self._stderr_fd = os.dup(2)
+        # Redirect both to /dev/null (Python + C/C++ writes)
+        self._devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(self._devnull, 1)
+        os.dup2(self._devnull, 2)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Restore fds
+        os.dup2(self._stdout_fd, 1)
+        os.dup2(self._stderr_fd, 2)
+        os.close(self._stdout_fd)
+        os.close(self._stderr_fd)
+        os.close(self._devnull)
+        # Restore logger levels
+        for lg, lvl in self._saved_levels.items():
+            lg.setLevel(lvl)
+        return False
+    
+
 
 def BuildEnv(meshcat, directives_file=None):
     builder = DiagramBuilder()
@@ -141,7 +174,54 @@ def extract_xyzrpy(pose):
     return result
 
 
+def CalculateError(pose1, pose2):
+    """
+    Compute the translational distance and rotational angle between two RigidTransforms.
+    
+    Args:
+        pose1: First RigidTransform
+        pose2: Second RigidTransform
+    
+    Returns:
+        tuple: (angle_rad, distance) where angle_rad is the rotation angle in radians
+               and distance is the Euclidean distance between translations
+    """
+    # Translational distance
+    distance = np.linalg.norm(pose1.translation() - pose2.translation())
+    
+    # Rotational angle: compute relative rotation
+    R_rel = pose1.rotation().inverse().multiply(pose2.rotation())
+    # Angle from rotation matrix using angle-axis representation
+    # trace(R) = 1 + 2*cos(theta)
+    trace = R_rel.matrix().trace()
+    angle_rad = np.arccos(np.clip((trace - 1) / 2, -1.0, 1.0))
+    
+    return (angle_rad, distance)
+
+
 class Mug:
     def __init__(self, middle: RigidTransform = RigidTransform(), height: float = 0.04):
         self.middle = middle
         self.height = height
+
+def GenerateDiagramWithMug(q, program, yaml_file, meshcat):
+    program.SetPositions(q)
+    target = program.frame.CalcPoseInWorld(program.plant_context)
+    translation = target.translation()
+    rotation = target.rotation().ToRollPitchYaw().vector() * 180 / np.pi
+
+    mug_str = f"""\n  - add_model:\n      name: mug\n      # file: package://drake/examples/manipulation_station/models/shelves.sdf\n      file: package://combining_kinematics/models/mug/mug_simple_red.urdf\n  - add_weld:\n      parent: world\n      child: mug::mug_body_link\n      X_PC:\n        translation: [{translation[0]}, {translation[1]}, {translation[2]}]\n        rotation: !Rpy {{ deg: [{rotation[0]}, {rotation[1]}, {rotation[2]}] }}
+    """
+    original_size = os.path.getsize(yaml_file)
+    with open(yaml_file, "a+") as f:
+        f.write(mug_str)
+    meshcat.Delete()
+    diagram_with_mug = BuildEnv(meshcat=meshcat, directives_file = yaml_file)
+    with open(yaml_file, "r+") as f:
+        f.truncate(original_size)
+    return diagram_with_mug, Mug(target)
+
+
+
+
+

@@ -3,12 +3,11 @@ from ikflow.config import DEVICE
 import torch
 import numpy as np
 from src.utils import Mug
-from src.generic_program import ProgramOptions, IKFlowProgram
+from src.generic_program import *
 import numpy as np
 from pydrake.all import (
     MathematicalProgram,
     AutoDiffXd, 
-    RigidTransform_,
 )
 
 
@@ -33,6 +32,7 @@ class PandaIKProgram(IKFlowProgram):
         self.ik_solver.nn_model.eval()
 
         self.options = options
+        self.constraints = []
 
 
 
@@ -58,31 +58,12 @@ class PandaIKProgram(IKFlowProgram):
         self.jacobian_gen = torch.func.jacrev(self.ik_inference) ## function that can compute jacobian dq/dvars
 
         ## Add Constraints
-        self.apply_constraints()
+        self.add_constraints()
 
         self.add_costs()
 
 
-    def apply_constraints(self):
-        ## Add Constraints
-        self.IKConstraint()
-        self.BoundingBoxConstraint()
-
-        if self.options.collision_avoidance:
-            self.CollisionFreeConstraint()
-        
-        if self.options.joint_limits:
-            self.JointLimitsConstraint()
-
-    def add_costs(self):
-        if self.options.joint_centering_cost > 0:
-            self.JointCenteringCost()
-        if self.options.correction_cost_weight > 0: 
-            self.CorrectionCost()
-
-
-
-    def ik_inference(self, vars):
+    def ik_inference(self, vars, add_correction = True):
         '''Given a latent + target + correction, returns corresponding joint angles
         vars can be either numpy array or torch tensor (for gradient computation)'''
         # Convert to tensor only if not already a tensor
@@ -96,17 +77,19 @@ class PandaIKProgram(IKFlowProgram):
 
         output, _ = self.ik_solver.nn_model(z_batch, c=c_torch, rev=True)
         q = output[:, :7].squeeze(0)
-        return q + correction
+        if add_correction:
+            return q + correction
+        else: return q
     
         
 
-    def VarsToQ(self, vars):
+    def VarsToQ(self, vars, add_correction = True):
         ad = isinstance(vars[0], AutoDiffXd) ## The hard part is to make torch interact with AutoDiffXd necessary for drake.
 
         if not ad:
             q = np.zeros(self.num_pos)
             q[7:] = [0.04] * (self.num_pos - 7)  # fixed gripper joints
-            q[:7] = self.ik_inference(vars).detach().cpu().numpy()
+            q[:7] = self.ik_inference(vars, add_correction=add_correction).detach().cpu().numpy()
             return q
         
         else: # Compute AutoDiffXd with Jacobian_Gen
@@ -117,7 +100,7 @@ class PandaIKProgram(IKFlowProgram):
             # Compute q values
             q_values = np.zeros(self.num_pos)
             q_values[7:] = [0.04] * (self.num_pos - 7)
-            q_values[:7] = self.ik_inference(vars_values).detach().cpu().numpy()
+            q_values[:7] = self.ik_inference(vars_values, add_correction=add_correction).detach().cpu().numpy()
             
             # Compute Jacobian dq/dvars
             vars_tensor = torch.tensor(vars_values, dtype=torch.float32, device=DEVICE, requires_grad=True)
@@ -158,27 +141,23 @@ class PandaMugProgram(PandaIKProgram):
         else:
             self.q_nominal = q_nominal
 
-        self.prog.SetInitialGuess(self.c, [*target_mug.middle.translation(), 0, 0, 0, 0])
+        self.prog.SetInitialGuess(self.c, [*target_mug.middle.translation(), 1, 0, 0, 0])
         self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
         self.jacobian_gen = torch.func.jacrev(self.ik_inference) ##
 
         self.target_pose = np.array([*target_mug.middle.translation(), 1, 0, 0, 0]) ## for bounding box
-        self.apply_constraints()
+        self.add_constraints()
         self.add_costs()
     
-
-    def IKConstraint(self):
+    def CreateIKConstraint(self):
         ik_tol, _ = self.options.ik_constraint_tol
-        self.prog.AddConstraint(
-            func=self.EvalMugConstraint,
-            lb=np.array([-ik_tol, -ik_tol, -self.target_mug.height, 1]),
-            ub=np.array([ik_tol, ik_tol, self.target_mug.height, 1]),
-            vars=self.lumped_vars
-        )
-    def EvalMugConstraint(self, vars):
-        position, _ = self.fk(self.VarsToQ(vars))
-        mug_transform = np.linalg.inv(self.target_mug.middle.GetAsMatrix4())
-        return mug_transform @ np.array([[*position, 1]]).T
-
-    
+        lb = np.array([-ik_tol, -ik_tol, -self.target_mug.height, 1])
+        ub = np.array([ik_tol, ik_tol, self.target_mug.height, 1])
+        def eval_func(vars, q, pose):
+            position, _ = pose
+            mug_transform = np.linalg.inv(self.target_mug.middle.GetAsMatrix4())
+            return (mug_transform @ np.array([[*position, 1]]).T).squeeze()
+        self.ik_constraint = IKFlowConstraints(lb, ub, eval_func, description="IKConstraint")
+        self.constraints.append(self.ik_constraint)
+        return self.ik_constraint

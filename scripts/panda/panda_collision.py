@@ -1,13 +1,9 @@
 import os, sys, time
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from src.utils import *
 from src.panda_program import PandaIKProgram
 from pydrake.all import (
     StartMeshcat,
-    Quaternion,
-    RigidTransform,
-    MinimumDistanceLowerBoundConstraint,
-    SceneGraphInspector,
 )
 from tqdm import tqdm
 
@@ -30,10 +26,10 @@ start = time.time()
 i = 0
 q = np.zeros(9)
 targets = np.zeros((num_tests, 7))
-while i < 1000:
+while i < num_tests:
     q[:7] = np.random.uniform(program.plant.GetPositionLowerLimits()[:-2], program.plant.GetPositionUpperLimits()[:-2])
     program.plant.SetPositions(program.plant_context, q)
-    if program.collision_free_constraint.Eval(q) < 1:
+    if program.collision_free_constraint_eval.Eval(q) < 1:
         pose = program.frame.CalcPoseInWorld(program.plant_context)
         targets[i] = np.array([*pose.translation(), *pose.rotation().ToQuaternion().wxyz()])
         i += 1

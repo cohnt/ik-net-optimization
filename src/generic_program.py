@@ -1,19 +1,10 @@
-from ikflow.model_loading import get_ik_solver
 from ikflow.config import DEVICE
-import torch
 import numpy as np
-from time import time, sleep
 from dataclasses import dataclass, field
-import sys, os
-from src.utils import RepoDir, BuildEnv, DrawAxes
+from functools import partial
 import numpy as np
 from pydrake.all import (
-    StartMeshcat, 
-    RigidTransform,
-    Quaternion,
-    MathematicalProgram,
     AutoDiffXd, 
-    Quaternion_, 
     IpoptSolver,
     SolverOptions,
     CommonSolverOption, 
@@ -39,9 +30,17 @@ class ProgramOptions:
     file_print_name: str = field(default="ikflow_solver_log.txt", metadata={"help": "File name for solver log"})
     max_wall_time: float = field(default=60, metadata={"help": "Maximum wall time for the solver in seconds"})
 
+    vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
+    visualize: bool = field(default=False, metadata={"help": "If true, visualizes the IK solving process in Meshcat"})
 
-
-
+class IKFlowConstraints:
+    def __init__(self, lb, ub, eval_func, description=""):
+        self.lb = lb
+        self.ub = ub
+        self.eval_func = eval_func
+        self.description = description
+    def __len__(self):
+        return len(self.lb)
 
 class IKFlowProgram:
     def __init__(self, diagram, frame, solver, options=ProgramOptions()):
@@ -60,6 +59,23 @@ class IKFlowProgram:
         self.ik_solver.nn_model.eval()
         self.options = options
 
+        self.constraints = []
+
+    def add_constraints(self):
+        self.CreateIKConstraint()
+        if self.options.collision_avoidance:
+            self.CreateCollisionFreeConstraint()
+        if self.options.joint_limits:
+            self.CreateJointLimitsConstraint()
+        self.ApplyConstraints()
+        self.BoundingBoxConstraint()
+
+    def add_costs(self):
+        if self.options.joint_centering_cost > 0.0:
+            self.JointCenteringCost()
+        if self.options.correction_cost_weight > 0.0:
+            self.CorrectionCost()
+
     def fk(self, q):
         frame, context = self.SetPositions(q)
         rigid_transform = frame.CalcPoseInWorld(context)
@@ -70,65 +86,94 @@ class IKFlowProgram:
         pass
     def VarsToQ(self, vars):
         pass
-    
-    def EvalPositionError(self, vars):
-        q = self.VarsToQ(vars)
-        position, _ = self.fk(q)
-        pos_error = position - self.target_pose[:3]
-        return pos_error
-    def EvalOrientationError(self, vars):
-        q = self.VarsToQ(vars)
-        _, orientation = self.fk(q)
-        orientation_error = 2 * np.arccos(np.abs(np.dot(orientation, self.target_pose[3:])))
-        return np.array([orientation_error])
-    
-    def IKConstraint(self): ## extremely nonlinear equality constraint !!!
-        pos_tol, ori_tol = self.options.ik_constraint_tol
-        self.position_constraint = self.prog.AddConstraint(
-            self.EvalPositionError, 
-            lb=np.zeros(3) - pos_tol, 
-            ub=np.zeros(3) + pos_tol,
-            vars=self.lumped_vars
-        )
-        self.position_constraint.evaluator().set_description("PositionConstraint")
-        self.orientation_constraint = self.prog.AddConstraint(
-            self.EvalOrientationError,
-            lb=np.array([0]),
-            ub=np.array([ori_tol]), # allow extremely small error
-            vars=self.lumped_vars
-        )
-        self.orientation_constraint.evaluator().set_description("OrientationConstraint")
 
-    def CollisionFreeConstraint(self):
-        self.collision_free_constraint = MinimumDistanceLowerBoundConstraint(
+    def SetPositions(self, q):
+        if isinstance(q[0], AutoDiffXd):
+            self.autodiff_plant.SetPositions(self.autodiff_context, q)
+            return self.autodiff_frame, self.autodiff_context
+        else:
+            self.plant.SetPositions(self.plant_context, q)
+            return self.frame, self.plant_context
+
+    def EvalAllConstraints(self, vars):
+        '''Parallelize as much of the VarsToQ as possible to shorten computation time'''
+        q = self.VarsToQ(vars) ## this is ran once for all constraints
+        pose = self.fk(q) ## this is ran once for all constraints
+        total_length = sum(len(constraint) for constraint in self.constraints)
+        result = np.full(total_length, q[0]) ## q datatype
+        idx = 0
+        for constraint in self.constraints:
+            l = len(constraint)
+            result[idx:idx + l] = constraint.eval_func(vars, q, pose)
+            idx += l
+        return result
+
+    
+    def ApplyConstraints(self):
+        total_lb = np.hstack([constraint.lb for constraint in self.constraints])
+        total_ub = np.hstack([constraint.ub for constraint in self.constraints])
+        self.all_constraints = self.prog.AddConstraint(
+            func=self.EvalAllConstraints,
+            lb=total_lb,
+            ub=total_ub,
+            vars=self.lumped_vars
+        )
+        self.all_constraints.evaluator().set_description("AllIKFlowConstraints")
+
+
+    def CreateIKConstraint(self):
+        pos_tol, ori_tol = self.options.ik_constraint_tol
+        lb = np.array([-pos_tol] * 3 + [0])
+        ub = np.array([pos_tol] * 3 + [ori_tol])
+        def eval_func(vars, q, pose):
+            position, orientation = pose
+            pos_error = position - self.target_pose[:3]
+            orientation_error = 2 * np.arccos(np.abs(np.dot(orientation, self.target_pose[3:])))
+            return np.concatenate([pos_error, np.array([orientation_error])])
+        self.ik_constraint = IKFlowConstraints(lb, ub, eval_func, description="IKConstraint")
+        self.constraints.append(self.ik_constraint)
+        return self.ik_constraint
+    
+    def CreateCollisionFreeConstraint(self):
+        self.collision_free_constraint_eval = MinimumDistanceLowerBoundConstraint(
             plant=self.plant,
             bound=1e-3,
             influence_distance_offset=1e-1,
             plant_context=self.plant_context
         )
-        self.collision_constraint = self.prog.AddConstraint(
-            self.EvalCollisionFreeConstraint,
-            lb=np.array([-np.inf]),
-            ub = np.array([1]),
-            vars=self.lumped_vars
-        )
-        self.collision_constraint.evaluator().set_description("CollisionFreeConstraint")
+        def eval_func(vars, q, pose):
+            return self.collision_free_constraint_eval.Eval(q)
+        lb = np.array([-np.inf])
+        ub = np.array([1])
+        self.collision_free_constraint = IKFlowConstraints(lb, ub, eval_func, description="CollisionFreeConstraint")
+        self.constraints.append(self.collision_free_constraint)
+        return self.collision_free_constraint
     
-    def EvalCollisionFreeConstraint(self, vars):
-        q = self.VarsToQ(vars)
-        return self.collision_free_constraint.Eval(q)
-    
-    def JointLimitsConstraint(self):
+    def CreateJointLimitsConstraint(self):
         lower_limits = self.plant.GetPositionLowerLimits()
         upper_limits = self.plant.GetPositionUpperLimits()
+        def eval_func(vars, q, pose):
+            return q
+        self.joint_limit_constraint = IKFlowConstraints(lower_limits, upper_limits, eval_func, description="JointLimitsConstraint")
+        self.constraints.append(self.joint_limit_constraint)
+        return self.joint_limit_constraint
 
-        self.joint_limits_constraint = self.prog.AddConstraint(
-            self.VarsToQ,
-            lb=lower_limits,
-            ub=upper_limits,
-            vars=self.lumped_vars
+
+    def BoundingBoxConstraint(self):
+        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
+            -1.5 * np.ones(self.ik_solver.network_width), 1.5 * np.ones(self.ik_solver.network_width), self.z
         )
-        self.joint_limits_constraint.evaluator().set_description("JointLimitsConstraint")
+        self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
+        self.c_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
+            self.target_pose - 1, self.target_pose + 1,self.c
+        )
+        self.c_bounding_box_constraint.evaluator().set_description("CBoundingBoxConstraint")
+        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
+            -0.1 * np.ones(7), 0.1 * np.ones(7), self.correction
+        )
+        self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
+    
+
     
     def JointCenteringCost(self):
         self.joint_centering_cost = self.prog.AddCost(
@@ -141,48 +186,14 @@ class IKFlowProgram:
         q = self.VarsToQ(vars)
         diff = q - self.q_nominal
         return 0.5 * diff @ (self.options.joint_centering_cost * np.eye(9)) @ diff
-
-    def BoundingBoxConstraint(self):
-        z_lower_bound = -1.5
-        z_upper_bound = 1.5
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            z_lower_bound * np.ones(self.ik_solver.network_width),
-            z_upper_bound * np.ones(self.ik_solver.network_width),
-            self.z
-        )
-        self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
-        c_lower_bound = self.target_pose - 5
-        c_upper_bound = self.target_pose + 5
-        self.c_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            c_lower_bound,
-            c_upper_bound,
-            self.c
-        )
-        self.c_bounding_box_constraint.evaluator().set_description("CBoundingBoxConstraint")
-        correction_lower_bound = -0.4 * np.ones(7)
-        correction_upper_bound = 0.4 * np.ones(7)
-        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            correction_lower_bound,
-            correction_upper_bound,
-            self.correction
-        )
-        self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
     
     def CorrectionCost(self):
         self.correction_cost = self.prog.AddQuadraticCost(
-            Q=self.options.correction_cost * np.eye(7),
+            Q=self.options.correction_cost_weight * np.eye(7),
             b=np.zeros(7),
             vars=self.correction
         )
         self.correction_cost.evaluator().set_description("CorrectionCost")
-
-    def SetPositions(self, q):
-        if isinstance(q[0], AutoDiffXd):
-            self.autodiff_plant.SetPositions(self.autodiff_context, q)
-            return self.autodiff_frame, self.autodiff_context
-        else:
-            self.plant.SetPositions(self.plant_context, q)
-            return self.frame, self.plant_context
     
 
     def Solve(self):
@@ -196,6 +207,23 @@ class IKFlowProgram:
         solver_options.SetOption(IpoptSolver().solver_id(), "print_user_options", "yes")
         solver_options.SetOption(CommonSolverOption.kPrintFileName, "ipopt_output.txt")
         solver_options.SetOption(IpoptSolver().solver_id(), "max_wall_time", 60.0)
+
+        self.prog.AddVisualizationCallback(
+            partial(visualization_callback, diagram=self.diagram, diagram_context=self.diagram_context,
+                                                plant=self.plant, plant_context=self.plant_context,
+                                                vars_to_q=self.VarsToQ, vars_file = self.options.vars_file, visualize = self.options.visualize),
+            self.lumped_vars
+        )
         
         return solver.Solve(self.prog, solver_options=solver_options)
 
+
+def visualization_callback(vars, diagram, diagram_context, plant, plant_context, vars_to_q, vars_file, visualize):
+    if visualize or vars_file is not None:
+        q = vars_to_q(vars)
+        if visualize:
+            plant.SetPositions(plant_context, q)
+            diagram.ForcedPublish(diagram_context)
+        if vars_file is not None:
+            with open(vars_file, "a") as f:
+                f.write(",".join([str(val) for val in vars]) + "\n")
