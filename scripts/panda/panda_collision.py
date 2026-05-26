@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 ###### OPTIONS ######
 
-num_tests = 1000
+num_tests = 100
 
 ######################
 
