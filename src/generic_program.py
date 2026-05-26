@@ -76,10 +76,13 @@ class IKFlowProgram:
         if self.options.correction_cost_weight > 0.0:
             self.CorrectionCost()
 
-    def fk(self, q):
+    def fk(self, q, matrix = False):
         frame, context = self.SetPositions(q)
         rigid_transform = frame.CalcPoseInWorld(context)
-        return rigid_transform.translation(), rigid_transform.rotation().ToQuaternion().wxyz()
+        if matrix:
+            return rigid_transform.GetAsMatrix4()
+        else:
+            return rigid_transform.translation(), rigid_transform.rotation().ToQuaternion().wxyz()
 
     ## These are Robot Specific need to be implemented in each file ##
     def ik_inference(self, vars):
@@ -104,7 +107,7 @@ class IKFlowProgram:
         idx = 0
         for constraint in self.constraints:
             l = len(constraint)
-            result[idx:idx + l] = constraint.eval_func(vars, q, pose)
+            result[idx:idx + l] = constraint.eval_func(vars = vars, q = q, pose = pose)
             idx += l
         return result
 
@@ -141,7 +144,7 @@ class IKFlowProgram:
             influence_distance_offset=1e-1,
             plant_context=self.plant_context
         )
-        def eval_func(vars, q, pose):
+        def eval_func(vars = None, q = np.zeros(7), pose = None):
             return self.collision_free_constraint_eval.Eval(q)
         lb = np.array([-np.inf])
         ub = np.array([1])
@@ -152,7 +155,7 @@ class IKFlowProgram:
     def CreateJointLimitsConstraint(self):
         lower_limits = self.plant.GetPositionLowerLimits()
         upper_limits = self.plant.GetPositionUpperLimits()
-        def eval_func(vars, q, pose):
+        def eval_func(vars = None, q = None, pose = None):
             return q
         self.joint_limit_constraint = IKFlowConstraints(lower_limits, upper_limits, eval_func, description="JointLimitsConstraint")
         self.constraints.append(self.joint_limit_constraint)
