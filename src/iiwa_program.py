@@ -76,7 +76,7 @@ class Iiwa14IKProgram(IKFlowProgram):
         self.add_constraints()
         self.add_costs()
 
-    def ik_inference(self, vars, add_correction = True):
+    def ik_inference(self, vars, add_correction = False):
         '''Given a latent + target + correction, returns corresponding joint angles
         vars can be either numpy array or torch tensor (for gradient computation)'''
         # Convert to tensor only if not already a tensor
