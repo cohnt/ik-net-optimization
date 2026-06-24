@@ -12,6 +12,7 @@ from pydrake.all import (
     AutoDiffXd, 
     RigidTransform_,
 )
+import pydrake.math
 
 
 
@@ -70,36 +71,54 @@ class Iiwa14IKProgram(IKFlowProgram):
         self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
 
-        self.jacobian_gen = torch.func.jacrev(self.ik_inference)
+        self.jacobian_gen = torch.func.vmap(torch.func.jacrev(self.ik_inference_single))
         self.rev_jac_gen = torch.func.jacrev(self.reverse_inference)
 
         self.add_constraints()
         self.add_costs()
 
-    def ik_inference(self, vars, add_correction = False):
+    def ik_inference_batched(self, vars, add_correction = False):
         '''Given a latent + target + correction, returns corresponding joint angles
-        vars can be either numpy array or torch tensor (for gradient computation)'''
+        vars can be either numpy array or torch tensor (for gradient computation)
+        vars should be batched already'''
+        # Convert to tensor only if not already a tensor
+        if not isinstance(vars, torch.Tensor):
+            vars = torch.tensor(vars, device=DEVICE, dtype=torch.float32)
+        
+        c, z, correction = (vars[:, :7], vars[:, 7:7+self.ik_solver.network_width], vars[:, 7+self.ik_solver.network_width:])
+
+        c_torch = torch.cat([c, torch.zeros((c.size(0), 1), dtype=torch.float32, device=DEVICE)], dim=1)
+
+        # print(z_batch, c_torch)
+        output, _ = self.ik_solver.nn_model(z, c=c_torch, rev=True)
+
+        q = output[:, :7]
+        if add_correction:
+            return q + correction
+        else: return q
+
+    def ik_inference_single(self, vars, add_correction = False):
+        '''Given a latent + target + correction, returns corresponding joint angles
+        vars can be either numpy array or torch tensor (for gradient computation)
+        '''
         # Convert to tensor only if not already a tensor
         if not isinstance(vars, torch.Tensor):
             vars = torch.tensor(vars, device=DEVICE, dtype=torch.float32)
         
         c, z, correction = (vars[:7], vars[7:7+self.ik_solver.network_width], vars[7+self.ik_solver.network_width:])
-        # Work directly with tensor slices - don't call torch.tensor() again!
+
 
         c_torch = torch.cat([c.unsqueeze(0), torch.zeros((1, 1), dtype=torch.float32, device=DEVICE)], dim=1)
 
-        z_batch = z.unsqueeze(0)
-
         # print(z_batch, c_torch)
-        output, extra = self.ik_solver.nn_model(z_batch, c=c_torch, rev=True)
-        # print(output, extra)
-        # Keep this as a torch tensor so correction addition is elementwise and type-safe.
+        output, _ = self.ik_solver.nn_model(z.unsqueeze(0), c=c_torch, rev=True)
+
         q = output[0, :7]
         if add_correction:
             return q + correction
         else: return q
 
-    def reverse_inference(self, vars):
+    def reverse_inference(self, vars, pad = 0.0):
         '''vars := [q + pose]
         run reverse inference to find associated z value'''
         if not isinstance(vars, torch.Tensor):
@@ -109,7 +128,7 @@ class Iiwa14IKProgram(IKFlowProgram):
         pose = vars[7:]
         c_torch = torch.cat([pose, torch.tensor([0.0], dtype=torch.float32, device=DEVICE)]).unsqueeze(0)
 
-        q_pad = torch.cat([q, torch.tensor([0.0], dtype=torch.float32, device=DEVICE)]).unsqueeze(0)  # [1, 8]
+        q_pad = torch.cat([q, torch.tensor([pad], dtype=torch.float32, device=DEVICE)]).unsqueeze(0)  # [1, 8]
         z_out, _ = self.ik_solver.nn_model(q_pad, c=c_torch, rev=False)
         return z_out
 
@@ -147,4 +166,80 @@ class Iiwa14IKProgram(IKFlowProgram):
             # print(sum(q_ad**2))
             return q_ad
 
+
+
+
+
+# iiwa_alpha = np.array([
+# 	-np.pi/2,
+# 	np.pi/2,
+# 	np.pi/2,
+# 	-np.pi/2,
+# 	-np.pi/2,
+# 	np.pi/2,
+# 	0
+# ])
+# # NOTE: We're using the LBR iiwa 14 R820, so our values are slightly different
+# # than the report found here: https://zenodo.org/record/4063575
+# iiwa_d = np.array([
+# 	0.36,
+# 	0,
+# 	0.42,
+# 	0,
+# 	0.4,
+# 	0,
+# 	0.126-0.045 # This adjustment is necessary to match drake. Probably due to a flange or something?
+# ])
+# iiwa_limits_lower = np.array([
+# 	-2.967060,
+# 	-2.094395,
+# 	-2.967060,
+# 	-2.094395,
+# 	-2.967060,
+# 	-2.094395,
+# 	-3.054326
+# ])
+# iiwa_limits_upper = np.array([
+# 	2.967060,
+# 	2.094395,
+# 	2.967060,
+# 	2.094395,
+# 	2.967060,
+# 	2.094395,
+# 	3.054326
+# ])
+
+# class IiwaFK:
+#     def __init__(self, alpha = iiwa_alpha, d = iiwa_d, limits_lower = iiwa_limits_lower, limits_upper = iiwa_limits_upper):
+#         # alpha and d are the DH parameters. We assume all other parameters are zero
+#         # limits_lower and limits_upper encode the joint limits
+#         # All arguments should be length seven arrays
+#         self.alpha = alpha.copy()
+#         self.d = d.copy()
+#         self.d_bs, self.d_se, self.d_ew, self.d_wf = d[0], d[2], d[4], d[6]
+#         self.limits_lower = limits_lower.copy()
+#         self.limits_upper = limits_upper.copy()
+
+#         self.eye4 = torch.eye(4, device=DEVICE, dtype=torch.float32)
+
+#         self.Ts = [
+#             lambda ti, ai=torch.as_tensor(ai, device=DEVICE, dtype=torch.float32), di=torch.as_tensor(di, device=DEVICE, dtype=torch.float32): torch.stack([
+#                 torch.stack([torch.cos(ti), -torch.sin(ti) * torch.cos(ai), torch.sin(ti) * torch.sin(ai), torch.zeros_like(ti)]),
+#                 torch.stack([torch.sin(ti), torch.cos(ti) * torch.cos(ai), -torch.cos(ti) * torch.sin(ai), torch.zeros_like(ti)]),
+#                 torch.stack([torch.zeros_like(ti), torch.sin(ai), torch.cos(ai), di * torch.ones_like(ti)]),
+#                 torch.stack([torch.zeros_like(ti), torch.zeros_like(ti), torch.zeros_like(ti), torch.ones_like(ti)]),
+#             ])
+#             for ai, di in zip(self.alpha, self.d)
+#         ]
+
+
+#     def FK(self, thetas):
+#         # thetas should be the joint angles
+#         # Returns the transform from the base frame B to the end effector frame E, X_EB
+#         # Also returns the global configuration parameters and elbow angle psi
+
+#         full_mat = self.eye4.to(dtype=thetas.dtype)
+#         for transform_fn, theta in zip(self.Ts, thetas):
+#             full_mat = full_mat @ transform_fn(theta)
+#         return full_mat
     
