@@ -7,7 +7,11 @@ from src.generic_program import *
 import numpy as np
 from pydrake.all import (
     MathematicalProgram,
-    AutoDiffXd, 
+    AutoDiffXd,
+    Quaternion,
+    RotationMatrix, 
+    RotationMatrix_,
+    RollPitchYaw_,
 )
 
 
@@ -36,9 +40,9 @@ class PandaIKProgram(IKFlowProgram):
 
 
 
-    def create_prog(self, target_pose = np.zeros(7), q_nominal = None):
+    def create_prog(self, target_pose = np.array([0., 0., 0., 1., 0., 0., 0.]), q_nominal = None):
         self.prog = MathematicalProgram()
-        self.c = self.prog.NewContinuousVariables(7) # x y z qw qx qy qz into nn model
+        self.c = self.prog.NewContinuousVariables(6) # x y z roll pitch yaw into nn model
         self.z = self.prog.NewContinuousVariables(self.ik_solver.network_width) # latent variables
         self.correction = self.prog.NewContinuousVariables(7) ## small correction term to q
 
@@ -48,14 +52,21 @@ class PandaIKProgram(IKFlowProgram):
 
         self.target_pose = target_pose
         if q_nominal is None:
-            self.q_nominal = np.zeros(self.num_pos)
+            self.q_nominal = np.zeros(7)
         else:
             self.q_nominal = q_nominal
 
-        self.prog.SetInitialGuess(self.c, target_pose)
+        self.initial_guess = np.zeros(6)
+        self.initial_guess[:3] = self.target_pose[:3]
+        self.initial_guess[3:] = RotationMatrix(Quaternion(self.target_pose[3:])).ToRollPitchYaw().vector()
+
+
+        self.prog.SetInitialGuess(self.c, self.initial_guess)
         self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
-        self.jacobian_gen = torch.func.jacrev(self.ik_inference) ## function that can compute jacobian dq/dvars
+
+
+        self.jacobian_gen = torch.compile(torch.func.jacrev(self.ik_inference)) ## function that can compute jacobian dq/dvars
 
         ## Add Constraints
         self.add_constraints()
@@ -83,8 +94,18 @@ class PandaIKProgram(IKFlowProgram):
     
         
 
-    def VarsToQ(self, vars, add_correction = True):
-        ad = isinstance(vars[0], AutoDiffXd) ## The hard part is to make torch interact with AutoDiffXd necessary for drake.
+    def VarsToQ(self, rpy_vars, add_correction = True):
+
+
+        ad = isinstance(rpy_vars[0], AutoDiffXd)
+        vars = np.zeros(21, dtype=AutoDiffXd if ad else np.float32)
+        t = AutoDiffXd if ad else float
+
+        vars[:3] = rpy_vars[:3]
+        vars[3:7] = RotationMatrix_[t](RollPitchYaw_[t](rpy_vars[3:6])).ToQuaternion().wxyz()
+        vars[7:14] = rpy_vars[6:13]
+        vars[14:21] = rpy_vars[13:20]
+
 
         if not ad:
             q = np.zeros(self.num_pos)
@@ -109,12 +130,11 @@ class PandaIKProgram(IKFlowProgram):
             
             # Chain rule: dq/dvars @ dvars = dq
             # For each element of q, compute gradient via chain rule
-            q_gradients = np.zeros((self.num_pos, len(vars)))
+            q_gradients = np.zeros((self.num_pos, len(rpy_vars)))
             q_gradients[:7, :] = jacobian_np @ vars_gradients
             
             # Create AutoDiffXd objects with value and gradient
             q_ad = np.array([AutoDiffXd(q_values[i], q_gradients[i]) for i in range(len(q_values))])
-            
             return q_ad
 
 

@@ -1,3 +1,5 @@
+import os
+
 from ikflow.config import DEVICE
 import numpy as np
 from dataclasses import dataclass, field
@@ -6,6 +8,7 @@ import numpy as np
 from pydrake.all import (
     AutoDiffXd, 
     IpoptSolver,
+    SnoptSolver,
     SolverOptions,
     CommonSolverOption, 
     MinimumDistanceLowerBoundConstraint
@@ -25,7 +28,8 @@ class ProgramOptions:
     acceptable_tol: float = field(default=1e-4, metadata={"help": "Acceptable tolerance for solver convergence"})
     acceptable_dual_inf_tol: float = field(default=1e-4, metadata={"help": "Acceptable dual infeasibility tolerance for solver convergence"})
     acceptable_compl_inf_tol: float = field(default=1e-4, metadata={"help": "Acceptable complementary infeasibility tolerance for solver convergence"})
-    acceptable_constr_viol_tol: float = field(default=1e-4, metadata={"help": "Acceptable constraint violation tolerance for solver convergence"})
+    acceptable_constr_viol_tol: float = field(default=1e-6, metadata={"help": "Acceptable constraint violation tolerance for solver convergence"})
+    acceptable_iter: int = field(default=1, metadata={"help": "Acceptable number of iterations for solver convergence"})
     file_print_level: int = field(default=5, metadata={"help": "File print level for the solver"})
     file_print_name: str = field(default="ikflow_solver_log.txt", metadata={"help": "File name for solver log"})
     max_wall_time: float = field(default=60, metadata={"help": "Maximum wall time for the solver in seconds"})
@@ -145,9 +149,9 @@ class IKFlowProgram:
             plant_context=self.plant_context
         )
         def eval_func(vars = None, q = np.zeros(7), pose = None):
-            return self.collision_free_constraint_eval.Eval(q)
+            return 0.1 * self.collision_free_constraint_eval.Eval(q)
         lb = np.array([-np.inf])
-        ub = np.array([1])
+        ub = np.array([0.1])
         self.collision_free_constraint = IKFlowConstraints(lb, ub, eval_func, description="CollisionFreeConstraint")
         self.constraints.append(self.collision_free_constraint)
         return self.collision_free_constraint
@@ -164,11 +168,11 @@ class IKFlowProgram:
 
     def BoundingBoxConstraint(self):
         self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -1.5 * np.ones(self.ik_solver.network_width), 1.5 * np.ones(self.ik_solver.network_width), self.z
+            -5. * np.ones(self.ik_solver.network_width), 5. * np.ones(self.ik_solver.network_width), self.z
         )
         self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
         self.c_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            self.target_pose - 1, self.target_pose + 1,self.c
+            self.initial_guess - 1, self.initial_guess + 1,self.c
         )
         self.c_bounding_box_constraint.evaluator().set_description("CBoundingBoxConstraint")
         self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
@@ -187,8 +191,8 @@ class IKFlowProgram:
     
     def EvalJointCenteringCost(self, vars):
         q = self.VarsToQ(vars)
-        diff = q - self.q_nominal
-        return 0.5 * diff @ (self.options.joint_centering_cost * np.eye(9)) @ diff
+        diff = q[:7] - self.q_nominal
+        return 0.5 * diff @ (self.options.joint_centering_cost * np.eye(7)) @ diff
     
     def CorrectionCost(self):
         self.correction_cost = self.prog.AddQuadraticCost(
@@ -200,16 +204,37 @@ class IKFlowProgram:
     
 
     def Solve(self):
-        solver = IpoptSolver()
-        solver_options = SolverOptions()
-        solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_tol", 1e-4)
-        solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_dual_inf_tol", 1e-4)
-        solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_compl_inf_tol", 1e-4)
-        solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_constr_viol_tol", 1e-6)
-        solver_options.SetOption(IpoptSolver().solver_id(), "file_print_level", 5)
-        solver_options.SetOption(IpoptSolver().solver_id(), "print_user_options", "yes")
-        solver_options.SetOption(CommonSolverOption.kPrintFileName, "ipopt_output.txt")
-        solver_options.SetOption(IpoptSolver().solver_id(), "max_wall_time", 60.0)
+
+        if os.path.exists(self.options.file_print_name):
+            with open(self.options.file_print_name, "r+") as f:
+                f.seek(0)
+                f.truncate()
+        
+        if self.options.which_solver == "ipopt":
+            solver = IpoptSolver()
+            solver_options = SolverOptions()
+            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_tol", self.options.acceptable_tol)
+            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_constr_viol_tol", self.options.acceptable_constr_viol_tol)
+            solver_options.SetOption(IpoptSolver().solver_id(), "file_print_level", self.options.file_print_level)
+            solver_options.SetOption(IpoptSolver().solver_id(), "print_user_options", "yes")
+            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_iter", self.options.acceptable_iter)
+            solver_options.SetOption(IpoptSolver().solver_id(), "max_wall_time", self.options.max_wall_time)            
+        if self.options.which_solver == 'snopt':
+            solver = SnoptSolver()
+            solver_options = SolverOptions()
+            solver_options.SetOption(SnoptSolver.id(), "Major print level", self.options.file_print_level)
+            solver_options.SetOption(SnoptSolver.id(), "Timing Level", 3)
+            solver_options.SetOption(SnoptSolver.id(), "Time Limit", self.options.max_wall_time)
+            solver_options.SetOption(SnoptSolver.id(), "Major optimality tolerance", self.options.acceptable_tol)
+            solver_options.SetOption(SnoptSolver.id(), "Minor optimality tolerance", self.options.acceptable_tol)
+            solver_options.SetOption(SnoptSolver.id(), "Major feasibility tolerance", self.options.acceptable_constr_viol_tol)
+            solver_options.SetOption(SnoptSolver.id(), "Major Iteration Limit", 4 * self.options.max_wall_time)
+
+
+        
+        solver_options.SetOption(CommonSolverOption.kPrintFileName, self.options.file_print_name)
+
+
 
         self.prog.AddVisualizationCallback(
             partial(visualization_callback, diagram=self.diagram, diagram_context=self.diagram_context,
