@@ -4,14 +4,19 @@ from jrl.robots import get_robot
 from ikflow.config import DEVICE
 import torch
 import numpy as np
-from src.utils import Mug
+from src.utils import Mug, RepoDir
 from src.generic_program import *
 import numpy as np
 from pydrake.all import (
     MathematicalProgram,
     AutoDiffXd, 
     RigidTransform_,
+    Quaternion,
+    RotationMatrix,
+    RotationMatrix_,
+    RollPitchYaw_,
 )
+import os
 import pydrake.math
 
 
@@ -47,17 +52,18 @@ class Iiwa14IKProgram(IKFlowProgram):
         hyper_parameters = IkflowModelParameters()
         hyper_parameters.__dict__.update(hparams)
         self.ik_solver = IKFlowSolver(hyper_parameters, robot, compile_model=None)
-        self.ik_solver.load_state_dict("iiwa14__lemon-haze-7__global_step_4.25M.pkl")
+        print(RepoDir())
+        self.ik_solver.load_state_dict(os.path.join(RepoDir(), "models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl"))
         self.ik_solver.nn_model.eval()
         
         self.options = options
         self.constraints = []
 
-    def create_prog(self, target_pose = np.zeros(7), q_nominal = None):
+    def create_prog(self, target_pose = np.array([0., 0., 0., 1., 0., 0., 0.]), q_nominal = None):
         self.prog = MathematicalProgram()
-        self.c = self.prog.NewContinuousVariables(7)
+        self.c = self.prog.NewContinuousVariables(6)
         self.z = self.prog.NewContinuousVariables(self.ik_solver.network_width)
-        self.correction = self.correction = self.prog.NewContinuousVariables(7)
+        self.correction = self.prog.NewContinuousVariables(7)
 
         self.lumped_vars = np.hstack([self.c, self.z, self.correction])
 
@@ -67,37 +73,23 @@ class Iiwa14IKProgram(IKFlowProgram):
         else:
             self.q_nominal = q_nominal
 
-        self.prog.SetInitialGuess(self.c, target_pose)
-        self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
+        self.initial_guess = np.zeros(6)
+        self.initial_guess[:3] = self.target_pose[:3]
+        self.initial_guess[3:] = RotationMatrix(Quaternion(self.target_pose[3:])).ToRollPitchYaw().vector()
+
+
+
+        self.prog.SetInitialGuess(self.c, self.initial_guess)
+        self.prog.SetInitialGuess(self.z, np.zeros(8))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
 
-        self.jacobian_gen = torch.func.vmap(torch.func.jacrev(self.ik_inference_single))
+        self.jacobian_gen = torch.compile(torch.func.jacrev(self.ik_inference))
         self.rev_jac_gen = torch.func.jacrev(self.reverse_inference)
 
         self.add_constraints()
         self.add_costs()
 
-    def ik_inference_batched(self, vars, add_correction = False):
-        '''Given a latent + target + correction, returns corresponding joint angles
-        vars can be either numpy array or torch tensor (for gradient computation)
-        vars should be batched already'''
-        # Convert to tensor only if not already a tensor
-        if not isinstance(vars, torch.Tensor):
-            vars = torch.tensor(vars, device=DEVICE, dtype=torch.float32)
-        
-        c, z, correction = (vars[:, :7], vars[:, 7:7+self.ik_solver.network_width], vars[:, 7+self.ik_solver.network_width:])
-
-        c_torch = torch.cat([c, torch.zeros((c.size(0), 1), dtype=torch.float32, device=DEVICE)], dim=1)
-
-        # print(z_batch, c_torch)
-        output, _ = self.ik_solver.nn_model(z, c=c_torch, rev=True)
-
-        q = output[:, :7]
-        if add_correction:
-            return q + correction
-        else: return q
-
-    def ik_inference_single(self, vars, add_correction = False):
+    def ik_inference(self, vars, add_correction = True):
         '''Given a latent + target + correction, returns corresponding joint angles
         vars can be either numpy array or torch tensor (for gradient computation)
         '''
@@ -121,6 +113,7 @@ class Iiwa14IKProgram(IKFlowProgram):
     def reverse_inference(self, vars, pad = 0.0):
         '''vars := [q + pose]
         run reverse inference to find associated z value'''
+
         if not isinstance(vars, torch.Tensor):
             vars = torch.tensor(vars, device=DEVICE, dtype=torch.float32)
         
@@ -134,8 +127,14 @@ class Iiwa14IKProgram(IKFlowProgram):
 
 
 
-    def VarsToQ(self, vars, add_correction = True):
-        ad = isinstance(vars[0], AutoDiffXd)
+    def VarsToQ(self, rpy_vars, add_correction = True):
+        ad = isinstance(rpy_vars[0], AutoDiffXd)
+        vars = np.zeros(22, dtype=AutoDiffXd if ad else np.float32)
+        t = AutoDiffXd if ad else float
+        vars[:3] = rpy_vars[:3]
+        vars[3:7] = RotationMatrix_[t](RollPitchYaw_[t](rpy_vars[3:6])).ToQuaternion().wxyz()
+        vars[7:15] = rpy_vars[6:14]
+        vars[15:22] = rpy_vars[14:21]
 
         if not ad:
             q = np.zeros(self.num_pos)
@@ -157,7 +156,7 @@ class Iiwa14IKProgram(IKFlowProgram):
             
             # Chain rule: dq/dvars @ dvars = dq
             # For each element of q, compute gradient via chain rule
-            q_gradients = np.zeros((self.num_pos, len(vars)))
+            q_gradients = np.zeros((self.num_pos, len(rpy_vars)))
             q_gradients[:7, :] = jacobian_np @ vars_gradients
             
             # Create AutoDiffXd objects with value and gradient
@@ -167,79 +166,22 @@ class Iiwa14IKProgram(IKFlowProgram):
             return q_ad
 
 
-
-
-
-# iiwa_alpha = np.array([
-# 	-np.pi/2,
-# 	np.pi/2,
-# 	np.pi/2,
-# 	-np.pi/2,
-# 	-np.pi/2,
-# 	np.pi/2,
-# 	0
-# ])
-# # NOTE: We're using the LBR iiwa 14 R820, so our values are slightly different
-# # than the report found here: https://zenodo.org/record/4063575
-# iiwa_d = np.array([
-# 	0.36,
-# 	0,
-# 	0.42,
-# 	0,
-# 	0.4,
-# 	0,
-# 	0.126-0.045 # This adjustment is necessary to match drake. Probably due to a flange or something?
-# ])
-# iiwa_limits_lower = np.array([
-# 	-2.967060,
-# 	-2.094395,
-# 	-2.967060,
-# 	-2.094395,
-# 	-2.967060,
-# 	-2.094395,
-# 	-3.054326
-# ])
-# iiwa_limits_upper = np.array([
-# 	2.967060,
-# 	2.094395,
-# 	2.967060,
-# 	2.094395,
-# 	2.967060,
-# 	2.094395,
-# 	3.054326
-# ])
-
-# class IiwaFK:
-#     def __init__(self, alpha = iiwa_alpha, d = iiwa_d, limits_lower = iiwa_limits_lower, limits_upper = iiwa_limits_upper):
-#         # alpha and d are the DH parameters. We assume all other parameters are zero
-#         # limits_lower and limits_upper encode the joint limits
-#         # All arguments should be length seven arrays
-#         self.alpha = alpha.copy()
-#         self.d = d.copy()
-#         self.d_bs, self.d_se, self.d_ew, self.d_wf = d[0], d[2], d[4], d[6]
-#         self.limits_lower = limits_lower.copy()
-#         self.limits_upper = limits_upper.copy()
-
-#         self.eye4 = torch.eye(4, device=DEVICE, dtype=torch.float32)
-
-#         self.Ts = [
-#             lambda ti, ai=torch.as_tensor(ai, device=DEVICE, dtype=torch.float32), di=torch.as_tensor(di, device=DEVICE, dtype=torch.float32): torch.stack([
-#                 torch.stack([torch.cos(ti), -torch.sin(ti) * torch.cos(ai), torch.sin(ti) * torch.sin(ai), torch.zeros_like(ti)]),
-#                 torch.stack([torch.sin(ti), torch.cos(ti) * torch.cos(ai), -torch.cos(ti) * torch.sin(ai), torch.zeros_like(ti)]),
-#                 torch.stack([torch.zeros_like(ti), torch.sin(ai), torch.cos(ai), di * torch.ones_like(ti)]),
-#                 torch.stack([torch.zeros_like(ti), torch.zeros_like(ti), torch.zeros_like(ti), torch.ones_like(ti)]),
-#             ])
-#             for ai, di in zip(self.alpha, self.d)
-#         ]
-
-
-#     def FK(self, thetas):
-#         # thetas should be the joint angles
-#         # Returns the transform from the base frame B to the end effector frame E, X_EB
-#         # Also returns the global configuration parameters and elbow angle psi
-
-#         full_mat = self.eye4.to(dtype=thetas.dtype)
-#         for transform_fn, theta in zip(self.Ts, thetas):
-#             full_mat = full_mat @ transform_fn(theta)
-#         return full_mat
+iiwa_limits_lower = np.array([
+	-2.967060,
+	-2.094395,
+	-2.967060,
+	-2.094395,
+	-2.967060,
+	-2.094395,
+	-3.054326
+])
+iiwa_limits_upper = np.array([
+	2.967060,
+	2.094395,
+	2.967060,
+	2.094395,
+	2.967060,
+	2.094395,
+	3.054326
+])
     
