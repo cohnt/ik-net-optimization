@@ -40,6 +40,25 @@ directives:
       child: panda2::panda_link0
 
   - add_model:
+      name: panda3
+      file: package://combining_kinematics/models/panda/panda_no_hand.urdf
+      # default_joint_positions:
+
+  - add_model:
+      name: finray3
+      file: package://combining_kinematics/models/panda/panda_finray.sdf
+  - add_weld:
+      parent: panda3::panda_link7
+      child: finray3::panda_hand_frame
+      X_PC:
+        translation: [0, 0, 0.134]
+        rotation: !Rpy { deg: [90, 0, 45.0] }
+
+  - add_weld:
+      parent: world
+      child: panda3::panda_link0
+
+  - add_model:
       name: binF
       # file: package://drake/examples/manipulation_station/models/bin2.sdf
       file: package://drake_models/manipulation_station/bin2.sdf

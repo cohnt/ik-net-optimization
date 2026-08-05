@@ -19,6 +19,9 @@ from pydrake.all import (
 import os
 import pydrake.math
 
+from src.iiwa_analytic_ik import iiwa_limits_lower, iiwa_limits_upper
+    
+
 
 
 class Iiwa14IKProgram(IKFlowProgram):
@@ -84,7 +87,7 @@ class Iiwa14IKProgram(IKFlowProgram):
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
 
         self.jacobian_gen = torch.compile(torch.func.jacrev(self.ik_inference))
-        self.rev_jac_gen = torch.func.jacrev(self.reverse_inference)
+        # self.rev_jac_gen = torch.func.jacrev(self.reverse_inference)
 
         self.add_constraints()
         self.add_costs()
@@ -166,22 +169,48 @@ class Iiwa14IKProgram(IKFlowProgram):
             return q_ad
 
 
-iiwa_limits_lower = np.array([
-	-2.967060,
-	-2.094395,
-	-2.967060,
-	-2.094395,
-	-2.967060,
-	-2.094395,
-	-3.054326
-])
-iiwa_limits_upper = np.array([
-	2.967060,
-	2.094395,
-	2.967060,
-	2.094395,
-	2.967060,
-	2.094395,
-	3.054326
-])
-    
+class IiwaMugProgram(Iiwa14IKProgram):
+    def __init__(self, diagram, options = ProgramOptions()):
+        super().__init__(diagram, options)
+        self.frame = self.frame = self.plant.GetFrameByName("between_fingers")
+        self.autodiff_frame = self.autodiff_plant.GetFrameByName("between_fingers")
+
+    def create_prog(self, target_mug = Mug(), q_nominal = None):
+        
+        self.prog = MathematicalProgram()
+        self.c = self.prog.NewContinuousVariables(6) # x y z roll pitch yaw
+        self.z = self.prog.NewContinuousVariables(self.ik_solver.network_width) # latent variables
+        self.correction = self.prog.NewContinuousVariables(7) ## small correction term to q
+
+        self.lumped_vars = np.hstack([self.c, self.z, self.correction])
+
+        self.target_mug = target_mug
+        if q_nominal is None:
+            self.q_nominal = np.zeros(self.num_pos)
+        else:
+            self.q_nominal = q_nominal
+
+
+        self.prog.SetInitialGuess(self.c, [*target_mug.middle.translation(), 0, 0, 0])
+        self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
+        self.prog.SetInitialGuess(self.correction, np.zeros(7))
+        self.jacobian_gen = torch.compile(torch.func.jacrev(self.ik_inference)) ## function that can compute jacobian dq/dvars
+
+        self.target_pose = np.array([*target_mug.middle.translation(), 0, 0, 0]) ## for bounding box
+        self.add_constraints()
+        self.add_costs()
+
+
+
+       
+    def CreateIKConstraint(self):
+        ik_tol, _ = self.options.ik_constraint_tol
+        lb = np.array([-ik_tol, -ik_tol, -self.target_mug.height, 1])
+        ub = np.array([ik_tol, ik_tol, self.target_mug.height, 1])
+        def eval_func(vars, q, pose):
+            position, _ = pose
+            mug_transform = np.linalg.inv(self.target_mug.middle.GetAsMatrix4())
+            return (mug_transform @ np.array([[*position, 1]]).T).squeeze()
+        self.ik_constraint = IKFlowConstraints(lb, ub, eval_func, description="IKConstraint")
+        self.constraints.append(self.ik_constraint)
+        return self.ik_constraint

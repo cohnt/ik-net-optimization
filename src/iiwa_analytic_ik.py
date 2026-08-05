@@ -34,8 +34,25 @@ iiwa_d = np.array([
 	0,
 	0.126-0.045 # This adjustment is necessary to match drake. Probably due to a flange or something?
 ])
-from src.iiwa_program import iiwa_limits_lower, iiwa_limits_upper
 
+iiwa_limits_lower = np.array([
+	-2.967060,
+	-2.094395,
+	-2.967060,
+	-2.094395,
+	-2.967060,
+	-2.094395,
+	-3.054326
+])
+iiwa_limits_upper = np.array([
+	2.967060,
+	2.094395,
+	2.967060,
+	2.094395,
+	2.967060,
+	2.094395,
+	3.054326
+])
 
 def cross_product_matrix(a):
 	# Returns a matrix, such that multiplication by a vector yields the cross product

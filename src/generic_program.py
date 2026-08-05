@@ -1,5 +1,6 @@
 import os
 
+import pydrake.math
 from ikflow.config import DEVICE
 import numpy as np
 from dataclasses import dataclass, field
@@ -22,6 +23,8 @@ class ProgramOptions:
     ik_constraint_tol: tuple = field(default=(1e-4, 0.01), metadata={"help": "Tolerance for IK constraints: tuple of (position tol, orientation tol)"})
     correction_cost_weight: float = field(default=0.0, metadata={"help": "Weight for correction cost to keep close to zero"})
 
+    mug_height: float = field(default=0.035, metadata={"help": "Mug height for valid grasp poses"})
+
 
     ## Solver options ##
     which_solver: str = field(default="ipopt", metadata={"help": "Which IKFlow solver to use"})
@@ -36,6 +39,13 @@ class ProgramOptions:
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
     visualize: bool = field(default=False, metadata={"help": "If true, visualizes the IK solving process in Meshcat"})
+
+
+
+def orientation_error(orientation, target_orientation, eps=1e-8):
+    dot_product = np.dot(orientation, target_orientation)
+    clipped_value = pydrake.math.min(1.0 - eps, pydrake.math.max(-1.0 + eps, np.abs(dot_product)))
+    return 2.0 * pydrake.math.arccos(clipped_value)
 
 class IKFlowConstraints:
     def __init__(self, lb, ub, eval_func, description=""):
@@ -135,8 +145,8 @@ class IKFlowProgram:
         def eval_func(vars, q, pose):
             position, orientation = pose
             pos_error = position - self.target_pose[:3]
-            orientation_error = 2 * np.arccos(np.abs(np.dot(orientation, self.target_pose[3:])))
-            return np.concatenate([pos_error, np.array([orientation_error])])
+            orientation_err = orientation_error(orientation, self.target_pose[3:])
+            return np.concatenate([pos_error, np.array([orientation_err])])
         self.ik_constraint = IKFlowConstraints(lb, ub, eval_func, description="IKConstraint")
         self.constraints.append(self.ik_constraint)
         return self.ik_constraint
