@@ -13,7 +13,16 @@ from tqdm import tqdm
 ####### Options #######
 num_tests = 100
 num_initial_guesses = 10
-options = ProgramOptions(ik_constraint_tol = (1e-3, 0))
+program_options = ProgramOptions(
+    visualize=True,
+    joint_centering_cost=1e-4,
+    max_wall_time=60.0,
+    which_solver='snopt',
+    acceptable_tol = 1e-4,
+    acceptable_constr_viol_tol = 1e-4,
+    ik_constraint_tol = (1e-6, 0.01),
+    mug_height = 0.04
+)
 #######################
 
 
@@ -42,22 +51,35 @@ while i < num_tests:
         i += 1
 print("Generated {} collision-free targets in {:.2f} seconds".format(num_tests, time.time() - start))
 
+ik_solver = program.ik_solver
+
+successes = 0
+times = []
+costs = []
 
 for i in tqdm(range(num_tests)):
     diagram_with_mug, mug = GenerateDiagramWithMug(qs[i], program, yaml_file, mug_meshcat)
     with HiddenPrints():
-        program = PandaMugProgram(diagram_with_mug, options=options)
-        program.SetPositions(qs[i])
-    for j in range(num_initial_guesses):
-        program.create_prog(target_mug=mug)
-        start = time.time()
-        result = program.Solve()
-        if not result.is_success():
-            print("Failed IK for target {} in {:.2f} seconds".format(i, time.time() - start))
-        else:
-            print("Solved IK for target {} in {:.2f} seconds".format(i, time.time() - start))
+        mug_program = PandaMugProgram(diagram_with_mug, options=program_options, model=ik_solver)
+        mug_program.SetPositions(qs[i])
+    # for j in range(num_initial_guesses):
+    mug_program.create_prog(target_mug=mug)
+    mug_program.options.file_print_name = RepoDir() + f"/results/panda/mug/learned/collision_test_{i}.txt"
+    start = time.time()
+    result = mug_program.Solve()
+    if not result.is_success():
+        print("Failed IK for target {} in {:.2f} seconds".format(i, time.time() - start))
+    else:
+        print("Solved IK for target {} in {:.2f} seconds".format(i, time.time() - start))
+        print(result.get_optimal_cost() / mug_program.options.joint_centering_cost)
+        times.append(time.time() - start)
+        costs.append(result.get_optimal_cost() / mug_program.options.joint_centering_cost)
+        successes += 1
+    del mug_program
 
-
+print("Solved {} / {} targets in {:.2f} seconds".format(successes, num_tests, sum(times)))
+print("Average cost: {:.2f}".format(sum(costs) / len(costs) if costs else 0))
+print("Average time: {:.2f}".format(sum(times) / len(times) if times else 0))
 
 
 
