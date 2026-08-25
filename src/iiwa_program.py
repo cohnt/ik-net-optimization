@@ -9,7 +9,8 @@ from src.generic_program import *
 import numpy as np
 from pydrake.all import (
     MathematicalProgram,
-    AutoDiffXd, 
+    AutoDiffXd,
+    RigidTransform,
     RigidTransform_,
     Quaternion,
     RotationMatrix,
@@ -25,7 +26,7 @@ from src.iiwa_analytic_ik import iiwa_limits_lower, iiwa_limits_upper
 
 
 class Iiwa14IKProgram(IKFlowProgram):
-    def __init__(self, diagram, options = ProgramOptions(), model_instance = None):
+    def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None):
         self.diagram = diagram
         self.plant = diagram.GetSubsystemByName("plant")
         self.autodiff_plant = self.plant.ToAutoDiffXd()
@@ -43,23 +44,26 @@ class Iiwa14IKProgram(IKFlowProgram):
             self.frame = self.plant.GetBodyByName("iiwa_link_7", model_instance).body_frame()
             self.autodiff_frame = self.autodiff_plant.GetBodyByName("iiwa_link_7", autodiff_model_instance).body_frame()
         self.num_pos = self.plant.num_positions()
+        self.num_arm_dof = 7
 
-        hparams = {'nb_nodes': 12, 
-        'dim_latent_space': 8, 
-        'coeff_fn_config': 3, 
-        'coeff_fn_internal_size': 1024, 
-        'rnvp_clamp': 2.5, 
-        'robot_name': 'iiwa14'}
+        if model is None:
+            hparams = {'nb_nodes': 12,
+            'dim_latent_space': 8,
+            'coeff_fn_config': 3,
+            'coeff_fn_internal_size': 1024,
+            'rnvp_clamp': 2.5,
+            'robot_name': 'iiwa14'}
 
-        robot = get_robot(hparams['robot_name'])
-        hyper_parameters = IkflowModelParameters()
-        hyper_parameters.__dict__.update(hparams)
-        self.ik_solver = IKFlowSolver(hyper_parameters, robot, compile_model=None)
-        print(RepoDir())
-        self.ik_solver.load_state_dict(os.path.join(RepoDir(), "models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl"))
-        self.ik_solver.nn_model.eval()
-        
+            robot = get_robot(hparams['robot_name'])
+            hyper_parameters = IkflowModelParameters()
+            hyper_parameters.__dict__.update(hparams)
+            self.ik_solver = IKFlowSolver(hyper_parameters, robot, compile_model=None)
+            self.ik_solver.load_state_dict(os.path.join(RepoDir(), "models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl"))
+        else:
+            self.ik_solver = model
+
         self.options = options
+        self.ConfigureNetworkDtype()
         self.constraints = []
 
     def create_prog(self, target_pose = np.array([0., 0., 0., 1., 0., 0., 0.]), q_nominal = None):
@@ -86,11 +90,13 @@ class Iiwa14IKProgram(IKFlowProgram):
         self.prog.SetInitialGuess(self.z, np.zeros(8))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
 
-        self.jacobian_gen = torch.compile(torch.func.jacrev(self.ik_inference))
+        # One reverse pass yields both dq/dvars and q; torch.compile measured no gain.
+        self.jacobian_gen = torch.func.jacrev(self.ik_inference_with_value, has_aux=True)
         # self.rev_jac_gen = torch.func.jacrev(self.reverse_inference)
 
         self.add_constraints()
         self.add_costs()
+        self.SeedInitialGuess()
 
     def ik_inference(self, vars, add_correction = True):
         '''Given a latent + target + correction, returns corresponding joint angles
@@ -98,12 +104,12 @@ class Iiwa14IKProgram(IKFlowProgram):
         '''
         # Convert to tensor only if not already a tensor
         if not isinstance(vars, torch.Tensor):
-            vars = torch.tensor(vars, device=DEVICE, dtype=torch.float32)
-        
+            vars = torch.tensor(vars, device=DEVICE, dtype=self.torch_dtype)
+
         c, z, correction = (vars[:7], vars[7:7+self.ik_solver.network_width], vars[7+self.ik_solver.network_width:])
 
 
-        c_torch = torch.cat([c.unsqueeze(0), torch.zeros((1, 1), dtype=torch.float32, device=DEVICE)], dim=1)
+        c_torch = torch.cat([c.unsqueeze(0), torch.zeros((1, 1), dtype=vars.dtype, device=DEVICE)], dim=1)
 
         # print(z_batch, c_torch)
         output, _ = self.ik_solver.nn_model(z.unsqueeze(0), c=c_torch, rev=True)
@@ -112,6 +118,11 @@ class Iiwa14IKProgram(IKFlowProgram):
         if add_correction:
             return q + correction
         else: return q
+
+    def ik_inference_with_value(self, vars):
+        '''jacrev(..., has_aux=True) target: one reverse pass gives dq/dvars and q.'''
+        q = self.ik_inference(vars)
+        return q, q
 
     def reverse_inference(self, vars, pad = 0.0):
         '''vars := [q + pose]
@@ -132,7 +143,7 @@ class Iiwa14IKProgram(IKFlowProgram):
 
     def VarsToQ(self, rpy_vars, add_correction = True):
         ad = isinstance(rpy_vars[0], AutoDiffXd)
-        vars = np.zeros(22, dtype=AutoDiffXd if ad else np.float32)
+        vars = np.zeros(22, dtype=AutoDiffXd if ad else np.float64)
         t = AutoDiffXd if ad else float
         vars[:3] = rpy_vars[:3]
         vars[3:7] = RotationMatrix_[t](RollPitchYaw_[t](rpy_vars[3:6])).ToQuaternion().wxyz()
@@ -147,16 +158,15 @@ class Iiwa14IKProgram(IKFlowProgram):
         else:
             vars_values = np.array([v.value() for v in vars])
             vars_gradients = np.array([v.derivatives() for v in vars])
-            
+
+            vars_tensor = torch.tensor(vars_values, dtype=self.torch_dtype, device=DEVICE)
+            jacobian, q_tensor = self.jacobian_gen(vars_tensor)
+            jacobian_np = jacobian.detach().cpu().numpy()
+
             q_values = np.zeros(self.num_pos)
             q_values[7:] = [0.04] * (self.num_pos - 7)
-            q_values[:7] = self.ik_inference(vars_values, add_correction=add_correction).detach().cpu().numpy()
-            
-            # Compute Jacobian dq/dvars
-            vars_tensor = torch.tensor(vars_values, dtype=torch.float32, device=DEVICE, requires_grad=True)
-            jacobian = self.jacobian_gen(vars_tensor)
-            jacobian_np = jacobian.detach().cpu().numpy()
-            
+            q_values[:7] = q_tensor.detach().cpu().numpy()
+
             # Chain rule: dq/dvars @ dvars = dq
             # For each element of q, compute gradient via chain rule
             q_gradients = np.zeros((self.num_pos, len(rpy_vars)))
@@ -170,13 +180,20 @@ class Iiwa14IKProgram(IKFlowProgram):
 
 
 class IiwaMugProgram(Iiwa14IKProgram):
-    def __init__(self, diagram, options = ProgramOptions()):
-        super().__init__(diagram, options)
-        self.frame = self.frame = self.plant.GetFrameByName("between_fingers")
+    def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None):
+        super().__init__(diagram, options, model_instance, model)
+        # The flow conditions on iiwa_link_7; the grasp constraint acts between the fingers.
+        self.ee_frame = self.frame
+        self.frame = self.plant.GetFrameByName("between_fingers")
         self.autodiff_frame = self.autodiff_plant.GetFrameByName("between_fingers")
 
+        self.plant.SetPositions(self.plant_context, np.zeros(self.num_pos))
+        X_W_ee = self.ee_frame.CalcPoseInWorld(self.plant_context)
+        X_W_grasp = self.frame.CalcPoseInWorld(self.plant_context)
+        self.X_grasp_ee = X_W_grasp.inverse() @ X_W_ee
+
     def create_prog(self, target_mug = Mug(), q_nominal = None):
-        
+
         self.prog = MathematicalProgram()
         self.c = self.prog.NewContinuousVariables(6) # x y z roll pitch yaw
         self.z = self.prog.NewContinuousVariables(self.ik_solver.network_width) # latent variables
@@ -194,23 +211,64 @@ class IiwaMugProgram(Iiwa14IKProgram):
         self.prog.SetInitialGuess(self.c, [*target_mug.middle.translation(), 0, 0, 0])
         self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
-        self.jacobian_gen = torch.compile(torch.func.jacrev(self.ik_inference)) ## function that can compute jacobian dq/dvars
+        self.jacobian_gen = torch.func.jacrev(self.ik_inference_with_value, has_aux=True)
 
         self.target_pose = np.array([*target_mug.middle.translation(), 0, 0, 0]) ## for bounding box
         self.add_constraints()
         self.add_costs()
+        self.SeedInitialGuess()
 
 
+    def SeedCandidates(self, n):
+        '''The grasp fixes only the gripper position, so sample orientations uniformly on
+        SO(3) and heights along the mug axis alongside the latents.'''
+        centre = self.target_mug.middle.translation()
+        axis = self.target_mug.middle.rotation().matrix()[:, 2]
+        heights = np.random.uniform(-self.target_mug.height, self.target_mug.height, size=(n, 1))
 
-       
+        quats = np.random.randn(n, 4)
+        quats /= np.linalg.norm(quats, axis=1, keepdims=True)
+
+        c = np.empty((n, 6))
+        for i in range(n):
+            X_W_grasp = RigidTransform(RotationMatrix(Quaternion(quats[i])), centre + heights[i] * axis)
+            X_W_ee = X_W_grasp @ self.X_grasp_ee
+            c[i, :3] = X_W_ee.translation()
+            c[i, 3:] = X_W_ee.rotation().ToRollPitchYaw().vector()
+
+        z = self.options.seed_latent_scale * np.random.randn(n, self.ik_solver.network_width)
+        return c, z
+
     def CreateIKConstraint(self):
         ik_tol, _ = self.options.ik_constraint_tol
-        lb = np.array([-ik_tol, -ik_tol, -self.target_mug.height, 1])
-        ub = np.array([ik_tol, ik_tol, self.target_mug.height, 1])
+        lb = np.array([-ik_tol, -ik_tol, -self.target_mug.height])
+        ub = np.array([ik_tol, ik_tol, self.target_mug.height])
         def eval_func(vars, q, pose):
             position, _ = pose
             mug_transform = np.linalg.inv(self.target_mug.middle.GetAsMatrix4())
-            return (mug_transform @ np.array([[*position, 1]]).T).squeeze()
+            # Drop the homogeneous row: identically 1 with a zero gradient, so keeping
+            # it as an equality row costs a rank and breaks LICQ.
+            return (mug_transform @ np.array([[*position, 1]]).T).squeeze()[:3]
         self.ik_constraint = IKFlowConstraints(lb, ub, eval_func, description="IKConstraint")
         self.constraints.append(self.ik_constraint)
         return self.ik_constraint
+
+    def BoundingBoxConstraint(self):
+        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
+            -5. * np.ones(self.ik_solver.network_width), 5. * np.ones(self.ik_solver.network_width), self.z
+        )
+        self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
+        # Keep the conditioning pose near the mug so the flow stays inside the workspace
+        # it was trained on. Orientation stays free.
+        centre = self.target_mug.middle.translation()
+        slack = self.options.c_position_slack
+        self.c_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
+            np.concatenate([centre - slack, -2 * np.pi * np.ones(3)]),
+            np.concatenate([centre + slack, 2 * np.pi * np.ones(3)]),
+            self.c
+        )
+        self.c_bounding_box_constraint.evaluator().set_description("CBoundingBoxConstraint")
+        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
+            -0.1 * np.ones(7), 0.1 * np.ones(7), self.correction
+        )
+        self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")

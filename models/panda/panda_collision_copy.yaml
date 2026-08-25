@@ -3,72 +3,69 @@ directives:
 # Add iiwa
   - add_model:
       name: panda
-      file: package://combining_kinematics/models/panda/panda_no_hand.urdf
+      file: package://combining_kinematics/models/panda/panda_jrl.urdf
       # default_joint_positions:
-
-  - add_model:
-      name: finray
-      file: package://combining_kinematics/models/panda/panda_finray.sdf
-  - add_weld:
-      parent: panda::panda_link7
-      child: finray::panda_hand_frame
-      X_PC:
-        translation: [0, 0, 0.134]
-        rotation: !Rpy { deg: [90, 0, 45.0] }
-
   - add_weld:
       parent: world
       child: panda::panda_link0
 
   - add_model:
       name: panda2
-      file: package://combining_kinematics/models/panda/panda_no_hand.urdf
+      file: package://combining_kinematics/models/panda/panda_jrl.urdf
       # default_joint_positions:
-
-  - add_model:
-      name: finray2
-      file: package://combining_kinematics/models/panda/panda_finray.sdf
-  - add_weld:
-      parent: panda2::panda_link7
-      child: finray2::panda_hand_frame
-      X_PC:
-        translation: [0, 0, 0.134]
-        rotation: !Rpy { deg: [90, 0, 45.0] }
-
   - add_weld:
       parent: world
       child: panda2::panda_link0
 
   - add_model:
       name: panda3
-      file: package://combining_kinematics/models/panda/panda_no_hand.urdf
+      file: package://combining_kinematics/models/panda/panda_jrl.urdf
       # default_joint_positions:
-
-  - add_model:
-      name: finray3
-      file: package://combining_kinematics/models/panda/panda_finray.sdf
-  - add_weld:
-      parent: panda3::panda_link7
-      child: finray3::panda_hand_frame
-      X_PC:
-        translation: [0, 0, 0.134]
-        rotation: !Rpy { deg: [90, 0, 45.0] }
-
   - add_weld:
       parent: world
       child: panda3::panda_link0
 
-#   - add_model:
-#       name: binF
-#       # file: package://drake/examples/manipulation_station/models/bin2.sdf
-#       file: package://drake_models/manipulation_station/bin2.sdf
+  - add_model:
+      name: panda4
+      file: package://combining_kinematics/models/panda/panda_jrl.urdf
+      # default_joint_positions:
+  - add_weld:
+      parent: world
+      child: panda4::panda_link0
 
-#   - add_weld:
-#       parent: world
-#       child: binF::bin_base
-#       X_PC:
-#         translation: [0.75, 0, 0]
-#         rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
+
+  - add_model:
+      name: panda5
+      file: package://combining_kinematics/models/panda/panda_jrl.urdf
+      # default_joint_positions:
+  - add_weld:
+      parent: world
+      child: panda5::panda_link0
+
+
+  - add_model:
+      name: panda6
+      file: package://combining_kinematics/models/panda/panda_jrl.urdf
+      # default_joint_positions:
+  - add_weld:
+      parent: world
+      child: panda6::panda_link0
+
+
+  - add_model:
+      name: panda7
+      file: package://combining_kinematics/models/panda/panda_jrl.urdf
+      # default_joint_positions:
+  - add_weld:
+      parent: world
+      child: panda7::panda_link0
+
+
+
+
+
+
+
 
   # Add table
   - add_model:
@@ -146,13 +143,13 @@ directives:
 #         translation: [-0.45, 0.55, 0.4]
 #         rotation: !Rpy { deg: [0.0, 0.0, 135.0] }
 
-  - add_model:
-      name: mug      
-      file: package://combining_kinematics/models/mug/mug_simple_red.urdf
+#   - add_model:
+#       name: mug      
+#       file: package://combining_kinematics/models/mug/mug_simple_red.urdf
 
-  - add_weld:
-      parent: world
-      child: mug::mug_body_link
-      X_PC:
-        translation: [0.75, 0.0, 0.05]
-        rotation: !Rpy { deg: [0, 0, 0] }
+#   - add_weld:
+#       parent: world
+#       child: mug::mug_body_link
+#       X_PC:
+#         translation: [0.75, 0.0, 0.05]
+#         rotation: !Rpy { deg: [0, 0, 0] }

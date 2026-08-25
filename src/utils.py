@@ -210,7 +210,9 @@ def GenerateDiagramWithMug(q, program, yaml_file, meshcat):
     translation = target.translation()
     rotation = target.rotation().ToRollPitchYaw().vector() * 180 / np.pi
 
-    mug_str = f"""\n  - add_model:\n      name: mug\n      # file: package://drake/examples/manipulation_station/models/shelves.sdf\n      file: package://combining_kinematics/models/mug/mug_simple_red.urdf\n  - add_weld:\n      parent: world\n      child: mug::mug_body_link\n      X_PC:\n        translation: [{translation[0]}, {translation[1]}, {translation[2]}]\n        rotation: !Rpy {{ deg: [{rotation[0]}, {rotation[1]}, {rotation[2]}] }}
+    # Named `target_mug` rather than `mug` so this can be appended to scenes that
+    # already contain static mugs (the iiwa scene defines several).
+    mug_str = f"""\n  - add_model:\n      name: target_mug\n      file: package://combining_kinematics/models/mug/mug_simple_red.urdf\n  - add_weld:\n      parent: world\n      child: target_mug::mug_body_link\n      X_PC:\n        translation: [{translation[0]}, {translation[1]}, {translation[2]}]\n        rotation: !Rpy {{ deg: [{rotation[0]}, {rotation[1]}, {rotation[2]}] }}
     """
     original_size = os.path.getsize(yaml_file)
     with open(yaml_file, "a+") as f:
