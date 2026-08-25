@@ -1,18 +1,23 @@
 import os
 
 import pydrake.math
+import torch
 from ikflow.config import DEVICE
 import numpy as np
 from dataclasses import dataclass, field
 from functools import partial
 import numpy as np
 from pydrake.all import (
-    AutoDiffXd, 
+    AutoDiffXd,
     IpoptSolver,
     SnoptSolver,
     SolverOptions,
-    CommonSolverOption, 
-    MinimumDistanceLowerBoundConstraint
+    CommonSolverOption,
+    MinimumDistanceLowerBoundConstraint,
+    Quaternion,
+    RigidTransform,
+    RotationMatrix,
+    RollPitchYaw,
 )
 
 @dataclass
@@ -25,6 +30,21 @@ class ProgramOptions:
 
     mug_height: float = field(default=0.035, metadata={"help": "Mug height for valid grasp poses"})
 
+    ## Network evaluation ##
+    # The flow is a float32 artifact, but evaluating it in float64 costs ~15% and
+    # makes the map smooth well below 1e-4. In float32 the finite-difference error
+    # against the analytic Jacobian blows up from 6e-3 (h=1e-4) to 1.8 (h=1e-6),
+    # which is what makes SNOPT's derivative check fail and starves the line search.
+    use_float64: bool = field(default=True, metadata={"help": "Evaluate the flow in float64 so the map is smooth at solver step sizes"})
+
+    ## Multi-start seeding ##
+    # A batched forward pass is nearly free (n=256 costs the same as n=1 on GPU),
+    # so draw many candidates and start from the most feasible one.
+    num_seed_samples: int = field(default=256, metadata={"help": "Candidate (c, z) pairs drawn to pick an initial guess. 0 disables seeding"})
+    seed_refine_top_k: int = field(default=8, metadata={"help": "Candidates re-scored against every constraint (incl. collision)"})
+    seed_latent_scale: float = field(default=1.0, metadata={"help": "Std dev of the sampled latents"})
+    c_position_slack: float = field(default=0.25, metadata={"help": "Half-width of the box on the conditioning position, about the target"})
+
 
     ## Solver options ##
     which_solver: str = field(default="ipopt", metadata={"help": "Which IKFlow solver to use"})
@@ -36,6 +56,7 @@ class ProgramOptions:
     file_print_level: int = field(default=5, metadata={"help": "File print level for the solver"})
     file_print_name: str = field(default="ikflow_solver_log.txt", metadata={"help": "File name for solver log"})
     max_wall_time: float = field(default=60, metadata={"help": "Maximum wall time for the solver in seconds"})
+    snopt_function_precision: float = field(default=None, metadata={"help": "SNOPT 'Function precision'. Leave None in float64; set ~1e-6 if evaluating the flow in float32"})
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
     visualize: bool = field(default=False, metadata={"help": "If true, visualizes the IK solving process in Meshcat"})
@@ -97,6 +118,96 @@ class IKFlowProgram:
             return rigid_transform.GetAsMatrix4()
         else:
             return rigid_transform.translation(), rigid_transform.rotation().ToQuaternion().wxyz()
+
+    ## ------------------------- multi-start seeding ------------------------- ##
+
+    @property
+    def torch_dtype(self):
+        return torch.float64 if self.options.use_float64 else torch.float32
+
+    def ConfigureNetworkDtype(self):
+        '''Cast the flow to the working dtype. Idempotent, so it is safe to call on a
+        solver instance shared between programs.'''
+        self.ik_solver.nn_model.to(self.torch_dtype)
+        self.ik_solver.nn_model.eval()
+
+    def PadQ(self, q_arm):
+        '''Arm joint angles -> a full plant position vector.'''
+        q = np.zeros(self.num_pos)
+        q[:self.num_arm_dof] = q_arm
+        q[self.num_arm_dof:] = 0.04  # fixed gripper joints
+        return q
+
+    @staticmethod
+    def CToPose7(c):
+        '''Conditioning variable (xyz + rpy) -> the xyz + wxyz the flow is conditioned on.'''
+        return np.concatenate([c[:3], RotationMatrix(RollPitchYaw(c[3:6])).ToQuaternion().wxyz()])
+
+    def BatchInference(self, c_candidates, z_candidates):
+        '''Evaluate the flow on a whole batch of (c, z) pairs at once.
+
+        On GPU a batch of 256 costs about the same as a batch of 1 (11.4 ms vs 11.3 ms),
+        because the network is small enough to be launch-latency bound.
+        '''
+        n = len(c_candidates)
+        dtype = self.torch_dtype
+        pose7 = np.array([self.CToPose7(c) for c in c_candidates])
+        c_t = torch.tensor(pose7, dtype=dtype, device=DEVICE)
+        c_t = torch.cat([c_t, torch.zeros((n, 1), dtype=dtype, device=DEVICE)], dim=1)
+        z_t = torch.tensor(np.asarray(z_candidates), dtype=dtype, device=DEVICE)
+        with torch.no_grad():
+            output, _ = self.ik_solver.nn_model(z_t, c=c_t, rev=True)
+        return output[:, :self.num_arm_dof].detach().cpu().numpy().astype(float)
+
+    def SeedCandidates(self, n):
+        '''Candidate (c, z) pairs to seed from. Subclasses whose task leaves part of the
+        target pose free should override this and sample that freedom too.'''
+        c = np.tile(np.asarray(self.prog.GetInitialGuess(self.c), dtype=float), (n, 1))
+        z = self.options.seed_latent_scale * np.random.randn(n, self.ik_solver.network_width)
+        return c, z
+
+    @staticmethod
+    def ConstraintViolation(constraint, vars, q, pose):
+        value = np.asarray(constraint.eval_func(vars=vars, q=q, pose=pose), dtype=float)
+        return float(np.sum(np.maximum(0.0, constraint.lb - value) + np.maximum(0.0, value - constraint.ub)))
+
+    def SeedInitialGuess(self):
+        '''Pick an initial guess by drawing candidates from the flow and keeping the most
+        feasible one, instead of starting from a single arbitrary latent draw.
+
+        Scoring is two-stage: every candidate is ranked on the IK constraint (forward
+        kinematics only), then the best few are re-scored against every constraint,
+        because the collision query is the expensive part.
+        '''
+        n = self.options.num_seed_samples
+        if n <= 0:
+            return None
+
+        c_candidates, z_candidates = self.SeedCandidates(n)
+        q_batch = self.BatchInference(c_candidates, z_candidates)
+
+        qs, poses = [], []
+        ik_violation = np.empty(n)
+        for i in range(n):
+            q = self.PadQ(q_batch[i])
+            pose = self.fk(q)
+            qs.append(q)
+            poses.append(pose)
+            ik_violation[i] = self.ConstraintViolation(self.ik_constraint, None, q, pose)
+
+        top_k = np.argsort(ik_violation)[:max(1, self.options.seed_refine_top_k)]
+
+        best_index, best_violation = int(top_k[0]), np.inf
+        for i in top_k:
+            vars_i = np.concatenate([c_candidates[i], z_candidates[i], np.zeros(self.num_arm_dof)])
+            violation = sum(self.ConstraintViolation(c, vars_i, qs[i], poses[i]) for c in self.constraints)
+            if violation < best_violation:
+                best_violation, best_index = violation, int(i)
+
+        self.prog.SetInitialGuess(self.c, c_candidates[best_index])
+        self.prog.SetInitialGuess(self.z, z_candidates[best_index])
+        self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
+        return best_violation
 
     ## These are Robot Specific need to be implemented in each file ##
     def ik_inference(self, vars):
@@ -225,6 +336,8 @@ class IKFlowProgram:
             solver_options = SolverOptions()
             solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_tol", self.options.acceptable_tol)
             solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_constr_viol_tol", self.options.acceptable_constr_viol_tol)
+            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_dual_inf_tol", self.options.acceptable_dual_inf_tol)
+            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_compl_inf_tol", self.options.acceptable_compl_inf_tol)
             solver_options.SetOption(IpoptSolver().solver_id(), "file_print_level", self.options.file_print_level)
             solver_options.SetOption(IpoptSolver().solver_id(), "print_user_options", "yes")
             solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_iter", self.options.acceptable_iter)
@@ -238,7 +351,11 @@ class IKFlowProgram:
             solver_options.SetOption(SnoptSolver.id(), "Major optimality tolerance", self.options.acceptable_tol)
             solver_options.SetOption(SnoptSolver.id(), "Minor optimality tolerance", self.options.acceptable_tol)
             solver_options.SetOption(SnoptSolver.id(), "Major feasibility tolerance", self.options.acceptable_constr_viol_tol)
-            solver_options.SetOption(SnoptSolver.id(), "Major Iteration Limit", 4 * self.options.max_wall_time)
+            if self.options.snopt_function_precision is not None:
+                # SNOPT otherwise assumes the constraints are accurate to ~1e-13 and
+                # probes derivatives at h=5.5e-7, which is pure noise for a float32 flow.
+                solver_options.SetOption(SnoptSolver.id(), "Function precision", self.options.snopt_function_precision)
+            # solver_options.SetOption(SnoptSolver.id(), "Major Iteration Limit", 4 * self.options.max_wall_time)
 
 
         

@@ -58,17 +58,17 @@ directives:
       parent: world
       child: panda3::panda_link0
 
-  - add_model:
-      name: binF
-      # file: package://drake/examples/manipulation_station/models/bin2.sdf
-      file: package://drake_models/manipulation_station/bin2.sdf
+#   - add_model:
+#       name: binF
+#       # file: package://drake/examples/manipulation_station/models/bin2.sdf
+#       file: package://drake_models/manipulation_station/bin2.sdf
 
-  - add_weld:
-      parent: world
-      child: binF::bin_base
-      X_PC:
-        translation: [0.75, 0, 0]
-        rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
+#   - add_weld:
+#       parent: world
+#       child: binF::bin_base
+#       X_PC:
+#         translation: [0.75, 0, 0]
+#         rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
 
   # Add table
   - add_model:
@@ -94,54 +94,65 @@ directives:
       X_PC:
         translation: [-0.2, 0.0, 0.0]
 
-  # Add shelves
+#   # Add shelves
+#   - add_model:
+#       name: shelves
+#       # file: package://drake/examples/manipulation_station/models/shelves.sdf
+#       file: package://combining_kinematics/models/assets/shelves.sdf
+
+#   - add_weld:
+#       parent: world
+#       child: shelves::shelves_body
+#       X_PC:
+#         translation: [0.3, 0.55, 0.4]
+#         rotation: !Rpy { deg: [0.0, 0.0, 235.0] }
+#   # Add shelves
+#   - add_model:
+#       name: shelves2
+#       # file: package://drake/examples/manipulation_station/models/shelves.sdf
+#       file: package://combining_kinematics/models/assets/shelves.sdf
+#       # file: package://drake_models/manipulation_station/shelves.sdf
+
+#   - add_weld:
+#       parent: world
+#       child: shelves2::shelves_body
+#       X_PC:
+#         translation: [0.3, -0.55, 0.4]
+#         rotation: !Rpy { deg: [0.0, 0.0, 135.0] }
+
+#   - add_model:
+#       name: shelves3
+#       # file: package://drake/examples/manipulation_station/models/shelves.sdf
+#       file: package://combining_kinematics/models/assets/shelves.sdf
+
+#   - add_weld:
+#       parent: world
+#       child: shelves3::shelves_body
+#       X_PC:
+#         translation: [-0.45, -0.55, 0.4]
+#         rotation: !Rpy { deg: [0.0, 0.0, 235.0] }
+
+#   # Add shelves
+#   - add_model:
+#       name: shelves4
+#       # file: package://drake/examples/manipulation_station/models/shelves.sdf
+#       file: package://combining_kinematics/models/assets/shelves.sdf
+#       # file: package://drake_models/manipulation_station/shelves.sdf
+
+#   - add_weld:
+#       parent: world
+#       child: shelves4::shelves_body
+#       X_PC:
+#         translation: [-0.45, 0.55, 0.4]
+#         rotation: !Rpy { deg: [0.0, 0.0, 135.0] }
+
   - add_model:
-      name: shelves
-      # file: package://drake/examples/manipulation_station/models/shelves.sdf
-      file: package://combining_kinematics/models/assets/shelves.sdf
+      name: mug      
+      file: package://combining_kinematics/models/mug/mug_simple_red.urdf
 
   - add_weld:
       parent: world
-      child: shelves::shelves_body
+      child: mug::mug_body_link
       X_PC:
-        translation: [0.3, 0.55, 0.4]
-        rotation: !Rpy { deg: [0.0, 0.0, 235.0] }
-  # Add shelves
-  - add_model:
-      name: shelves2
-      # file: package://drake/examples/manipulation_station/models/shelves.sdf
-      file: package://combining_kinematics/models/assets/shelves.sdf
-      # file: package://drake_models/manipulation_station/shelves.sdf
-
-  - add_weld:
-      parent: world
-      child: shelves2::shelves_body
-      X_PC:
-        translation: [0.3, -0.55, 0.4]
-        rotation: !Rpy { deg: [0.0, 0.0, 135.0] }
-
-  - add_model:
-      name: shelves3
-      # file: package://drake/examples/manipulation_station/models/shelves.sdf
-      file: package://combining_kinematics/models/assets/shelves.sdf
-
-  - add_weld:
-      parent: world
-      child: shelves3::shelves_body
-      X_PC:
-        translation: [-0.45, -0.55, 0.4]
-        rotation: !Rpy { deg: [0.0, 0.0, 235.0] }
-
-  # Add shelves
-  - add_model:
-      name: shelves4
-      # file: package://drake/examples/manipulation_station/models/shelves.sdf
-      file: package://combining_kinematics/models/assets/shelves.sdf
-      # file: package://drake_models/manipulation_station/shelves.sdf
-
-  - add_weld:
-      parent: world
-      child: shelves4::shelves_body
-      X_PC:
-        translation: [-0.45, 0.55, 0.4]
-        rotation: !Rpy { deg: [0.0, 0.0, 135.0] }
+        translation: [0.75, 0.0, 0.05]
+        rotation: !Rpy { deg: [0, 0, 0] }
