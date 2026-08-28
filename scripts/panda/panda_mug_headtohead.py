@@ -7,7 +7,10 @@ was a timeout rather than an infeasibility. This script gives all three the same
 the same cap and the same constraint tolerance, which is the only setup in which
 "formulation A beats formulation B" is a meaningful statement.
 
-Usage:  python panda_mug_headtohead.py [num_tests] [max_wall_time]
+Usage:  python panda_mug_headtohead.py [num_tests] [max_wall_time] [which_solver]
+
+which_solver is 'ipopt' (default) or 'snopt'; each writes to its own subdirectory so the
+two solver columns of the paper's tables can be produced by two invocations.
 """
 import os, sys, time, json
 from dataclasses import replace
@@ -21,6 +24,7 @@ from tqdm import tqdm
 
 num_tests = int(sys.argv[1]) if len(sys.argv) > 1 else 12
 max_wall_time = float(sys.argv[2]) if len(sys.argv) > 2 else 45.0
+which_solver = sys.argv[3] if len(sys.argv) > 3 else 'ipopt'
 seed = 0
 
 # Same seed and generation procedure as panda_mug_ablation.py, so the targets match.
@@ -28,7 +32,7 @@ base_options = ProgramOptions(
     visualize=False,
     joint_centering_cost=1e-4,
     max_wall_time=max_wall_time,
-    which_solver='ipopt',
+    which_solver=which_solver,
     acceptable_tol=1e-3,
     acceptable_constr_viol_tol=1e-4,
     ik_constraint_tol=(1e-4, 0.01),
@@ -59,7 +63,7 @@ while i < num_tests:
 
 mugs = [GenerateDiagramWithMug(qs[i], program, yaml_file, mug_meshcat) for i in range(num_tests)]
 
-log_dir = os.path.join(RepoDir(), "results/panda/mug/headtohead")
+log_dir = os.path.join(RepoDir(), "results/panda/mug/headtohead", which_solver)
 os.makedirs(log_dir, exist_ok=True)
 
 # The learned formulation gets every improvement; the other two are unchanged.
