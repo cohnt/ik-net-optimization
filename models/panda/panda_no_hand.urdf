@@ -11,12 +11,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/.venv/lib/python3.10/site-packages/jrl/urdfs/panda/meshes/visual/link0.dae" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link0.obj" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/ik-net-optimization/models/panda/collision_geometries/link0.obj" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link0.obj" />
       </geometry>
     </collision>
   </link>
@@ -29,7 +29,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/.venv/lib/python3.10/site-packages/jrl/urdfs/panda/meshes/visual/link1.dae" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link1.obj" />
       </geometry>
 
       <material name="white">
@@ -39,7 +39,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/ik-net-optimization/models/panda/collision_geometries/link1.obj" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link1.obj" />
       </geometry>
     </collision>
   </link>
@@ -60,7 +60,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/.venv/lib/python3.10/site-packages/jrl/urdfs/panda/meshes/visual/link2.dae" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link2.obj" />
       </geometry>
       
       <material name="white">
@@ -70,7 +70,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/ik-net-optimization/models/panda/collision_geometries/link2.obj" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link2.obj" />
       </geometry>
     </collision>
   </link>
@@ -89,12 +89,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/.venv/lib/python3.10/site-packages/jrl/urdfs/panda/meshes/visual/link3.dae" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link3.obj" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/ik-net-optimization/models/panda/collision_geometries/link3.obj" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link3.obj" />
       </geometry>
     </collision>
   </link>
@@ -113,12 +113,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/.venv/lib/python3.10/site-packages/jrl/urdfs/panda/meshes/visual/link4.dae" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link4.obj" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/ik-net-optimization/models/panda/collision_geometries/link4.obj" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link4.obj" />
       </geometry>
     </collision>
   </link>
@@ -137,12 +137,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/.venv/lib/python3.10/site-packages/jrl/urdfs/panda/meshes/visual/link5.dae" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link5.obj" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/ik-net-optimization/models/panda/collision_geometries/link5.obj" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link5.obj" />
       </geometry>
     </collision>
   </link>
@@ -161,12 +161,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/.venv/lib/python3.10/site-packages/jrl/urdfs/panda/meshes/visual/link6.dae" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link6.obj" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/ik-net-optimization/models/panda/collision_geometries/link6.obj" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link6.obj" />
       </geometry>
     </collision>
   </link>
@@ -185,12 +185,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/.venv/lib/python3.10/site-packages/jrl/urdfs/panda/meshes/visual/link7.dae" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link7.obj" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="/home/tangles/Urop/ikflow/ik-net-optimization/models/panda/collision_geometries/link7.obj" />
+        <mesh filename="package://combining_kinematics/models/panda/collision_geometries/link7.obj" />
       </geometry>
     </collision>
   </link>
