@@ -240,9 +240,11 @@ class IiwaMugProgram(Iiwa14IKProgram):
         return c, z
 
     def CreateIKConstraint(self):
-        ik_tol, _ = self.options.ik_constraint_tol
-        lb = np.array([-ik_tol, -ik_tol, -self.target_mug.height])
-        ub = np.array([ik_tol, ik_tol, self.target_mug.height])
+        # The gripper must lie on the mug's central axis (x = y = 0 exactly, as
+        # ../codebase's MugConstraint imposes it) and within the mug's height along it.
+        # Orientation is left free: any approach direction is a valid grasp.
+        lb = np.array([0.0, 0.0, -self.target_mug.height])
+        ub = np.array([0.0, 0.0, self.target_mug.height])
         def eval_func(vars, q, pose):
             position, _ = pose
             mug_transform = np.linalg.inv(self.target_mug.middle.GetAsMatrix4())
