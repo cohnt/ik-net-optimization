@@ -18,6 +18,13 @@ from pydrake.all import(
     RollPitchYaw_,
     StartMeshcat,
 )
+from pydrake.common.schema import Transform as SchemaTransform
+from pydrake.multibody.parsing import (
+    ModelDirectives,
+    ModelDirective,
+    AddModel,
+    AddWeld,
+)
 
 def RepoDir():
     return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -53,7 +60,12 @@ class HiddenPrints:
     
 
 
-def BuildEnv(meshcat, directives_file=None):
+def BuildEnv(meshcat, directives_file=None, extra_directives=None):
+    """
+    Build the diagram described by `directives_file`, optionally with additional
+    `ModelDirective`s appended in memory. `extra_directives` exists so callers can add
+    models to a scene without ever writing to the (tracked) YAML file on disk.
+    """
     builder = DiagramBuilder()
 
     plant, scene_graph = AddMultibodyPlantSceneGraph(builder, time_step=0.1)
@@ -62,7 +74,12 @@ def BuildEnv(meshcat, directives_file=None):
     parser = Parser(plant, scene_graph)
     package_xml_path = os.path.join(RepoDir(), "package.xml")
     parser.package_map().AddPackageXml(package_xml_path)
-    ProcessModelDirectives(LoadModelDirectives(directives_file), plant, parser)
+    directives = LoadModelDirectives(directives_file)
+    if extra_directives:
+        combined = ModelDirectives()
+        combined.directives = list(directives.directives) + list(extra_directives)
+        directives = combined
+    ProcessModelDirectives(directives, plant, parser)
 
     plant.Finalize()
     vis_config = VisualizationConfig()
@@ -205,22 +222,35 @@ class Mug:
         self.height = height
 
 def GenerateDiagramWithMug(q, program, yaml_file, meshcat):
+    """
+    Build the scene in `yaml_file` with an extra mug welded at the gripper pose of `q`.
+
+    The mug is appended as an in-memory model directive; the YAML file itself is never
+    modified, so a crash or interrupt here cannot leave a stray mug in a tracked scene.
+    """
     program.SetPositions(q)
     target = program.frame.CalcPoseInWorld(program.plant_context)
-    translation = target.translation()
-    rotation = target.rotation().ToRollPitchYaw().vector() * 180 / np.pi
 
     # Named `target_mug` rather than `mug` so this can be appended to scenes that
     # already contain static mugs (the iiwa scene defines several).
-    mug_str = f"""\n  - add_model:\n      name: target_mug\n      file: package://combining_kinematics/models/mug/mug_simple_red.urdf\n  - add_weld:\n      parent: world\n      child: target_mug::mug_body_link\n      X_PC:\n        translation: [{translation[0]}, {translation[1]}, {translation[2]}]\n        rotation: !Rpy {{ deg: [{rotation[0]}, {rotation[1]}, {rotation[2]}] }}
-    """
-    original_size = os.path.getsize(yaml_file)
-    with open(yaml_file, "a+") as f:
-        f.write(mug_str)
+    add_mug = ModelDirective()
+    add_mug.add_model = AddModel(
+        name="target_mug",
+        file="package://combining_kinematics/models/mug/mug_simple_red.urdf",
+    )
+    weld_mug = ModelDirective()
+    weld_mug.add_weld = AddWeld(
+        parent="world",
+        child="target_mug::mug_body_link",
+        X_PC=SchemaTransform(target),
+    )
+
     meshcat.Delete()
-    diagram_with_mug = BuildEnv(meshcat=meshcat, directives_file = yaml_file)
-    with open(yaml_file, "r+") as f:
-        f.truncate(original_size)
+    diagram_with_mug = BuildEnv(
+        meshcat=meshcat,
+        directives_file=yaml_file,
+        extra_directives=[add_mug, weld_mug],
+    )
     return diagram_with_mug, Mug(target)
 
 
