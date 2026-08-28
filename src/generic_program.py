@@ -63,6 +63,39 @@ class ProgramOptions:
 
 
 
+# TODO: replace this with a custom evaluator that computes theta^2 and its derivative
+# exactly as a function of d = |q . q_target|, instead of composing arccos and clamping.
+#
+# Why: theta = 2*arccos(d) has an infinite derivative at d = 1, i.e. exactly at
+# convergence. The eps clamp below does not merely bound that -- when it binds,
+# pydrake.math.min returns the float bound promoted to an AutoDiffXd with an *empty*
+# derivative vector, so the orientation row reports no gradient at all inside
+# theta < 2.8e-4 rad. Squaring removes the branch point (theta^2 ~ 8*(1-d), linear in d),
+# but writing (2*arccos(d))**2 literally still evaluates 0 * inf at d = 1 and yields NaN.
+#
+# Implementation notes:
+#   value:      theta^2 = 4*arccos(d)^2
+#   derivative: d(theta^2)/dd = -8*arccos(d)/sqrt(1-d^2),  which is 0/0 at d = 1 with
+#               limit -8, so branch to a series near coincidence. With u = 1-d,
+#               arccos(1-u) = sqrt(2u)*(1 + u/12 + 3u^2/160 + ...), hence
+#               theta^2 = 8u*(1 + u/6 + ...) and d(theta^2)/dd = -8*(1 + u/3 + ...).
+#   Assemble the result as AutoDiffXd(value, dtheta2_dd * d.derivatives()).
+#
+# Callers must also change with it:
+#   - CreateIKConstraint's lb for this row must become -inf rather than 0. theta^2 >= 0
+#     automatically, and grad(theta^2) = 0 at the solution (grad(d) vanishes there
+#     because d is at its maximum), so an lb of 0 makes the row active with a zero
+#     gradient at convergence -- the same LICQ failure as the mug constraint's
+#     homogeneous row. This holds however exactly theta^2 is computed.
+#   - ub becomes ori_tol**2, which is 1e-4 for the current 0.01 rad and therefore the
+#     same order as acceptable_constr_viol_tol; normalize the row (theta^2/ori_tol^2 <= 1)
+#     so the solver's slack does not widen the effective angular tolerance by ~40%.
+#   - This changes the meaning of ik_constraint_tol[1], so archived solver logs stop
+#     being comparable across the change.
+#
+# Only the pose-target programs reach this (PandaIKProgram, Iiwa14IKProgram and their
+# ...Numerical variants); the mug programs override CreateIKConstraint and leave
+# orientation free.
 def orientation_error(orientation, target_orientation, eps=1e-8):
     dot_product = np.dot(orientation, target_orientation)
     clipped_value = pydrake.math.min(1.0 - eps, pydrake.math.max(-1.0 + eps, np.abs(dot_product)))
@@ -146,8 +179,9 @@ class IKFlowProgram:
     def BatchInference(self, c_candidates, z_candidates):
         '''Evaluate the flow on a whole batch of (c, z) pairs at once.
 
-        On GPU a batch of 256 costs about the same as a batch of 1 (11.4 ms vs 11.3 ms),
-        because the network is small enough to be launch-latency bound.
+        Batching is nearly free in float32 (batch 256 costs 8.8 ms vs 5.9 ms for batch 1,
+        because the evaluation is CPU-dispatch bound, not FLOP bound) but NOT in float64,
+        where the same batch costs 84 ms vs 6.8 ms. See scripts/profiling/profile_flow.py.
         '''
         n = len(c_candidates)
         dtype = self.torch_dtype
