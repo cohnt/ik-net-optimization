@@ -271,6 +271,74 @@ with cotangent `dcost/dq` would have replaced seven passes. Sharing the constrai
 Jacobian captured that instead. The remaining runtime levers are iteration count and
 `torch.compile` (~1.3x on the `jacrev`), not the AD mode.
 
+### Next steps
+
+Ordered by what the evidence actually supports. Nothing here weakens the problem: the
+grasp axis stays an equality, every arm starts from the same `q_init`, and no formulation
+searches for a start.
+
+**Required before any new claim**
+
+1. Re-run the ablation ladder under the valid protocol (the command is in the results
+   section above, ~1 h). The 12/30 -> 21/30 gain on the Panda grasp is real but currently
+   unattributed; the frame fix and the shared flow evaluation are justified without it, the
+   task parameterisation and the latent trust region are not.
+
+**Panda grasp -- the failures are collision, not the chart**
+
+Every failure is a timeout, 8 of 9 land within 1 cm of the mug axis, and 9 of 9 are in
+collision. So target the collision constraint and the iteration budget, not the task rows.
+
+2. Collision-constraint shaping: `influence_distance_offset` (0.1) and the 0.1 scaling on
+   that row set the gradient the solver has to follow while it is far from contact. Never
+   swept.
+3. IPOPT `mu_strategy="adaptive"`, `max_iter`, `nlp_scaling_method`. Plumbed, never swept.
+   The archived logs show `lg(mu)` collapsing to -8 within 50 iterations and then hundreds
+   of iterations of tiny steps, which is the signature `adaptive` exists for.
+4. `torch.compile` on the `jacrev`: a measured 1.3x, and the Jacobian is 84% of a solve, so
+   roughly 25% more iterations inside the same cap. Costs ~11.5 s per process, so it is
+   worth it for a sweep and not for one solve. Pure throughput -- no protocol question.
+5. `correction_bound` (0.1) and `correction_cost_weight` (0), neither ever examined. The
+   draft only says `q_c ~ 0`.
+6. `latent_trust_region` radius: 4.0 was one guess for a 7-dimensional latent. Sweep it,
+   and compare against the soft form (`latent_cost_weight`).
+7. Report success against the wall-clock cap as a curve rather than one number, plus
+   iteration counts, which are hardware-independent. Successes take 5.8 s median of a 20 s
+   cap, so the single number is mostly describing the tail.
+8. More guesses per target in the paired grid -- same guesses for every arm -- reported as
+   "solved within k restarts". This is the only honest form of multi-start and the harness
+   already does it.
+
+**iiwa -- model quality first, optimisation second**
+
+The iiwa flow is a 4-8x worse chart than the Panda's (16.6 mm / 6.4 deg median against
+3.8 mm / 0.71 deg). Optimisation cannot repair that, so establish it before tuning.
+
+9. Sweep `correction_bound` upward. It is +-0.1 rad, sized for a chart 3.8 mm off, and is
+   almost certainly binding at 16.6 mm.
+10. Ask Julia about `iiwa14__lemon-haze-7__global_step_4.25M.pkl`. It is a local checkpoint
+    of unknown provenance against the Panda's published weights; if it is undertrained then
+    the iiwa grasp row is a statement about the checkpoint, not about the method. Cheap and
+    decisive.
+11. Only then, the divergent cells -- a few reach 3.4e7 constraint violation, which is the
+    latent or the conditioning pose escaping despite the trust region.
+
+**Fairness repairs owed to the baselines**
+
+12. `PandaMugProgramAnalytic`'s mug constraint uses `+-ik_constraint_tol[0]` on the two axis
+    rows while the learned arm pins them. Pin the analytic arm too.
+13. `PandaMugProgramAnalytic` inherits from the pose analytic class and never moves
+    `self.frame` off `panda_hand`, which is a trap for anything that measures through it.
+
+**Speculative, in the project's spirit**
+
+14. The `c` / `q_c` redundancy: with both free, many pairs give the same `q`, so the active
+    constraint gradients are rank-deficient. The task parameterisation addresses part of
+    this; a `q_c == 0` arm (the draft's eq. 4) would quantify what the correction buys.
+15. Non-dimensionalise the conditioning pose's translation against its rotation, the way
+    `eaik-experiment` scales its Jacobian rows by a 1.12 m length scale, so the `c` block is
+    dimensionally coherent.
+
 ### Scenes and utilities (`src/utils.py`, `models/`)
 
 `BuildEnv(meshcat, directives_file, extra_directives=None)` builds the diagram from a Drake model-directives YAML, registering `package.xml` so `package://combining_kinematics/...` URIs resolve; `extra_directives` is a list of `ModelDirective` objects appended to the loaded ones **in memory**, so a caller can add models to a scene without writing to the tracked YAML. `GenerateDiagramWithMug(q, program, yaml_file, meshcat)` uses exactly that: it constructs an `add_model`/`add_weld` pair for a mug at the gripper pose of `q` (the weld pose is passed as a `pydrake.common.schema.Transform`, not formatted into text) and rebuilds the diagram. The YAML on disk is never modified, so a crash or interrupt mid-call cannot leave a stray mug in a tracked scene — it used to append-then-truncate the file, which could. Targets in the mug experiments are generated by sampling collision-free `q` and welding a mug at the resulting gripper pose, so every target is known to admit a valid grasp.
