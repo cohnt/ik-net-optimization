@@ -12,9 +12,11 @@ Usage:
     python iiwa_benchmark.py --task mug  --targets 15 --guesses 2 --wall-time 20
 """
 import argparse
+import hashlib
 import os
 import sys
-from dataclasses import replace
+from ast import literal_eval
+from dataclasses import fields, replace
 
 import numpy as np
 
@@ -50,16 +52,43 @@ def parse_args():
     p.add_argument("--wall-time", type=float, default=20.0)
     p.add_argument("--solver", choices=["ipopt", "snopt"], default="ipopt")
     p.add_argument("--arms", default="learned,numerical")
-    p.add_argument("--config", default="axis")
+    # "axis" named a config that was removed with the mug-axis tolerance, so the default
+    # raised KeyError; "latent" is the configuration the Panda ladder settled on.
+    p.add_argument("--config", default="latent")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--task-tol", type=float, default=1e-3)
     p.add_argument("--tag", default=None)
+    p.add_argument("--compile", action="store_true",
+                   help="torch.compile the flow Jacobian, once per process, warmed up "
+                        "before the grid. Moves the learned arm's success rate inside a "
+                        "fixed cap, so runs being compared must set it the same way.")
+    p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
+                   help="override any ProgramOptions field, e.g. --set correction_bound=0.4")
     return p.parse_args()
+
+
+def apply_overrides(options, overrides):
+    parsed = {}
+    for item in overrides:
+        if "=" not in item:
+            raise SystemExit(f"--set expects NAME=VALUE, got {item!r}")
+        name, _, value = item.partition("=")
+        name = name.strip()
+        if not any(f.name == name for f in fields(ProgramOptions)):
+            raise SystemExit(f"--set: no such ProgramOptions field {name!r}")
+        try:
+            parsed[name] = literal_eval(value)
+        except (ValueError, SyntaxError):
+            parsed[name] = value
+    return replace(options, **parsed), parsed
 
 
 def main():
     args = parse_args()
-    tag = args.tag or f"iiwa_{args.task}_{args.config}"
+    tag = args.tag or "_".join(
+        ["iiwa", args.task, args.config]
+        + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
+        + (["compiled"] if args.compile else []))
     log_dir = os.path.join(RepoDir(), "results/iiwa/benchmark", tag)
     out_path = os.path.join(log_dir, "summary.json")
 
@@ -68,9 +97,14 @@ def main():
         which_solver=args.solver, acceptable_tol=1e-3,
         acceptable_constr_viol_tol=1e-4, ik_constraint_tol=(1e-4, 0.01),
         mug_height=0.04)
-    base_options = replace(base_options, **CONFIGS[args.config])
+    base_options = replace(base_options, **CONFIGS[args.config],
+                           compile_flow_jacobian=args.compile)
+    base_options, overrides = apply_overrides(base_options, args.overrides)
     slack = base_options.acceptable_constr_viol_tol
 
+    # A local generator for the grid: see the note in the Panda script -- draws made during
+    # program construction used to shift which targets a configuration was measured on.
+    rng = np.random.default_rng(args.seed)
     np.random.seed(args.seed)
     meshcat = Meshcat()
     yaml_file = os.path.join(RepoDir(), "models/iiwa14/iiwa14_collision.yaml")
@@ -85,13 +119,19 @@ def main():
 
     def sample_collision_free():
         while True:
-            q = np.random.uniform(lower, upper)
+            q = rng.uniform(lower, upper)
             sampler.plant.SetPositions(sampler.plant_context, q)
             if sampler.collision_free_constraint_eval.Eval(q) < 1:
                 return q
 
     target_qs = [sample_collision_free() for _ in tqdm(range(args.targets), desc="targets")]
     guesses = [sample_collision_free() for _ in range(args.guesses)]
+    grid_hash = hashlib.sha1(np.asarray(target_qs + guesses).tobytes()).hexdigest()[:12]
+
+    compile_seconds = None
+    if args.compile:
+        compile_seconds = sampler.WarmUpJacobian()
+        print(f"compiled the flow Jacobian in {compile_seconds:.1f} s")
 
     if args.task == "mug":
         mug_meshcat = Meshcat()
@@ -166,8 +206,11 @@ def main():
                           progress=lambda *a: bar.update(1),
                           metadata=dict(robot="iiwa14", task=args.task,
                                         solver=args.solver, config=args.config,
-                                        wall_time=args.wall_time,
-                                        seed=args.seed))
+                                        wall_time=args.wall_time, seed=args.seed,
+                                        grid_hash=grid_hash, compiled=args.compile,
+                                        compile_seconds=compile_seconds,
+                                        overrides=overrides, start="paired",
+                                        n_targets=args.targets, n_guesses=args.guesses))
     bar.close()
     print()
     bm.print_table(bm.summarise(records, arms, args.targets, args.guesses),

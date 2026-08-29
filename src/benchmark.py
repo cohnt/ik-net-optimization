@@ -134,6 +134,14 @@ def verify(program, result, task_gate, tol):
     collision = float(np.asarray(program.collision_free_constraint_eval.Eval(q)).flatten()[0])
     detail["collision_value"] = collision
 
+    # How much of its own budget the learned formulation used: |q_c| against
+    # correction_bound says whether the correction box is binding, and ||z|| says whether
+    # the latent left the flow's typical set (sqrt(latent_dim), so ~2.65 and ~2.83).
+    if hasattr(program, "correction"):
+        detail["correction_inf"] = float(np.max(np.abs(result.GetSolution(program.correction))))
+    if hasattr(program, "z"):
+        detail["z_norm"] = float(np.linalg.norm(result.GetSolution(program.z)))
+
     ok, task_detail = task_gate(program, q)
     detail.update(task_detail)
 
@@ -148,6 +156,43 @@ def verify(program, result, task_gate, tol):
     if not ok:
         return Verdict(False, "task_error", detail)
     return Verdict(True, "", detail)
+
+
+def _finite(value):
+    """None rather than inf/nan, so a diverged cell does not poison an aggregate."""
+    if value is None:
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def start_diagnostics(program, q_init):
+    """How far this arm's *actual* starting configuration is from the shared q_init.
+
+    The protocol rests on every formulation beginning at the same configuration, and only
+    the joint-space arm can hold that exactly: each of the others starts at its own
+    projection of `q_init` onto its variables and their bounds. The analytic arm cannot
+    represent a configuration its chart's branches miss, and the task-parameterised learned
+    arm cannot represent one that is not a grasp of this mug at all -- its `c` is projected
+    onto the mug axis, which moves the configuration by radians. That is a property of the
+    formulations, not a defect, but it has to be *reported* rather than assumed away, so
+    every cell carries the number.
+    """
+    out = {"clip_distance": _finite(getattr(program, "clip_distance", None))}
+    n = getattr(program, "num_arm_dof", 7)
+    try:
+        x0 = program.prog.GetInitialGuess(program.lumped_vars)
+        q0 = np.asarray([float(v) for v in program.VarsToQ(x0)], dtype=float)
+        out["start_q_error"] = _finite(np.max(np.abs(q0[:n] - np.asarray(q_init, dtype=float)[:n])))
+    except Exception:
+        out["start_q_error"] = None
+    if hasattr(program, "z"):
+        try:
+            out["start_z_norm"] = _finite(
+                np.linalg.norm(program.prog.GetInitialGuess(program.z)))
+        except Exception:
+            pass
+    return out
 
 
 ## -------------------------------- statistics --------------------------------- ##
@@ -235,6 +280,8 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                 try:
                     program = arm.make_program(targets[ti], guesses[gi])
                     record["setup_time"] = time.time() - t0
+                    record.update(start_diagnostics(program, guesses[gi]))
+                    record["correction_bound"] = getattr(program.options, "correction_bound", None)
                     program.options.file_print_name = log_path
                     start = time.time()
                     result = program.Solve()
@@ -247,6 +294,8 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     record["fail_reason"] = verdict.fail_reason
                     detail = dict(verdict.detail)
                     detail.pop("q", None)
+                    for key in ("correction_inf", "z_norm"):
+                        record[key] = _finite(detail.pop(key, None))
                     record["detail"] = detail
                     if verdict.feasible:
                         record["cost"] = float(result.get_optimal_cost()) / arm.weight
@@ -291,6 +340,13 @@ def summarise(records, arms, n_targets, n_guesses):
             mean_cost=_mean(ok, "cost", ok_only=False),
             median_cost=_median(ok, "cost"),
             solved_within_k=solved_within_k(per_target),
+            median_clip_distance=_median(recs, "clip_distance"),
+            median_start_q_error=_median(recs, "start_q_error"),
+            max_start_q_error=_max(recs, "start_q_error"),
+            median_start_z_norm=_median(recs, "start_z_norm"),
+            median_correction_inf=_median(ok, "correction_inf"),
+            correction_binding=_binding_fraction(ok),
+            median_z_norm=_median(ok, "z_norm"),
         )
 
     # Cost is only comparable on cells every formulation solved: each arm's success set
@@ -327,6 +383,23 @@ def _mean(recs, key, ok_only=True):
 def _median(recs, key):
     vals = [r[key] for r in recs if r.get(key) is not None]
     return float(np.median(vals)) if vals else float("nan")
+
+
+def _max(recs, key):
+    vals = [r[key] for r in recs if r.get(key) is not None]
+    return float(np.max(vals)) if vals else float("nan")
+
+
+def _binding_fraction(recs, tol=1e-6):
+    """Fraction of solutions sitting on the correction box.
+
+    The number that decides whether widening `correction_bound` is worth measuring: a
+    correction pinned at its bound is the chart error the box refused to absorb."""
+    vals = [(r["correction_inf"], r["correction_bound"]) for r in recs
+            if r.get("correction_inf") is not None and r.get("correction_bound")]
+    if not vals:
+        return float("nan")
+    return float(np.mean([c >= b - tol for c, b in vals]))
 
 
 def _write_summary(records, arms, n_targets, n_guesses, out_path, metadata, partial):
@@ -372,6 +445,17 @@ def print_table(summary, arm_names):
     print("\npaired McNemar (exact, two-sided):")
     for pair, m in summary["_mcnemar"].items():
         print(f"  {pair:<34} {m['a_only']:>4} / {m['b_only']:<4}  p = {m['p']:.3g}")
+    print("\nstart fidelity (|q(start) - q_init|, and how far the start was clipped):")
+    for name in arm_names:
+        s = summary[name]
+        print(f"  {name:<14} median {s['median_start_q_error']:>8.4f}  "
+              f"max {s['max_start_q_error']:>8.4f}  clip {s['median_clip_distance']:>8.4f}  "
+              f"|z| at start {s['median_start_z_norm']:>7.3f}")
+    print("\nat the solution:  |q_c| against its box, and ||z||:")
+    for name in arm_names:
+        s = summary[name]
+        print(f"  {name:<14} median |q_c| {s['median_correction_inf']:>8.4f}  "
+              f"on the box {s['correction_binding']:>6.2f}  ||z|| {s['median_z_norm']:>7.3f}")
     print("\nfailure modes:")
     for name in arm_names:
         print(f"  {name:<14} {summary[name]['fail_reasons']}")
