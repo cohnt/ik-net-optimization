@@ -16,6 +16,7 @@ from pydrake.all import (
     MinimumDistanceLowerBoundConstraint,
     Quaternion,
     RigidTransform,
+    RigidTransform_,
     RotationMatrix,
     RotationMatrix_,
     RollPitchYaw,
@@ -47,8 +48,47 @@ class ProgramOptions:
     num_seed_samples: int = field(default=256, metadata={"help": "Candidate (c, z) pairs drawn to pick an initial guess. 0 disables seeding"})
     seed_refine_top_k: int = field(default=8, metadata={"help": "Candidates re-scored against every constraint (incl. collision)"})
     seed_latent_scale: float = field(default=1.0, metadata={"help": "Std dev of the sampled latents"})
+    seed_use_float32: bool = field(default=True, metadata={"help": "Rank seed candidates in float32; the pass needs neither precision nor gradients"})
     c_position_slack: float = field(default=0.25, metadata={"help": "Half-width of the box on the conditioning position, about the target"})
 
+
+    ## Evaluation sharing ##
+    # Every Drake binding evaluates its own callback, so the joint-centering cost used to
+    # run a *second* forward pass and a second jacrev through the flow at the same point
+    # as the constraint binding. An IPOPT log of the mug problem records 1276 objective
+    # evaluations against 1276 constraint evaluations and 455 objective gradients against
+    # 490 constraint Jacobians -- i.e. about half the network work was redundant.
+    # On by default: the memoised path returns bit-identical values *and* derivatives, so
+    # this is a pure throughput win (measured 12/30 -> 22/30 on the Panda grasp once the
+    # frame was also fixed). Turn it off only to reproduce a pre-overhaul measurement.
+    share_flow_evaluations: bool = field(default=True, metadata={"help": "Memoise VarsToQ/fk so the cost and constraint bindings share one flow evaluation per point"})
+
+    ## Conditioning of the learned program ##
+    # The flow is conditioned on the pose of the frame it was *trained* on. In the finray
+    # grasp scene the body called "panda_hand" is a different frame, 27 mm and 120 degrees
+    # away, so looking it up by name conditions the network on a pose it never saw. Off by
+    # default only so the ladder can measure the repair separately from the redesigns.
+    calibrate_flow_frame: bool = field(default=True, metadata={"help": "Express the conditioning pose in the frame the flow was trained on rather than in whichever scene body shares its name"})
+    # The latent prior is N(0, I), so |z| concentrates near sqrt(latent_dim); a +-5 box
+    # per component lets the optimiser walk to |z| ~ 13, deep into the tail where the flow
+    # has seen no training mass and its output stops meaning anything. A norm bound is the
+    # learned analogue of the analytic framework's reachability constraint, which is the
+    # gap the draft itself names ("outside the reachable set IKFlow's gradients explode").
+    latent_trust_region: float = field(default=None, metadata={"help": "Bound on ||z||; None keeps the per-component box only"})
+    latent_cost_weight: float = field(default=0.0, metadata={"help": "Weight on ||z||^2, keeping the latent in the flow's typical set"})
+    correction_bound: float = field(default=0.1, metadata={"help": "Half-width of the box on the joint-space correction"})
+    mug_axis_tol: float = field(default=0.0, metadata={"help": "Half-width on the two mug-axis rows. 0 pins them exactly, as the analytic arm's own constraint does not"})
+    c_parameterization: str = field(default="free", metadata={"help": "'free': c is a free 6-vector constrained through FK. 'task': c is computed from task parameters so the conditioning pose satisfies the task by construction"})
+
+    ## Solver behaviour ##
+    ipopt_mu_strategy: str = field(default=None, metadata={"help": "IPOPT 'mu_strategy'; 'adaptive' often helps on badly scaled problems"})
+    max_iter: int = field(default=None, metadata={"help": "Iteration cap (IPOPT max_iter / SNOPT Major iterations limit)"})
+
+    ## Starting point ##
+    # A benchmark that starts each formulation somewhere different cannot attribute a
+    # success-rate gap to the formulation. `SetStartFromQ` puts every arm at the same
+    # configuration; this switch only exists so the old protocol stays reproducible.
+    seed_from_q_init: bool = field(default=False, metadata={"help": "Start from a shared q_init instead of the per-formulation default"})
 
     ## Solver options ##
     which_solver: str = field(default="ipopt", metadata={"help": "Which IKFlow solver to use"})
@@ -167,6 +207,46 @@ class IKFlowProgram:
         else:
             return rigid_transform.translation(), rigid_transform.rotation().ToQuaternion().wxyz()
 
+    ## ---------------------- shared flow evaluation ------------------------- ##
+
+    def _FlowCacheKey(self, vars):
+        '''Key an iterate by its values *and* its derivative block.
+
+        Drake hands the cost and the constraint the same `vars` at the same point, but an
+        AutoDiffXd carries a gradient as well as a value, and the two callbacks can be
+        called with different seed matrices. Keying on the value alone would silently
+        return a Jacobian computed against the wrong seeds.
+        '''
+        if isinstance(vars[0], AutoDiffXd):
+            values = np.array([v.value() for v in vars])
+            derivatives = np.array([v.derivatives() for v in vars])
+            return (True, values.tobytes(), derivatives.shape, derivatives.tobytes())
+        return (False, np.asarray(vars, dtype=float).tobytes())
+
+    def QAndPose(self, vars):
+        '''`(q, pose)` for an iterate, evaluating the flow at most once per point.
+
+        The forward pass and the `jacrev` are the dominant cost of the learned
+        formulation -- everything else in a `VarsToQ` evaluation is about 0.01 ms -- so
+        sharing them between the constraint binding and the cost binding is close to a
+        factor of two on the whole solve.
+        '''
+        if not getattr(self.options, "share_flow_evaluations", False):
+            q = self.VarsToQ(vars)
+            return q, self.fk(q)
+        cache = getattr(self, "_flow_cache", None)
+        if cache is None:
+            cache = self._flow_cache = {}
+        key = self._FlowCacheKey(vars)
+        hit = cache.get(key)
+        if hit is None:
+            q = self.VarsToQ(vars)
+            hit = (q, self.fk(q))
+            cache[key] = hit
+            while len(cache) > 4:
+                cache.pop(next(iter(cache)))
+        return hit
+
     ## ------------------------- multi-start seeding ------------------------- ##
 
     @property
@@ -274,8 +354,7 @@ class IKFlowProgram:
 
     def EvalAllConstraints(self, vars):
         '''Parallelize as much of the VarsToQ as possible to shorten computation time'''
-        q = self.VarsToQ(vars) ## this is ran once for all constraints
-        pose = self.fk(q) ## this is ran once for all constraints
+        q, pose = self.QAndPose(vars)  ## one flow evaluation for every constraint row
         total_length = sum(len(constraint) for constraint in self.constraints)
         result = np.full(total_length, q[0]) ## q datatype
         idx = 0
@@ -375,7 +454,9 @@ class IKFlowProgram:
         self.joint_centering_cost.evaluator().set_description("JointCenteringCost")
     
     def EvalJointCenteringCost(self, vars):
-        q = self.VarsToQ(vars)
+        # Shares the constraint binding's flow evaluation when share_flow_evaluations is
+        # on; otherwise this is a second full forward pass / jacrev at the same point.
+        q, _ = self.QAndPose(vars)
         diff = q[:7] - self.q_nominal
         return 0.5 * diff @ (self.options.joint_centering_cost * np.eye(7)) @ diff
     
