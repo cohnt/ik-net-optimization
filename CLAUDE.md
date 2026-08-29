@@ -9,6 +9,7 @@ Research code (ROS-style package `combining_kinematics`) for solving inverse kin
 | Formulation | Decision variables | `VarsToQ` |
 | --- | --- | --- |
 | **learned** (`Panda/IiwaIKProgram`, `...MugProgram`) | conditioning pose `c` (xyz+rpy, 6), latent `z` (`network_width`), `correction` (7) | forward pass of the IKFlow model + `correction` |
+| **learned, task-parameterised** (`...MugProgramTaskParam`) | grasp pose in the mug frame `X_MG` (6), latent `z`, `correction` (7) | `c` computed from `X_MG`, then as above |
 | **numerical** (`...ProgramNumerical`) | joint angles `q` (7) | identity |
 | **analytic** (`...ProgramAnalytic`) | end-effector pose `xyz_rpy` (6) + redundancy parameter `psi` (1) | closed-form S-R-S IK (`src/*_analytic_ik.py`) |
 
@@ -21,6 +22,13 @@ No package manifest. Dependencies: `pydrake` from a local Drake build (`~/opt/rl
 Scripts append the repo root to `sys.path` themselves, so run them from anywhere:
 
 ```bash
+# The current harness (paired grid, feasibility-verified success -- prefer these):
+python scripts/panda/panda_benchmark.py --task mug  --targets 15 --guesses 3 --config latent --start native
+python scripts/panda/panda_benchmark.py --task pose --targets 15 --guesses 3 --config latent --start native
+python scripts/iiwa/iiwa_benchmark.py   --task mug  --targets 12 --guesses 2 --config latent --start native
+python scripts/collate.py 'results/*/benchmark/*/summary.json'
+
+# The older per-experiment scripts, kept for comparability with archived results:
 python scripts/panda/panda_mug.py            # 3-way mug-grasp comparison, panda
 python scripts/panda/panda_mug_headtohead.py [num_tests] [max_wall_time]
 python scripts/panda/panda_mug_ablation.py [config_index] [num_tests] [max_wall_time]
@@ -74,6 +82,142 @@ wall time despite a 3.4x difference in actual GPU kernel time. Roughly 70% of a 
 CPU-side work — mostly PyTorch/FrEIA Python dispatch, with `cudaLaunchKernel` itself only about
 17% — so runtime is bounded by how fast the CPU can describe 2853 operations, not by GPU math.
 Even zero-overhead execution would leave only a ~3x ceiling.
+
+### The conditioning frame (read this before touching the learned formulation)
+
+The flow is conditioned on the pose of **the frame it was trained on**, and in both grasp
+scenes that is *not* the frame the code used to look up by name. `panda_finray.sdf`
+contains its own body called `panda_hand`, welded to `panda_link7` at `[0, 0, 0.134]` with
+`rpy [90, 0, 45]`, whereas jrl's Panda -- the model IKFlow was trained against -- puts
+`panda_hand` at `[0, 0, 0.107]` with `rpy [0, 0, -45]`. `GetBodyByName("panda_hand")`
+returns the finray one, which is **27 mm and 120 degrees** away. The iiwa has the same
+class of error: the scene's `iiwa_link_7` is 45 mm short of the flow's frame.
+
+The symptom is quantitative and unmistakable. Running the flow *forwards* on a random
+configuration (`rev=False`, which inverts it exactly) returns the latent that would have
+produced it:
+
+| robot | at the scene frame | at the calibrated frame | typical `|z|` under the prior |
+| --- | --- | --- | --- |
+| Panda | 67.6 | 2.23 | sqrt(7) = 2.65 |
+| iiwa14 | 12.1 | 2.45 | sqrt(8) = 2.83 |
+
+A latent of 67 is the network reporting that the configuration is astronomically unlikely
+for that conditioning pose. Every iterate of every grasp solve was in that regime.
+`IKFlowProgram.CalibrateFlowFrame` now measures the offset against `ik_solver.robot.
+forward_kinematics` at several configurations, checks it is constant (both frames are
+welded to the same link, so it must be), and caches it as `self.X_ee_flow`;
+`FlowPoseInWorld()` is what should be used wherever a conditioning pose is formed.
+`ProgramOptions.calibrate_flow_frame=False` restores the old behaviour for ablations.
+
+Measured effect on the 256-sample seed for the Panda mug: the best candidate starts
+**0.0005 m** off the mug axis instead of **0.098 m**.
+
+### Sharing the flow evaluation between bindings
+
+Each Drake binding evaluates its own callback, so `EvalJointCenteringCost` used to run a
+second forward pass and a second `jacrev` at exactly the point `EvalAllConstraints` had
+just evaluated. An archived IPOPT log shows 1276 objective evaluations against 1276
+constraint evaluations and 455 objective gradients against 490 constraint Jacobians --
+about half the network work was redundant. `IKFlowProgram.QAndPose` memoises `(q, pose)`
+on the iterate, keyed on the values **and** the AutoDiffXd derivative block (keying on the
+value alone would hand back a Jacobian computed against the wrong seed matrix), behind
+`ProgramOptions.share_flow_evaluations`, which **defaults on** -- the memoised path returns
+bit-identical values and derivatives, so there is no reason to run without it except to
+reproduce a pre-overhaul measurement.
+
+### Task-parameterised conditioning (`c_parameterization="task"`)
+
+`GraspTaskParamMixin` in `src/generic_program.py` replaces the free 6-vector `c` with the
+grasp pose in the mug frame, `X_MG`, and *computes* the conditioning pose as
+`c = X_WM . X_MG . X_GE`. Every `c` the optimiser can name is then a valid grasp, and the
+task constraint on `c` becomes a plain bounding box (`x = y = 0`, `z` within the mug
+height, orientation free) instead of two nonlinear equality rows -- the shape
+`../../minimal-coordinates/ift/eaik-experiment` uses for the same grasp. What stays
+nonlinear is the flow's *chart error*, which is what the correction `q_c` exists to
+absorb; `q_c` remains a 7-vector in joint space and is untouched by this.
+
+Note `X_GE`, not `X_EG`: converting the grasp pose to the frame the flow speaks in is a
+conjugation that does not cancel, and getting it backwards is a bug that survived a long
+time in the sibling project. `PandaMugProgramTaskParam` and `IiwaMugProgramTaskParam` are
+one-line subclasses of the mixin.
+
+### Benchmarking (`src/benchmark.py`, `scripts/*/[a-z]*_benchmark.py`)
+
+The older head-to-head scripts remain for comparability, but new measurements should use
+`src/benchmark.py`, which fixes three things they got wrong:
+
+- **Paired grid.** `num_targets x num_guesses` cells, one solve per cell, no
+  retry-on-failure, every formulation on the identical cells -- so success can be compared
+  with an exact McNemar test and the CI can bootstrap over whole *targets* (guesses within
+  a target are correlated).
+- **A shared starting configuration** (`--start paired`). `SetStartFromQ(q_init)` puts each
+  arm at the same configuration in its own variables: the joint-space arm at `q_init`, the
+  analytic arm at `FK(q_init)` with `psi`/`GC` recovered by inversion, the learned arm at
+  `c = FK(q_init)` with `z` from running the flow forwards. Order matters: invert **first**,
+  then clip `c` into its box. Clipping first and inverting at the projected pose returns
+  `|z| ~ 1e7`, because a random configuration is not a grasp of this mug and the flow is
+  right to say so. `--start native` instead gives each arm its own best initialisation
+  (256-sample seeding for the learned arm), which is the "best practice" comparison.
+- **Success verified from the returned point**, not from `result.is_success()`. Every
+  binding is re-evaluated at the solution and the task is re-measured from `q`, with a
+  named `fail_reason`. This matters because *every* learned failure in the archived runs
+  was a wall-clock timeout, and a timeout that landed on a valid grasp is a success. Two
+  gates that are easy to get wrong: an interior-point method parks *on* the collision
+  constraint (value 1 + 1e-7), so the collision gate needs the same slack the binding has;
+  and `PandaMugProgramAnalytic` inherits from the *pose* analytic class and never moves
+  `self.frame` off `panda_hand`, so the grasp must be measured by asking for
+  `between_fingers` by name.
+
+### Measured results (2026-08-28, RTX 3080 Ti laptop, IPOPT, 20 s cap)
+
+Produced with `src/benchmark.py`; raw records in `results/*/benchmark/*/summary.json`.
+Success is feasibility-verified from the returned point, solver status reported alongside.
+These supersede the archived `results/panda/mug/headtohead` numbers, which were scored by
+`result.is_success()` and were run before the conditioning-frame fix.
+
+**The ladder** (Panda grasp, learned arm only, 15 targets x 2 guesses, 256-sample seeding),
+cumulative -- each row adds one change to the row above:
+
+| configuration | success | timeouts | mean iters | mean jacrevs | wall (s) |
+| --- | --- | --- | --- | --- | --- |
+| baseline (scene frame, separate cost evaluation) | 12/30 | 18 | 144 | 145 | 17.7 |
+| + calibrated flow frame | 18/30 | 12 | 103 | 104 | 14.2 |
+| + shared flow evaluation | 22/30 | 9 | 129 | 130 | 12.3 |
+| + task-parameterised `c` | 22/30 | 8 | **72** | **73** | 9.0 |
+| + latent trust region `||z|| <= 4` | **23/30** | 7 | 80 | 81 | 8.8 |
+| + mug axis relaxed to +-1e-4 | 20/30 | 10 | 94 | 95 | 11.2 |
+| latent trust region + axis, but free `c` | 19/30 | 11 | 108 | 109 | 11.9 |
+
+Two things to keep: the task parameterisation buys no extra successes but cuts iterations
+by 44%, which is a conditioning result, not a feasibility one; and **relaxing the mug-axis
+equality made things worse** (23 -> 20), so the two rows stay pinned. `mug_axis_tol` is
+kept as an option only to record that the experiment was run.
+
+**Head to head, shared start** (`--start paired`, 15 targets x 2 guesses). The learned
+column is the same protocol before and after, so the two are directly comparable:
+
+| experiment | learned | numerical | analytic |
+| --- | --- | --- | --- |
+| Panda grasp, before | 12/30 | 27/30 | 28/30 |
+| Panda grasp, after | **21/30** | 29/30 | 30/30 |
+| Panda pose, after | **24/30** | 15/30 | 14/30 |
+
+On the pose experiment the learned formulation wins on success (McNemar p = 0.023 against
+joint space, 0.013 against analytic) *and* on cost (median 8.91 against 10.77 and 9.30 on
+the cells all three solved). That is the draft's central claim, now with paired statistics.
+On the grasp experiment it is still behind both baselines (p = 0.008, 0.004), where before
+it was behind them by roughly twice as much.
+
+**Where it did not work: the iiwa grasp.** Every configuration lands in the same place --
+baseline 3/24, frame fix with free `c` 5/24, the Panda's winning configuration 4/24, with
+18-21 of 24 cells timing out in all three. The Panda's gains do not transfer. The iiwa
+grasp scene is far more cluttered (four shelf units and seven decorative mugs against the
+Panda scene's two shelves and a bin) so the collision query dominates, and the iiwa flow is
+a different artifact (a local `lemon-haze-7` pickle rather than the published Panda
+weights). Diagnosing that is open work; do not assume it is the same problem as the Panda's
+was. The iiwa *pose* experiment is fine: learned 21/24 against joint space 22/24, at 25
+solver iterations against 31.
 
 ### Scenes and utilities (`src/utils.py`, `models/`)
 
