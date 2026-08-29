@@ -59,10 +59,11 @@ CONFIGS = {
                          latent_trust_region=4.0),
     "axis":         dict(share_flow_evaluations=True, c_parameterization="task",
                          latent_trust_region=4.0, mug_axis_tol=1e-4),
-    # Same as "axis" but with the free conditioning pose, to separate the task
-    # parameterisation from everything stacked on top of it.
     "axis-free-c":  dict(share_flow_evaluations=True, latent_trust_region=4.0,
                          mug_axis_tol=1e-4),
+    # The clean control for the task parameterisation: identical to "latent" but with the
+    # free conditioning pose, so the difference between the two rows is that change alone.
+    "latent-free-c": dict(share_flow_evaluations=True, latent_trust_region=4.0),
 }
 
 
@@ -103,13 +104,16 @@ def main():
         acceptable_constr_viol_tol=1e-4,
         ik_constraint_tol=(1e-4, 0.01),
         mug_height=0.04,
-        # Under the paired protocol the start comes from q_init, so the multi-start
-        # seeding pass is off by default; `--config seeded` turns it back on as its own
-        # row rather than leaving it as an advantage only one arm enjoys.
         num_seed_samples=0,
     )
     base_options = replace(base_options, **CONFIGS[args.config])
     if args.start == "native":
+        # NOT a valid comparison: only the learned arm can search for a start this way,
+        # and the other two then repeat one fixed start across every guess. Kept as a
+        # diagnostic, loudly labelled, never as a headline number.
+        print("WARNING: --start native gives each formulation a different initial guess "
+              "and lets the learned arm search 256 candidates for a good one. Its numbers "
+              "are a statement about seeding, not about the formulation.")
         base_options = replace(base_options, num_seed_samples=256)
 
     pos_tol, _ = base_options.ik_constraint_tol
