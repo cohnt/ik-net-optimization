@@ -79,11 +79,10 @@ class PandaIKProgram(IKFlowProgram):
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
 
 
-        # jacrev already computes the forward pass, so ask it for the value too
-        # (has_aux) rather than evaluating the network a second time in VarsToQ.
-        # torch.compile is deliberately not used here: measured 39.5 ms either way,
-        # against a 200 ms compilation penalty per program.
-        self.jacobian_gen = torch.func.jacrev(self.ik_inference_with_value, has_aux=True)
+        # One reverse pass gives both dq/dvars and q (has_aux). Built through the
+        # shared factory so that, with compile_flow_jacobian on, one compiled graph is
+        # reused by every program in a grid instead of one per program.
+        self.jacobian_gen = self.MakeJacobianGen()
 
         ## Add Constraints
         self.add_constraints()
@@ -92,22 +91,18 @@ class PandaIKProgram(IKFlowProgram):
 
 
     def ik_inference(self, vars, add_correction = True):
-        '''Given a latent + target + correction, returns corresponding joint angles
-        vars can be either numpy array or torch tensor (for gradient computation)'''
-        # Convert to tensor only if not already a tensor
+        '''Given a latent + target + correction, returns corresponding joint angles.
+
+        The body lives in `MakeFlowInference` so that this eager path and the (possibly
+        compiled) Jacobian evaluate literally the same code.'''
         if not isinstance(vars, torch.Tensor):
             vars = torch.tensor(vars, device=DEVICE, dtype=self.torch_dtype)
-
-        c, z, correction = (vars[:7], vars[7:7+self.ik_solver.network_width], vars[7+self.ik_solver.network_width:])
-        # Work directly with tensor slices - don't call torch.tensor() again!
-        c_torch = torch.cat([c.unsqueeze(0), torch.zeros((1, 1), dtype=vars.dtype, device=DEVICE)], dim=1)
-        z_batch = z.unsqueeze(0)
-
-        output, _ = self.ik_solver.nn_model(z_batch, c=c_torch, rev=True)
-        q = output[:, :7].squeeze(0)
-        if add_correction:
-            return q + correction
-        else: return q
+        if not add_correction:
+            width = self.ik_solver.network_width
+            vars = torch.cat([vars[:7 + width],
+                              torch.zeros(self.num_arm_dof, dtype=vars.dtype, device=DEVICE)])
+        q, _ = self.FlowInference()(vars)
+        return q
 
     def ik_inference_with_value(self, vars):
         '''jacrev(..., has_aux=True) target: returns q twice so one reverse pass yields
@@ -221,7 +216,7 @@ class PandaMugProgram(PandaIKProgram):
             [X_W_ee.translation(), X_W_ee.rotation().ToRollPitchYaw().vector()]))
         self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
-        self.jacobian_gen = torch.func.jacrev(self.ik_inference_with_value, has_aux=True)
+        self.jacobian_gen = self.MakeJacobianGen()
 
         self.target_pose = np.array([*target_mug.middle.translation(), 1, 0, 0, 0]) ## for bounding box
         self.add_constraints()

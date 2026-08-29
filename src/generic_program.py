@@ -44,6 +44,15 @@ class ProgramOptions:
 
     c_position_slack: float = field(default=0.25, metadata={"help": "Half-width of the box on the conditioning position, about the target"})
 
+    # torch.compile on the jacrev: measured 17.98 -> 13.55 ms (1.33x) at batch 1 in float64,
+    # one dynamo graph with no recompiles across iterates, agreeing with eager to 1e-14 on a
+    # Jacobian of magnitude 12, for a 14.2 s one-off compile penalty. The Jacobian is 84% of
+    # a learned solve, so inside a fixed wall-clock cap this is roughly 30% more iterations
+    # -- which means it *moves the learned arm's success rate* and every arm of a reported
+    # comparison has to be run with the same setting. Off by default so a solve costs no
+    # compile; the benchmark scripts turn it on and warm it up before the grid.
+    compile_flow_jacobian: bool = field(default=False, metadata={"help": "torch.compile the flow Jacobian once per process and share it between programs"})
+
 
     ## Evaluation sharing ##
     # Every Drake binding evaluates its own callback, so the joint-centering cost used to
@@ -147,6 +156,55 @@ def orientation_error_rpy(orientation, target_rpy):
 
 
 ORIENTATION_ERROR_FORMS = ("rpy", "rpy_boxed")
+
+## ---------------------------- the flow evaluation ----------------------------- ##
+#
+# The network forward pass lives here as a *free function of the lumped variables* rather
+# than as a method, for one reason: torch.compile guards on everything the compiled callable
+# closes over, so a bound method would carry the program instance into the guards and each of
+# the thirty programs in a benchmark grid would re-trigger dynamo. Closing over the network
+# alone lets one graph be compiled once per process and reused by every program that shares
+# it. (This is what the old "200 ms compilation penalty per program" comment was measuring:
+# the penalty was per instance because the compiled thing was per instance.)
+
+
+def MakeFlowInference(nn_model, width, num_arm_dof, device):
+    """`vars -> (q, q)`, the shape `jacrev(..., has_aux=True)` wants.
+
+    Returning q twice is what lets one reverse pass yield both dq/dvars and q, instead of
+    evaluating the network again for the value. `vars` is [conditioning pose as xyz + wxyz,
+    latent, correction]; the trailing zero on the conditioning row is the padding the flow
+    was trained with.
+    """
+    def flow_inference(vars):
+        c, z, correction = vars[:7], vars[7:7 + width], vars[7 + width:]
+        c_torch = torch.cat(
+            [c.unsqueeze(0), torch.zeros((1, 1), dtype=vars.dtype, device=device)], dim=1)
+        output, _ = nn_model(z.unsqueeze(0), c=c_torch, rev=True)
+        q = output[0, :num_arm_dof] + correction
+        return q, q
+    return flow_inference
+
+
+_COMPILED_JACOBIANS = {}
+
+
+def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it):
+    """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked.
+
+    Reverse mode is the right primitive at this shape -- 7 outputs against 21 inputs, of
+    which 13 reach the network -- and the measurements behind that are in CLAUDE.md.
+    """
+    jacobian_gen = torch.func.jacrev(
+        MakeFlowInference(nn_model, width, num_arm_dof, device), has_aux=True)
+    if not compile_it:
+        return jacobian_gen
+    key = (id(nn_model), width, num_arm_dof, str(device),
+           next(nn_model.parameters()).dtype)
+    if key not in _COMPILED_JACOBIANS:
+        _COMPILED_JACOBIANS[key] = torch.compile(jacobian_gen)
+    return _COMPILED_JACOBIANS[key]
+
 
 class IKFlowConstraints:
     def __init__(self, lb, ub, eval_func, description=""):
@@ -329,6 +387,40 @@ class IKFlowProgram:
             2.0 * np.eye(width), np.zeros(width), -np.inf, radius ** 2, self.z)
         self.latent_trust_constraint.evaluator().set_description("LatentTrustRegion")
 
+    def FlowInference(self):
+        """The eager forward pass, built once per program and shared with the compiled
+        Jacobian so both paths run identical code."""
+        fn = getattr(self, "_flow_inference", None)
+        if fn is None:
+            fn = self._flow_inference = MakeFlowInference(
+                self.ik_solver.nn_model, self.ik_solver.network_width,
+                self.num_arm_dof, DEVICE)
+        return fn
+
+    def MakeJacobianGen(self):
+        return FlowJacobianGen(
+            self.ik_solver.nn_model, self.ik_solver.network_width, self.num_arm_dof,
+            DEVICE, self.options.compile_flow_jacobian)
+
+    def WarmUpJacobian(self):
+        """Pay torch.compile's one-off cost outside any timed solve.
+
+        Returns the seconds spent. The benchmark scripts call this on the sampler program,
+        which holds the same network every later program is handed, so the grid never sees
+        the compile.
+        """
+        import time
+        width = self.ik_solver.network_width
+        vars = np.zeros(7 + width + self.num_arm_dof)
+        vars[3] = 1.0                                  # a unit quaternion, w first
+        tensor = torch.tensor(vars, dtype=self.torch_dtype, device=DEVICE)
+        start = time.time()
+        gen = self.MakeJacobianGen()
+        gen(tensor)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        return time.time() - start
+
     def fk(self, q, matrix = False):
         frame, context = self.SetPositions(q)
         rigid_transform = frame.CalcPoseInWorld(context)
@@ -403,9 +495,18 @@ class IKFlowProgram:
             return self.X_ee_flow
         lower = self.plant.GetPositionLowerLimits()[:self.num_arm_dof]
         upper = self.plant.GetPositionUpperLimits()[:self.num_arm_dof]
+        # A local, fixed-seed generator, for two reasons. The offset is constant by
+        # construction, but it is *measured*, so it carries ~1e-8 of numerical noise that
+        # differs with the configurations it was measured at; drawing them from the global
+        # stream gave every program a slightly different X_ee_flow, and the flow amplifies
+        # 1e-8 in the conditioning pose to 1e-6 in q -- enough that two arms of the same
+        # cell were not solving quite the same problem. It also stops this call from
+        # consuming global draws, which used to shift the benchmark's target grid depending
+        # on whether calibrate_flow_frame was on.
+        rng = np.random.default_rng(0)
         offsets = []
         for _ in range(samples):
-            q_arm = np.random.uniform(lower, upper)
+            q_arm = rng.uniform(lower, upper)
             self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
             X_scene = self.frame_for_flow.CalcPoseInWorld(self.plant_context)
             pose = self.ik_solver.robot.forward_kinematics(
