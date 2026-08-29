@@ -1,4 +1,5 @@
 import os
+import time
 
 import pydrake.math
 import torch
@@ -23,6 +24,18 @@ from pydrake.all import (
     RollPitchYaw_,
     Quaternion_,
 )
+
+class SolveTimeout(RuntimeError):
+    '''Raised out of a constraint evaluation when a solve overruns its hard cap.
+
+    IPOPT's own `max_wall_time` is checked between iterations, so a solve that gets stuck
+    *inside* one -- a restoration phase thrashing on a badly conditioned point, say -- can
+    run indefinitely: one observed grasp cell sat in a single 20 s-capped solve for eleven
+    minutes at full CPU. The constraint callback is Python and runs thousands of times a
+    second, so raising from there is a cap that does not depend on the solver honouring
+    anything.
+    '''
+
 
 @dataclass
 class ProgramOptions:
@@ -101,6 +114,7 @@ class ProgramOptions:
     file_print_level: int = field(default=5, metadata={"help": "File print level for the solver"})
     file_print_name: str = field(default="ikflow_solver_log.txt", metadata={"help": "File name for solver log"})
     max_wall_time: float = field(default=60, metadata={"help": "Maximum wall time for the solver in seconds"})
+    hard_time_factor: float = field(default=3.0, metadata={"help": "Abandon a solve from inside the constraint callback once it has run this many times max_wall_time; None disables. A backstop for solves that overrun IPOPT's own limit"})
     snopt_function_precision: float = field(default=None, metadata={"help": "SNOPT 'Function precision'. Leave None in float64; set ~1e-6 if evaluating the flow in float32"})
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
@@ -667,6 +681,11 @@ class IKFlowProgram:
 
     def EvalAllConstraints(self, vars):
         '''Parallelize as much of the VarsToQ as possible to shorten computation time'''
+        deadline = getattr(self, "_solve_deadline", None)
+        if deadline is not None and time.time() > deadline:
+            raise SolveTimeout(
+                f"solve exceeded {self.options.hard_time_factor}x its "
+                f"{self.options.max_wall_time} s cap inside a single iteration")
         q, pose = self.QAndPose(vars)  ## one flow evaluation for every constraint row
         total_length = sum(len(constraint) for constraint in self.constraints)
         result = np.full(total_length, q[0]) ## q datatype
@@ -784,6 +803,9 @@ class IKFlowProgram:
     
 
     def Solve(self):
+        factor = self.options.hard_time_factor
+        self._solve_deadline = (None if factor is None
+                                else time.time() + factor * self.options.max_wall_time)
 
         if os.path.exists(self.options.file_print_name):
             with open(self.options.file_print_name, "r+") as f:

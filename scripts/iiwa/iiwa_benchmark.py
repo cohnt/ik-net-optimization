@@ -215,7 +215,7 @@ def main():
     arms = [all_arms[name] for name in args.arms.split(",")]
 
     bar = tqdm(total=len(arms) * args.targets * args.guesses, desc=tag)
-    records = bm.run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol=slack,
+    records = bm.run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol=slack, cell_timeout=5 * args.wall_time + 300,
                           progress=lambda *a: bar.update(1),
                           metadata=dict(robot="iiwa14", task=args.task,
                                         solver=args.solver, config=args.config,
