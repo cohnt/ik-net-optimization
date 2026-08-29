@@ -256,8 +256,13 @@ class PandaMugProgram(PandaIKProgram):
         # The gripper must lie on the mug's central axis (x = y = 0 exactly, as
         # ../codebase's MugConstraint imposes it) and within the mug's height along it.
         # Orientation is left free: any approach direction is a valid grasp.
-        lb = np.array([0.0, 0.0, -self.options.mug_height])
-        ub = np.array([0.0, 0.0, self.options.mug_height])
+        # `mug_axis_tol` of 0 pins the two axis rows exactly. The analytic arm's own mug
+        # constraint uses +-ik_constraint_tol[0] on the same two rows, so pinning them
+        # here holds the learned formulation to a strictly harder problem than its
+        # baseline; the option exists so that asymmetry can be removed and measured.
+        axis_tol = self.options.mug_axis_tol
+        lb = np.array([-axis_tol, -axis_tol, -self.options.mug_height])
+        ub = np.array([axis_tol, axis_tol, self.options.mug_height])
         def eval_func(vars, q, pose):
             position, _ = pose
             mug_transform = np.linalg.inv(self.target_mug.middle.GetAsMatrix4())

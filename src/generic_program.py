@@ -312,12 +312,44 @@ class IKFlowProgram:
             self.CreateJointLimitsConstraint()
         self.ApplyConstraints()
         self.BoundingBoxConstraint()
+        # Only the learned formulations have a latent; the joint-space and analytic arms
+        # share this options object so that budgets and tolerances stay identical between
+        # them, which means options that name learned-only variables must be guarded.
+        if self.options.latent_trust_region is not None and hasattr(self, "z"):
+            self.LatentTrustRegion()
 
     def add_costs(self):
         if self.options.joint_centering_cost > 0.0:
             self.JointCenteringCost()
         if self.options.correction_cost_weight > 0.0:
             self.CorrectionCost()
+        if self.options.latent_cost_weight > 0.0 and hasattr(self, "z"):
+            self.LatentCost()
+
+    def LatentCost(self):
+        '''A quadratic pull towards the centre of the latent prior.
+
+        Excluded from the reported objective by name, the way ../codebase excludes its
+        barrier terms, so the learned column of a cost table still measures the same
+        objective as the other formulations.'''
+        width = self.ik_solver.network_width
+        self.latent_cost = self.prog.AddQuadraticCost(
+            Q=self.options.latent_cost_weight * np.eye(width),
+            b=np.zeros(width), vars=self.z)
+        self.latent_cost.evaluator().set_description("LatentRegularizerCost")
+
+    def LatentTrustRegion(self):
+        '''`||z||^2 <= r^2`, imposed as an inequality rather than a per-component box.
+
+        The prior mass sits on a shell of radius sqrt(latent_dim), and a per-component box
+        of +-5 admits norms far outside it. An inequality is deliberate: its gradient,
+        `2 z`, does not vanish where the constraint is active, so it does not reproduce
+        the degenerate active set that a norm-residual equality would create.'''
+        radius = self.options.latent_trust_region
+        width = self.ik_solver.network_width
+        self.latent_trust_constraint = self.prog.AddQuadraticConstraint(
+            2.0 * np.eye(width), np.zeros(width), -np.inf, radius ** 2, self.z)
+        self.latent_trust_constraint.evaluator().set_description("LatentTrustRegion")
 
     def fk(self, q, matrix = False):
         frame, context = self.SetPositions(q)
@@ -527,21 +559,45 @@ class IKFlowProgram:
         where the same batch costs 84 ms vs 6.8 ms. See scripts/profiling/profile_flow.py.
         '''
         n = len(c_candidates)
-        dtype = self.torch_dtype
+        # Rank in float32. The pass needs neither precision nor gradients, and float64 is
+        # FLOP-bound past about batch 4: measured 83.7 ms against 8.8 ms at batch 256.
+        # (float16 is *slower* than float32 at this batch size and 2000x less accurate --
+        # see the ikflow-float16 measurements; do not reach for it here.)
+        dtype = torch.float32 if self.options.seed_use_float32 else self.torch_dtype
+        model_dtype = next(self.ik_solver.nn_model.parameters()).dtype
+        if model_dtype != dtype:
+            self.ik_solver.nn_model.to(dtype)
         pose7 = np.array([self.CToPose7(c) for c in c_candidates])
         c_t = torch.tensor(pose7, dtype=dtype, device=DEVICE)
         c_t = torch.cat([c_t, torch.zeros((n, 1), dtype=dtype, device=DEVICE)], dim=1)
         z_t = torch.tensor(np.asarray(z_candidates), dtype=dtype, device=DEVICE)
         with torch.no_grad():
             output, _ = self.ik_solver.nn_model(z_t, c=c_t, rev=True)
-        return output[:, :self.num_arm_dof].detach().cpu().numpy().astype(float)
+        result = output[:, :self.num_arm_dof].detach().cpu().numpy().astype(float)
+        if model_dtype != dtype:
+            self.ik_solver.nn_model.to(model_dtype)
+        return result
 
     def SeedCandidates(self, n):
-        '''Candidate (c, z) pairs to seed from. Subclasses whose task leaves part of the
-        target pose free should override this and sample that freedom too.'''
-        c = np.tile(np.asarray(self.prog.GetInitialGuess(self.c), dtype=float), (n, 1))
+        '''Candidate (task_vars, z) pairs to seed from. Subclasses whose task leaves part
+        of the target pose free should override this and sample that freedom too.
+
+        `task_vars` are whatever the program's first block of decision variables are --
+        the conditioning pose itself under `c_parameterization="free"`, and the grasp
+        parameters under `"task"`. `TaskVarsToC` maps a batch of them to conditioning
+        poses for the flow.'''
+        c = np.tile(np.asarray(self.prog.GetInitialGuess(self.task_vars), dtype=float), (n, 1))
         z = self.options.seed_latent_scale * np.random.randn(n, self.ik_solver.network_width)
         return c, z
+
+    @property
+    def task_vars(self):
+        '''The decision variables the conditioning pose is built from.'''
+        return self.c
+
+    def TaskVarsToC(self, task_vars):
+        '''Batch of task variables -> conditioning poses (xyz + rpy), as plain floats.'''
+        return np.asarray(task_vars, dtype=float)
 
     @staticmethod
     def ConstraintViolation(constraint, vars, q, pose):
@@ -560,7 +616,8 @@ class IKFlowProgram:
         if n <= 0:
             return None
 
-        c_candidates, z_candidates = self.SeedCandidates(n)
+        task_candidates, z_candidates = self.SeedCandidates(n)
+        c_candidates = self.TaskVarsToC(task_candidates)
         q_batch = self.BatchInference(c_candidates, z_candidates)
 
         qs, poses = [], []
@@ -735,7 +792,12 @@ class IKFlowProgram:
             solver_options.SetOption(IpoptSolver().solver_id(), "file_print_level", self.options.file_print_level)
             solver_options.SetOption(IpoptSolver().solver_id(), "print_user_options", "yes")
             solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_iter", self.options.acceptable_iter)
-            solver_options.SetOption(IpoptSolver().solver_id(), "max_wall_time", self.options.max_wall_time)            
+            solver_options.SetOption(IpoptSolver().solver_id(), "max_wall_time", self.options.max_wall_time)
+            if self.options.ipopt_mu_strategy is not None:
+                solver_options.SetOption(IpoptSolver().solver_id(), "mu_strategy", self.options.ipopt_mu_strategy)
+            if self.options.max_iter is not None:
+                solver_options.SetOption(IpoptSolver().solver_id(), "max_iter", int(self.options.max_iter))
+            
         if self.options.which_solver == 'snopt':
             solver = SnoptSolver()
             solver_options = SolverOptions()
@@ -745,6 +807,8 @@ class IKFlowProgram:
             solver_options.SetOption(SnoptSolver.id(), "Major optimality tolerance", self.options.acceptable_tol)
             solver_options.SetOption(SnoptSolver.id(), "Minor optimality tolerance", self.options.acceptable_tol)
             solver_options.SetOption(SnoptSolver.id(), "Major feasibility tolerance", self.options.acceptable_constr_viol_tol)
+            if self.options.max_iter is not None:
+                solver_options.SetOption(SnoptSolver.id(), "Major iterations limit", int(self.options.max_iter))
             if self.options.snopt_function_precision is not None:
                 # SNOPT otherwise assumes the constraints are accurate to ~1e-13 and
                 # probes derivatives at h=5.5e-7, which is pure noise for a float32 flow.
