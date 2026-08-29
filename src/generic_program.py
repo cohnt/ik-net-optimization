@@ -315,6 +315,66 @@ class IKFlowProgram:
         '''
         return getattr(self, "ee_frame", self.frame)
 
+    def InvertFlow(self, q_arm, c):
+        '''The latent that reproduces `q_arm` under conditioning pose `c`.
+
+        IKFlow is a normalizing flow, so this is the network run forwards (`rev=False`)
+        and is exact -- not an optimisation. It is what lets the learned formulation start
+        from the *same* configuration as the joint-space one, the way ../codebase seeds
+        its analytic formulation by recovering `psi` and `GC` from `q_initial`.
+        '''
+        dtype = self.torch_dtype
+        pose7 = self.CToPose7(np.asarray(c, dtype=float))
+        c_t = torch.tensor(np.concatenate([pose7, [0.0]])[None, :], dtype=dtype, device=DEVICE)
+        x = np.zeros((1, self.ik_solver.network_width))
+        x[0, :self.num_arm_dof] = np.asarray(q_arm, dtype=float)[:self.num_arm_dof]
+        x_t = torch.tensor(x, dtype=dtype, device=DEVICE)
+        with torch.no_grad():
+            z, _ = self.ik_solver.nn_model(x_t, c=c_t, rev=False)
+        return z.squeeze(0).detach().cpu().numpy().astype(float)
+
+    def SetStartFromQ(self, q_arm):
+        '''Start this program at the configuration `q_arm`, in its own variables.
+
+        Returns how far the start had to be clipped to sit inside the variable bounds; a
+        start outside the box is not the same start, and the amount matters when reading
+        a paired comparison.
+        '''
+        q_arm = np.asarray(q_arm, dtype=float)[:self.num_arm_dof]
+        self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
+        pose = self.FlowPoseInWorld()
+        c = np.concatenate([pose.translation(), pose.rotation().ToRollPitchYaw().vector()])
+        # Invert at the *unclipped* conditioning pose, then clip. The temptation is to do
+        # it the other way round so that q(start) is exactly q_arm, and that is wrong: a
+        # random collision-free configuration is not a grasp of this mug, so its
+        # conditioning pose sits outside the program's box, and asking the flow for the
+        # latent that produces q_arm under a *projected* pose returns |z| ~ 1e7 -- the
+        # flow correctly reporting that this configuration is astronomically unlikely
+        # there. Measured: |z| goes from 1.6 to 6.2e7 between the two orders. Inverting
+        # first keeps the latent inside the typical set and lets the box move only the
+        # conditioning pose, which is the quantity the box is actually about.
+        z = self.InvertFlow(q_arm, c)
+        clipped = self._SetClipped(self.c, c) + self._SetClipped(self.z, z)
+        self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
+        return clipped
+
+    def _SetClipped(self, variables, values):
+        '''Set an initial guess, clipped into the program's bounding box on it.'''
+        values = np.asarray(values, dtype=float)
+        lower = np.full(len(values), -np.inf)
+        upper = np.full(len(values), np.inf)
+        names = {v.get_id(): i for i, v in enumerate(variables)}
+        for binding in self.prog.bounding_box_constraints():
+            evaluator = binding.evaluator()
+            for row, var in enumerate(binding.variables()):
+                index = names.get(var.get_id())
+                if index is not None:
+                    lower[index] = max(lower[index], evaluator.lower_bound()[row])
+                    upper[index] = min(upper[index], evaluator.upper_bound()[row])
+        clipped = np.clip(values, lower, upper)
+        self.prog.SetInitialGuess(variables, clipped)
+        return float(np.linalg.norm(clipped - values))
+
     ## ------------------------- multi-start seeding ------------------------- ##
 
     @property

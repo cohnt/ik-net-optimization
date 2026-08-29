@@ -299,6 +299,11 @@ class PandaIKProgramNumerical(PandaIKProgram):
         q[:7] = rpy_vars[:7]
         return q
 
+    def SetStartFromQ(self, q_arm):
+        '''The joint-space arm's variables *are* the configuration, so the shared start
+        needs no conversion.'''
+        return self._SetClipped(self.q, np.asarray(q_arm, dtype=float)[:7])
+
     def BoundingBoxConstraint(self):
         self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
                     -10. * np.ones(7), 10. * np.ones(7), self.q
@@ -321,7 +326,7 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         else:
             self.q_nominal = q_nominal
         if gc is None:
-            opts = np.array([[1,1],[1,2],[2,1],[1,2]])
+            opts = np.array([[1,1],[1,2],[2,1],[2,2]])
             self.gc = opts[np.random.randint(len(opts))]
         else:
             self.gc = gc
@@ -334,6 +339,25 @@ class PandaIKProgramAnalytic(PandaIKProgram):
 
         self.add_constraints()
         self.add_costs()
+
+    def SetStartFromQ(self, q_arm):
+        '''Recover the analytic parameterisation of `q_arm` by inversion.
+
+        `psi` and the branch `GC` are read straight back out of the configuration, the way
+        ../codebase seeds its new formulation with `analytic_ik.psi(q_initial)` and
+        `.GC(q_initial)`. Choosing the branch from the seed rather than at random is also
+        the honest baseline: a random branch is feasible only some of the time, and
+        charging the analytic arm for that is not a statement about the formulation.
+        '''
+        q_arm = np.asarray(q_arm, dtype=float)[:7]
+        self.gc = self.analytic_ik.gc(q_arm)
+        self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
+        pose = self.FlowFrame().CalcPoseInWorld(self.plant_context)
+        xyz_rpy = np.concatenate([pose.translation(),
+                                  pose.rotation().ToRollPitchYaw().vector()])
+        clipped = self._SetClipped(self.xyz_rpy, xyz_rpy)
+        clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])
+        return clipped
 
     def add_constraints(self):
         if self.options.collision_avoidance:
@@ -416,6 +440,9 @@ class PandaMugProgramNumerical(PandaMugProgram):
         q[:7] = rpy_vars[:7]
         return q
 
+    def SetStartFromQ(self, q_arm):
+        return self._SetClipped(self.q, np.asarray(q_arm, dtype=float)[:7])
+
     def BoundingBoxConstraint(self):
         self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
                     -10. * np.ones(7), 10. * np.ones(7), self.q
@@ -437,7 +464,7 @@ class PandaMugProgramAnalytic(PandaIKProgramAnalytic):
         else:
             self.q_nominal = q_nominal
         if gc is None:
-            opts = np.array([[1,1],[1,2],[2,1],[1,2]])
+            opts = np.array([[1,1],[1,2],[2,1],[2,2]])
             self.gc = opts[np.random.randint(len(opts))]
         else:
             self.gc = gc
