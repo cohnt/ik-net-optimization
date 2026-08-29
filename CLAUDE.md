@@ -227,6 +227,51 @@ the start stands as it is and is reported rather than repaired.
 
 
 
+### The ablation ladder, re-run (2026-08-29, RTX 3080 Ti laptop, IPOPT, 20 s cap, compiled)
+
+Panda grasp, learned arm only, 15 targets x 2 guesses, paired start, `--compile`, one grid
+for every rung (`grid_hash 64f0c9cdf9be`), so the rungs are comparable cell by cell. Each
+rung adds one change to the one above it; `latent-free-c` is `latent` without the task
+parameterisation, the control that isolates it.
+
+| rung | success | iters | wall (s) | `\|z\|` at start | median start error |
+| --- | --- | --- | --- | --- | --- |
+| baseline (uncalibrated frame, no sharing) | 19/30 | 116 | 12.0 | 11.93 | 3.91 |
+| + conditioning-frame fix | 21/30 | 107 | 11.2 | 3.03 | 2.32 |
+| + shared flow evaluation | 20/30 | 107 | 10.1 | 3.03 | 2.32 |
+| + task parameterisation | 22/30 | 198 | 12.9 | 3.03 | 3.58 |
+| + latent trust region | **24/30** | 172 | 11.0 | 3.03 | 3.58 |
+| latent trust region *without* the task parameterisation | 15/30 | 160 | 13.9 | 3.03 | 2.32 |
+
+Exact McNemar on the shared cells, each change against the rung below it:
+
+| change | success | better / worse | p |
+| --- | --- | --- | --- |
+| conditioning frame | 21 vs 19 | 7 / 5 | 0.77 |
+| shared flow evaluation | 20 vs 21 | 1 / 2 | 1.0 |
+| task parameterisation | 22 vs 20 | 6 / 4 | 0.75 |
+| latent trust region, with the task parameterisation | 24 vs 22 | 7 / 5 | 0.77 |
+| latent trust region, on the free conditioning pose | 15 vs 20 | 3 / 8 | 0.23 |
+| the whole stack | 24 vs 19 | 8 / 3 | 0.23 |
+
+**Nothing here is significant.** The stack is worth +5 cells over the baseline and no single
+rung is distinguishable from the one below it, so the honest statement is that the task
+parameterisation and the latent trust region remain **unproven**, exactly as they were
+before -- the ladder did not rescue them, it measured them. Three things it does establish:
+
+- The old "12/30 -> 21/30" framing is gone. Under the repaired starts and the compiled
+  Jacobian the *baseline* reaches 19/30, so most of that apparent gain was the broken
+  latent start and the iteration budget, not the redesigns.
+- The one consistent direction in the table is **negative**: the latent trust region on the
+  free conditioning pose loses 8 cells and wins 3. It appears to be worth something only
+  alongside the task parameterisation, which is an interaction, not a main effect.
+- The task parameterisation nearly doubles the iteration count (198 against 107) for its two
+  cells, so it is buying success with work rather than with better conditioning.
+
+Detecting a 5-cell difference at 30 cells is hopeless; a grid several times larger is what
+these two design choices would need, and that is a cheaper experiment than it looks now that
+a rung costs about six minutes.
+
 ### Measured results (2026-08-28, RTX 3080 Ti laptop, IPOPT, 20 s cap)
 
 Produced with `src/benchmark.py`; raw records in `results/*/benchmark/*/summary.json`.
