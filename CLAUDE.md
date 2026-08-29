@@ -297,9 +297,10 @@ Against the analytic arm on the Panda, 28 vs 16 native (p = 0.0042) but 23 vs 21
 (p = 0.77). It also wins on cost wherever it wins on success. This is the draft's central
 claim, and it now holds under two different initialisation protocols rather than one.
 
-**On the grasp task it loses to both baselines,** and the iiwa is far worse than the Panda
-(12/30 and 7/30 against 29/30). Panda grasp against joint space: 24 vs 30 paired
-(p = 0.031), 25 vs 30 native (p = 0.063).
+**On the grasp task it loses to both baselines at this cap** -- Panda 24 vs 30 paired
+(p = 0.031) and 25 vs 30 native (p = 0.063), iiwa 12/30 and 7/30 against 29/30 -- but read
+the next section before concluding anything from that: on the Panda the entire deficit is
+the 20 s cap, and it disappears at 45 s.
 
 **Neither protocol is uniformly kind**, which is the reason to report both:
 
@@ -319,6 +320,35 @@ handicaps the **analytic arm on the grasp task**, where the shared `q_init` ofte
 the half of the chart it does not cover. Both effects are protocol artefacts rather than
 statements about the formulations, and they point in opposite directions, so the two
 qualitative conclusions above are robust to the choice.
+
+### What the wall-clock cap was actually measuring (20 s against 45 s)
+
+The same eight experiments at a 45 s cap. **Every baseline is bit-identical at both caps in
+all four experiments**, and so is every arm on the pose task -- same successes, same
+iteration counts, same solver exit strings. Only the learned arm on the grasp task moves:
+
+| experiment | start | 20 s | 45 s | gained | p |
+| --- | --- | --- | --- | --- | --- |
+| Panda grasp | native | 25/30 | **30/30** | 5 | 0.063 |
+| Panda grasp | paired | 24/30 | 27/30 | 3 | 0.25 |
+| iiwa grasp | native | 7/30 | 14/30 | 7 | 0.016 |
+| iiwa grasp | paired | 12/30 | 16/30 | 4 | 0.125 |
+| everything else | either | -- | identical | 0 | 1.0 |
+
+So **the Panda grasp result at 20 s was measuring the cap, not the formulation**. At 45 s
+with its native start the learned arm solves 30/30, the same as joint space and the same as
+the analytic arm; the five cells it lost at 20 s all exit "Maximum wallclock time exceeded"
+there and "Solved To Acceptable Level" here. The iiwa grasp deficit is real and survives the
+cap (14/30 and 16/30 against 29/30), as does the pose result in the learned arm's favour.
+
+The honest way to state the Panda grasp row is therefore in iterations, which are
+hardware-independent, rather than in seconds. On the 45 s native run the learned arm reaches
+30/30 in a mean of **147 iterations**, against 166 for joint space and 247 for the analytic
+arm -- it needs *fewer* solver iterations than either baseline. What it does not have is
+their per-iteration cost: each of its iterations carries a network Jacobian at ~14 ms
+compiled, against ~2 ms of Drake kinematics, and the profiling says that gap is CPU dispatch
+rather than arithmetic. That is an implementation property; the iteration count is the
+formulation property, and it is the one to report.
 
 ### Measured results (2026-08-28, RTX 3080 Ti laptop, IPOPT, 20 s cap)
 
