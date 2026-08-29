@@ -158,6 +158,16 @@ The older head-to-head scripts remain for comparability, but new measurements sh
   then clip `c` into its box. Clipping first and inverting at the projected pose returns
   `|z| ~ 1e7`, because a random configuration is not a grasp of this mug and the flow is
   right to say so.
+- **Both start protocols are measured** (`--start`). `paired` puts every arm at the same
+  `q_init` in its own variables. `native` gives each formulation the initialisation it
+  would have outside a comparison: the learned arm conditions on the pose the task hands it
+  and draws its latent from the prior the flow was trained against, the analytic arm takes
+  the target pose and draws its redundancy parameter and branch, and the joint-space arm
+  takes a random configuration -- which is what `q_init` already is, so that arm's two
+  protocols coincide and any difference between the tables is attributable to the other
+  formulations. Neither protocol searches: nothing is scored against the problem's
+  constraints or objective before the solve, which is the line the removed 256-sample
+  seeding crossed.
 - **The paired start is measured, not assumed.** Every cell records `clip_distance`, the
   arm's actual `start_q_error = |q(start) - q_init|` and (for learned arms) the norm of the
   latent it started from, because only the joint-space arm can hold the shared start
@@ -198,13 +208,17 @@ actually gets is `q_init` *projected onto its own feasible set*. Measured:
 | learned, free `c` | 1.2 - 3.3 rad | `c` is clipped into a 0.25 m box about the mug |
 | learned, task-parameterised | ~3 rad, occasionally 1e16 | `c` is projected onto the mug axis, and `q_init` is not a grasp |
 
-Two of these deserve care when reading a grasp table. The **analytic chart misses about 30%
-of random collision-free configurations**: over 40 samples it reproduced 28 exactly and
-missed 12, every one of them with the elbow nearly straight (`q4` between -0.09 and -0.44
-against a limit of -0.07). Neither a different `GC` branch nor the commented-out elbow case
-rescues a single one -- the best of the four branches reproduces exactly the same 28 -- so
-this is coverage, not branch selection, and `analytic_ik.gc(q)` stays as the way `GC` is
-recovered. The **task-parameterised learned arm** keeps the latent from inverting at
+Two of these deserve care when reading a grasp table. The **analytic chart covers about 70%
+of random collision-free configurations, by design**: the closed-form map has eight
+branches and this implementation charts four, the other four lying very close to the joint
+limits -- an accepted limitation carried over from the Panda analytic IK paper, not a gap
+in the derivation. Measured, over 40 samples it reproduced 28 exactly and missed 12, every
+one of them with the elbow nearly straight (`q4` between -0.09 and -0.44 against a limit of
+-0.07), and no `GC` branch and no variant of the commented-out elbow case rescues any of
+them: `analytic_ik.gc(q)` already agrees with the best of the four available branches on 38
+of 40. So do not try to "repair" it; the consequence to carry is only that in the uncharted
+region the analytic arm cannot be given the shared start, which `start_q_error` records
+cell by cell. The **task-parameterised learned arm** keeps the latent from inverting at
 `q_init`'s own conditioning pose and then moves `c` onto the mug axis, and holding `z` fixed
 while `c` moves that far can put the flow's output at 1e16 (GLOW's clamped exponentials
 amplify by up to `exp(2.5)` per coupling block, twelve blocks deep). Re-inverting at the
@@ -406,11 +420,11 @@ The iiwa flow is a 4-8x worse chart than the Panda's (16.6 mm / 6.4 deg median a
 13. ~~`PandaMugProgramAnalytic` never moves `self.frame` off `panda_hand`~~ **done**, and it
     was worse than a trap: it made the analytic arm start 3-5.6 rad from the shared
     `q_init`. Its pose offset is now measured from the scene rather than fitted, too.
-16. The analytic chart cannot represent ~30% of random collision-free configurations (all
-    of them near-straight-elbow), so in those cells it is handed a start it cannot hold.
-    That is measured per cell as `start_q_error` but not repaired; whether the missing
-    coverage is a derivation gap or a genuine property of this parameterisation is open,
-    and it bounds how paired a grasp comparison can be.
+16. ~~The analytic chart cannot represent ~30% of configurations~~ **not a defect**: it
+    charts four of the eight branches deliberately, the others being very close to the
+    joint limits (see the Panda analytic IK paper). The consequence stands and is measured
+    per cell as `start_q_error` -- in the uncharted region the analytic arm cannot be given
+    the shared start -- but nothing here is to be repaired.
 
 **Speculative, in the project's spirit**
 

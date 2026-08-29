@@ -84,6 +84,13 @@ def parse_args():
     p.add_argument("--guesses", type=int, default=3)
     p.add_argument("--wall-time", type=float, default=20.0)
     p.add_argument("--solver", choices=["ipopt", "snopt"], default="ipopt")
+    p.add_argument("--start", choices=["paired", "native"], default="paired",
+                   help="paired: every arm starts at the same q_init, in its own variables "
+                        "(SetStartFromQ). native: every arm uses its own initialisation -- "
+                        "the flow's latent drawn from its prior, the analytic map's "
+                        "redundancy parameter and branch drawn from theirs, the joint-space "
+                        "arm from a random configuration. Sampled, never searched: no "
+                        "candidate is scored against the problem in either mode.")
     p.add_argument("--arms", default="learned,numerical,analytic")
     p.add_argument("--config", default="baseline")
     p.add_argument("--seed", type=int, default=0)
@@ -127,7 +134,7 @@ def apply_overrides(options, overrides):
 def main():
     args = parse_args()
     tag = args.tag or "_".join(
-        [args.task, args.config, args.solver]
+        [args.task, args.config, args.solver, args.start]
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
         + (["compiled"] if args.compile else []))
     log_dir = os.path.join(RepoDir(), "results/panda/benchmark", tag)
@@ -242,7 +249,7 @@ def main():
     ## -------------------------------- the arms ----------------------------- ##
     numerical_options = replace(base_options, joint_centering_cost=1e0)
 
-    def build(cls, options, target, q_init, **extra):
+    def build(cls, options, target, q_init, cell, **extra):
         if args.task == "mug":
             diagram_with_mug, mug = target
             with HiddenPrints():
@@ -253,7 +260,13 @@ def main():
                 program = cls(diagram, options=options, model=ik_solver)
                 program.create_prog(target, **extra)
         with HiddenPrints():
-            program.clip_distance = program.SetStartFromQ(q_init)
+            if args.start == "paired":
+                program.clip_distance = program.SetStartFromQ(q_init)
+            else:
+                # A generator per cell, so a native start varies from guess to guess and
+                # from target to target while staying reproducible from --seed.
+                program.clip_distance = program.SetNativeStart(
+                    q_init, np.random.default_rng([args.seed, *cell]))
         return program
 
     mug = args.task == "mug"
@@ -267,17 +280,17 @@ def main():
     all_arms = {
         "learned": bm.Arm(
             "learned",
-            lambda t, g: build(learned_cls, base_options, t, g),
+            lambda t, g, c: build(learned_cls, base_options, t, g, c),
             base_options.joint_centering_cost),
         "numerical": bm.Arm(
             "numerical",
-            lambda t, g: build(PandaMugProgramNumerical if mug else PandaIKProgramNumerical,
-                               numerical_options, t, g),
+            lambda t, g, c: build(PandaMugProgramNumerical if mug else PandaIKProgramNumerical,
+                               numerical_options, t, g, c),
             numerical_options.joint_centering_cost),
         "analytic": bm.Arm(
             "analytic",
-            lambda t, g: build(PandaMugProgramAnalytic if mug else PandaIKProgramAnalytic,
-                               base_options, t, g, pose_offset=analytic_offset),
+            lambda t, g, c: build(PandaMugProgramAnalytic if mug else PandaIKProgramAnalytic,
+                               base_options, t, g, c, pose_offset=analytic_offset),
             base_options.joint_centering_cost),
     }
     arms = [all_arms[name] for name in args.arms.split(",")]
@@ -290,7 +303,7 @@ def main():
         metadata=dict(task=args.task, solver=args.solver, config=args.config,
                       wall_time=args.wall_time, seed=args.seed, grid_hash=grid_hash,
                       compiled=args.compile, compile_seconds=compile_seconds,
-                      overrides=overrides, start="paired",
+                      overrides=overrides, start=args.start,
                       n_targets=args.targets, n_guesses=args.guesses))
     bar.close()
 
