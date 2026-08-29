@@ -7,6 +7,7 @@ from src.generic_program import *
 import numpy as np
 from pydrake.all import (
     MathematicalProgram,
+    RollPitchYaw,
     AutoDiffXd,
     Quaternion,
     RotationMatrix,
@@ -45,6 +46,10 @@ class PandaIKProgram(IKFlowProgram):
         self.options = options
         self.ConfigureNetworkDtype()
         self.constraints = []
+        # Size of the first block of decision variables, from which the conditioning pose
+        # is built. Six either way: a free conditioning pose (xyz + rpy), or the grasp
+        # pose in the mug frame under c_parameterization="task".
+        self.num_task_vars = 6
 
 
 
@@ -114,17 +119,32 @@ class PandaIKProgram(IKFlowProgram):
 
 
 
+    def TaskVarsToPose7(self, task_vars, t):
+        '''Task variables -> the (xyz, wxyz) the flow is conditioned on.
+
+        The default parameterisation is the identity in all but coordinates: the task
+        variables *are* the conditioning pose, written as xyz + rpy. Subclasses that fold
+        the task into the variables override this, and because the whole expression is
+        evaluated on Drake's templated types the AutoDiffXd derivatives flow through it
+        without any extra chain rule.
+        '''
+        xyz = task_vars[:3]
+        quaternion = RotationMatrix_[t](RollPitchYaw_[t](task_vars[3:6])).ToQuaternion().wxyz()
+        return xyz, quaternion
+
     def VarsToQ(self, rpy_vars, add_correction = True):
 
-
         ad = isinstance(rpy_vars[0], AutoDiffXd)
-        vars = np.zeros(21, dtype=AutoDiffXd if ad else np.float64)
         t = AutoDiffXd if ad else float
+        width = self.ik_solver.network_width
+        n = self.num_task_vars
 
-        vars[:3] = rpy_vars[:3]
-        vars[3:7] = RotationMatrix_[t](RollPitchYaw_[t](rpy_vars[3:6])).ToQuaternion().wxyz()
-        vars[7:14] = rpy_vars[6:13]
-        vars[14:21] = rpy_vars[13:20]
+        vars = np.zeros(7 + width + 7, dtype=AutoDiffXd if ad else np.float64)
+        xyz, quaternion = self.TaskVarsToPose7(rpy_vars[:n], t)
+        vars[:3] = xyz
+        vars[3:7] = quaternion
+        vars[7:7 + width] = rpy_vars[n:n + width]
+        vars[7 + width:] = rpy_vars[n + width:]
 
 
         if not ad:
@@ -264,11 +284,19 @@ class PandaMugProgram(PandaIKProgram):
             self.c
         )
         self.c_bounding_box_constraint.evaluator().set_description("CBoundingBoxConstraint")
+        bound = self.options.correction_bound
         self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -0.1 * np.ones(7), 0.1 * np.ones(7), self.correction
+            -bound * np.ones(7), bound * np.ones(7), self.correction
         )
         self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
 
+
+
+class PandaMugProgramTaskParam(GraspTaskParamMixin, PandaMugProgram):
+    '''The Panda grasp with the task folded into the decision variables.
+
+    All of the work is in `GraspTaskParamMixin`; it is robot-agnostic, so the iiwa gets the
+    same formulation from the same code.'''
 
 
 class PandaIKProgramNumerical(PandaIKProgram):
