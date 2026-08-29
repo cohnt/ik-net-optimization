@@ -350,6 +350,44 @@ compiled, against ~2 ms of Drake kinematics, and the profiling says that gap is 
 rather than arithmetic. That is an implementation property; the iteration count is the
 formulation property, and it is the one to report.
 
+### The two knob sweeps: both are inert (2026-08-29, 20 s cap, paired, learned only)
+
+One factor at a time on the grasp task, 15 x 2 on the same grid as the finals, whose learned
+column supplies the default point rather than re-running it.
+
+| `correction_bound` | 0.1 | 0.2 | 0.4 | 0.8 |
+| --- | --- | --- | --- | --- |
+| iiwa success | 12/30 | 10/30 | 9/30 | 11/30 |
+| iiwa median `\|q_c\|` | 0.054 | 0.080 | 0.271 | 0.484 |
+| Panda success | 24/30 | 19/30 | 23/30 | 20/30 |
+
+| `latent_trust_region` | 3.0 | 4.0 / 4.3 | 6.0 | off |
+| --- | --- | --- | --- | --- |
+| iiwa success | 9/30 | 12/30 | 13/30 | 13/30 |
+| Panda success | 24/30 | 24/30 | 22/30 | 20/30 |
+
+Nothing in either table is significant against its default (smallest p = 0.27), and neither
+has a monotone trend. Two specific things they settle:
+
+- **The correction box is not binding, on either robot.** The fraction of solutions sitting
+  on it is **0.00 at every point of both sweeps**, and at the default the median `|q_c|` is
+  0.054 against a bound of 0.1. The standing hypothesis -- that the iiwa's +-0.1 rad box was
+  sized for a chart 3.8 mm off and must be strangling a chart 16.6 mm off -- is **refuted**.
+  The solver takes more of the box when it is given more (0.054 -> 0.484 as the bound goes
+  0.1 -> 0.8) and gets nothing for it, which says the extra freedom is used but useless.
+- **The latent trust region does nothing that its absence does not.** Combined with the
+  ladder, where it was worth +2 cells with the task parameterisation and -5 without it,
+  there is now no measurement anywhere in this repo that supports it. The one honest
+  observation is that removing it makes solves *pathological* rather than merely worse: the
+  Panda `off` run contains a cell that ran 6106 s before the hard-time watchdog stopped it,
+  against a 20 s cap.
+
+So the iiwa's grasp deficit is not the correction box and not the latent bound. What remains
+of the original suspicion is the chart itself (16.6 mm / 6.4 deg median against the Panda's
+3.8 mm / 0.71 deg), which no knob in this program can repair -- which makes asking Julia
+about the provenance of `iiwa14__lemon-haze-7__global_step_4.25M.pkl` the next thing worth
+doing, and a cheap one.
+
 ### Measured results (2026-08-28, RTX 3080 Ti laptop, IPOPT, 20 s cap)
 
 Produced with `src/benchmark.py`; raw records in `results/*/benchmark/*/summary.json`.
@@ -509,13 +547,15 @@ collision. So target the collision constraint and the iteration budget, not the 
    `VarsToQ`, one graph per process. Note it is not quite "pure throughput, no protocol
    question" as this list used to claim -- only the learned arm evaluates a network, so
    inside a fixed cap it moves that arm's success rate and nothing else's.
-5. `correction_bound` (0.1) and `correction_cost_weight` (0), neither ever examined. The
+5. `correction_bound` swept (see 9; inert). `correction_cost_weight` (0) still unexamined. The
    draft only says `q_c ~ 0`. Widening the bound is a *formulation* change, not tuning: at
    the limit the correction can represent any configuration and the learned arm becomes a
    reparameterised joint-space arm, so a success gain has to be read against how much of
    the box the solutions actually use (`median_correction_inf`, `correction_binding`).
-6. `latent_trust_region` radius: 4.0 was one guess for a 7-dimensional latent. Sweep it,
-   and compare against the soft form (`latent_cost_weight`).
+6. ~~`latent_trust_region` radius~~ **swept, inert** (3.0 / 4.0 / 6.0 / off: 24, 24, 22, 20
+   on the Panda; 9, 12, 13, 13 on the iiwa). No measurement in this repo supports it now.
+   The soft form (`latent_cost_weight`) is still unmeasured, but there is little reason to
+   expect more of it than of the hard form.
 7. Report success against the wall-clock cap as a curve rather than one number, plus
    iteration counts, which are hardware-independent. Successes take 5.8 s median of a 20 s
    cap, so the single number is mostly describing the tail.
@@ -528,8 +568,9 @@ collision. So target the collision constraint and the iteration budget, not the 
 The iiwa flow is a 4-8x worse chart than the Panda's (16.6 mm / 6.4 deg median against
 3.8 mm / 0.71 deg). Optimisation cannot repair that, so establish it before tuning.
 
-9. Sweep `correction_bound` upward. It is +-0.1 rad, sized for a chart 3.8 mm off, and is
-   almost certainly binding at 16.6 mm.
+9. ~~Sweep `correction_bound` upward~~ **done, and the premise was wrong**: the box is not
+   binding on either robot (0.00 of solutions sit on it; median `|q_c|` is 0.054 against a
+   bound of 0.1), and widening it to 0.8 changes nothing.
 10. Ask Julia about `iiwa14__lemon-haze-7__global_step_4.25M.pkl`. It is a local checkpoint
     of unknown provenance against the Panda's published weights; if it is undertrained then
     the iiwa grasp row is a statement about the checkpoint, not about the method. Cheap and
