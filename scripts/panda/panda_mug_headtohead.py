@@ -48,7 +48,7 @@ mug_meshcat = StartMeshcat()
 
 yaml_file = os.path.join(RepoDir(), "models/panda/panda_finray_collision.yaml")
 base_diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
-program = PandaMugProgram(base_diagram, options=replace(base_options, num_seed_samples=0))
+program = PandaMugProgram(base_diagram, options=base_options)
 program.create_prog()
 ik_solver = program.ik_solver
 
@@ -68,7 +68,7 @@ os.makedirs(log_dir, exist_ok=True)
 
 # The learned formulation gets every improvement; the other two are unchanged.
 methods = {
-    "learned  ": (PandaMugProgram, replace(base_options, use_float64=True, num_seed_samples=256), {}),
+    "learned  ": (PandaMugProgram, replace(base_options, use_float64=True), {}),
     "numerical": (PandaMugProgramNumerical, replace(base_options, joint_centering_cost=1e0), {}),
     "analytic ": (PandaMugProgramAnalytic, base_options, dict(pose_offset=analytic_offset)),
 }

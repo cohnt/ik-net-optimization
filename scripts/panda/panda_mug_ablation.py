@@ -48,10 +48,9 @@ base_options = ProgramOptions(
 
 # Cumulative: each row adds one change to the row above it.
 configurations = [
-    ("original            ", dict(use_float64=False, num_seed_samples=0,   ik_constraint_tol=(1e-6, 0.01))),
-    ("+ float64           ", dict(use_float64=True,  num_seed_samples=0,   ik_constraint_tol=(1e-6, 0.01))),
-    ("+ tolerance 1e-4    ", dict(use_float64=True,  num_seed_samples=0,   ik_constraint_tol=(1e-4, 0.01))),
-    ("+ 256-sample seeding", dict(use_float64=True,  num_seed_samples=256, ik_constraint_tol=(1e-4, 0.01))),
+    ("original            ", dict(use_float64=False, ik_constraint_tol=(1e-6, 0.01))),
+    ("+ float64           ", dict(use_float64=True,  ik_constraint_tol=(1e-6, 0.01))),
+    ("+ tolerance 1e-4    ", dict(use_float64=True,  ik_constraint_tol=(1e-4, 0.01))),
 ]
 if only_config is not None:
     configurations = [configurations[only_config]]
@@ -63,7 +62,7 @@ mug_meshcat = StartMeshcat()
 
 yaml_file = os.path.join(RepoDir(), "models/panda/panda_finray_collision.yaml")
 base_diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
-program = PandaMugProgram(base_diagram, options=replace(base_options, num_seed_samples=0))
+program = PandaMugProgram(base_diagram, options=base_options)
 program.create_prog()
 ik_solver = program.ik_solver
 

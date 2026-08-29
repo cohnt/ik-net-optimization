@@ -42,18 +42,6 @@ class ProgramOptions:
     # which is what makes SNOPT's derivative check fail and starves the line search.
     use_float64: bool = field(default=True, metadata={"help": "Evaluate the flow in float64 so the map is smooth at solver step sizes"})
 
-    ## Multi-start seeding -- OFF for any reported comparison ##
-    # Kept only so the effect of a searched start can itself be measured, and so the
-    # pre-overhaul runs stay reproducible.
-    # Defaults to 0, and any measurement that is going to be reported must leave it there.
-    # Drawing candidates, scoring them against the problem's own constraints and keeping
-    # the best is not initialisation -- it is solving part of the problem outside the
-    # solver, and only the learned formulation can afford to do it, so it flatters that
-    # column. Every formulation must start from the same configuration; see SetStartFromQ.
-    num_seed_samples: int = field(default=0, metadata={"help": "Candidate (c, z) pairs drawn to pick an initial guess. Must be 0 for any reported comparison"})
-    seed_refine_top_k: int = field(default=8, metadata={"help": "Candidates re-scored against every constraint (incl. collision)"})
-    seed_latent_scale: float = field(default=1.0, metadata={"help": "Std dev of the sampled latents"})
-    seed_use_float32: bool = field(default=True, metadata={"help": "Rank seed candidates in float32; the pass needs neither precision nor gradients"})
     c_position_slack: float = field(default=0.25, metadata={"help": "Half-width of the box on the conditioning position, about the target"})
 
 
@@ -216,35 +204,12 @@ class GraspTaskParamMixin:
         X_MG = self.target_mug.middle.inverse() @ X_W_grasp
         return np.concatenate([X_MG.translation(), X_MG.rotation().ToRollPitchYaw().vector()])
 
-    def TaskVarsToC(self, task_vars):
-        task_vars = np.asarray(task_vars, dtype=float)
-        out = np.empty((len(task_vars), 6))
-        for i, p in enumerate(task_vars):
-            X_W_ee = (self.target_mug.middle
-                      @ RigidTransform(RollPitchYaw(p[3:6]), p[:3])
-                      @ self.X_grasp_ee)
-            out[i, :3] = X_W_ee.translation()
-            out[i, 3:] = X_W_ee.rotation().ToRollPitchYaw().vector()
-        return out
-
-    def SeedCandidates(self, n):
-        '''Every candidate is a valid grasp by construction, so only the height along the
-        axis, the approach orientation and the latent need sampling.'''
-        params = np.zeros((n, 6))
-        params[:, 2] = np.random.uniform(-self.MugHeight(), self.MugHeight(), n)
-        quats = np.random.randn(n, 4)
-        quats /= np.linalg.norm(quats, axis=1, keepdims=True)
-        for i in range(n):
-            params[i, 3:] = RotationMatrix(Quaternion(quats[i])).ToRollPitchYaw().vector()
-        z = self.options.seed_latent_scale * np.random.randn(n, self.ik_solver.network_width)
-        return params, z
-
     def create_prog(self, *args, **kwargs):
         super().create_prog(*args, **kwargs)
         # The inherited guess is a conditioning pose; here the variables are grasp
-        # parameters, and the centre of the mug's axis is the natural default.
-        if self.options.num_seed_samples <= 0:
-            self.prog.SetInitialGuess(self.c, np.zeros(6))
+        # parameters, and the centre of the mug's axis is the natural default. Callers
+        # that want a specific start use SetStartFromQ.
+        self.prog.SetInitialGuess(self.c, np.zeros(6))
 
     def SetStartFromQ(self, q_arm):
         # Same ordering point as the free-c version: the latent is taken at the
@@ -555,98 +520,6 @@ class IKFlowProgram:
     def CToPose7(c):
         '''Conditioning variable (xyz + rpy) -> the xyz + wxyz the flow is conditioned on.'''
         return np.concatenate([c[:3], RotationMatrix(RollPitchYaw(c[3:6])).ToQuaternion().wxyz()])
-
-    def BatchInference(self, c_candidates, z_candidates):
-        '''Evaluate the flow on a whole batch of (c, z) pairs at once.
-
-        Batching is nearly free in float32 (batch 256 costs 8.8 ms vs 5.9 ms for batch 1,
-        because the evaluation is CPU-dispatch bound, not FLOP bound) but NOT in float64,
-        where the same batch costs 84 ms vs 6.8 ms. See scripts/profiling/profile_flow.py.
-        '''
-        n = len(c_candidates)
-        # Rank in float32. The pass needs neither precision nor gradients, and float64 is
-        # FLOP-bound past about batch 4: measured 83.7 ms against 8.8 ms at batch 256.
-        # (float16 is *slower* than float32 at this batch size and 2000x less accurate --
-        # see the ikflow-float16 measurements; do not reach for it here.)
-        dtype = torch.float32 if self.options.seed_use_float32 else self.torch_dtype
-        model_dtype = next(self.ik_solver.nn_model.parameters()).dtype
-        if model_dtype != dtype:
-            self.ik_solver.nn_model.to(dtype)
-        pose7 = np.array([self.CToPose7(c) for c in c_candidates])
-        c_t = torch.tensor(pose7, dtype=dtype, device=DEVICE)
-        c_t = torch.cat([c_t, torch.zeros((n, 1), dtype=dtype, device=DEVICE)], dim=1)
-        z_t = torch.tensor(np.asarray(z_candidates), dtype=dtype, device=DEVICE)
-        with torch.no_grad():
-            output, _ = self.ik_solver.nn_model(z_t, c=c_t, rev=True)
-        result = output[:, :self.num_arm_dof].detach().cpu().numpy().astype(float)
-        if model_dtype != dtype:
-            self.ik_solver.nn_model.to(model_dtype)
-        return result
-
-    def SeedCandidates(self, n):
-        '''Candidate (task_vars, z) pairs to seed from. Subclasses whose task leaves part
-        of the target pose free should override this and sample that freedom too.
-
-        `task_vars` are whatever the program's first block of decision variables are --
-        the conditioning pose itself under `c_parameterization="free"`, and the grasp
-        parameters under `"task"`. `TaskVarsToC` maps a batch of them to conditioning
-        poses for the flow.'''
-        c = np.tile(np.asarray(self.prog.GetInitialGuess(self.task_vars), dtype=float), (n, 1))
-        z = self.options.seed_latent_scale * np.random.randn(n, self.ik_solver.network_width)
-        return c, z
-
-    @property
-    def task_vars(self):
-        '''The decision variables the conditioning pose is built from.'''
-        return self.c
-
-    def TaskVarsToC(self, task_vars):
-        '''Batch of task variables -> conditioning poses (xyz + rpy), as plain floats.'''
-        return np.asarray(task_vars, dtype=float)
-
-    @staticmethod
-    def ConstraintViolation(constraint, vars, q, pose):
-        value = np.asarray(constraint.eval_func(vars=vars, q=q, pose=pose), dtype=float)
-        return float(np.sum(np.maximum(0.0, constraint.lb - value) + np.maximum(0.0, value - constraint.ub)))
-
-    def SeedInitialGuess(self):
-        '''Pick an initial guess by drawing candidates from the flow and keeping the most
-        feasible one, instead of starting from a single arbitrary latent draw.
-
-        Scoring is two-stage: every candidate is ranked on the IK constraint (forward
-        kinematics only), then the best few are re-scored against every constraint,
-        because the collision query is the expensive part.
-        '''
-        n = self.options.num_seed_samples
-        if n <= 0:
-            return None
-
-        task_candidates, z_candidates = self.SeedCandidates(n)
-        c_candidates = self.TaskVarsToC(task_candidates)
-        q_batch = self.BatchInference(c_candidates, z_candidates)
-
-        qs, poses = [], []
-        ik_violation = np.empty(n)
-        for i in range(n):
-            q = self.PadQ(q_batch[i])
-            pose = self.fk(q)
-            qs.append(q)
-            poses.append(pose)
-            ik_violation[i] = self.ConstraintViolation(self.ik_constraint, None, q, pose)
-
-        top_k = np.argsort(ik_violation)[:max(1, self.options.seed_refine_top_k)]
-
-        best_index, best_violation = int(top_k[0]), np.inf
-        for i in top_k:
-            vars_i = np.concatenate([task_candidates[i], z_candidates[i], np.zeros(self.num_arm_dof)])
-            violation = sum(self.ConstraintViolation(c, vars_i, qs[i], poses[i]) for c in self.constraints)
-            if violation < best_violation:
-                best_violation, best_index = violation, int(i)
-
-        self.prog.SetInitialGuess(self.task_vars, task_candidates[best_index])
-        self.prog.SetInitialGuess(self.z, z_candidates[best_index])
-        self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
-        return best_violation
 
     ## These are Robot Specific need to be implemented in each file ##
     def ik_inference(self, vars):
