@@ -216,7 +216,15 @@ class GraspTaskParamMixin:
         # projected onto the manifold the box describes.
         q_arm = np.asarray(q_arm, dtype=float)[:self.num_arm_dof]
         self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
-        X_W_ee = self.FlowFrame().CalcPoseInWorld(self.plant_context)
+        # FlowPoseInWorld, not FlowFrame().CalcPoseInWorld: the latter drops X_ee_flow, the
+        # 27 mm / 120 degree offset between the scene's panda_hand and the frame the network
+        # was trained on. Inverting at the uncalibrated frame returns |z| between 40 and
+        # 5.7e7 (measured over six random configurations) against 2.8-4.1 here, i.e. the
+        # network correctly reporting that the configuration is impossible for that pose --
+        # and the start was then clipped from |z| ~ 1e5 into the +-5 box, so the arm began
+        # at an arbitrary latent. Identity offset when calibrate_flow_frame is off, so the
+        # ladder's baseline rung still measures the uncalibrated frame on purpose.
+        X_W_ee = self.FlowPoseInWorld()
         c = np.concatenate([X_W_ee.translation(), X_W_ee.rotation().ToRollPitchYaw().vector()])
         z = self.InvertFlow(q_arm, c)
         clipped = self._SetClipped(self.c, self._GraspParamsFromQ(q_arm))
