@@ -268,6 +268,10 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     """
     os.makedirs(log_dir, exist_ok=True)
     records = {arm.name: [] for arm in arms}
+    # A dedicated file rather than stderr: program construction runs under HiddenPrints,
+    # which redirects fd 2 to /dev/null, and a dump that lands in that window is simply
+    # lost -- which is what happened to the one stall this was meant to catch.
+    stalls = open(os.path.join(log_dir, "stalls.txt"), "a") if cell_timeout else None
     n_targets, n_guesses = len(targets), len(guesses)
 
     for ti in range(n_targets):
@@ -282,7 +286,8 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                 # construction, verification, a solve that overruns even the hard cap --
                 # dump every thread's stack to the log rather than leaving a silent stall.
                 if cell_timeout:
-                    faulthandler.dump_traceback_later(cell_timeout, repeat=False)
+                    faulthandler.dump_traceback_later(cell_timeout, repeat=True,
+                                                      file=stalls)
                 try:
                     program = arm.make_program(targets[ti], guesses[gi], (ti, gi))
                     record["setup_time"] = time.time() - t0
@@ -322,6 +327,8 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
         _write_summary(records, arms, n_targets, n_guesses, out_path, metadata,
                        partial=(ti < n_targets - 1))
 
+    if stalls is not None:
+        stalls.close()
     return records
 
 
