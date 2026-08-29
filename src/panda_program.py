@@ -170,10 +170,14 @@ class PandaMugProgram(PandaIKProgram):
         self.frame = self.plant.GetFrameByName("between_fingers")
         self.autodiff_frame = self.autodiff_plant.GetFrameByName("between_fingers")
 
+        # Calibrate the conditioning frame before anything derived from it. `X_grasp_ee`
+        # then maps the grasp frame to the frame the *flow* speaks in, not to whichever
+        # body the scene happens to call "panda_hand".
+        self.CalibrateFlowFrame()
         self.plant.SetPositions(self.plant_context, np.zeros(self.num_pos))
-        X_W_ee = self.ee_frame.CalcPoseInWorld(self.plant_context)
+        X_W_flow = self.FlowPoseInWorld()
         X_W_grasp = self.frame.CalcPoseInWorld(self.plant_context)
-        self.X_grasp_ee = X_W_grasp.inverse() @ X_W_ee
+        self.X_grasp_ee = X_W_grasp.inverse() @ X_W_flow
 
 
     def SeedCandidates(self, n):
@@ -212,7 +216,13 @@ class PandaMugProgram(PandaIKProgram):
         else:
             self.q_nominal = q_nominal
 
-        self.prog.SetInitialGuess(self.c, [*target_mug.middle.translation(), 1, 0, 0])
+        # `c` is the pose of the frame the flow was trained on, not of the grasp point, so
+        # the mug centre is not a valid guess for it -- the two differ by X_grasp_ee, 0.1 m
+        # for this gripper. Seeding or SetStartFromQ overwrites this, but a wrong default
+        # is a trap for any caller that runs neither.
+        X_W_ee = target_mug.middle @ self.X_grasp_ee
+        self.prog.SetInitialGuess(self.c, np.concatenate(
+            [X_W_ee.translation(), X_W_ee.rotation().ToRollPitchYaw().vector()]))
         self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
         self.jacobian_gen = torch.func.jacrev(self.ik_inference_with_value, has_aux=True)

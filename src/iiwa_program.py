@@ -187,10 +187,11 @@ class IiwaMugProgram(Iiwa14IKProgram):
         self.frame = self.plant.GetFrameByName("between_fingers")
         self.autodiff_frame = self.autodiff_plant.GetFrameByName("between_fingers")
 
+        self.CalibrateFlowFrame()
         self.plant.SetPositions(self.plant_context, np.zeros(self.num_pos))
-        X_W_ee = self.ee_frame.CalcPoseInWorld(self.plant_context)
+        X_W_flow = self.FlowPoseInWorld()
         X_W_grasp = self.frame.CalcPoseInWorld(self.plant_context)
-        self.X_grasp_ee = X_W_grasp.inverse() @ X_W_ee
+        self.X_grasp_ee = X_W_grasp.inverse() @ X_W_flow
 
     def create_prog(self, target_mug = Mug(), q_nominal = None):
 

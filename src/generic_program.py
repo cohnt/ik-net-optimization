@@ -247,6 +247,74 @@ class IKFlowProgram:
                 cache.pop(next(iter(cache)))
         return hit
 
+    ## ------------------------- shared starting point ----------------------- ##
+
+    def CalibrateFlowFrame(self, samples=4, tol=1e-9):
+        '''Measure the offset between the scene's end-effector frame and the frame the
+        flow was actually trained on, and cache it.
+
+        This is not a nicety. The flow is conditioned on the pose of a specific frame --
+        jrl's `panda_hand`, at the standard Franka offset from `panda_link7`. The mug
+        scene welds a finray gripper to `panda_link7` and that model *also* contains a
+        body called `panda_hand`, but at translation [0, 0, 0.134] and rpy [90, 0, 45]
+        rather than the Franka hand's [0, 0, 0.107] and [0, 0, -45]. Looking the frame up
+        by name therefore returns a frame 27 mm and 120 degrees away from the one the
+        network means, and every `c` handed to the flow in the grasp experiments was in
+        that wrong frame. Measured symptom: inverting a random configuration at the
+        scene's frame returns |z| = 67.6, against 2.23 -- essentially sqrt(7), the typical
+        norm under the latent prior -- at the correct frame. The network was being asked
+        about configurations it considers astronomically unlikely on every iterate.
+
+        Both frames are rigidly welded to the same link, so the offset is a constant; it
+        is measured at several configurations and checked rather than assumed.
+        '''
+        if not self.options.calibrate_flow_frame:
+            self.X_ee_flow = RigidTransform()
+            return self.X_ee_flow
+        lower = self.plant.GetPositionLowerLimits()[:self.num_arm_dof]
+        upper = self.plant.GetPositionUpperLimits()[:self.num_arm_dof]
+        offsets = []
+        for _ in range(samples):
+            q_arm = np.random.uniform(lower, upper)
+            self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
+            X_scene = self.frame_for_flow.CalcPoseInWorld(self.plant_context)
+            pose = self.ik_solver.robot.forward_kinematics(
+                torch.tensor(q_arm[None, :], dtype=torch.float64, device=DEVICE))
+            pose = pose.detach().cpu().numpy()[0]
+            wxyz = pose[3:] / np.linalg.norm(pose[3:])
+            X_flow = RigidTransform(Quaternion(wxyz), pose[:3])
+            offsets.append(X_scene.inverse() @ X_flow)
+        spread = max(np.linalg.norm(offsets[0].translation() - o.translation())
+                     + abs((offsets[0].inverse() @ o).rotation().ToAngleAxis().angle())
+                     for o in offsets[1:])
+        if spread > 1e-6:
+            raise RuntimeError(
+                f"the flow frame offset is not constant across configurations "
+                f"(spread {spread:.3e}); the scene's joint convention does not match the "
+                f"one the network was trained with")
+        self.X_ee_flow = offsets[0]
+        return self.X_ee_flow
+
+    def FlowPoseInWorld(self, context=None):
+        '''The pose the flow should be conditioned on, in the world frame.'''
+        context = self.plant_context if context is None else context
+        X = self.frame_for_flow.CalcPoseInWorld(context)
+        offset = getattr(self, "X_ee_flow", None)
+        return X if offset is None else X @ offset
+
+    @property
+    def frame_for_flow(self):
+        return self.FlowFrame()
+
+    def FlowFrame(self):
+        '''The frame the flow was conditioned on during training.
+
+        The mug programs move `self.frame` to `between_fingers` because that is where the
+        grasp constraint acts, but the network still speaks in terms of the end-effector
+        frame it was trained against, so `c` must always be expressed there.
+        '''
+        return getattr(self, "ee_frame", self.frame)
+
     ## ------------------------- multi-start seeding ------------------------- ##
 
     @property
