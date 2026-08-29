@@ -239,9 +239,8 @@ class IiwaMugProgram(Iiwa14IKProgram):
         # options.mug_height, not target_mug.height: the two default differently (0.035
         # against 0.04), and the constraint must agree with the bound the task-parameterised
         # program puts on the same quantity.
-        axis_tol = self.options.mug_axis_tol
-        lb = np.array([-axis_tol, -axis_tol, -self.options.mug_height])
-        ub = np.array([axis_tol, axis_tol, self.options.mug_height])
+        lb = np.array([0.0, 0.0, -self.options.mug_height])
+        ub = np.array([0.0, 0.0, self.options.mug_height])
         def eval_func(vars, q, pose):
             position, _ = pose
             mug_transform = np.linalg.inv(self.target_mug.middle.GetAsMatrix4())

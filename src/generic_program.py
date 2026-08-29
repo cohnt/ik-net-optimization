@@ -70,7 +70,6 @@ class ProgramOptions:
     latent_trust_region: float = field(default=None, metadata={"help": "Bound on ||z||; None keeps the per-component box only"})
     latent_cost_weight: float = field(default=0.0, metadata={"help": "Weight on ||z||^2, keeping the latent in the flow's typical set"})
     correction_bound: float = field(default=0.1, metadata={"help": "Half-width of the box on the joint-space correction"})
-    mug_axis_tol: float = field(default=0.0, metadata={"help": "Half-width on the two mug-axis rows. 0 pins them exactly, as the analytic arm's own constraint does not"})
     c_parameterization: str = field(default="free", metadata={"help": "'free': c is a free 6-vector constrained through FK. 'task': c is computed from task parameters so the conditioning pose satisfies the task by construction"})
 
     ## Solver behaviour ##
@@ -230,12 +229,13 @@ class GraspTaskParamMixin:
             -5. * np.ones(self.ik_solver.network_width),
             5. * np.ones(self.ik_solver.network_width), self.z)
         self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
-        # The grasp itself: on the mug's axis, within its height, orientation free.
-        axis_tol = self.options.mug_axis_tol
+        # The grasp itself: exactly on the mug's axis, within its height, orientation
+        # free. x and y are pinned because that is what the task is -- the gripper origin
+        # lies *on* the axis -- not because a tolerance happened to be chosen.
         height = self.MugHeight()
         self.c_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            np.array([-axis_tol, -axis_tol, -height, -2 * np.pi, -2 * np.pi, -2 * np.pi]),
-            np.array([axis_tol, axis_tol, height, 2 * np.pi, 2 * np.pi, 2 * np.pi]),
+            np.array([0.0, 0.0, -height, -2 * np.pi, -2 * np.pi, -2 * np.pi]),
+            np.array([0.0, 0.0, height, 2 * np.pi, 2 * np.pi, 2 * np.pi]),
             self.c)
         self.c_bounding_box_constraint.evaluator().set_description("GraspParamBoundingBox")
         bound = self.options.correction_bound

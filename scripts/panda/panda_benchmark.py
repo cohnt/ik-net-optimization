@@ -57,10 +57,6 @@ CONFIGS = {
     "task":         dict(share_flow_evaluations=True, c_parameterization="task"),
     "latent":       dict(share_flow_evaluations=True, c_parameterization="task",
                          latent_trust_region=4.0),
-    "axis":         dict(share_flow_evaluations=True, c_parameterization="task",
-                         latent_trust_region=4.0, mug_axis_tol=1e-4),
-    "axis-free-c":  dict(share_flow_evaluations=True, latent_trust_region=4.0,
-                         mug_axis_tol=1e-4),
     # The clean control for the task parameterisation: identical to "latent" but with the
     # free conditioning pose, so the difference between the two rows is that change alone.
     "latent-free-c": dict(share_flow_evaluations=True, latent_trust_region=4.0),
