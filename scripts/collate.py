@@ -45,7 +45,10 @@ def pair(arm, paths):
         cells = {(r["target"], r["guess"]): bool(r.get("feasible"))
                  for r in data["records"][arm]}
         note = ""
-        if data["metadata"].get("grid_hash") != ref["metadata"].get("grid_hash"):
+        mine, theirs = data["metadata"].get("grid_hash"), ref["metadata"].get("grid_hash")
+        if mine is None or theirs is None:
+            note = "no grid_hash -- provenance unknown, not evidence of a shared grid"
+        elif mine != theirs:
             note = "DIFFERENT GRID -- not comparable"
         shared = sorted(set(cells) & set(ref_cells))
         m = mcnemar_exact([cells[c] for c in shared], [ref_cells[c] for c in shared])
