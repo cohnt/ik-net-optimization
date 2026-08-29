@@ -307,6 +307,14 @@ class PandaIKProgramNumerical(PandaIKProgram):
         needs no conversion.'''
         return self._SetClipped(self.q, np.asarray(q_arm, dtype=float)[:7])
 
+    def SetNativeStart(self, q_init, rng):
+        '''Joint-space IK is restarted from random configurations drawn uniformly inside
+        the joint limits, and `q_init` is exactly such a draw, so this formulation's native
+        and paired starts coincide by construction. Keeping them identical is useful: any
+        difference between a native table and a paired one is then attributable to the
+        other formulations alone.'''
+        return self.SetStartFromQ(q_init)
+
     def BoundingBoxConstraint(self):
         self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
                     -10. * np.ones(7), 10. * np.ones(7), self.q
@@ -364,6 +372,21 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         clipped = self._SetClipped(self.xyz_rpy, xyz_rpy)
         clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])
         return clipped
+
+    def SetNativeStart(self, q_init, rng):
+        '''The analytic formulation's own initialisation.
+
+        Its pose variables are pinned near the target by the task itself, so what is
+        actually free at the start is the redundancy parameter and the branch, and both are
+        drawn rather than chosen: `psi` uniformly over the range joint 7 admits, `GC`
+        uniformly over the four branches this map charts. (It charts four of the eight; the
+        other four sit very close to the joint limits and are an accepted limitation of the
+        formulation, not a gap to be filled.) `create_prog` has already put the pose
+        variables at the target, which is the natural choice.'''
+        options = np.array([[1, 1], [1, 2], [2, 1], [2, 2]])
+        self.gc = options[rng.integers(len(options))]
+        self.prog.SetInitialGuess(self.psi, [rng.uniform(-np.pi, np.pi)])
+        return 0.0
 
     def add_constraints(self):
         if self.options.collision_avoidance:
@@ -448,6 +471,9 @@ class PandaMugProgramNumerical(PandaMugProgram):
 
     def SetStartFromQ(self, q_arm):
         return self._SetClipped(self.q, np.asarray(q_arm, dtype=float)[:7])
+
+    def SetNativeStart(self, q_init, rng):
+        return self.SetStartFromQ(q_init)
 
     def BoundingBoxConstraint(self):
         self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(

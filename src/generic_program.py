@@ -589,6 +589,27 @@ class IKFlowProgram:
         self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
         return clipped
 
+    def SetNativeStart(self, q_init, rng):
+        """This formulation's *own* initialisation, as it would be run outside a comparison.
+
+        The learned formulation's natural procedure is the flow's inference procedure:
+        condition on the pose the task hands you and draw the latent from the prior the
+        network was trained against, with no correction. `create_prog` has already set the
+        conditioning pose from the target, so only the latent is drawn here.
+
+        This is a *sample*, not a search. Nothing in it looks at the problem's constraints
+        or its objective, and no candidate is scored or selected -- which is the line that
+        separates a formulation's natural initialisation from solving part of the problem
+        outside the solver.
+
+        `q_init` is accepted so that formulations whose natural start *is* a configuration
+        can use it; this one ignores it. Returns a clip distance, for symmetry with
+        `SetStartFromQ`.
+        """
+        self.prog.SetInitialGuess(self.z, rng.standard_normal(self.ik_solver.network_width))
+        self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
+        return 0.0
+
     def _SetClipped(self, variables, values):
         '''Set an initial guess, clipped into the program's bounding box on it.'''
         values = np.asarray(values, dtype=float)

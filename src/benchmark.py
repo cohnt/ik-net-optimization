@@ -254,7 +254,7 @@ def solved_within_k(per_target_success):
 class Arm:
     """One formulation, as the benchmark sees it."""
     name: str
-    make_program: object      # (target, q_init) -> program, already `create_prog`ed
+    make_program: object      # (target, q_init, (ti, gi)) -> program, already `create_prog`ed
     weight: float = 1.0       # joint-centering weight, to normalise the reported cost
 
 
@@ -278,7 +278,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                 record = dict(target=ti, guess=gi)
                 t0 = time.time()
                 try:
-                    program = arm.make_program(targets[ti], guesses[gi])
+                    program = arm.make_program(targets[ti], guesses[gi], (ti, gi))
                     record["setup_time"] = time.time() - t0
                     record.update(start_diagnostics(program, guesses[gi]))
                     record["correction_bound"] = getattr(program.options, "correction_bound", None)

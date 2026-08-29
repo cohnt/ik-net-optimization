@@ -293,6 +293,11 @@ class Iiwa14IKProgramNumerical(Iiwa14IKProgram):
     def SetStartFromQ(self, q_arm):
         return self._SetClipped(self.q, np.asarray(q_arm, dtype=float)[:7])
 
+    def SetNativeStart(self, q_init, rng):
+        '''Joint-space IK restarts from uniformly random configurations, which is what
+        `q_init` is, so native and paired coincide for this arm by construction.'''
+        return self.SetStartFromQ(q_init)
+
     def BoundingBoxConstraint(self):
         self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
             iiwa_limits_lower, iiwa_limits_upper, self.q)
@@ -321,6 +326,11 @@ class IiwaMugProgramNumerical(IiwaMugProgram):
 
     def SetStartFromQ(self, q_arm):
         return self._SetClipped(self.q, np.asarray(q_arm, dtype=float)[:7])
+
+    def SetNativeStart(self, q_init, rng):
+        '''Joint-space IK restarts from uniformly random configurations, which is what
+        `q_init` is, so native and paired coincide for this arm by construction.'''
+        return self.SetStartFromQ(q_init)
 
     def BoundingBoxConstraint(self):
         self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(

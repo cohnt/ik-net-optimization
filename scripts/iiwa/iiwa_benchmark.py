@@ -51,6 +51,13 @@ def parse_args():
     p.add_argument("--guesses", type=int, default=2)
     p.add_argument("--wall-time", type=float, default=20.0)
     p.add_argument("--solver", choices=["ipopt", "snopt"], default="ipopt")
+    p.add_argument("--start", choices=["paired", "native"], default="paired",
+                   help="paired: every arm starts at the same q_init, in its own variables "
+                        "(SetStartFromQ). native: every arm uses its own initialisation -- "
+                        "the flow's latent drawn from its prior, the analytic map's "
+                        "redundancy parameter and branch drawn from theirs, the joint-space "
+                        "arm from a random configuration. Sampled, never searched: no "
+                        "candidate is scored against the problem in either mode.")
     p.add_argument("--arms", default="learned,numerical")
     # "axis" named a config that was removed with the mug-axis tolerance, so the default
     # raised KeyError; "latent" is the configuration the Panda ladder settled on.
@@ -86,7 +93,7 @@ def apply_overrides(options, overrides):
 def main():
     args = parse_args()
     tag = args.tag or "_".join(
-        ["iiwa", args.task, args.config]
+        ["iiwa", args.task, args.config, args.start]
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
         + (["compiled"] if args.compile else []))
     log_dir = os.path.join(RepoDir(), "results/iiwa/benchmark", tag)
@@ -171,7 +178,7 @@ def main():
     numerical_options = replace(base_options, joint_centering_cost=1e0)
     mug = args.task == "mug"
 
-    def build(cls, options, target, q_init):
+    def build(cls, options, target, q_init, cell):
         if mug:
             diagram_with_mug, target_mug = target
             with HiddenPrints():
@@ -182,7 +189,13 @@ def main():
                 program = cls(diagram, options=options, model=ik_solver)
                 program.create_prog(target)
         with HiddenPrints():
-            program.clip_distance = program.SetStartFromQ(q_init)
+            if args.start == "paired":
+                program.clip_distance = program.SetStartFromQ(q_init)
+            else:
+                # A generator per cell, so a native start varies from guess to guess and
+                # from target to target while staying reproducible from --seed.
+                program.clip_distance = program.SetNativeStart(
+                    q_init, np.random.default_rng([args.seed, *cell]))
         return program
 
     learned_cls = Iiwa14IKProgram
@@ -191,12 +204,12 @@ def main():
                        if base_options.c_parameterization == "task" else IiwaMugProgram)
     all_arms = {
         "learned": bm.Arm("learned",
-                          lambda t, g: build(learned_cls, base_options, t, g),
+                          lambda t, g, c: build(learned_cls, base_options, t, g, c),
                           base_options.joint_centering_cost),
         "numerical": bm.Arm("numerical",
-                            lambda t, g: build(
+                            lambda t, g, c: build(
                                 IiwaMugProgramNumerical if mug else Iiwa14IKProgramNumerical,
-                                numerical_options, t, g),
+                                numerical_options, t, g, c),
                             numerical_options.joint_centering_cost),
     }
     arms = [all_arms[name] for name in args.arms.split(",")]
@@ -209,7 +222,7 @@ def main():
                                         wall_time=args.wall_time, seed=args.seed,
                                         grid_hash=grid_hash, compiled=args.compile,
                                         compile_seconds=compile_seconds,
-                                        overrides=overrides, start="paired",
+                                        overrides=overrides, start=args.start,
                                         n_targets=args.targets, n_guesses=args.guesses))
     bar.close()
     print()
