@@ -49,7 +49,7 @@ def parse_args():
     p.add_argument("--guesses", type=int, default=2)
     p.add_argument("--wall-time", type=float, default=20.0)
     p.add_argument("--solver", choices=["ipopt", "snopt"], default="ipopt")
-    p.add_argument("--start", choices=["paired", "native"], default="native")
+    p.add_argument("--start", choices=["paired", "native"], default="paired")
     p.add_argument("--arms", default="learned,numerical")
     p.add_argument("--config", default="axis")
     p.add_argument("--seed", type=int, default=0)
@@ -71,6 +71,12 @@ def main():
         mug_height=0.04, num_seed_samples=0)
     base_options = replace(base_options, **CONFIGS[args.config])
     if args.start == "native":
+        # NOT a valid comparison: only the learned arm can search for a start this way,
+        # and the other two then repeat one fixed start across every guess. Kept as a
+        # diagnostic, loudly labelled, never as a headline number.
+        print("WARNING: --start native gives each formulation a different initial guess "
+              "and lets the learned arm search 256 candidates for a good one. Its numbers "
+              "are a statement about seeding, not about the formulation.")
         base_options = replace(base_options, num_seed_samples=256)
     slack = base_options.acceptable_constr_viol_tol
 

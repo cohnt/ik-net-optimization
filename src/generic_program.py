@@ -42,10 +42,15 @@ class ProgramOptions:
     # which is what makes SNOPT's derivative check fail and starves the line search.
     use_float64: bool = field(default=True, metadata={"help": "Evaluate the flow in float64 so the map is smooth at solver step sizes"})
 
-    ## Multi-start seeding ##
-    # A batched forward pass is nearly free (n=256 costs the same as n=1 on GPU),
-    # so draw many candidates and start from the most feasible one.
-    num_seed_samples: int = field(default=256, metadata={"help": "Candidate (c, z) pairs drawn to pick an initial guess. 0 disables seeding"})
+    ## Multi-start seeding -- OFF for any reported comparison ##
+    # Kept only so the effect of a searched start can itself be measured, and so the
+    # pre-overhaul runs stay reproducible.
+    # Defaults to 0, and any measurement that is going to be reported must leave it there.
+    # Drawing candidates, scoring them against the problem's own constraints and keeping
+    # the best is not initialisation -- it is solving part of the problem outside the
+    # solver, and only the learned formulation can afford to do it, so it flatters that
+    # column. Every formulation must start from the same configuration; see SetStartFromQ.
+    num_seed_samples: int = field(default=0, metadata={"help": "Candidate (c, z) pairs drawn to pick an initial guess. Must be 0 for any reported comparison"})
     seed_refine_top_k: int = field(default=8, metadata={"help": "Candidates re-scored against every constraint (incl. collision)"})
     seed_latent_scale: float = field(default=1.0, metadata={"help": "Std dev of the sampled latents"})
     seed_use_float32: bool = field(default=True, metadata={"help": "Rank seed candidates in float32; the pass needs neither precision nor gradients"})
