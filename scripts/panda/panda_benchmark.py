@@ -15,9 +15,11 @@ Usage:
     python panda_benchmark.py --task pose  --targets 20 --guesses 3 --config seeded
 """
 import argparse
+import hashlib
 import os
 import sys
-from dataclasses import replace
+from ast import literal_eval
+from dataclasses import fields, replace
 
 import numpy as np
 
@@ -35,13 +37,25 @@ from pydrake.geometry import Meshcat
 from tqdm import tqdm
 
 
-# The analytic map is written against a different end-effector convention than the
-# scene's; this is the offset that reconciles them (unchanged from the older scripts).
-MUG_ANALYTIC_OFFSET = RigidTransform(
-    RotationMatrix([[0, 0., 1.], [0, -1, 0.], [1., 0, 0.]]),
-    np.array([-0.0236, -1.87933e-05, 0.0]))
-POSE_ANALYTIC_OFFSET = RigidTransform(RotationMatrix.Identity(),
-                                      np.array([0.0, 0.0, 0.1034]))
+# The analytic map is written against its own end-effector convention: link 7, rotated
+# -pi/4 about z and translated by d7 + d8 = 0.2104 m. Reconciling it with a scene frame is
+# therefore a measurement, not a constant -- the fitted MUG_ANALYTIC_OFFSET this replaces
+# was 0.046 degrees off, because the finray SDF writes 1.57 where the constant assumed
+# pi/2, which cost 1.5e-3 to 4.9e-3 rad of round-trip error in the paired start (0.019 mm
+# at the gripper, so it never showed up in the task gate).
+X_L7_ANALYTIC = RigidTransform(RotationMatrix.MakeZRotation(-np.pi / 4),
+                               np.array([0.0, 0.0, 0.2104]))
+
+
+def AnalyticPoseOffset(plant, context, frame_name):
+    """`X_FA`: the analytic map's frame, expressed in the frame its variables denote.
+
+    Both are welded to link 7, so this is constant and one configuration suffices.
+    """
+    plant.SetPositions(context, np.zeros(plant.num_positions()))
+    X_WF = plant.GetFrameByName(frame_name).CalcPoseInWorld(context)
+    X_WL7 = plant.GetFrameByName("panda_link7").CalcPoseInWorld(context)
+    return X_WF.inverse() @ X_WL7 @ X_L7_ANALYTIC
 
 # Ladder configurations. Each is an override of the base options; "baseline" is the
 # code exactly as it stood before this overhaul, so every later row is a delta from a
@@ -81,12 +95,41 @@ def parse_args():
                         "smaller. The raw errors are stored per record, so a stricter "
                         "gate can be recomputed from the summary without re-running.")
     p.add_argument("--tag", default=None, help="subdirectory under results/")
+    p.add_argument("--compile", action="store_true",
+                   help="torch.compile the flow Jacobian (1.33x on it, ~1.5x on an "
+                        "AutoDiffXd VarsToQ). Compiled once per process and warmed up "
+                        "before the grid, so no cell pays the ~10 s penalty -- but it "
+                        "moves the learned arm's success rate inside a fixed wall-clock "
+                        "cap, so every run being compared must set it the same way.")
+    p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
+                   help="override any ProgramOptions field, e.g. --set correction_bound=0.4. "
+                        "Applied after --config, recorded in the metadata and the tag.")
     return p.parse_args()
+
+
+def apply_overrides(options, overrides):
+    """`--set name=value` -> a replace() on the options, validated against the dataclass."""
+    parsed = {}
+    for item in overrides:
+        if "=" not in item:
+            raise SystemExit(f"--set expects NAME=VALUE, got {item!r}")
+        name, _, value = item.partition("=")
+        name = name.strip()
+        if not any(f.name == name for f in fields(ProgramOptions)):
+            raise SystemExit(f"--set: no such ProgramOptions field {name!r}")
+        try:
+            parsed[name] = literal_eval(value)
+        except (ValueError, SyntaxError):
+            parsed[name] = value
+    return replace(options, **parsed), parsed
 
 
 def main():
     args = parse_args()
-    tag = args.tag or f"{args.task}_{args.config}_{args.solver}"
+    tag = args.tag or "_".join(
+        [args.task, args.config, args.solver]
+        + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
+        + (["compiled"] if args.compile else []))
     log_dir = os.path.join(RepoDir(), "results/panda/benchmark", tag)
     out_path = os.path.join(log_dir, "summary.json")
 
@@ -100,11 +143,19 @@ def main():
         ik_constraint_tol=(1e-4, 0.01),
         mug_height=0.04,
     )
-    base_options = replace(base_options, **CONFIGS[args.config])
+    base_options = replace(base_options, **CONFIGS[args.config],
+                           compile_flow_jacobian=args.compile)
+    base_options, overrides = apply_overrides(base_options, args.overrides)
 
     pos_tol, _ = base_options.ik_constraint_tol
     slack = base_options.acceptable_constr_viol_tol
 
+    # A local generator for the grid, so that the targets and guesses cannot be shifted by
+    # anything else drawing from the global stream -- which is exactly what used to happen:
+    # CalibrateFlowFrame drew four configurations in __init__ and returned early when it was
+    # disabled, so the ladder's baseline rung ran on a different grid from every other rung
+    # and no cross-rung comparison was paired. The global seed stays for incidental draws.
+    rng = np.random.default_rng(args.seed)
     np.random.seed(args.seed)
     meshcat = Meshcat()
     scene = "panda_finray_collision.yaml" if args.task == "mug" else "panda_collision.yaml"
@@ -123,7 +174,7 @@ def main():
 
     def sample_collision_free():
         while True:
-            q = np.random.uniform(lower, upper)
+            q = rng.uniform(lower, upper)
             sampler.plant.SetPositions(sampler.plant_context, q)
             if sampler.collision_free_constraint_eval.Eval(q) < 1:
                 return q
@@ -133,6 +184,14 @@ def main():
     # reachable and, for the mug, that at least one valid grasp exists.
     target_qs = [sample_collision_free() for _ in tqdm(range(args.targets), desc="targets")]
     guesses = [sample_collision_free() for _ in range(args.guesses)]
+    # Identical cells across runs are what makes the ladder and the sweeps paired; record a
+    # hash of them so a mismatch is visible in the summary rather than silently compared.
+    grid_hash = hashlib.sha1(np.asarray(target_qs + guesses).tobytes()).hexdigest()[:12]
+
+    compile_seconds = None
+    if args.compile:
+        compile_seconds = sampler.WarmUpJacobian()
+        print(f"compiled the flow Jacobian in {compile_seconds:.1f} s")
 
     if args.task == "mug":
         mug_meshcat = Meshcat()
@@ -151,10 +210,11 @@ def main():
     ## ------------------------------ task gates ----------------------------- ##
     if args.task == "mug":
         def task_gate(program, q):
-            # Ask for `between_fingers` by name rather than using `program.frame`.
-            # PandaMugProgramAnalytic inherits from the *pose* analytic class, which never
-            # moves `self.frame` off `panda_hand`, so reading `program.frame` here would
-            # silently measure a point 0.1 m (|X_grasp_ee|) away from the grasp.
+            # Ask for `between_fingers` by name rather than using `program.frame`: the
+            # gate should measure the same physical point whatever each formulation calls
+            # its own frame. (PandaMugProgramAnalytic used to leave `self.frame` on
+            # `panda_hand`, 0.1 m away from the grasp; it no longer does, but the gate has
+            # no business depending on that.)
             program.plant.SetPositions(program.plant_context, q)
             grasp = program.plant.GetFrameByName("between_fingers")
             p_W = grasp.CalcPoseInWorld(program.plant_context).translation()
@@ -197,6 +257,9 @@ def main():
         return program
 
     mug = args.task == "mug"
+    analytic_offset = AnalyticPoseOffset(
+        sampler.plant, sampler.plant_context,
+        "between_fingers" if mug else "panda_hand")
     learned_cls = PandaIKProgram
     if mug:
         learned_cls = (PandaMugProgramTaskParam
@@ -214,8 +277,7 @@ def main():
         "analytic": bm.Arm(
             "analytic",
             lambda t, g: build(PandaMugProgramAnalytic if mug else PandaIKProgramAnalytic,
-                               base_options, t, g,
-                               pose_offset=MUG_ANALYTIC_OFFSET if mug else POSE_ANALYTIC_OFFSET),
+                               base_options, t, g, pose_offset=analytic_offset),
             base_options.joint_centering_cost),
     }
     arms = [all_arms[name] for name in args.arms.split(",")]
@@ -226,7 +288,9 @@ def main():
         tol=slack,
         progress=lambda *a: bar.update(1),
         metadata=dict(task=args.task, solver=args.solver, config=args.config,
-                      wall_time=args.wall_time, seed=args.seed,
+                      wall_time=args.wall_time, seed=args.seed, grid_hash=grid_hash,
+                      compiled=args.compile, compile_seconds=compile_seconds,
+                      overrides=overrides, start="paired",
                       n_targets=args.targets, n_guesses=args.guesses))
     bar.close()
 
