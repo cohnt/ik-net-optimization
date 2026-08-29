@@ -467,6 +467,7 @@ class IKFlowProgram:
         sharing them between the constraint binding and the cost binding is close to a
         factor of two on the whole solve.
         '''
+        self.CheckDeadline()
         if not getattr(self.options, "share_flow_evaluations", False):
             q = self.VarsToQ(vars)
             return q, self.fk(q)
@@ -679,13 +680,23 @@ class IKFlowProgram:
             self.plant.SetPositions(self.plant_context, q)
             return self.frame, self.plant_context
 
-    def EvalAllConstraints(self, vars):
-        '''Parallelize as much of the VarsToQ as possible to shorten computation time'''
+    def CheckDeadline(self):
+        '''Abandon a solve that has outrun its hard cap.
+
+        Called from `QAndPose`, which every binding funnels through -- the constraint, the
+        joint-centering cost, and the analytic arms' evaluations alike. Putting it only in
+        the constraint callback left a hole: one sweep cell ran 6106 s against a 20 s cap
+        before anything noticed.
+        '''
         deadline = getattr(self, "_solve_deadline", None)
         if deadline is not None and time.time() > deadline:
             raise SolveTimeout(
                 f"solve exceeded {self.options.hard_time_factor}x its "
-                f"{self.options.max_wall_time} s cap inside a single iteration")
+                f"{self.options.max_wall_time} s cap")
+
+    def EvalAllConstraints(self, vars):
+        '''Parallelize as much of the VarsToQ as possible to shorten computation time'''
+        self.CheckDeadline()
         q, pose = self.QAndPose(vars)  ## one flow evaluation for every constraint row
         total_length = sum(len(constraint) for constraint in self.constraints)
         result = np.full(total_length, q[0]) ## q datatype
@@ -858,7 +869,12 @@ class IKFlowProgram:
             self.lumped_vars
         )
         
-        return solver.Solve(self.prog, solver_options=solver_options)
+        try:
+            return solver.Solve(self.prog, solver_options=solver_options)
+        finally:
+            # Clear it, so that re-evaluating the bindings afterwards -- which is how the
+            # benchmark verifies a solution -- cannot trip a deadline set for the solve.
+            self._solve_deadline = None
 
 
 def visualization_callback(vars, diagram, diagram_context, plant, plant_context, vars_to_q, vars_file, visualize):
