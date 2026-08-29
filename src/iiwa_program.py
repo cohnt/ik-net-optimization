@@ -45,6 +45,9 @@ class Iiwa14IKProgram(IKFlowProgram):
             self.autodiff_frame = self.autodiff_plant.GetBodyByName("iiwa_link_7", autodiff_model_instance).body_frame()
         self.num_pos = self.plant.num_positions()
         self.num_arm_dof = 7
+        # Size of the first block of decision variables, from which the conditioning pose
+        # is built: the pose itself, or the grasp parameters under c_parameterization="task".
+        self.num_task_vars = 6
 
         if model is None:
             hparams = {'nb_nodes': 12,
@@ -141,14 +144,25 @@ class Iiwa14IKProgram(IKFlowProgram):
 
 
 
+    def TaskVarsToPose7(self, task_vars, t):
+        '''Task variables -> the (xyz, wxyz) the flow is conditioned on. Default: they are
+        the conditioning pose, written as xyz + rpy. Overridden by GraspTaskParamMixin.'''
+        xyz = task_vars[:3]
+        quaternion = RotationMatrix_[t](RollPitchYaw_[t](task_vars[3:6])).ToQuaternion().wxyz()
+        return xyz, quaternion
+
     def VarsToQ(self, rpy_vars, add_correction = True):
         ad = isinstance(rpy_vars[0], AutoDiffXd)
-        vars = np.zeros(22, dtype=AutoDiffXd if ad else np.float64)
         t = AutoDiffXd if ad else float
-        vars[:3] = rpy_vars[:3]
-        vars[3:7] = RotationMatrix_[t](RollPitchYaw_[t](rpy_vars[3:6])).ToQuaternion().wxyz()
-        vars[7:15] = rpy_vars[6:14]
-        vars[15:22] = rpy_vars[14:21]
+        width = self.ik_solver.network_width
+        n = self.num_task_vars
+
+        vars = np.zeros(7 + width + 7, dtype=AutoDiffXd if ad else np.float64)
+        xyz, quaternion = self.TaskVarsToPose7(rpy_vars[:n], t)
+        vars[:3] = xyz
+        vars[3:7] = quaternion
+        vars[7:7 + width] = rpy_vars[n:n + width]
+        vars[7 + width:] = rpy_vars[n + width:]
 
         if not ad:
             q = np.zeros(self.num_pos)
