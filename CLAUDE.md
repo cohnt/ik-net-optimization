@@ -56,7 +56,7 @@ Constraints are **not** added to Drake one at a time. Each `Create*Constraint` m
 
 ### Per-robot subclasses (`src/panda_program.py`, `src/iiwa_program.py`)
 
-Each robot implements `__init__` (frames, plant sizes, model loading), `create_prog` (declares decision variables, sets initial guesses, builds `self.jacobian_gen`, calls `add_constraints` / `add_costs`), `ik_inference`, and `VarsToQ`. The `...MugProgram` subclasses additionally swap `self.frame` from the end-effector (the frame the flow was *trained* on) to `between_fingers` (the frame the grasp constraint acts on), keeping `X_grasp_ee` so seeds can still be expressed in the network's frame. A mug grasp constrains only the gripper's position in the mug frame (`x = y = 0` exactly, `z` within `mug_height`), leaving orientation free — hence the overridden `CreateIKConstraint` and `SeedCandidates`.
+Each robot implements `__init__` (frames, plant sizes, model loading), `create_prog` (declares decision variables, sets initial guesses, builds `self.jacobian_gen`, calls `add_constraints` / `add_costs`), `ik_inference`, and `VarsToQ`. The `...MugProgram` subclasses additionally swap `self.frame` from the end-effector (the frame the flow was *trained* on) to `between_fingers` (the frame the grasp constraint acts on), keeping `X_grasp_ee` so seeds can still be expressed in the network's frame. A mug grasp constrains only the gripper's position in the mug frame (`x = y = 0` exactly -- an equality, because that is what the task is; `z` within `mug_height`), leaving orientation free — hence the overridden `CreateIKConstraint` and `SeedCandidates`.
 
 ### Gradients through the flow
 
@@ -202,10 +202,11 @@ Of the five changes in that gain, two need no benchmark to justify:
 - **sharing the flow evaluation** returns bit-identical values and derivatives at roughly
   twice the throughput, so it cannot cost anything.
 
-The other three -- the **task parameterisation**, the **latent trust region**, and the
-**mug-axis tolerance** -- are genuine design choices whose value is currently unproven. The
-axis-tolerance result in particular (a 3-cell difference at n = 30) was never outside the
-noise. Re-running the ladder is the first thing to do:
+The other two -- the **task parameterisation** and the **latent trust region** -- are
+genuine design choices whose value is currently unproven. (A third, relaxing the mug-axis
+equality, has been removed rather than re-measured: that equality is the definition of the
+grasp task, so widening it solves an easier problem instead of solving this one better.)
+Re-running the ladder is the first thing to do:
 
 ```bash
 for CFG in baseline frame eval task latent latent-free-c; do
