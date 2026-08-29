@@ -25,6 +25,7 @@ Three things distinguish it from the older per-script harnesses:
     failures were all wall-clock timeouts, and a timeout that landed on a valid grasp is
     a success by any definition that matters.
 """
+import faulthandler
 import json
 import math
 import os
@@ -259,7 +260,7 @@ class Arm:
 
 
 def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
-             progress=None, metadata=None):
+             progress=None, metadata=None, cell_timeout=None):
     """Run every (arm, target, guess) cell once and write a checkpointed summary.
 
     Checkpointing after each target matters: these runs are hours long and the learned
@@ -277,6 +278,11 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     os.remove(log_path)
                 record = dict(target=ti, guess=gi)
                 t0 = time.time()
+                # If a cell wedges somewhere the solver's own caps cannot reach -- program
+                # construction, verification, a solve that overruns even the hard cap --
+                # dump every thread's stack to the log rather than leaving a silent stall.
+                if cell_timeout:
+                    faulthandler.dump_traceback_later(cell_timeout, repeat=False)
                 try:
                     program = arm.make_program(targets[ti], guesses[gi], (ti, gi))
                     record["setup_time"] = time.time() - t0
@@ -302,7 +308,13 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                 except Exception as exc:            # never let one cell kill a sweep
                     record["error"] = f"{type(exc).__name__}: {exc}"
                     record["feasible"] = False
-                    record["fail_reason"] = "error"
+                    record["fail_reason"] = ("hard_timeout"
+                                             if type(exc).__name__ == "SolveTimeout"
+                                             else "error")
+                    record["wall_time"] = time.time() - t0
+                finally:
+                    if cell_timeout:
+                        faulthandler.cancel_dump_traceback_later()
                 records[arm.name].append(record)
                 if progress is not None:
                     progress(arm.name, ti, gi, record)

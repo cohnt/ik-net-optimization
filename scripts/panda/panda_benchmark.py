@@ -298,7 +298,7 @@ def main():
     bar = tqdm(total=len(arms) * args.targets * args.guesses, desc=tag)
     records = bm.run_grid(
         arms, targets, guesses, task_gate, log_dir, out_path,
-        tol=slack,
+        tol=slack, cell_timeout=5 * args.wall_time + 300,
         progress=lambda *a: bar.update(1),
         metadata=dict(task=args.task, solver=args.solver, config=args.config,
                       wall_time=args.wall_time, seed=args.seed, grid_hash=grid_hash,
