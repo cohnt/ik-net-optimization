@@ -60,7 +60,7 @@ Each robot implements `__init__` (frames, plant sizes, model loading), `create_p
 
 ### Gradients through the flow
 
-`VarsToQ` is dual-path: under `float` it returns a plain forward pass; under `AutoDiffXd` it calls `self.jacobian_gen = torch.func.jacrev(ik_inference_with_value, has_aux=True)` (one reverse pass yields both `dq/dvars` and `q`) and chain-rules `jacobian @ vars_gradients` into fresh `AutoDiffXd` objects. Analytic formulations instead evaluate `pydrake.math` trig on templated types (`RigidTransform_[T]`, `RollPitchYaw_[T]`) so Drake's own autodiff propagates.
+`VarsToQ` is dual-path: under `float` it returns a plain forward pass; under `AutoDiffXd` it calls `self.jacobian_gen` (one reverse pass yields both `dq/dvars` and `q`) and chain-rules `jacobian @ vars_gradients` into fresh `AutoDiffXd` objects. Both paths go through `MakeFlowInference(nn_model, ...)` in `src/generic_program.py`, a free function of the lumped variables that closes over the network and nothing else — which is what lets `FlowJacobianGen` memoise `torch.compile(jacrev(...))` per process instead of per program (`ProgramOptions.compile_flow_jacobian`, and see the Jacobian section below). Analytic formulations instead evaluate `pydrake.math` trig on templated types (`RigidTransform_[T]`, `RollPitchYaw_[T]`) so Drake's own autodiff propagates.
 
 Numerical facts worth not rediscovering — several are recorded in code comments and encoded in `ProgramOptions` defaults:
 
@@ -158,6 +158,12 @@ The older head-to-head scripts remain for comparability, but new measurements sh
   then clip `c` into its box. Clipping first and inverting at the projected pose returns
   `|z| ~ 1e7`, because a random configuration is not a grasp of this mug and the flow is
   right to say so.
+- **The paired start is measured, not assumed.** Every cell records `clip_distance`, the
+  arm's actual `start_q_error = |q(start) - q_init|` and (for learned arms) the norm of the
+  latent it started from, because only the joint-space arm can hold the shared start
+  exactly. See "How paired the paired start actually is" below -- the numbers are large
+  enough that quoting the comparison without them would misdescribe it.
+
 - **Success verified from the returned point**, not from `result.is_success()`. Every
   binding is re-evaluated at the solution and the task is re-measured from `q`, with a
   named `fail_reason`. This matters because *every* learned failure in the archived runs
@@ -166,7 +172,46 @@ The older head-to-head scripts remain for comparability, but new measurements sh
   constraint (value 1 + 1e-7), so the collision gate needs the same slack the binding has;
   and `PandaMugProgramAnalytic` inherits from the *pose* analytic class and never moves
   `self.frame` off `panda_hand`, so the grasp must be measured by asking for
-  `between_fingers` by name.
+  `between_fingers` by name (that class now moves `self.frame` onto the grasp frame, but
+  the gate should not depend on it).
+
+Three switches the scripts grew for this round of measurements. `--compile` turns on the
+compiled flow Jacobian and warms it up before the grid, so no cell pays the ~10 s penalty;
+because it changes how many iterations the learned arm fits inside a fixed cap, **every run
+being compared has to set it the same way**. `--set NAME=VALUE` overrides any
+`ProgramOptions` field, so a sweep needs no code edit; it lands in the metadata and the
+default tag. And the grid is drawn from a generator local to the script and hashed into
+`metadata["grid_hash"]`, so runs that were not measured on the same cells cannot be
+compared by accident -- `python scripts/collate.py --pair learned '<glob>'` runs exact
+McNemar between runs on matching cells and refuses a grid mismatch.
+
+### How paired the paired start actually is
+
+`SetStartFromQ` gives every arm the same `q_init` expressed in its own variables, but a
+formulation can only represent a configuration its variables reach, so what each arm
+actually gets is `q_init` *projected onto its own feasible set*. Measured:
+
+| arm | `\|q(start) - q_init\|` | why |
+| --- | --- | --- |
+| joint space | 0 exactly | its variables are the configuration |
+| analytic | 1e-11, or several radians | exact where its chart covers the configuration; see below |
+| learned, free `c` | 1.2 - 3.3 rad | `c` is clipped into a 0.25 m box about the mug |
+| learned, task-parameterised | ~3 rad, occasionally 1e16 | `c` is projected onto the mug axis, and `q_init` is not a grasp |
+
+Two of these deserve care when reading a grasp table. The **analytic chart misses about 30%
+of random collision-free configurations**: over 40 samples it reproduced 28 exactly and
+missed 12, every one of them with the elbow nearly straight (`q4` between -0.09 and -0.44
+against a limit of -0.07). Neither a different `GC` branch nor the commented-out elbow case
+rescues a single one -- the best of the four branches reproduces exactly the same 28 -- so
+this is coverage, not branch selection, and `analytic_ik.gc(q)` stays as the way `GC` is
+recovered. The **task-parameterised learned arm** keeps the latent from inverting at
+`q_init`'s own conditioning pose and then moves `c` onto the mug axis, and holding `z` fixed
+while `c` moves that far can put the flow's output at 1e16 (GLOW's clamped exponentials
+amplify by up to `exp(2.5)` per coupling block, twelve blocks deep). Re-inverting at the
+projected pose is worse, not better -- CLAUDE.md's ordering note measures `|z| ~ 1e7` -- so
+the start stands as it is and is reported rather than repaired.
+
+
 
 ### Measured results (2026-08-28, RTX 3080 Ti laptop, IPOPT, 20 s cap)
 
@@ -174,19 +219,31 @@ Produced with `src/benchmark.py`; raw records in `results/*/benchmark/*/summary.
 Success is feasibility-verified from the returned point, solver status reported alongside.
 Every arm starts from the same `q_init` and none of them searches for a good start.
 
-**Valid, and directly comparable before/after** (15 targets x 2 guesses):
+**Superseded, but the last thing measured** (15 targets x 2 guesses):
 
 | experiment | learned | numerical | analytic |
 | --- | --- | --- | --- |
 | Panda grasp, before the overhaul | 12/30 | 27/30 | 28/30 |
-| Panda grasp, after | **21/30** | 29/30 | 30/30 |
-| Panda pose, after | **24/30** | 15/30 | 14/30 |
+| Panda grasp, after | 21/30 | 29/30 | 30/30 |
+| Panda pose, after | 24/30 | 15/30 | 14/30 |
 
-On the pose experiment the learned formulation wins on success (McNemar p = 0.023 against
+On the pose experiment the learned formulation won on success (McNemar p = 0.023 against
 joint space, 0.013 against analytic) *and* on cost (median 8.91 against 10.77 and 9.30 on
 the cells all three solved) -- the draft's central claim, with paired statistics. On the
-grasp experiment it is still behind both baselines (p = 0.008, 0.004), where before it was
-behind by roughly twice as much.
+grasp experiment it was still behind both baselines (p = 0.008, 0.004).
+
+The grasp rows were produced with two defects in the shared start, both since repaired, so
+they are being re-run rather than quoted (`ladder3_*`, `final3_*` in `results/`):
+
+- `GraspTaskParamMixin.SetStartFromQ` inverted the flow at the **uncalibrated** frame, so
+  the task-parameterised arm -- the one behind every `task` and `latent` number -- started
+  from a latent of norm 40 to 5.7e7 that was then clipped into the +-5 box. The calibrated
+  inversion returns 2.8 to 4.1, against the prior's `sqrt(7) = 2.65`.
+- `PandaMugProgramAnalytic` left `self.frame` on `panda_hand` while its variables denote
+  `between_fingers`, so the analytic arm started 3.0 to 5.6 rad from the shared `q_init`.
+
+The analytic arm's grasp constraint was also loosened to `+-ik_constraint_tol[0]` on the two
+axis rows where the learned arm is pinned; it is now pinned too.
 
 **Withdrawn.** Every other table this branch produced was run with the searched 256-sample
 start that has since been removed: the Panda grasp 35/45, the Panda pose 45/45, both iiwa
@@ -265,6 +322,20 @@ Forward mode is 2.8x slower, and 13 tangents cost the same as 20 -- confirming t
 result that this is CPU-dispatch bound, not FLOP bound, so reducing the tangent count buys
 nothing. It also disagrees with reverse by 6e-8, float32-level error in a float64 model.
 
+**`torch.compile` on the `jacrev` is now implemented** and is worth taking. Measured in this
+environment at batch 1 in float64: 17.98 ms eager against 13.55 ms compiled on the `jacrev`
+alone, and 21.3 ms against 14.4 ms on a whole AutoDiffXd `VarsToQ` (**1.48x**), agreeing
+with eager to 3.5e-15 relative on both value and derivatives, with dynamo reporting a single
+graph and no recompiles across iterates. The one-off cost is 8-14 s. The reason the old
+comment in `panda_program.py` said it was not worth it ("39.5 ms either way, against a
+200 ms compilation penalty per program") is that the compiled object was a *bound method*:
+`torch.compile` guards on everything the callable closes over, so each of the thirty
+programs in a grid re-triggered dynamo. `MakeFlowInference` closes over the network alone
+and `FlowJacobianGen` memoises on `(network, shape, dtype)`, so one graph now serves every
+program in the process. It is off by default and turned on with the benchmark scripts'
+`--compile`, because more iterations inside a fixed wall-clock cap *moves the learned arm's
+success rate*, and only the learned arm benefits.
+
 The one place a VJP genuinely would have won is already gone: the objective-gradient path
 used to compute the whole 7 x 21 Jacobian to produce a single 1 x 20 row, where one VJP
 with cotangent `dcost/dq` would have replaced seven passes. Sharing the constraint's
@@ -279,10 +350,12 @@ searches for a start.
 
 **Required before any new claim**
 
-1. Re-run the ablation ladder under the valid protocol (the command is in the results
-   section above, ~1 h). The 12/30 -> 21/30 gain on the Panda grasp is real but currently
-   unattributed; the frame fix and the shared flow evaluation are justified without it, the
-   task parameterisation and the latent trust region are not.
+1. Re-run the ablation ladder under the valid protocol (`scripts/run_queue.sh`, stage 1).
+   The 12/30 -> 21/30 gain on the Panda grasp is real but unattributed; the frame fix and
+   the shared flow evaluation are justified without it, the task parameterisation and the
+   latent trust region are not. Only now is the ladder *paired*: until the grid moved to a
+   local generator, `CalibrateFlowFrame`'s draws meant the `baseline` rung ran on different
+   targets from every other rung.
 
 **Panda grasp -- the failures are collision, not the chart**
 
@@ -295,11 +368,15 @@ collision. So target the collision constraint and the iteration budget, not the 
 3. IPOPT `mu_strategy="adaptive"`, `max_iter`, `nlp_scaling_method`. Plumbed, never swept.
    The archived logs show `lg(mu)` collapsing to -8 within 50 iterations and then hundreds
    of iterations of tiny steps, which is the signature `adaptive` exists for.
-4. `torch.compile` on the `jacrev`: a measured 1.3x, and the Jacobian is 84% of a solve, so
-   roughly 25% more iterations inside the same cap. Costs ~11.5 s per process, so it is
-   worth it for a sweep and not for one solve. Pure throughput -- no protocol question.
+4. ~~`torch.compile` on the `jacrev`~~ **done**: `--compile`, 1.48x on an AutoDiffXd
+   `VarsToQ`, one graph per process. Note it is not quite "pure throughput, no protocol
+   question" as this list used to claim -- only the learned arm evaluates a network, so
+   inside a fixed cap it moves that arm's success rate and nothing else's.
 5. `correction_bound` (0.1) and `correction_cost_weight` (0), neither ever examined. The
-   draft only says `q_c ~ 0`.
+   draft only says `q_c ~ 0`. Widening the bound is a *formulation* change, not tuning: at
+   the limit the correction can represent any configuration and the learned arm becomes a
+   reparameterised joint-space arm, so a success gain has to be read against how much of
+   the box the solutions actually use (`median_correction_inf`, `correction_binding`).
 6. `latent_trust_region` radius: 4.0 was one guess for a 7-dimensional latent. Sweep it,
    and compare against the soft form (`latent_cost_weight`).
 7. Report success against the wall-clock cap as a curve rather than one number, plus
@@ -323,12 +400,17 @@ The iiwa flow is a 4-8x worse chart than the Panda's (16.6 mm / 6.4 deg median a
 11. Only then, the divergent cells -- a few reach 3.4e7 constraint violation, which is the
     latent or the conditioning pose escaping despite the trust region.
 
-**Fairness repairs owed to the baselines**
+**Fairness repairs owed to the baselines** (12 and 13 done; 16 is new and open)
 
-12. `PandaMugProgramAnalytic`'s mug constraint uses `+-ik_constraint_tol[0]` on the two axis
-    rows while the learned arm pins them. Pin the analytic arm too.
-13. `PandaMugProgramAnalytic` inherits from the pose analytic class and never moves
-    `self.frame` off `panda_hand`, which is a trap for anything that measures through it.
+12. ~~Pin the analytic arm's two mug-axis rows~~ **done**.
+13. ~~`PandaMugProgramAnalytic` never moves `self.frame` off `panda_hand`~~ **done**, and it
+    was worse than a trap: it made the analytic arm start 3-5.6 rad from the shared
+    `q_init`. Its pose offset is now measured from the scene rather than fitted, too.
+16. The analytic chart cannot represent ~30% of random collision-free configurations (all
+    of them near-straight-elbow), so in those cells it is handed a start it cannot hold.
+    That is measured per cell as `start_q_error` but not repaired; whether the missing
+    coverage is a derivation gap or a genuine property of this parameterisation is open,
+    and it bounds how paired a grasp comparison can be.
 
 **Speculative, in the project's spirit**
 
