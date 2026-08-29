@@ -360,7 +360,10 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         q_arm = np.asarray(q_arm, dtype=float)[:7]
         self.gc = self.analytic_ik.gc(q_arm)
         self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
-        pose = self.FlowFrame().CalcPoseInWorld(self.plant_context)
+        # self.frame, not FlowFrame(): there is no flow in this formulation, and the
+        # variables are the pose of the frame the closed-form map is written against --
+        # panda_hand here, between_fingers in the grasp scene.
+        pose = self.frame.CalcPoseInWorld(self.plant_context)
         xyz_rpy = np.concatenate([pose.translation(),
                                   pose.rotation().ToRollPitchYaw().vector()])
         clipped = self._SetClipped(self.xyz_rpy, xyz_rpy)
@@ -460,6 +463,14 @@ class PandaMugProgramNumerical(PandaMugProgram):
 class PandaMugProgramAnalytic(PandaIKProgramAnalytic):
     def __init__(self, diagram, options = ProgramOptions(), model = None):
         super().__init__(diagram, options, model)
+        # `xyz_rpy` is the pose of the *grasp* frame: Analytic_IK_Panda.IK with
+        # MUG_ANALYTIC_OFFSET inverts the between_fingers pose back to q (to 5e-3 rad, the
+        # residual between the DH parameters and the finray URDF), while panda_hand's pose
+        # gives 4.5 rad. Leaving self.frame on panda_hand made the inherited SetStartFromQ
+        # write a pose 0.1 m and 90 degrees from the one the variables mean, so the analytic
+        # arm began 3-5.6 rad from the shared q_init -- i.e. it was not the paired start.
+        self.frame = self.plant.GetFrameByName("between_fingers")
+        self.autodiff_frame = self.autodiff_plant.GetFrameByName("between_fingers")
     def create_prog(self, target_mug = Mug(), q_nominal = None, pose_offset = None, gc = None):
         self.prog = MathematicalProgram()
         self.xyz_rpy = self.prog.NewContinuousVariables(6) ## x y z roll pitch yaw
@@ -487,11 +498,13 @@ class PandaMugProgramAnalytic(PandaIKProgramAnalytic):
 
 
     def IKConstraint(self):
-        ik_tol = self.options.ik_constraint_tol[0]
+        # x = y = 0 exactly, the same equality the learned arm is held to. These rows used
+        # to be +-ik_constraint_tol[0], which held the analytic arm to a slightly easier
+        # problem than the formulation it is being compared against.
         self.ik_constraint = self.prog.AddConstraint(
             func = lambda vars: self.EvalIKMugConstraint(vars),
-            lb = np.array([-ik_tol, -ik_tol, -self.options.mug_height]),
-            ub = np.array([ik_tol, ik_tol, self.options.mug_height]),
+            lb = np.array([0.0, 0.0, -self.options.mug_height]),
+            ub = np.array([0.0, 0.0, self.options.mug_height]),
             vars = self.lumped_vars,
             description = "IKMugConstraint"
         )
