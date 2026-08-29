@@ -74,7 +74,6 @@ def parse_args():
     p.add_argument("--guesses", type=int, default=3)
     p.add_argument("--wall-time", type=float, default=20.0)
     p.add_argument("--solver", choices=["ipopt", "snopt"], default="ipopt")
-    p.add_argument("--start", choices=["paired", "native"], default="paired")
     p.add_argument("--arms", default="learned,numerical,analytic")
     p.add_argument("--config", default="baseline")
     p.add_argument("--seed", type=int, default=0)
@@ -91,7 +90,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    tag = args.tag or f"{args.task}_{args.config}_{args.start}_{args.solver}"
+    tag = args.tag or f"{args.task}_{args.config}_{args.solver}"
     log_dir = os.path.join(RepoDir(), "results/panda/benchmark", tag)
     out_path = os.path.join(log_dir, "summary.json")
 
@@ -104,17 +103,8 @@ def main():
         acceptable_constr_viol_tol=1e-4,
         ik_constraint_tol=(1e-4, 0.01),
         mug_height=0.04,
-        num_seed_samples=0,
     )
     base_options = replace(base_options, **CONFIGS[args.config])
-    if args.start == "native":
-        # NOT a valid comparison: only the learned arm can search for a start this way,
-        # and the other two then repeat one fixed start across every guess. Kept as a
-        # diagnostic, loudly labelled, never as a headline number.
-        print("WARNING: --start native gives each formulation a different initial guess "
-              "and lets the learned arm search 256 candidates for a good one. Its numbers "
-              "are a statement about seeding, not about the formulation.")
-        base_options = replace(base_options, num_seed_samples=256)
 
     pos_tol, _ = base_options.ik_constraint_tol
     slack = base_options.acceptable_constr_viol_tol
@@ -129,7 +119,7 @@ def main():
         # One program, used only to sample targets and to hold the loaded network so
         # every later program shares it (the flow is ~1.8 s to load).
         sampler_cls = PandaMugProgram if args.task == "mug" else PandaIKProgram
-        sampler = sampler_cls(diagram, options=replace(base_options, num_seed_samples=0))
+        sampler = sampler_cls(diagram, options=base_options)
         sampler.create_prog()
     ik_solver = sampler.ik_solver
     lower = sampler.plant.GetPositionLowerLimits()
@@ -206,9 +196,8 @@ def main():
             with HiddenPrints():
                 program = cls(diagram, options=options, model=ik_solver)
                 program.create_prog(target, **extra)
-        if args.start == "paired":
-            with HiddenPrints():
-                program.clip_distance = program.SetStartFromQ(q_init)
+        with HiddenPrints():
+            program.clip_distance = program.SetStartFromQ(q_init)
         return program
 
     mug = args.task == "mug"
@@ -241,7 +230,7 @@ def main():
         tol=slack,
         progress=lambda *a: bar.update(1),
         metadata=dict(task=args.task, solver=args.solver, config=args.config,
-                      start=args.start, wall_time=args.wall_time, seed=args.seed,
+                      wall_time=args.wall_time, seed=args.seed,
                       n_targets=args.targets, n_guesses=args.guesses))
     bar.close()
 

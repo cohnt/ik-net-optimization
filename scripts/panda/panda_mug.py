@@ -27,7 +27,6 @@ program_options = ProgramOptions(
     ik_constraint_tol = (1e-4, 0.01),
     mug_height = 0.04,
     use_float64 = True,
-    num_seed_samples = 256,
 )
 # All three formulations share ik_constraint_tol so they solve the same feasible
 # problem and the success rates are comparable.
@@ -70,7 +69,7 @@ mug_meshcat = StartMeshcat()
 yaml_file = os.path.join(RepoDir(), "models/panda/panda_finray_collision.yaml")
 base_diagram = BuildEnv(meshcat=meshcat, directives_file = yaml_file)
 # Only used to sample targets and to share the loaded network, so skip the seeding work.
-program = PandaMugProgram(base_diagram, options=replace(program_options, num_seed_samples=0))
+program = PandaMugProgram(base_diagram, options=program_options)
 program.create_prog()
 
 

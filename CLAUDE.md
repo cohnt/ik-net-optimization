@@ -23,9 +23,9 @@ Scripts append the repo root to `sys.path` themselves, so run them from anywhere
 
 ```bash
 # The current harness (paired grid, feasibility-verified success -- prefer these):
-python scripts/panda/panda_benchmark.py --task mug  --targets 15 --guesses 3 --config latent --start native
-python scripts/panda/panda_benchmark.py --task pose --targets 15 --guesses 3 --config latent --start native
-python scripts/iiwa/iiwa_benchmark.py   --task mug  --targets 12 --guesses 2 --config latent --start native
+python scripts/panda/panda_benchmark.py --task mug  --targets 15 --guesses 3 --config latent
+python scripts/panda/panda_benchmark.py --task pose --targets 15 --guesses 3 --config latent
+python scripts/iiwa/iiwa_benchmark.py   --task mug  --targets 12 --guesses 2 --config latent
 python scripts/collate.py 'results/*/benchmark/*/summary.json'
 
 # The older per-experiment scripts, kept for comparability with archived results:
@@ -56,7 +56,7 @@ Constraints are **not** added to Drake one at a time. Each `Create*Constraint` m
 
 ### Per-robot subclasses (`src/panda_program.py`, `src/iiwa_program.py`)
 
-Each robot implements `__init__` (frames, plant sizes, model loading), `create_prog` (declares decision variables, sets initial guesses, builds `self.jacobian_gen`, calls `add_constraints` / `add_costs` / `SeedInitialGuess`), `ik_inference`, and `VarsToQ`. The `...MugProgram` subclasses additionally swap `self.frame` from the end-effector (the frame the flow was *trained* on) to `between_fingers` (the frame the grasp constraint acts on), keeping `X_grasp_ee` so seeds can still be expressed in the network's frame. A mug grasp constrains only the gripper's position in the mug frame (`x = y = 0` exactly, `z` within `mug_height`), leaving orientation free — hence the overridden `CreateIKConstraint` and `SeedCandidates`.
+Each robot implements `__init__` (frames, plant sizes, model loading), `create_prog` (declares decision variables, sets initial guesses, builds `self.jacobian_gen`, calls `add_constraints` / `add_costs`), `ik_inference`, and `VarsToQ`. The `...MugProgram` subclasses additionally swap `self.frame` from the end-effector (the frame the flow was *trained* on) to `between_fingers` (the frame the grasp constraint acts on), keeping `X_grasp_ee` so seeds can still be expressed in the network's frame. A mug grasp constrains only the gripper's position in the mug frame (`x = y = 0` exactly, `z` within `mug_height`), leaving orientation free — hence the overridden `CreateIKConstraint` and `SeedCandidates`.
 
 ### Gradients through the flow
 
@@ -69,7 +69,7 @@ Numerical facts worth not rediscovering — several are recorded in code comment
 - The IK pose constraint is six rows: the per-axis position error, then the **roll-pitch-yaw residual** `rpy(FK(q)) - rpy(target)` wrapped to (-pi, pi] (`orientation_error_rpy` in `src/generic_program.py`). `ProgramOptions.orientation_error_form` picks the bounds: `rpy` (the default) pins the residual to zero, as `../codebase`'s `EEPoseConstraint` does with `lb == ub`; `rpy_boxed` allows `±ori_tol` per row. Three signed rows are deliberate. Earlier revisions used a single scalar angle `2*arccos(|q.q_target|)`, and taking a norm of a three-component error is exactly what puts a branch point at zero error — its derivative is infinite there, and its `eps` clamp additionally returned an `AutoDiffXd` with an *empty* derivative vector while freezing the row's value at 2.83e-4. Three rows have neither problem: the residual is smooth at the solution with a full-rank Jacobian, and the chart's degeneracies (gimbal lock at `pitch = ±pi/2`, the `±pi` wrap) are properties of the *target pose*, not of the error. Commit `0be5342` holds the retired scalar forms and the measurements behind the decision. `scripts/panda/panda_pose_headtohead.py` compares the joint-space and learned formulations under it.
 - Constraint rows with an identically-zero gradient (e.g. the homogeneous row of a transformed point) break LICQ — the mug constraints deliberately drop it.
 - The conditioning variable `c` is boxed near the target (`c_position_slack=0.25`) to keep the flow inside its trained workspace. This is a conditioning heuristic, not a correctness requirement — the IK constraint is imposed on `FK(q)`, so an out-of-distribution `c` cannot produce a false solution. It is also loose enough not to exclude valid grasps (`between_fingers` sits 0.1 m from `panda_hand`, so with free orientation and `mug_height=0.04` the valid `c` positions lie within 0.14 m of the mug centre). No sweep in this repo isolates its benefit.
-- `SeedInitialGuess` draws `num_seed_samples` `(c, z)` pairs in one batched forward pass, ranks them on the IK constraint alone, then re-scores the top `seed_refine_top_k` against *all* constraints because the collision query is expensive. Set `num_seed_samples=0` for programs used only to sample targets or share a loaded network. Note that batching is only free in float32: measured on this machine a batch-256 forward costs 8.8 ms in float32 (1.5x a batch of 1) but 84 ms in float64 (12x), because float64 is FLOP-bound past about batch 4 while float32 stays overhead-bound. Seeding therefore pays ~80 ms per program for a precision it does not need — it only ranks candidates.
+- **There is no seeding search, deliberately.** A previous revision drew 256 `(c, z)` candidates, scored them against the problem's own constraints and started from the best. That is not initialisation, it is solving part of the problem outside the solver, and only the learned formulation can afford it — so it flatters exactly the column under test. The machinery is removed, not merely disabled. `SetStartFromQ(q_init)` is the only way to set a program's initial guess, and every formulation in a comparison must be given the same `q_init`.
 
 ### Profiling
 
@@ -157,8 +157,7 @@ The older head-to-head scripts remain for comparability, but new measurements sh
   `c = FK(q_init)` with `z` from running the flow forwards. Order matters: invert **first**,
   then clip `c` into its box. Clipping first and inverting at the projected pose returns
   `|z| ~ 1e7`, because a random configuration is not a grasp of this mug and the flow is
-  right to say so. `--start native` instead gives each arm its own best initialisation
-  (256-sample seeding for the learned arm), which is the "best practice" comparison.
+  right to say so.
 - **Success verified from the returned point**, not from `result.is_success()`. Every
   binding is re-evaluated at the solution and the task is re-measured from `q`, with a
   named `fail_reason`. This matters because *every* learned failure in the archived runs
@@ -173,51 +172,68 @@ The older head-to-head scripts remain for comparability, but new measurements sh
 
 Produced with `src/benchmark.py`; raw records in `results/*/benchmark/*/summary.json`.
 Success is feasibility-verified from the returned point, solver status reported alongside.
-These supersede the archived `results/panda/mug/headtohead` numbers, which were scored by
-`result.is_success()` and were run before the conditioning-frame fix.
+Every arm starts from the same `q_init` and none of them searches for a good start.
 
-**The ladder** (Panda grasp, learned arm only, 15 targets x 2 guesses, 256-sample seeding),
-cumulative -- each row adds one change to the row above:
-
-| configuration | success | timeouts | mean iters | mean jacrevs | wall (s) |
-| --- | --- | --- | --- | --- | --- |
-| baseline (scene frame, separate cost evaluation) | 12/30 | 18 | 144 | 145 | 17.7 |
-| + calibrated flow frame | 18/30 | 12 | 103 | 104 | 14.2 |
-| + shared flow evaluation | 22/30 | 9 | 129 | 130 | 12.3 |
-| + task-parameterised `c` | 22/30 | 8 | **72** | **73** | 9.0 |
-| + latent trust region `||z|| <= 4` | **23/30** | 7 | 80 | 81 | 8.8 |
-| + mug axis relaxed to +-1e-4 | 20/30 | 10 | 94 | 95 | 11.2 |
-| latent trust region + axis, but free `c` | 19/30 | 11 | 108 | 109 | 11.9 |
-
-Two things to keep: the task parameterisation buys no extra successes but cuts iterations
-by 44%, which is a conditioning result, not a feasibility one; and **relaxing the mug-axis
-equality made things worse** (23 -> 20), so the two rows stay pinned. `mug_axis_tol` is
-kept as an option only to record that the experiment was run.
-
-**Head to head, shared start** (`--start paired`, 15 targets x 2 guesses). The learned
-column is the same protocol before and after, so the two are directly comparable:
+**Valid, and directly comparable before/after** (15 targets x 2 guesses):
 
 | experiment | learned | numerical | analytic |
 | --- | --- | --- | --- |
-| Panda grasp, before | 12/30 | 27/30 | 28/30 |
+| Panda grasp, before the overhaul | 12/30 | 27/30 | 28/30 |
 | Panda grasp, after | **21/30** | 29/30 | 30/30 |
 | Panda pose, after | **24/30** | 15/30 | 14/30 |
 
 On the pose experiment the learned formulation wins on success (McNemar p = 0.023 against
 joint space, 0.013 against analytic) *and* on cost (median 8.91 against 10.77 and 9.30 on
-the cells all three solved). That is the draft's central claim, now with paired statistics.
-On the grasp experiment it is still behind both baselines (p = 0.008, 0.004), where before
-it was behind them by roughly twice as much.
+the cells all three solved) -- the draft's central claim, with paired statistics. On the
+grasp experiment it is still behind both baselines (p = 0.008, 0.004), where before it was
+behind by roughly twice as much.
 
-**Where it did not work: the iiwa grasp.** Every configuration lands in the same place --
-baseline 3/24, frame fix with free `c` 5/24, the Panda's winning configuration 4/24, with
-18-21 of 24 cells timing out in all three. The Panda's gains do not transfer. The iiwa
-grasp scene is far more cluttered (four shelf units and seven decorative mugs against the
-Panda scene's two shelves and a bin) so the collision query dominates, and the iiwa flow is
-a different artifact (a local `lemon-haze-7` pickle rather than the published Panda
-weights). Diagnosing that is open work; do not assume it is the same problem as the Panda's
-was. The iiwa *pose* experiment is fine: learned 21/24 against joint space 22/24, at 25
-solver iterations against 31.
+**Withdrawn.** Every other table this branch produced was run with the searched 256-sample
+start that has since been removed: the Panda grasp 35/45, the Panda pose 45/45, both iiwa
+tables, and the whole seven-rung ablation ladder. They measure the seeding, not the change
+under test. The 12/30 -> 21/30 above survives because both ends had seeding off, but the
+**attribution of that gain to the individual changes is not established**.
+
+Of the five changes in that gain, two need no benchmark to justify:
+
+- the **conditioning frame** was a straight bug -- the network was being asked about poses
+  27 mm and 120 degrees from the frame it was trained on, and `|z| = 67.6` against 2.23 is
+  a direct measurement of that, independent of any solve;
+- **sharing the flow evaluation** returns bit-identical values and derivatives at roughly
+  twice the throughput, so it cannot cost anything.
+
+The other three -- the **task parameterisation**, the **latent trust region**, and the
+**mug-axis tolerance** -- are genuine design choices whose value is currently unproven. The
+axis-tolerance result in particular (a 3-cell difference at n = 30) was never outside the
+noise. Re-running the ladder is the first thing to do:
+
+```bash
+for CFG in baseline frame eval task latent latent-free-c; do
+  python scripts/panda/panda_benchmark.py --task mug --targets 15 --guesses 2 \
+      --wall-time 20 --arms learned --config $CFG --tag ladder2_$CFG
+done            # roughly 10 minutes per configuration
+```
+
+**What the grasp failures are.** Every learned grasp failure is a wall-clock timeout, and
+on the valid run 8 of 9 sit within 1 cm of the mug axis while 9 of 9 are in collision
+(median collision value 1.34 against a limit of 1.0). The binding difficulty is collision
+avoidance, not the learned chart. Successes take a median of 74 iterations and 5.8 s of the
+20 s cap.
+
+**Chart accuracy, which no protocol question touches.** `|FK(flow(c, z)) - c|` over 200
+random targets:
+
+| robot | position, median / p90 | orientation, median / p90 |
+| --- | --- | --- |
+| Panda | 3.8 mm / 9.4 mm | 0.71 deg / 2.76 deg |
+| iiwa14 | 16.6 mm / 64.5 mm | 6.39 deg / 30.2 deg |
+
+The iiwa flow is a four- to eightfold worse chart than the Panda's, which no amount of
+optimisation will repair. Two things to check before any more iiwa work: `correction_bound`
+is +-0.1 rad, chosen for a chart 3.8 mm off and almost certainly binding at 16.6 mm; and
+`models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl` is a local checkpoint of
+unknown provenance, unlike the Panda's published weights, so a 4x worse chart may be a
+statement about the checkpoint rather than about the method.
 
 ### Why the Jacobian is a `jacrev` and not a JVP
 

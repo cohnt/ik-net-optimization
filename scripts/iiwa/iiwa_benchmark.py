@@ -49,7 +49,6 @@ def parse_args():
     p.add_argument("--guesses", type=int, default=2)
     p.add_argument("--wall-time", type=float, default=20.0)
     p.add_argument("--solver", choices=["ipopt", "snopt"], default="ipopt")
-    p.add_argument("--start", choices=["paired", "native"], default="paired")
     p.add_argument("--arms", default="learned,numerical")
     p.add_argument("--config", default="axis")
     p.add_argument("--seed", type=int, default=0)
@@ -60,7 +59,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    tag = args.tag or f"iiwa_{args.task}_{args.config}_{args.start}"
+    tag = args.tag or f"iiwa_{args.task}_{args.config}"
     log_dir = os.path.join(RepoDir(), "results/iiwa/benchmark", tag)
     out_path = os.path.join(log_dir, "summary.json")
 
@@ -68,16 +67,8 @@ def main():
         visualize=False, joint_centering_cost=1e-4, max_wall_time=args.wall_time,
         which_solver=args.solver, acceptable_tol=1e-3,
         acceptable_constr_viol_tol=1e-4, ik_constraint_tol=(1e-4, 0.01),
-        mug_height=0.04, num_seed_samples=0)
+        mug_height=0.04)
     base_options = replace(base_options, **CONFIGS[args.config])
-    if args.start == "native":
-        # NOT a valid comparison: only the learned arm can search for a start this way,
-        # and the other two then repeat one fixed start across every guess. Kept as a
-        # diagnostic, loudly labelled, never as a headline number.
-        print("WARNING: --start native gives each formulation a different initial guess "
-              "and lets the learned arm search 256 candidates for a good one. Its numbers "
-              "are a statement about seeding, not about the formulation.")
-        base_options = replace(base_options, num_seed_samples=256)
     slack = base_options.acceptable_constr_viol_tol
 
     np.random.seed(args.seed)
@@ -86,7 +77,7 @@ def main():
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
         sampler_cls = IiwaMugProgram if args.task == "mug" else Iiwa14IKProgram
-        sampler = sampler_cls(diagram, options=replace(base_options, num_seed_samples=0))
+        sampler = sampler_cls(diagram, options=base_options)
         sampler.create_prog()
     ik_solver = sampler.ik_solver
     lower = sampler.plant.GetPositionLowerLimits()
@@ -150,9 +141,8 @@ def main():
             with HiddenPrints():
                 program = cls(diagram, options=options, model=ik_solver)
                 program.create_prog(target)
-        if args.start == "paired":
-            with HiddenPrints():
-                program.clip_distance = program.SetStartFromQ(q_init)
+        with HiddenPrints():
+            program.clip_distance = program.SetStartFromQ(q_init)
         return program
 
     learned_cls = Iiwa14IKProgram
@@ -176,7 +166,7 @@ def main():
                           progress=lambda *a: bar.update(1),
                           metadata=dict(robot="iiwa14", task=args.task,
                                         solver=args.solver, config=args.config,
-                                        start=args.start, wall_time=args.wall_time,
+                                        wall_time=args.wall_time,
                                         seed=args.seed))
     bar.close()
     print()

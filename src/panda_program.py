@@ -90,8 +90,6 @@ class PandaIKProgram(IKFlowProgram):
 
         self.add_costs()
 
-        self.SeedInitialGuess()
-
 
     def ik_inference(self, vars, add_correction = True):
         '''Given a latent + target + correction, returns corresponding joint angles
@@ -200,28 +198,6 @@ class PandaMugProgram(PandaIKProgram):
         self.X_grasp_ee = X_W_grasp.inverse() @ X_W_flow
 
 
-    def SeedCandidates(self, n):
-        '''The mug grasp constrains only where the gripper sits, not how it is oriented,
-        so sample orientations uniformly on SO(3) and heights along the mug axis in
-        addition to the latents.'''
-        centre = self.target_mug.middle.translation()
-        axis = self.target_mug.middle.rotation().matrix()[:, 2]
-        heights = np.random.uniform(-self.options.mug_height, self.options.mug_height, size=(n, 1))
-
-        quats = np.random.randn(n, 4)
-        quats /= np.linalg.norm(quats, axis=1, keepdims=True)
-
-        c = np.empty((n, 6))
-        for i in range(n):
-            X_W_grasp = RigidTransform(RotationMatrix(Quaternion(quats[i])), centre + heights[i] * axis)
-            X_W_ee = X_W_grasp @ self.X_grasp_ee
-            c[i, :3] = X_W_ee.translation()
-            c[i, 3:] = X_W_ee.rotation().ToRollPitchYaw().vector()
-
-        z = self.options.seed_latent_scale * np.random.randn(n, self.ik_solver.network_width)
-        return c, z
-
-
     def create_prog(self, target_mug = Mug(), q_nominal = None):
         self.prog = MathematicalProgram()
         self.c = self.prog.NewContinuousVariables(6) # x y z qw qx qy qz into nn model
@@ -250,7 +226,6 @@ class PandaMugProgram(PandaIKProgram):
         self.target_pose = np.array([*target_mug.middle.translation(), 1, 0, 0, 0]) ## for bounding box
         self.add_constraints()
         self.add_costs()
-        self.SeedInitialGuess()
 
     def CreateIKConstraint(self):
         # The gripper must lie on the mug's central axis (x = y = 0 exactly, as
