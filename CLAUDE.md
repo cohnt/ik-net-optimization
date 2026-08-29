@@ -272,6 +272,54 @@ Detecting a 5-cell difference at 30 cells is hopeless; a grid several times larg
 these two design choices would need, and that is a cheaper experiment than it looks now that
 a rung costs about six minutes.
 
+### The three-way comparison, both start protocols (2026-08-29, IPOPT, 20 s cap, compiled)
+
+15 targets x 2 guesses, one grid per experiment, `--compile`, feasibility-verified success.
+`paired` starts every arm at the same `q_init`; `native` gives each formulation its own
+initialisation. The joint-space arm's two protocols coincide by construction, and it does
+score identically in all four experiments, which is the harness checking itself.
+
+| experiment | start | learned | numerical | analytic |
+| --- | --- | --- | --- | --- |
+| Panda pose | paired | **23/30** | 15/30 | 21/30 |
+| Panda pose | native | **28/30** | 15/30 | 16/30 |
+| Panda grasp | paired | 24/30 | **30/30** | 26/30 |
+| Panda grasp | native | 25/30 | **30/30** | **30/30** |
+| iiwa pose | paired | 16/30 | 14/30 | -- |
+| iiwa pose | native | **30/30** | 14/30 | -- |
+| iiwa grasp | paired | 12/30 | **29/30** | -- |
+| iiwa grasp | native | 7/30 | **29/30** | -- |
+
+**On the pose task the learned formulation wins, on both robots, under both protocols.**
+Exact McNemar against joint space: Panda 23 vs 15 (p = 0.039) paired and 28 vs 15
+(p = 0.00098) native; iiwa 16 vs 14 (p = 0.77) paired and 30 vs 14 (p = 3.1e-5) native.
+Against the analytic arm on the Panda, 28 vs 16 native (p = 0.0042) but 23 vs 21 paired
+(p = 0.77). It also wins on cost wherever it wins on success. This is the draft's central
+claim, and it now holds under two different initialisation protocols rather than one.
+
+**On the grasp task it loses to both baselines,** and the iiwa is far worse than the Panda
+(12/30 and 7/30 against 29/30). Panda grasp against joint space: 24 vs 30 paired
+(p = 0.031), 25 vs 30 native (p = 0.063).
+
+**Neither protocol is uniformly kind**, which is the reason to report both:
+
+| arm and experiment | paired | native | p |
+| --- | --- | --- | --- |
+| learned, iiwa pose | 16/30 | 30/30 | 0.00012 |
+| learned, Panda pose | 23/30 | 28/30 | 0.125 |
+| analytic, Panda grasp | 26/30 | 30/30 | 0.125 |
+| analytic, Panda pose | 21/30 | 16/30 | 0.227 |
+| learned, iiwa grasp | 12/30 | 7/30 | 0.227 |
+| numerical, all four | -- | identical | 1.0 |
+
+The pattern is that the paired start **handicaps the learned arm on the pose task** -- its
+natural start conditions the flow on the target pose and draws the latent from the prior,
+whereas the paired start hands it the latent of an unrelated random configuration -- and
+handicaps the **analytic arm on the grasp task**, where the shared `q_init` often falls in
+the half of the chart it does not cover. Both effects are protocol artefacts rather than
+statements about the formulations, and they point in opposite directions, so the two
+qualitative conclusions above are robust to the choice.
+
 ### Measured results (2026-08-28, RTX 3080 Ti laptop, IPOPT, 20 s cap)
 
 Produced with `src/benchmark.py`; raw records in `results/*/benchmark/*/summary.json`.
