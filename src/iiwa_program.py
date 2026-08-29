@@ -239,7 +239,7 @@ class IiwaMugProgram(Iiwa14IKProgram):
         SO(3) and heights along the mug axis alongside the latents.'''
         centre = self.target_mug.middle.translation()
         axis = self.target_mug.middle.rotation().matrix()[:, 2]
-        heights = np.random.uniform(-self.target_mug.height, self.target_mug.height, size=(n, 1))
+        heights = np.random.uniform(-self.options.mug_height, self.options.mug_height, size=(n, 1))
 
         quats = np.random.randn(n, 4)
         quats /= np.linalg.norm(quats, axis=1, keepdims=True)
@@ -258,8 +258,12 @@ class IiwaMugProgram(Iiwa14IKProgram):
         # The gripper must lie on the mug's central axis (x = y = 0 exactly, as
         # ../codebase's MugConstraint imposes it) and within the mug's height along it.
         # Orientation is left free: any approach direction is a valid grasp.
-        lb = np.array([0.0, 0.0, -self.target_mug.height])
-        ub = np.array([0.0, 0.0, self.target_mug.height])
+        # options.mug_height, not target_mug.height: the two default differently (0.035
+        # against 0.04), and the constraint must agree with the bound the task-parameterised
+        # program puts on the same quantity.
+        axis_tol = self.options.mug_axis_tol
+        lb = np.array([-axis_tol, -axis_tol, -self.options.mug_height])
+        ub = np.array([axis_tol, axis_tol, self.options.mug_height])
         def eval_func(vars, q, pose):
             position, _ = pose
             mug_transform = np.linalg.inv(self.target_mug.middle.GetAsMatrix4())
@@ -285,7 +289,74 @@ class IiwaMugProgram(Iiwa14IKProgram):
             self.c
         )
         self.c_bounding_box_constraint.evaluator().set_description("CBoundingBoxConstraint")
+        bound = self.options.correction_bound
         self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -0.1 * np.ones(7), 0.1 * np.ones(7), self.correction
+            -bound * np.ones(7), bound * np.ones(7), self.correction
         )
         self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
+
+
+class Iiwa14IKProgramNumerical(Iiwa14IKProgram):
+    '''The joint-space ("C-space") formulation: the decision variables are the joint
+    angles themselves, so `VarsToQ` is the identity and no network is evaluated. It shares
+    every constraint and cost with the learned formulation through `IKFlowProgram`, which
+    is what makes the comparison a statement about the change of variables alone.'''
+
+    def create_prog(self, target_pose=np.array([0., 0., 0., 1., 0., 0., 0.]), q_nominal=None):
+        self.prog = MathematicalProgram()
+        self.q = self.prog.NewContinuousVariables(7)
+        self.lumped_vars = self.q
+        self.target_pose = target_pose
+        self.q_nominal = np.zeros(7) if q_nominal is None else q_nominal
+        self.prog.SetInitialGuess(self.q, self.q_nominal)
+        self.add_constraints()
+        self.add_costs()
+
+    def VarsToQ(self, rpy_vars, add_correction=False):
+        q = np.zeros(self.num_pos,
+                     dtype=AutoDiffXd if isinstance(rpy_vars[0], AutoDiffXd) else float)
+        q[7:] = [0.04] * (self.num_pos - 7)  # fixed gripper joints
+        q[:7] = rpy_vars[:7]
+        return q
+
+    def SetStartFromQ(self, q_arm):
+        return self._SetClipped(self.q, np.asarray(q_arm, dtype=float)[:7])
+
+    def BoundingBoxConstraint(self):
+        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
+            iiwa_limits_lower, iiwa_limits_upper, self.q)
+        self.bounding_box_constraint.evaluator().set_description("QBoundingBoxConstraint")
+
+
+class IiwaMugProgramNumerical(IiwaMugProgram):
+    '''Joint-space formulation of the grasp-selection task.'''
+
+    def create_prog(self, target_mug=Mug(), q_nominal=None):
+        self.prog = MathematicalProgram()
+        self.q = self.prog.NewContinuousVariables(7)
+        self.lumped_vars = self.q
+        self.target_mug = target_mug
+        self.q_nominal = np.zeros(7) if q_nominal is None else q_nominal
+        self.prog.SetInitialGuess(self.q, self.q_nominal)
+        self.add_constraints()
+        self.add_costs()
+
+    def VarsToQ(self, rpy_vars, add_correction=False):
+        q = np.zeros(self.num_pos,
+                     dtype=AutoDiffXd if isinstance(rpy_vars[0], AutoDiffXd) else float)
+        q[7:] = [0.04] * (self.num_pos - 7)
+        q[:7] = rpy_vars[:7]
+        return q
+
+    def SetStartFromQ(self, q_arm):
+        return self._SetClipped(self.q, np.asarray(q_arm, dtype=float)[:7])
+
+    def BoundingBoxConstraint(self):
+        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
+            iiwa_limits_lower, iiwa_limits_upper, self.q)
+        self.bounding_box_constraint.evaluator().set_description("QBoundingBoxConstraint")
+
+
+class IiwaMugProgramTaskParam(GraspTaskParamMixin, IiwaMugProgram):
+    '''The iiwa grasp with the task folded into the decision variables; the formulation
+    is identical to the Panda's and lives in `GraspTaskParamMixin`.'''
