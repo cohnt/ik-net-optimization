@@ -115,6 +115,12 @@ class ProgramOptions:
     file_print_name: str = field(default="ikflow_solver_log.txt", metadata={"help": "File name for solver log"})
     max_wall_time: float = field(default=60, metadata={"help": "Maximum wall time for the solver in seconds"})
     hard_time_factor: float = field(default=3.0, metadata={"help": "Abandon a solve from inside the constraint callback once it has run this many times max_wall_time; None disables. A backstop for solves that overrun IPOPT's own limit"})
+    # Which discrete branch set the Panda analytic chart uses: 4 is the historical chart
+    # (elbow branch pinned, the half far from the joint limits); 8 adds the mirrored elbow
+    # branch, taking round-trip coverage from 89.4% to 99.4% of random configurations. The
+    # default stays 4 so archived runs remain reproducible; the residual ~0.6% at 8 is a
+    # measured property of this chart, left as future work (arXiv:2503.03992 may help).
+    analytic_branches: int = 4
     snopt_function_precision: float = field(default=None, metadata={"help": "SNOPT 'Function precision'. Leave None in float64; set ~1e-6 if evaluating the flow in float32"})
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})

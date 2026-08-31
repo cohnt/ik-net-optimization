@@ -320,6 +320,21 @@ class PandaIKProgramNumerical(PandaIKProgram):
                     -10. * np.ones(7), 10. * np.ones(7), self.q
         )
 
+def AnalyticBranchOptions(branches):
+    """The discrete branch set of the Panda analytic chart.
+
+    4 is the historical chart (B x C, elbow branch pinned); 8 adds the elbow branch
+    A in {+1, -1} as a third index (see Analytic_IK_Panda.IK). One helper rather than
+    three copies of the array, so the two sets cannot drift apart.
+    """
+    bc = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    if branches == 4:
+        return np.array(bc)
+    if branches == 8:
+        return np.array([(b, c, a) for b, c in bc for a in (1, -1)])
+    raise ValueError(f"analytic_branches must be 4 or 8, got {branches}")
+
+
 class PandaIKProgramAnalytic(PandaIKProgram):
     def __init__(self, diagram, options = ProgramOptions(), model = None):
         super().__init__(diagram, options, model)
@@ -337,7 +352,7 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         else:
             self.q_nominal = q_nominal
         if gc is None:
-            opts = np.array([[1,1],[1,2],[2,1],[2,2]])
+            opts = AnalyticBranchOptions(self.options.analytic_branches)
             self.gc = opts[np.random.randint(len(opts))]
         else:
             self.gc = gc
@@ -361,7 +376,8 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         charging the analytic arm for that is not a statement about the formulation.
         '''
         q_arm = np.asarray(q_arm, dtype=float)[:7]
-        self.gc = self.analytic_ik.gc(q_arm)
+        self.gc = self.analytic_ik.gc(
+            q_arm, branches=3 if self.options.analytic_branches == 8 else 2)
         self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
         # self.frame, not FlowFrame(): there is no flow in this formulation, and the
         # variables are the pose of the frame the closed-form map is written against --
@@ -379,11 +395,11 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         Its pose variables are pinned near the target by the task itself, so what is
         actually free at the start is the redundancy parameter and the branch, and both are
         drawn rather than chosen: `psi` uniformly over the range joint 7 admits, `GC`
-        uniformly over the four branches this map charts. (It charts four of the eight; the
-        other four sit very close to the joint limits and are an accepted limitation of the
-        formulation, not a gap to be filled.) `create_prog` has already put the pose
+        uniformly over the branches the configured chart covers (4 historically; 8 with
+        `analytic_branches=8`, which adds the elbow branch -- the half of the chart that
+        sits close to the joint limits). `create_prog` has already put the pose
         variables at the target, which is the natural choice.'''
-        options = np.array([[1, 1], [1, 2], [2, 1], [2, 2]])
+        options = AnalyticBranchOptions(self.options.analytic_branches)
         self.gc = options[rng.integers(len(options))]
         self.prog.SetInitialGuess(self.psi, [rng.uniform(-np.pi, np.pi)])
         return 0.0
@@ -504,7 +520,7 @@ class PandaMugProgramAnalytic(PandaIKProgramAnalytic):
         else:
             self.q_nominal = q_nominal
         if gc is None:
-            opts = np.array([[1,1],[1,2],[2,1],[2,2]])
+            opts = AnalyticBranchOptions(self.options.analytic_branches)
             self.gc = opts[np.random.randint(len(opts))]
         else:
             self.gc = gc

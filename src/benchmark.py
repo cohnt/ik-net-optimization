@@ -260,11 +260,17 @@ class Arm:
 
 
 def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
-             progress=None, metadata=None, cell_timeout=None):
+             progress=None, metadata=None, cell_timeout=None, cells=None):
     """Run every (arm, target, guess) cell once and write a checkpointed summary.
 
     Checkpointing after each target matters: these runs are hours long and the learned
     arm's cells can each take the full wall-clock cap.
+
+    `cells`, when given, is a collection of (target, guess) index pairs and restricts the
+    run to exactly those cells. It exists to make a single cell of a past run addressable
+    (the grid is seeded and hashed, so cell (ti, gi) of an archived summary is
+    reproducible bit for bit) -- a debugging aid, not a sampling mechanism: the summary of
+    a filtered run is partial and says so in its metadata.
     """
     os.makedirs(log_dir, exist_ok=True)
     records = {arm.name: [] for arm in arms}
@@ -274,8 +280,15 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     stalls = open(os.path.join(log_dir, "stalls.txt"), "a") if cell_timeout else None
     n_targets, n_guesses = len(targets), len(guesses)
 
+    if cells is not None:
+        cells = {(int(t), int(g)) for t, g in cells}
+        if metadata is not None:
+            metadata = dict(metadata, cells=sorted(cells))
+
     for ti in range(n_targets):
         for gi in range(n_guesses):
+            if cells is not None and (ti, gi) not in cells:
+                continue
             for arm in arms:
                 log_path = os.path.join(log_dir, f"{arm.name}_{ti}_{gi}.txt")
                 if os.path.exists(log_path):

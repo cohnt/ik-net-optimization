@@ -65,6 +65,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--task-tol", type=float, default=1e-3)
     p.add_argument("--tag", default=None)
+    p.add_argument("--cells", default=None, metavar="TI:GI[,TI:GI...]",
+                   help="run only these (target, guess) cells of the seeded grid")
     p.add_argument("--compile", action="store_true",
                    help="torch.compile the flow Jacobian, once per process, warmed up "
                         "before the grid. Moves the learned arm's success rate inside a "
@@ -216,6 +218,8 @@ def main():
 
     bar = tqdm(total=len(arms) * args.targets * args.guesses, desc=tag)
     records = bm.run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol=slack, cell_timeout=5 * args.wall_time + 300,
+        cells=([tuple(map(int, c.split(":"))) for c in args.cells.split(",")]
+               if args.cells else None),
                           progress=lambda *a: bar.update(1),
                           metadata=dict(robot="iiwa14", task=args.task,
                                         solver=args.solver, config=args.config,

@@ -102,6 +102,9 @@ def parse_args():
                         "smaller. The raw errors are stored per record, so a stricter "
                         "gate can be recomputed from the summary without re-running.")
     p.add_argument("--tag", default=None, help="subdirectory under results/")
+    p.add_argument("--cells", default=None, metavar="TI:GI[,TI:GI...]",
+                   help="run only these (target, guess) cells of the seeded grid -- "
+                        "a debugging aid for reproducing a single archived cell")
     p.add_argument("--compile", action="store_true",
                    help="torch.compile the flow Jacobian (1.33x on it, ~1.5x on an "
                         "AutoDiffXd VarsToQ). Compiled once per process and warmed up "
@@ -292,6 +295,16 @@ def main():
             lambda t, g, c: build(PandaMugProgramAnalytic if mug else PandaIKProgramAnalytic,
                                base_options, t, g, c, pose_offset=analytic_offset),
             base_options.joint_centering_cost),
+        # The same formulation on the full 8-branch chart. A separate arm rather than a
+        # config so the 4- and 8-branch columns land in one run on identical cells; the
+        # only difference is the discrete branch set (and so which q_init the paired start
+        # can represent -- the 4-branch chart cannot express ~10% of configurations).
+        "analytic8": bm.Arm(
+            "analytic8",
+            lambda t, g, c: build(PandaMugProgramAnalytic if mug else PandaIKProgramAnalytic,
+                               replace(base_options, analytic_branches=8),
+                               t, g, c, pose_offset=analytic_offset),
+            base_options.joint_centering_cost),
     }
     arms = [all_arms[name] for name in args.arms.split(",")]
 
@@ -299,6 +312,8 @@ def main():
     records = bm.run_grid(
         arms, targets, guesses, task_gate, log_dir, out_path,
         tol=slack, cell_timeout=5 * args.wall_time + 300,
+        cells=([tuple(map(int, c.split(":"))) for c in args.cells.split(",")]
+               if args.cells else None),
         progress=lambda *a: bar.update(1),
         metadata=dict(task=args.task, solver=args.solver, config=args.config,
                       wall_time=args.wall_time, seed=args.seed, grid_hash=grid_hash,
