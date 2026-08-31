@@ -385,7 +385,19 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         pose = self.frame.CalcPoseInWorld(self.plant_context)
         xyz_rpy = np.concatenate([pose.translation(),
                                   pose.rotation().ToRollPitchYaw().vector()])
-        clipped = self._SetClipped(self.xyz_rpy, xyz_rpy)
+        if self.options.legacy_paired_start:
+            clipped = self._SetClipped(self.xyz_rpy, xyz_rpy)
+            clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])
+            return clipped
+        # Unclipped, like the learned arm's conditioning pose: the pose formulation pins
+        # xyz_rpy to the target with a +-ik_tol bounding box, so clipping the guess into
+        # it silently replaced the paired start with (target pose, psi(q_init)) -- the
+        # archived pose tables show the analytic arm starting a median 2.7 rad from the
+        # shared q_init for exactly this reason, chart coverage notwithstanding. A Drake
+        # guess may sit outside the bounds; IPOPT's own projection is the solver's first
+        # move and its size is returned as the clip distance.
+        self.prog.SetInitialGuess(self.xyz_rpy, xyz_rpy)
+        clipped = self._BoxDistance(self.xyz_rpy, xyz_rpy)
         clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])
         return clipped
 

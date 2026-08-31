@@ -111,16 +111,27 @@ class Verdict:
     detail: dict = field(default_factory=dict)
 
 
-def verify(program, result, task_gate, tol):
+def verify(program, result, task_gate, tol, x_lumped=None):
     """Score a solve from the returned point, independently of the solver's own status.
 
     `task_gate(q)` returns `(ok, detail_dict)` and is where the experiment states what
     "the arm is actually where it was asked to be" means -- distance off the mug axis for
     a grasp, per-axis position and rpy residual for a pose target.
+
+    `x_lumped`, when given instead of `result`, is a raw value of
+    `program.lumped_vars` -- the last iterate of a solve that ended abnormally. The point
+    the solver actually had is scored the same way a returned solution is, so an aborted
+    solve that was sitting on a feasible point is still visible as one.
     """
-    x = result.get_x_val()
+    if result is not None:
+        x = result.get_x_val()
+        x_lumped = result.GetSolution(program.lumped_vars)
+    else:
+        x_lumped = np.asarray(x_lumped, dtype=float)
+        x = np.empty(program.prog.num_vars())
+        x[program.prog.FindDecisionVariableIndices(program.lumped_vars)] = x_lumped
     try:
-        q = program.VarsToQ(result.GetSolution(program.lumped_vars))
+        q = program.VarsToQ(x_lumped)
         q = np.asarray([float(v) for v in q])
     except Exception as exc:                      # a diverged solve can produce garbage
         return Verdict(False, "nan", {"exception": f"{type(exc).__name__}: {exc}"})
@@ -139,9 +150,11 @@ def verify(program, result, task_gate, tol):
     # correction_bound says whether the correction box is binding, and ||z|| says whether
     # the latent left the flow's typical set (sqrt(latent_dim), so ~2.65 and ~2.83).
     if hasattr(program, "correction"):
-        detail["correction_inf"] = float(np.max(np.abs(result.GetSolution(program.correction))))
+        detail["correction_inf"] = float(np.max(np.abs(
+            x[program.prog.FindDecisionVariableIndices(program.correction)])))
     if hasattr(program, "z"):
-        detail["z_norm"] = float(np.linalg.norm(result.GetSolution(program.z)))
+        detail["z_norm"] = float(np.linalg.norm(
+            x[program.prog.FindDecisionVariableIndices(program.z)]))
 
     ok, task_detail = task_gate(program, q)
     detail.update(task_detail)
@@ -301,6 +314,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                 if cell_timeout:
                     faulthandler.dump_traceback_later(cell_timeout, repeat=True,
                                                       file=stalls)
+                program = None
                 try:
                     program = arm.make_program(targets[ti], guesses[gi], (ti, gi))
                     record["setup_time"] = time.time() - t0
@@ -326,10 +340,22 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                 except Exception as exc:            # never let one cell kill a sweep
                     record["error"] = f"{type(exc).__name__}: {exc}"
                     record["feasible"] = False
-                    record["fail_reason"] = ("hard_timeout"
-                                             if type(exc).__name__ == "SolveTimeout"
-                                             else "error")
+                    record["fail_reason"] = "error"
                     record["wall_time"] = time.time() - t0
+                    # The solve is lost, but the point it had need not be: score the last
+                    # iterate the solver reached exactly as a returned solution would be.
+                    # A cell that died on a feasible point is then still visible as one.
+                    last = getattr(program, "last_iterate", None) if program is not None else None
+                    if last is not None:
+                        try:
+                            verdict = verify(program, None, task_gate, tol, x_lumped=last)
+                            record["recovered_feasible"] = verdict.feasible
+                            record["recovered_fail_reason"] = verdict.fail_reason
+                            detail = dict(verdict.detail)
+                            detail.pop("q", None)
+                            record["recovered_detail"] = detail
+                        except Exception as exc2:
+                            record["recovered_error"] = f"{type(exc2).__name__}: {exc2}"
                 finally:
                     if cell_timeout:
                         faulthandler.cancel_dump_traceback_later()
