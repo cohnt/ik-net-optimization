@@ -25,16 +25,7 @@ from pydrake.all import (
     Quaternion_,
 )
 
-class SolveTimeout(RuntimeError):
-    '''Raised out of a constraint evaluation when a solve overruns its hard cap.
 
-    IPOPT's own `max_wall_time` is checked between iterations, so a solve that gets stuck
-    *inside* one -- a restoration phase thrashing on a badly conditioned point, say -- can
-    run indefinitely: one observed grasp cell sat in a single 20 s-capped solve for eleven
-    minutes at full CPU. The constraint callback is Python and runs thousands of times a
-    second, so raising from there is a cap that does not depend on the solver honouring
-    anything.
-    '''
 
 
 @dataclass
@@ -114,13 +105,22 @@ class ProgramOptions:
     file_print_level: int = field(default=5, metadata={"help": "File print level for the solver"})
     file_print_name: str = field(default="ikflow_solver_log.txt", metadata={"help": "File name for solver log"})
     max_wall_time: float = field(default=60, metadata={"help": "Maximum wall time for the solver in seconds"})
-    hard_time_factor: float = field(default=3.0, metadata={"help": "Abandon a solve from inside the constraint callback once it has run this many times max_wall_time; None disables. A backstop for solves that overrun IPOPT's own limit"})
     # Which discrete branch set the Panda analytic chart uses: 4 is the historical chart
     # (elbow branch pinned, the half far from the joint limits); 8 adds the mirrored elbow
     # branch, taking round-trip coverage from 89.4% to 99.4% of random configurations. The
     # default stays 4 so archived runs remain reproducible; the residual ~0.6% at 8 is a
     # measured property of this chart, left as future work (arXiv:2503.03992 may help).
     analytic_branches: int = 4
+    # Restores the pre-2026-08-31 paired start, in which the conditioning pose was clipped
+    # into its box before the solve and the correction started at zero -- leaving the
+    # learned arm 1.2-3.3 rad from the shared q_init. The repaired default sets the guess
+    # exactly (Drake accepts an infeasible initial guess; IPOPT projects bounds itself),
+    # for reproducing archived runs only.
+    legacy_paired_start: bool = False
+    # Degrade the flow's chart by a deterministic smooth perturbation of this magnitude
+    # (rad, per-joint sin features of [c; z]); 0 disables. Experimental knob for the
+    # chart-error dose-response -- see MakeFlowInference.
+    chart_error_scale: float = 0.0
     snopt_function_precision: float = field(default=None, metadata={"help": "SNOPT 'Function precision'. Leave None in float64; set ~1e-6 if evaluating the flow in float32"})
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
@@ -188,20 +188,40 @@ ORIENTATION_ERROR_FORMS = ("rpy", "rpy_boxed")
 # the penalty was per instance because the compiled thing was per instance.)
 
 
-def MakeFlowInference(nn_model, width, num_arm_dof, device):
+def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.0):
     """`vars -> (q, q)`, the shape `jacrev(..., has_aux=True)` wants.
 
     Returning q twice is what lets one reverse pass yield both dq/dvars and q, instead of
     evaluating the network again for the value. `vars` is [conditioning pose as xyz + wxyz,
     latent, correction]; the trailing zero on the conditioning row is the padding the flow
     was trained with.
+
+    `chart_error_scale` adds a deterministic, smooth, seeded perturbation
+    `eps * sin(W [c; z] + b)` to the network's output -- an experimental knob that
+    degrades the chart's accuracy without touching anything else, so success can be
+    measured against chart error with the scene, kinematics and solver held fixed (the
+    dose-response experiment: the Panda's 3.8 mm chart pushed through the iiwa's
+    16.6-64 mm regime). It is a function of the conditioning pose and latent only, so the
+    correction's analytic identity block in the Jacobian is untouched.
     """
+    if chart_error_scale:
+        # Explicit device="cpu": ikflow installs a global default-device override that
+        # would otherwise pair the CPU generator with a CUDA allocation and fail.
+        gen = torch.Generator(device="cpu").manual_seed(0)
+        W = torch.randn((7 + width, num_arm_dof), generator=gen,
+                        dtype=torch.float64, device="cpu").to(device)
+        b = torch.randn(num_arm_dof, generator=gen,
+                        dtype=torch.float64, device="cpu").to(device)
+
     def flow_inference(vars):
         c, z, correction = vars[:7], vars[7:7 + width], vars[7 + width:]
         c_torch = torch.cat(
             [c.unsqueeze(0), torch.zeros((1, 1), dtype=vars.dtype, device=device)], dim=1)
         output, _ = nn_model(z.unsqueeze(0), c=c_torch, rev=True)
         q = output[0, :num_arm_dof] + correction
+        if chart_error_scale:
+            q = q + chart_error_scale * torch.sin(
+                vars[:7 + width].to(W.dtype) @ W + b).to(q.dtype)
         return q, q
     return flow_inference
 
@@ -209,18 +229,19 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device):
 _COMPILED_JACOBIANS = {}
 
 
-def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it):
+def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_error_scale=0.0):
     """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked.
 
     Reverse mode is the right primitive at this shape -- 7 outputs against 21 inputs, of
     which 13 reach the network -- and the measurements behind that are in CLAUDE.md.
     """
     jacobian_gen = torch.func.jacrev(
-        MakeFlowInference(nn_model, width, num_arm_dof, device), has_aux=True)
+        MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale),
+        has_aux=True)
     if not compile_it:
         return jacobian_gen
     key = (id(nn_model), width, num_arm_dof, str(device),
-           next(nn_model.parameters()).dtype)
+           next(nn_model.parameters()).dtype, float(chart_error_scale))
     if key not in _COMPILED_JACOBIANS:
         _COMPILED_JACOBIANS[key] = torch.compile(jacobian_gen)
     return _COMPILED_JACOBIANS[key]
@@ -308,6 +329,17 @@ class GraspTaskParamMixin:
         clipped = self._SetClipped(self.c, self._GraspParamsFromQ(q_arm))
         clipped += self._SetClipped(self.z, z)
         self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
+        # An exact paired start is impossible here by construction -- these variables
+        # encode a grasp and q_arm is not one, so the start is genuinely a projection.
+        # The correction still closes what it can representably close (at most
+        # correction_bound per joint, and clipped to noise when the flow's output at the
+        # projected grasp parameters is far from any configuration); start_q_error keeps
+        # reporting the remaining distance per cell, which is the honest number.
+        residual = q_arm - np.asarray(
+            self.VarsToQ(self.prog.GetInitialGuess(self.lumped_vars)), dtype=float)[:self.num_arm_dof]
+        bound = self.options.correction_bound
+        residual = np.nan_to_num(residual, nan=0.0, posinf=bound, neginf=-bound)
+        self.prog.SetInitialGuess(self.correction, np.clip(residual, -bound, bound))
         return clipped
 
     def BoundingBoxConstraint(self):
@@ -414,13 +446,13 @@ class IKFlowProgram:
         if fn is None:
             fn = self._flow_inference = MakeFlowInference(
                 self.ik_solver.nn_model, self.ik_solver.network_width,
-                self.num_arm_dof, DEVICE)
+                self.num_arm_dof, DEVICE, self.options.chart_error_scale)
         return fn
 
     def MakeJacobianGen(self):
         return FlowJacobianGen(
             self.ik_solver.nn_model, self.ik_solver.network_width, self.num_arm_dof,
-            DEVICE, self.options.compile_flow_jacobian)
+            DEVICE, self.options.compile_flow_jacobian, self.options.chart_error_scale)
 
     def WarmUpJacobian(self):
         """Pay torch.compile's one-off cost outside any timed solve.
@@ -473,7 +505,6 @@ class IKFlowProgram:
         sharing them between the constraint binding and the cost binding is close to a
         factor of two on the whole solve.
         '''
-        self.CheckDeadline()
         if not getattr(self.options, "share_flow_evaluations", False):
             q = self.VarsToQ(vars)
             return q, self.fk(q)
@@ -606,8 +637,26 @@ class IKFlowProgram:
         # first keeps the latent inside the typical set and lets the box move only the
         # conditioning pose, which is the quantity the box is actually about.
         z = self.InvertFlow(q_arm, c)
-        clipped = self._SetClipped(self.c, c) + self._SetClipped(self.z, z)
+        if self.options.legacy_paired_start:
+            clipped = self._SetClipped(self.c, c) + self._SetClipped(self.z, z)
+            self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
+            return clipped
+        # The exact paired start. The conditioning pose is set *unclipped* -- a Drake
+        # initial guess need not satisfy the bounds, and IPOPT projects variables into
+        # their box itself -- so flow(c, z) reproduces q_arm to the network's noise floor
+        # (measured ~1e-6 in float32, tighter in float64), and the correction closes that
+        # residual. q(start) is then q_arm to float precision, which is what "paired"
+        # claims; the pre-clipped version started 1.2-3.3 rad away. The distance from c to
+        # its box is returned as the clip distance: it is how far the solver's own
+        # projection will move the first iterate.
+        self.prog.SetInitialGuess(self.c, c)
+        clipped = self._BoxDistance(self.c, c) + self._SetClipped(self.z, z)
         self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
+        residual = q_arm - np.asarray(
+            self.VarsToQ(self.prog.GetInitialGuess(self.lumped_vars)), dtype=float)[:self.num_arm_dof]
+        bound = self.options.correction_bound
+        residual = np.nan_to_num(residual, nan=0.0, posinf=bound, neginf=-bound)
+        self.prog.SetInitialGuess(self.correction, np.clip(residual, -bound, bound))
         return clipped
 
     def SetNativeStart(self, q_init, rng):
@@ -631,11 +680,10 @@ class IKFlowProgram:
         self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
         return 0.0
 
-    def _SetClipped(self, variables, values):
-        '''Set an initial guess, clipped into the program's bounding box on it.'''
-        values = np.asarray(values, dtype=float)
-        lower = np.full(len(values), -np.inf)
-        upper = np.full(len(values), np.inf)
+    def _VariableBounds(self, variables):
+        '''The tightest bounding box the program imposes on `variables`.'''
+        lower = np.full(len(variables), -np.inf)
+        upper = np.full(len(variables), np.inf)
         names = {v.get_id(): i for i, v in enumerate(variables)}
         for binding in self.prog.bounding_box_constraints():
             evaluator = binding.evaluator()
@@ -644,9 +692,23 @@ class IKFlowProgram:
                 if index is not None:
                     lower[index] = max(lower[index], evaluator.lower_bound()[row])
                     upper[index] = min(upper[index], evaluator.upper_bound()[row])
+        return lower, upper
+
+    def _SetClipped(self, variables, values):
+        '''Set an initial guess, clipped into the program's bounding box on it.'''
+        values = np.asarray(values, dtype=float)
+        lower, upper = self._VariableBounds(variables)
         clipped = np.clip(values, lower, upper)
         self.prog.SetInitialGuess(variables, clipped)
         return float(np.linalg.norm(clipped - values))
+
+    def _BoxDistance(self, variables, values):
+        '''How far `values` sits outside the program's bounding box on `variables` --
+        the projection distance IPOPT will apply at its first iterate when the guess is
+        set unclipped.'''
+        values = np.asarray(values, dtype=float)
+        lower, upper = self._VariableBounds(variables)
+        return float(np.linalg.norm(np.clip(values, lower, upper) - values))
 
     ## ------------------------- multi-start seeding ------------------------- ##
 
@@ -686,23 +748,9 @@ class IKFlowProgram:
             self.plant.SetPositions(self.plant_context, q)
             return self.frame, self.plant_context
 
-    def CheckDeadline(self):
-        '''Abandon a solve that has outrun its hard cap.
-
-        Called from `QAndPose`, which every binding funnels through -- the constraint, the
-        joint-centering cost, and the analytic arms' evaluations alike. Putting it only in
-        the constraint callback left a hole: one sweep cell ran 6106 s against a 20 s cap
-        before anything noticed.
-        '''
-        deadline = getattr(self, "_solve_deadline", None)
-        if deadline is not None and time.time() > deadline:
-            raise SolveTimeout(
-                f"solve exceeded {self.options.hard_time_factor}x its "
-                f"{self.options.max_wall_time} s cap")
 
     def EvalAllConstraints(self, vars):
         '''Parallelize as much of the VarsToQ as possible to shorten computation time'''
-        self.CheckDeadline()
         q, pose = self.QAndPose(vars)  ## one flow evaluation for every constraint row
         total_length = sum(len(constraint) for constraint in self.constraints)
         result = np.full(total_length, q[0]) ## q datatype
@@ -820,10 +868,6 @@ class IKFlowProgram:
     
 
     def Solve(self):
-        factor = self.options.hard_time_factor
-        self._solve_deadline = (None if factor is None
-                                else time.time() + factor * self.options.max_wall_time)
-
         if os.path.exists(self.options.file_print_name):
             with open(self.options.file_print_name, "r+") as f:
                 f.seek(0)
@@ -868,19 +912,26 @@ class IKFlowProgram:
 
 
 
-        self.prog.AddVisualizationCallback(
-            partial(visualization_callback, diagram=self.diagram, diagram_context=self.diagram_context,
+        inner = partial(visualization_callback, diagram=self.diagram, diagram_context=self.diagram_context,
                                                 plant=self.plant, plant_context=self.plant_context,
-                                                vars_to_q=self.VarsToQ, vars_file = self.options.vars_file, visualize = self.options.visualize),
-            self.lumped_vars
-        )
+                                                vars_to_q=self.VarsToQ, vars_file = self.options.vars_file, visualize = self.options.visualize)
+
+        def record_iterate(vars):
+            # Keep the newest iterate on the program, in memory, always. A solve that ends
+            # abnormally -- an exception, a harness kill, the (measured, once in 1740
+            # cells) C++-level wedge inside a single IPOPT iteration -- can then still be
+            # verified from the point the solver actually had, instead of the point being
+            # discarded with the solve. The predecessor design raised SolveTimeout from
+            # the constraint callback, which both threw the iterate away and could not
+            # fire during the wedge (no Python ran for 102 minutes); when a wedge
+            # releases, IPOPT's own max_wall_time ends the solve at the next iteration
+            # boundary with the iterate intact, which needs no help from us.
+            self.last_iterate = np.array(vars, dtype=float)
+            inner(vars)
+
+        self.prog.AddVisualizationCallback(record_iterate, self.lumped_vars)
         
-        try:
-            return solver.Solve(self.prog, solver_options=solver_options)
-        finally:
-            # Clear it, so that re-evaluating the bindings afterwards -- which is how the
-            # benchmark verifies a solution -- cannot trip a deadline set for the solve.
-            self._solve_deadline = None
+        return solver.Solve(self.prog, solver_options=solver_options)
 
 
 def visualization_callback(vars, diagram, diagram_context, plant, plant_context, vars_to_q, vars_file, visualize):

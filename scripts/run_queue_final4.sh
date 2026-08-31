@@ -58,9 +58,10 @@ run panda final4_panda_pose_20_paired_charted --task pose --wall-time 20 --start
     --config latent --arms learned,numerical,analytic,analytic8 --guess-filter charted
 
 # E(ii). Chart-degradation dose-response: the Panda flow output perturbed to a target
-# median chart error, learned arm only, paired, mug. eps values calibrated by
-# scripts/../smoke (see CLAUDE.md); 0 is the control point and is the final4 run above.
-for EPS in 0.008 0.016 0.032 0.064; do
+# median chart error, learned arm only, paired, mug. Calibrated 2026-08-31 on 200 samples:
+# eps {0.016, 0.032, 0.064, 0.128} -> median chart position error {12, 20, 43, 83} mm,
+# bracketing the iiwa checkpoint's 16.6 mm. eps=0 is the final4 learned column above.
+for EPS in 0.016 0.032 0.064 0.128; do
     run panda "dose4_eps${EPS}" --task mug --wall-time 20 --start paired --config latent \
         --arms learned --set chart_error_scale=${EPS}
 done

@@ -195,35 +195,88 @@ default tag. And the grid is drawn from a generator local to the script and hash
 compared by accident -- `python scripts/collate.py --pair learned '<glob>'` runs exact
 McNemar between runs on matching cells and refuses a grid mismatch.
 
-### How paired the paired start actually is
+### How paired the paired start actually is (repaired 2026-08-31)
 
 `SetStartFromQ` gives every arm the same `q_init` expressed in its own variables, but a
 formulation can only represent a configuration its variables reach, so what each arm
-actually gets is `q_init` *projected onto its own feasible set*. Measured:
+actually gets is `q_init` *projected onto its own representable set*. Two of the four
+projections were unnecessary and have been removed:
 
-| arm | `\|q(start) - q_init\|` | why |
+- **The learned free-`c` arm now starts exactly at `q_init`.** The 1.2-3.3 rad error of
+  the previous protocol came entirely from pre-clipping `c` into its box before the solve,
+  which was never required: a Drake initial guess need not satisfy the bounds, and IPOPT
+  projects variables into their box itself (`bound_push`). The repaired start sets
+  `c = FK(q_init)` unclipped, inverts the flow there (measured: `flow(c, z)` then
+  reproduces `q_init` to ~1e-6, the network's noise floor), and closes that residual with
+  the correction. `clip_distance` now records how far `c` sits outside its box -- the
+  projection IPOPT will apply at its first iterate -- and `legacy_paired_start=True`
+  restores the old behaviour for reproducing archived runs.
+- **The analytic arm can now represent ~99.4% of configurations instead of ~89%**, with
+  `analytic_branches=8` (see the chart section below). Where the chart covers `q_init` the
+  start is exact to 1e-11; `start_q_error` keeps recording the remainder per cell.
+
+| arm | `\|q(start) - q_init\|` at the guess | why |
 | --- | --- | --- |
 | joint space | 0 exactly | its variables are the configuration |
-| analytic | 1e-11, or several radians | exact where its chart covers the configuration; see below |
-| learned, free `c` | 1.2 - 3.3 rad | `c` is clipped into a 0.25 m box about the mug |
-| learned, task-parameterised | ~3 rad, occasionally 1e16 | `c` is projected onto the mug axis, and `q_init` is not a grasp |
+| learned, free `c` | ~1e-6 (pose task: 0.0 measured) | exact: unclipped conditioning pose + inverted latent + correction |
+| analytic, 8 branches | 1e-11, or several radians on ~0.6% of starts | exact where the chart covers the configuration |
+| analytic, 4 branches | 1e-11, or several radians on ~10% of starts | the historical chart; kept as the `analytic` column |
+| learned, task-parameterised | ~3 rad, occasionally 1e16 | `c` encodes a grasp and `q_init` is not one -- exact matching impossible by construction |
 
-Two of these deserve care when reading a grasp table. The **analytic chart covers about 70%
-of random collision-free configurations, by design**: the closed-form map has eight
-branches and this implementation charts four, the other four lying very close to the joint
-limits -- an accepted limitation carried over from the Panda analytic IK paper, not a gap
-in the derivation. Measured, over 40 samples it reproduced 28 exactly and missed 12, every
-one of them with the elbow nearly straight (`q4` between -0.09 and -0.44 against a limit of
--0.07), and no `GC` branch and no variant of the commented-out elbow case rescues any of
-them: `analytic_ik.gc(q)` already agrees with the best of the four available branches on 38
-of 40. So do not try to "repair" it; the consequence to carry is only that in the uncharted
-region the analytic arm cannot be given the shared start, which `start_q_error` records
-cell by cell. The **task-parameterised learned arm** keeps the latent from inverting at
-`q_init`'s own conditioning pose and then moves `c` onto the mug axis, and holding `z` fixed
-while `c` moves that far can put the flow's output at 1e16 (GLOW's clamped exponentials
-amplify by up to `exp(2.5)` per coupling block, twelve blocks deep). Re-inverting at the
-projected pose is worse, not better -- CLAUDE.md's ordering note measures `|z| ~ 1e7` -- so
-the start stands as it is and is reported rather than repaired.
+A third defect surfaced while verifying the repair: **the pose task's analytic arm was
+never given the paired start either.** Its formulation pins `xyz_rpy` to the target with a
+`+-ik_constraint_tol` *bounding box*, and `SetStartFromQ` clipped the guess into it -- so
+the arm always began at (target pose, `psi(q_init)`, `gc(q_init)`), a median 2.7 rad from
+the shared `q_init` in the archived pose tables, regardless of chart coverage. Fixed the
+same way as the learned `c`: the guess is set unclipped and the box projection is the
+solver's first move. (The mug analytic arm never had this problem -- its task rows are
+generic constraints, not variable bounds -- which is why it measured 8e-11.)
+
+The number to keep in mind reading any of this: `start_q_error` measures the *initial
+guess*. Where a guess sits outside a variable's bounds, IPOPT projects it at iterate 0,
+and `clip_distance` now records exactly that projection distance per cell. "Paired" is
+exact at the guess; how much of it survives the solver's own bound projection is a
+per-formulation property that the two numbers together describe honestly.
+
+The **task-parameterised learned arm** keeps the latent from inverting at `q_init`'s own
+conditioning pose and then moves `c` onto the mug axis; holding `z` fixed while `c` moves
+that far can put the flow's output at 1e16 (GLOW's clamped exponentials amplify by up to
+`exp(2.5)` per coupling block, twelve blocks deep). Re-inverting at the projected pose is
+worse, not better -- the ordering note above measures `|z| ~ 1e7` -- so the start stands as
+a projection, the correction closes the (at most +-0.1 rad per joint) part it can
+representably close, and `start_q_error` reports the rest per cell.
+
+### The analytic chart: eight branches, and what the last 0.6% is (2026-08-31)
+
+The closed-form map's discrete set is three binary choices -- wrist (B), shoulder (C), and
+elbow (A) -- and the implementation historically charted only A = +1, the half away from
+the joint limits, following the Panda analytic IK paper. The missing half is a *single
+sign*: negate both triangle angles `O2O4O6` and `O2O6O4` (the arm plane's signed angles
+flipping together; the elbow reflected across the shoulder-wrist axis). The old
+commented-out "Case A1" line (`O2O4O6 - q3_add`) matches no configuration and was a dead
+end; the measured elbow relations are `q3 = theta + q3_add - 2*pi` (A = +1) and
+`-theta + q3_add` (A = -1), partitioning exactly at `q3 = q3_add - pi = -0.467`.
+
+`ProgramOptions.analytic_branches` selects the chart (default 4, so archived runs stay
+reproducible; the benchmark's `analytic8` arm runs the 8-branch chart on the same cells).
+`gc(q, branches=3)` recovers all three indices with zero mislabels in 4000 samples.
+Round-trip coverage of `IK(FK(q), psi(q), gc(q)) == q`, 4000 random configurations:
+
+| tolerance | 4 branches | 8 branches |
+| --- | --- | --- |
+| 1e-6 | 89.4% | 99.40% |
+| 1e-3 | -- | 99.58% |
+| 1e-2 | -- | 99.83% |
+
+**The residual is not singularities** (those are measure zero; this set has positive
+measure) **and not branch mislabelling** (the 24/4000 misses are reproduced by *no* branch
+of the eight). Two are off by ~4 rad -- a genuinely distinct solution -- and 22 by 1e-3 to
+1e-2, clustered where the wrist arcsin argument approaches 1, i.e. near a branch-merge
+locus. Consistent with the <=16 self-motion-manifold bound (Burdick/Luck): three binary
+indices need not enumerate them all for an arm with the Panda's link offsets. **Left as
+future work by decision** -- a recent Panda IK paper with alternative self-motion
+parameterisations (arXiv:2503.03992) is the suggested starting point -- and until then
+coverage is reported as the curve above, never as "100% up to singularities".
 
 
 
@@ -379,14 +432,48 @@ has a monotone trend. Two specific things they settle:
   ladder, where it was worth +2 cells with the task parameterisation and -5 without it,
   there is now no measurement anywhere in this repo that supports it. The one honest
   observation is that removing it makes solves *pathological* rather than merely worse: the
-  Panda `off` run contains a cell that ran 6106 s before the hard-time watchdog stopped it,
-  against a 20 s cap.
+  Panda `off` run contains a cell that ran 6106 s against a 20 s cap (diagnosed below --
+  a nondeterministic C++-level wedge, not a property of the formulation or the iterate).
 
 So the iiwa's grasp deficit is not the correction box and not the latent bound. What remains
 of the original suspicion is the chart itself (16.6 mm / 6.4 deg median against the Panda's
 3.8 mm / 0.71 deg), which no knob in this program can repair -- which makes asking Julia
 about the provenance of `iiwa14__lemon-haze-7__global_step_4.25M.pkl` the next thing worth
 doing, and a cheap one.
+
+### The 6106-second cell, diagnosed (2026-08-31): a rare C++ wedge, and what now bounds a solve
+
+The cell (`sweep3_panda_latent_None`, target 0 guess 1) is fully explained and its
+watchdog has been **removed**, not tuned. The evidence:
+
+- Its IPOPT log ends after iteration 125 (an `H` step -- regularised Hessian) with no
+  `EXIT:` line, and nothing was written for 102 minutes; IPOPT writes one line per
+  iteration, so the process was wedged **inside a single iteration**, in IPOPT/SPRAL C++,
+  where no Python callback runs.
+- Re-running the cell (`--cells 0:1`, same grid hash) is **bit-identical through iteration
+  125** -- same objective, infeasibility, and step sizes line for line -- and then simply
+  continues, solving in 8 s / 154 iterations. Sixteen consecutive attempts all did exactly
+  that. So the computation is deterministic and the wedge is not: a rare scheduling-level
+  stall (once in 1740 cells), not a numerical pathology of the iterate. The kernel journal
+  shows nothing in the window.
+- The wedge **released on its own**: the old `SolveTimeout` fired from the constraint
+  callback at 6106 s, which is the deadline check finally being *reachable* again -- proof
+  that a callback-based kill can never catch this class of stall, only add insult by
+  discarding the iterate afterwards.
+
+The design that replaced it, per the standing rule that a watchdog must not throw away the
+solver's point:
+
+- `Solve()`'s per-iteration callback stores `program.last_iterate` (in memory, always).
+- On any exception, `run_grid` re-verifies that iterate exactly as a returned solution
+  (`recovered_feasible`, `recovered_fail_reason`, `recovered_detail` in the record).
+- A wedge that releases now ends *cleanly*: the next iteration trips IPOPT's own
+  `max_wall_time` and the solve returns its point, which is verified normally. The only
+  remaining bound on a wedge that never releases is the OS (`timeout` in the queue
+  script), which is where such a bound belongs.
+- `SolveTimeout`, `CheckDeadline`, `hard_time_factor` and the `QAndPose` deadline poll are
+  deleted -- the poll cost a `time.time()` on the hottest path in the program and could not
+  fire when it mattered.
 
 ### Measured results (2026-08-28, RTX 3080 Ti laptop, IPOPT, 20 s cap)
 

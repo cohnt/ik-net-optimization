@@ -102,6 +102,14 @@ def parse_args():
                         "smaller. The raw errors are stored per record, so a stricter "
                         "gate can be recomputed from the summary without re-running.")
     p.add_argument("--tag", default=None, help="subdirectory under results/")
+    p.add_argument("--guess-filter", choices=["none", "charted"], default="none",
+                   help="'charted' rejection-samples the shared guess list into the four "
+                        "wide analytic branches (elbow branch A=+1). Applied once, to the "
+                        "guesses every arm receives, before any solve -- pairing is "
+                        "preserved and nothing is scored against the problem. The grid is "
+                        "conditioned on the analytic chart, so its table answers 'given a "
+                        "start in a wide bundle, how do the arms compare?' and is reported "
+                        "separately with that caveat.")
     p.add_argument("--cells", default=None, metavar="TI:GI[,TI:GI...]",
                    help="run only these (target, guess) cells of the seeded grid -- "
                         "a debugging aid for reproducing a single archived cell")
@@ -193,7 +201,20 @@ def main():
     # Sampling a configuration and taking its gripper pose guarantees every target is
     # reachable and, for the mug, that at least one valid grasp exists.
     target_qs = [sample_collision_free() for _ in tqdm(range(args.targets), desc="targets")]
-    guesses = [sample_collision_free() for _ in range(args.guesses)]
+
+    def sample_guess():
+        # A property of the *grid*, identical for every arm: with --guess-filter charted,
+        # keep drawing until the guess lies in the half of the analytic chart the
+        # historical 4-branch map covers (elbow branch A = +1; ~90% of configurations).
+        while True:
+            q = sample_collision_free()
+            if args.guess_filter == "none":
+                return q
+            from src.panda_analytic_ik import Analytic_IK_Panda
+            if Analytic_IK_Panda().gc(np.asarray(q, dtype=float)[:7], branches=3)[2] > 0:
+                return q
+
+    guesses = [sample_guess() for _ in range(args.guesses)]
     # Identical cells across runs are what makes the ladder and the sweeps paired; record a
     # hash of them so a mismatch is visible in the summary rather than silently compared.
     grid_hash = hashlib.sha1(np.asarray(target_qs + guesses).tobytes()).hexdigest()[:12]
@@ -318,7 +339,7 @@ def main():
         metadata=dict(task=args.task, solver=args.solver, config=args.config,
                       wall_time=args.wall_time, seed=args.seed, grid_hash=grid_hash,
                       compiled=args.compile, compile_seconds=compile_seconds,
-                      overrides=overrides, start=args.start,
+                      overrides=overrides, start=args.start, guess_filter=args.guess_filter,
                       n_targets=args.targets, n_guesses=args.guesses))
     bar.close()
 
