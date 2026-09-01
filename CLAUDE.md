@@ -473,6 +473,63 @@ historical 4-branch chart was, in effect, performing branch selection for free -
 a genuine finding about unbalanced discrete solution bundles in optimization-IK, and
 exactly the phenomenon the `analytic8` column was added to expose.
 
+### The final4 measurements: what ran, what it says (2026-09-01, stopped early by request)
+
+The queue was stopped at 09:40 after suspend-related losses; completed and clean (no
+suspend-bloated cell in any written summary): **finals-20 for all six experiments,
+finals-45 for three of the four Panda runs, five of six ladder rungs**, and the iiwa
+failed-cell analysis. Not run: every iiwa mug run (the suspends happened to land on
+them), iiwa pose 45, `ladder4_eval`, `final4_panda_mug_45_paired`, the charted-bundle
+grid, and the dose-response sweep. `scripts/run_queue_final4b.sh` re-runs exactly the
+missing set (skip logic) under a sleep inhibitor, ~1.5 h.
+
+**45 s rows** (completing the 20 s table above): Panda pose native 29/30 vs 15/30
+(14/0, p = 1.2e-4), paired 26/30 vs 15/30 (13/2, p = 0.0074); Panda mug native **30/30 vs
+30/30** (p = 1) -- the cap story reproduces under the exact protocol: the learned arm's
+grasp deficit at 20 s is the budget, and at 45 s it reaches parity with joint space.
+analytic8 trails analytic at 45 s too (5/0 and 6/0 native, 9/2 paired pose).
+
+### The ablation ladder under the exact start: the stack is worth zero, and why
+
+15 x 2, learned arm only, Panda grasp, 20 s, one grid (`64f0c9cdf9be`), exact paired
+start protocol. `eval` was lost to a suspend and is queued.
+
+| rung | success | iters | median start error | note |
+| --- | --- | --- | --- | --- |
+| baseline | 22/30 | 127 | 3.1e11 | uncalibrated frame: inversion garbage, clipped to an arbitrary in-box start |
+| + frame calibration | **11/30** | 104 | 0 (exact) | the exact start at a non-grasp `q_init` |
+| + shared evaluation | (lost to a suspend; queued) | | | |
+| + task parameterisation | 20/30 | 150 | 3.48 | start projected onto the grasp manifold again |
+| + latent trust region | 22/30 | 139 | 3.48 | |
+| trust region without task param | 18/30 | 201 | 0 (exact) | |
+
+Rung-to-rung exact McNemar: frame vs baseline **0/11, p = 0.001**; task vs frame **13/4,
+p = 0.049**; latent vs task 7/5, p = 0.77; **the whole stack vs baseline 5/5, p = 1.0**.
+
+Two things changed against ladder3. First, the rung deltas now measure *start
+representability* as much as each rung's nominal change: with the frame calibrated, the
+free-`c` arm can (and now does) start exactly at `q_init` -- and `q_init` is not a grasp,
+so the solve begins with the task constraints maximally violated and the conditioning
+pose outside its box. Second, that effect is now measured three independent times in one
+night and always points the same way:
+
+- learned free-`c`, exact start: 11/30 against 21/30 for the projected start (ladder3);
+- analytic8, paired: lands exactly in the mirrored near-limit bundle when `q_init` is
+  there -- trails the projecting 4-branch chart in all four experiments;
+- analytic8, native: draws that bundle half the time -- 0/6, p = 0.031 on the pose task.
+
+**On the grasp task, an exact start at a configuration that does not satisfy the task is
+worse than a projected one, for every formulation that can express the difference.** The
+formulations that always project -- joint space trivially (its start is feasible by
+construction), the task-parameterised arm, the 4-branch analytic chart -- are exactly the
+ones that do well under the paired protocol. This is the sharpest statement the repo now
+has about *why* the paired protocol is delicate, and it dissolves the ladder's old
+framing: under the honest start, the frame calibration + task parameterisation + trust
+region stack buys nothing at all over the (garbage-start) baseline on this grid (5/5,
+p = 1.0). The pose task runs the other way -- there the exact start *helped* the learned
+arm (23 -> 25 paired) -- because a pose target leaves `c` free enough that starting at
+`q_init`'s own pose is not starting infeasible.
+
 ### The 6106-second "wedge", solved: the laptop was suspending (2026-09-01)
 
 Every multi-hour stall this repo has recorded -- the archived 6106 s cell, and four
