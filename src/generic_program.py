@@ -524,10 +524,13 @@ class IKFlowProgram:
         # _SetClipped/_BoxDistance no longer see it; measure and (for legacy) apply the
         # clip against the stored region instead.
         c_lo, c_hi = self.c_box
+        z_lo, z_hi = self.z_box
         c_clip_distance = float(np.linalg.norm(np.clip(c, c_lo, c_hi) - c))
+        z_clip_distance = float(np.linalg.norm(np.clip(z, z_lo, z_hi) - z))
         if self.options.legacy_paired_start:
             self.prog.SetInitialGuess(self.c, np.clip(c, c_lo, c_hi))
-            clipped = c_clip_distance + self._SetClipped(self.z, z)
+            self.prog.SetInitialGuess(self.z, np.clip(z, z_lo, z_hi))
+            clipped = c_clip_distance + z_clip_distance
             self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
             return clipped
         # The exact paired start. The conditioning pose is set *unclipped* -- a Drake
@@ -539,7 +542,8 @@ class IKFlowProgram:
         # its box is returned as the clip distance: it is how far the solver's own
         # projection will move the first iterate.
         self.prog.SetInitialGuess(self.c, c)
-        clipped = c_clip_distance + self._SetClipped(self.z, z)
+        self.prog.SetInitialGuess(self.z, z)
+        clipped = c_clip_distance + z_clip_distance
         self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
         residual = q_arm - np.asarray(
             self.VarsToQ(self.prog.GetInitialGuess(self.lumped_vars)), dtype=float)[:self.num_arm_dof]
@@ -717,8 +721,21 @@ class IKFlowProgram:
 
 
     def BoundingBoxConstraint(self):
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -5. * np.ones(self.ik_solver.network_width), 5. * np.ones(self.ik_solver.network_width), self.z
+        # The latent box is a general linear constraint for exactly the same reason the
+        # conditioning-pose box below is, and the failure it caused was worse than
+        # bound_push because we applied it ourselves: `SetStartFromQ` clipped the inverted
+        # latent into this box before the solver ever ran. The flow is a bijection, so
+        # `flow(c, InvertFlow(q, c))` reproduces `q` exactly -- but only at the *unclipped*
+        # latent. On the iiwa pose task the inversion routinely returns components past
+        # +-5 (measured |z| ~ 9.1), so the clip moved the start several radians, the
+        # +-0.1 correction could not close the residual, and 49 of 60 paired cells were
+        # recorded as `unrepresentable_start` -- an arm scored as unable to represent a
+        # configuration it represents exactly. The feasible set is unchanged; only the
+        # guess's freedom to start outside it changes.
+        self.z_box = (-5. * np.ones(self.ik_solver.network_width),
+                      5. * np.ones(self.ik_solver.network_width))
+        self.bounding_box_constraint = self.prog.AddLinearConstraint(
+            np.eye(self.ik_solver.network_width), self.z_box[0], self.z_box[1], self.z
         )
         self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
         # A general linear constraint, deliberately NOT a bounding box, and the
