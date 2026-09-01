@@ -441,6 +441,38 @@ of the original suspicion is the chart itself (16.6 mm / 6.4 deg median against 
 about the provenance of `iiwa14__lemon-haze-7__global_step_4.25M.pkl` the next thing worth
 doing, and a cheap one.
 
+### The final4 comparison, 20 s cap (2026-09-01, exact paired start, 8-branch column)
+
+15 x 2, `--compile`, seed 0, same grid as final3 (`64f0c9cdf9be` on the Panda mug), so
+`collate.py --pair` compares cell by cell. `analytic` is the historical 4-branch chart;
+`analytic8` the full chart. Joint space is the comparison's target; analytic is a baseline.
+
+| experiment | start | learned | numerical | analytic | analytic8 |
+| --- | --- | --- | --- | --- | --- |
+| Panda pose | paired | **25/30** | 15/30 | 21/30 | 14/30 |
+| Panda pose | native | **28/30** | 15/30 | 16/30 | 10/30 |
+| Panda grasp | paired | 22/30 | **30/30** | 26/30 | 21/30 |
+| Panda grasp | native | 27/30 | **30/30** | 29/30 | 24/30 |
+| iiwa pose | paired | 18/30 | 14/30 | -- | -- |
+| iiwa pose | native | **30/30** | 14/30 | -- | -- |
+| iiwa grasp | either | (wedged; queued for re-run) | | -- | -- |
+
+Against joint space, exact McNemar: Panda pose **12/2, p = 0.013** paired (the repaired
+start *strengthened* the final3 result, 23-vs-15 p = 0.039 -> 25-vs-15 p = 0.013) and
+14/1, p = 0.00098 native; Panda grasp 0/8, p = 0.0078 paired and 0/3, p = 0.25 native at
+this cap; iiwa pose 8/4, p = 0.39 paired (a tie, as before) and 16/0, p = 3.1e-5 native.
+
+**The 8-branch chart makes the analytic formulation worse, uniformly.** analytic8 trails
+analytic in all four Panda experiments -- 0/6 p = 0.031 (pose native), 9/2 p = 0.065
+(pose paired), 7/2 (grasp paired), 5/0 p = 0.0625 (grasp native) -- despite (because of)
+representing the start exactly: under the paired start it lands *in* the mirrored
+near-limit bundle whenever `q_init` does, and under the native start it draws that bundle
+half the time. Starting a solve inside a bundle pinned against the joint limits is worse
+than starting at the wide-bundle chart's projection of the same configuration. The
+historical 4-branch chart was, in effect, performing branch selection for free -- which is
+a genuine finding about unbalanced discrete solution bundles in optimization-IK, and
+exactly the phenomenon the `analytic8` column was added to expose.
+
 ### The 6106-second cell, diagnosed (2026-08-31): a rare C++ wedge, and what now bounds a solve
 
 The cell (`sweep3_panda_latent_None`, target 0 guess 1) is fully explained and its
