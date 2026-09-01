@@ -378,6 +378,59 @@ One wart worth knowing: on the iiwa the mug and pose experiments report the *sam
 cross-compares tasks, but `collate.py --pair` would not refuse a mug-vs-pose pairing on
 that robot the way it should.
 
+### The final5 45 s stage: three of eight runs, and the cap only ever moves one arm (2026-09-01)
+
+Same grids, same seeds, same `--compile`, only `--wall-time` changed, so these pair cell for
+cell against the 20 s tables above. Three of the eight runs are done -- all `paired` -- and
+the queue was paused at a run boundary; the remaining five are the `native` half plus
+`iiwa_pose_45_paired`.
+
+| experiment (paired) | arm | 20 s | 45 s | +/- | p | at the 45 s cap | mean iters |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda grasp | learned | 35/60 | **46/60** | +11 / -0 | 0.00098 | 13 | 229 |
+| | joint space | 56/60 | 56/60 | 0 / 0 | 1.0 | 0 | 102 |
+| | analytic4 | 52/60 | 52/60 | 0 / 0 | 1.0 | 0 | 188 |
+| | analytic8 | 57/60 | 57/60 | 0 / 0 | 1.0 | 0 | 194 |
+| Panda pose | learned | 41/60 | 43/60 | +2 / -0 | 0.5 | 16 | 91 |
+| | joint space | 29/60 | 29/60 | 0 / 0 | 1.0 | 0 | 41 |
+| | analytic4 | 29/60 | 29/60 | 0 / 0 | 1.0 | 0 | 47 |
+| | analytic8 | 31/60 | 31/60 | 0 / 0 | 1.0 | 0 | 45 |
+| iiwa grasp | learned | 12/60 | **20/60** | +8 / -0 | 0.0078 | 39 | 299 |
+| | joint space | 59/60 | 59/60 | 0 / 0 | 1.0 | 0 | 143 |
+
+**Every baseline is bit-identical at both caps, in all three experiments** -- same cells, same
+iteration counts. The extra budget reaches only the arm that evaluates a network, which is
+simultaneously the expected result and a check that nothing else differed between the runs.
+Note also that no cell is ever *lost* to the larger cap (`-0` everywhere): more time is
+monotone here, which is not guaranteed for an interior-point method whose iterates it
+changes.
+
+**The grasp deficit is a budget effect in part, and not only a budget effect.** On the Panda
+the learned arm gains 11 cells but still trails joint space 46 vs 56 (3 better / 13 worse,
+p = 0.021) with 13 cells still at the cap. This contradicts the void task-param result, which
+claimed parity at 45 s: **the draft's own formulation does not reach parity on this grid**,
+and the honest statement is that the gap narrows with budget without closing.
+
+On the iiwa the picture is starker: 20/60 against 59/60 (0 better / 39 worse, p = 3.6e-12)
+with **39 of 60 cells still at the cap**. The success curve is nowhere near flat there, so
+45 s does not bound that arm's asymptote either -- but the gap is far too large for the cap
+to be the explanation, and it should be read against the iiwa flow being a 4-8x worse chart
+than the Panda's from a checkpoint of unknown provenance. That row is provisional until the
+network is retrained.
+
+The comparison worth reporting for the grasp rows is **iterations**, which are
+hardware-independent. The learned arm averages 229 (Panda) and 299 (iiwa) against joint
+space's 102 and 143: it is not merely paying more per iteration, it is taking two to three
+times as many steps. That points at the grasp constraint geometry seen through the flow,
+not at the flow's per-iteration cost. On the pose task, where it wins, the ordering is the
+same (91 against 41) but both are small -- it wins there despite taking more steps.
+
+Two collateral notes from this stage. `analytic4` forfeits 6 grasp and 13 pose cells
+outright as `unrepresentable_start`, unchanged by the cap, which is chart coverage and not
+solver budget. And the learned arm's correction stays off its box at 45 s too (median
+`\|q_c\|` 0.073 on the iiwa against +-0.1, 0.10 of solutions on the box), so the extra
+iterations are not being spent quietly turning it into a joint-space arm.
+
 ### The ablation ladder, re-run (2026-08-29, RTX 3080 Ti laptop, IPOPT, 20 s cap, compiled)
 
 **VOID (2026-09-01): the `task`/`latent` rungs and every conclusion about the task parameterisation ran an unauthorized formulation -- see "The task-parameterised variant: removed".**
