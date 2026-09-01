@@ -131,8 +131,10 @@ def main():
                 return q
 
     target_qs = [sample_collision_free() for _ in tqdm(range(args.targets), desc="targets")]
-    guesses = [sample_collision_free() for _ in range(args.guesses)]
-    grid_hash = hashlib.sha1(np.asarray(target_qs + guesses).tobytes()).hexdigest()[:12]
+    # Per-target guesses; see the panda script for the rationale.
+    guesses = [[sample_collision_free() for _ in range(args.guesses)] for _ in range(args.targets)]
+    grid_hash = hashlib.sha1(np.asarray(
+        target_qs + [g for row in guesses for g in row]).tobytes()).hexdigest()[:12]
 
     compile_seconds = None
     if args.compile:

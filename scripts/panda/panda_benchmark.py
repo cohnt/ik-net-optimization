@@ -209,10 +209,15 @@ def main():
             if Analytic_IK_Panda().gc(np.asarray(q, dtype=float)[:7], branches=3)[2] > 0:
                 return q
 
-    guesses = [sample_guess() for _ in range(args.guesses)]
+    # Per-target guesses (Thomas, 2026-09-01): statistically better -- start-dependent
+    # effects average over n_targets independent draws instead of riding on a handful of
+    # shared ones -- and cross-target comparability of guesses was never used, arguably
+    # harmful. Pairing is untouched: every arm still receives the identical q_init per cell.
+    guesses = [[sample_guess() for _ in range(args.guesses)] for _ in range(args.targets)]
     # Identical cells across runs are what makes the ladder and the sweeps paired; record a
     # hash of them so a mismatch is visible in the summary rather than silently compared.
-    grid_hash = hashlib.sha1(np.asarray(target_qs + guesses).tobytes()).hexdigest()[:12]
+    grid_hash = hashlib.sha1(np.asarray(
+        target_qs + [g for row in guesses for g in row]).tobytes()).hexdigest()[:12]
 
     compile_seconds = None
     if args.compile:

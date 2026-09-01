@@ -287,12 +287,17 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     a filtered run is partial and says so in its metadata.
     """
     os.makedirs(log_dir, exist_ok=True)
+    # `guesses` is per-target -- guesses[ti][gi] -- by decision: shared guesses made the
+    # grid's effective sample size for start-dependent effects equal to the number of
+    # guesses (branch membership of ONE shared guess decided entire columns), and guesses
+    # being comparable across targets is not a property any analysis here uses.
     records = {arm.name: [] for arm in arms}
     # A dedicated file rather than stderr: program construction runs under HiddenPrints,
     # which redirects fd 2 to /dev/null, and a dump that lands in that window is simply
     # lost -- which is what happened to the one stall this was meant to catch.
     stalls = open(os.path.join(log_dir, "stalls.txt"), "a") if cell_timeout else None
-    n_targets, n_guesses = len(targets), len(guesses)
+    n_targets, n_guesses = len(targets), len(guesses[0])
+    assert len(guesses) == n_targets and all(len(row) == n_guesses for row in guesses)
 
     if cells is not None:
         cells = {(int(t), int(g)) for t, g in cells}
@@ -317,9 +322,9 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                                                       file=stalls)
                 program = None
                 try:
-                    program = arm.make_program(targets[ti], guesses[gi], (ti, gi))
+                    program = arm.make_program(targets[ti], guesses[ti][gi], (ti, gi))
                     record["setup_time"] = time.time() - t0
-                    record.update(start_diagnostics(program, guesses[gi]))
+                    record.update(start_diagnostics(program, guesses[ti][gi]))
                     record["correction_bound"] = getattr(program.options, "correction_bound", None)
                     # The paired protocol means starting AT q_init. A formulation whose
                     # variables cannot represent q_init (an analytic chart that does not
