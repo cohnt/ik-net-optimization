@@ -243,10 +243,7 @@ class PandaMugProgram(PandaIKProgram):
         return self.ik_constraint
 
     def BoundingBoxConstraint(self):
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -5. * np.ones(self.ik_solver.network_width), 5. * np.ones(self.ik_solver.network_width), self.z
-        )
-        self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
+        self.LatentBoxConstraint()
         # Keep the conditioning pose near the mug. A +-5 m box lets the optimizer walk
         # the flow far outside the workspace it was trained on, where its output is
         # meaningless. Orientation stays free (+-2*pi avoids clipping rpy wraparound).

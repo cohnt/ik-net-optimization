@@ -245,10 +245,7 @@ class IiwaMugProgram(Iiwa14IKProgram):
         return self.ik_constraint
 
     def BoundingBoxConstraint(self):
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -5. * np.ones(self.ik_solver.network_width), 5. * np.ones(self.ik_solver.network_width), self.z
-        )
-        self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
+        self.LatentBoxConstraint()
         # Keep the conditioning pose near the mug so the flow stays inside the workspace
         # it was trained on. Orientation stays free.
         centre = self.target_mug.middle.translation()

@@ -720,24 +720,35 @@ class IKFlowProgram:
         return self.joint_limit_constraint
 
 
-    def BoundingBoxConstraint(self):
-        # The latent box is a general linear constraint for exactly the same reason the
-        # conditioning-pose box below is, and the failure it caused was worse than
-        # bound_push because we applied it ourselves: `SetStartFromQ` clipped the inverted
-        # latent into this box before the solver ever ran. The flow is a bijection, so
-        # `flow(c, InvertFlow(q, c))` reproduces `q` exactly -- but only at the *unclipped*
-        # latent. On the iiwa pose task the inversion routinely returns components past
-        # +-5 (measured |z| ~ 9.1), so the clip moved the start several radians, the
-        # +-0.1 correction could not close the residual, and 49 of 60 paired cells were
-        # recorded as `unrepresentable_start` -- an arm scored as unable to represent a
-        # configuration it represents exactly. The feasible set is unchanged; only the
-        # guess's freedom to start outside it changes.
-        self.z_box = (-5. * np.ones(self.ik_solver.network_width),
-                      5. * np.ones(self.ik_solver.network_width))
+    def LatentBoxConstraint(self):
+        '''`-5 <= z <= 5`, as a general linear constraint rather than a variable bound.
+
+        Defined once here and called by every program that owns a latent -- the pose
+        programs through `BoundingBoxConstraint` below and the mug programs through their
+        overrides -- because the three copies this replaces are how the bug below survived
+        the first repair: the pose arms were fixed and the mug arms silently were not.
+
+        The reason it is not a bounding box is the same one that applies to the
+        conditioning pose, but the failure was worse, because we applied the projection
+        ourselves rather than leaving it to IPOPT: `SetStartFromQ` clipped the inverted
+        latent into this box before the solver ever ran. The flow is a bijection, so
+        `flow(c, InvertFlow(q, c))` reproduces `q` exactly -- but only at the *unclipped*
+        latent. On the iiwa pose task the inversion routinely returns components past +-5
+        (measured |z| ~ 9.1), so the clip moved the start several radians, the +-0.1
+        correction could not close the residual, and 49 of 60 paired cells were recorded
+        as `unrepresentable_start`: an arm scored as unable to represent a configuration
+        it represents exactly. The feasible set is unchanged; what changes is only the
+        guess's freedom to start outside it.
+        '''
+        width = self.ik_solver.network_width
+        self.z_box = (-5. * np.ones(width), 5. * np.ones(width))
         self.bounding_box_constraint = self.prog.AddLinearConstraint(
-            np.eye(self.ik_solver.network_width), self.z_box[0], self.z_box[1], self.z
-        )
+            np.eye(width), self.z_box[0], self.z_box[1], self.z)
         self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
+        return self.bounding_box_constraint
+
+    def BoundingBoxConstraint(self):
+        self.LatentBoxConstraint()
         # A general linear constraint, deliberately NOT a bounding box, and the
         # distinction is load-bearing. IPOPT (an interior-point method) requires every
         # iterate to sit strictly inside the *variable bounds* -- its bound_push projects
