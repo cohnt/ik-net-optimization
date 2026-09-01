@@ -45,13 +45,18 @@ systemd-inhibit --list 2>/dev/null | grep -q "sleep" || \
 # A. Finals at 20 s (headline tables).
 finals 20
 
-# B. The ladder, now four rungs (task-param rungs are gone with the formulation).
+# B. Finals at 45 s. Ahead of the ladder deliberately: at 20 s the learned grasp arm times
+# out on 48 of 60 iiwa cells and 25 of 60 Panda cells, so that column is reporting the
+# budget rather than the formulation, and the only prior 45 s grasp measurement was made
+# with the task-parameterised arm and is void. Until this stage lands there is no valid
+# cap-sensitivity result for the draft's formulation on the grasp task, which makes it
+# worth more than the learned-only ablation that used to sit here.
+finals 45
+
+# C. The ladder, now four rungs (task-param rungs are gone with the formulation).
 for CFG in baseline frame eval latent; do
     run panda "ladder5_${CFG}" --task mug --wall-time 20 --arms learned --config "$CFG"
 done
-
-# C. Finals at 45 s (cap sensitivity).
-finals 45
 
 # D. Charted-bundle grid (separate table, stated caveat).
 run panda final5_panda_mug_20_paired_charted  --task mug  --wall-time 20 --start paired \
