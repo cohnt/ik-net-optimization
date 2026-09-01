@@ -448,8 +448,7 @@ watchdog has been **removed**, not tuned. The evidence:
 
 - Its IPOPT log ends after iteration 125 (an `H` step -- regularised Hessian) with no
   `EXIT:` line, and nothing was written for 102 minutes; IPOPT writes one line per
-  iteration, so the process was wedged **inside a single iteration**, in IPOPT/SPRAL C++,
-  where no Python callback runs.
+  iteration, so the process was wedged **inside a single iteration**, below Python.
 - Re-running the cell (`--cells 0:1`, same grid hash) is **bit-identical through iteration
   125** -- same objective, infeasibility, and step sizes line for line -- and then simply
   continues, solving in 8 s / 154 iterations. Sixteen consecutive attempts all did exactly
@@ -474,6 +473,27 @@ solver's point:
 - `SolveTimeout`, `CheckDeadline`, `hard_time_factor` and the `QAndPose` deadline poll are
   deleted -- the poll cost a `time.time()` on the hottest path in the program and could not
   fire when it mattered.
+
+**The mechanism, caught live the same night (2026-09-01, ~00:20).** The first `final4`
+iiwa grasp run wedged for five hours at its fourth learned cell, and this time the
+per-cell `faulthandler` dumps caught it: eighteen identical stack dumps over the whole
+window show the main thread inside a *torch op in the eager float forward pass*
+(`VarsToQ` -> `QAndPose` -> `EvalJointCenteringCost`), i.e. **a CUDA call that never
+returned** -- and the process survived `timeout`'s SIGTERM for three hours, the signature
+of an *uninterruptible* ioctl. The machine runs the GPU with fine-grained **Runtime D3
+enabled**, runtime PM `auto`, persistence mode off: when the solver spends minutes in the
+numerical/analytic arms (zero GPU work), the device autosuspends, and the learned arm's
+next torch op must resume it -- a resume that occasionally hangs for hours and then
+releases. That fits every observation: the nondeterminism, the bit-identical re-runs that
+sail through, no Python for the whole window, the self-release, SIGTERM immunity, both
+robots, an empty kernel journal, and the timing (the wedge struck immediately after a
+long GPU-idle numerical solve). Mitigation while the queue runs, root-free: a sidecar
+process launching one trivial CUDA kernel per second so the device never goes idle long
+enough to suspend. The durable fix needs root -- persistence mode (`nvidia-smi -pm 1`) or
+`NVreg_DynamicPowerManagement=0x00` -- and is recorded as an open item. Note the OS-level
+`timeout` is *also* powerless against the wedge itself (nothing delivers a signal to a
+process stuck in an uninterruptible syscall); it fires when the wedge releases, which is
+another reason the recovery path, not a kill, is the right design.
 
 ### Measured results (2026-08-28, RTX 3080 Ti laptop, IPOPT, 20 s cap)
 
