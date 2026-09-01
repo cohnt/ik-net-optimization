@@ -273,7 +273,8 @@ class Arm:
 
 
 def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
-             progress=None, metadata=None, cell_timeout=None, cells=None):
+             progress=None, metadata=None, cell_timeout=None, cells=None,
+             unrepresentable_tol=None):
     """Run every (arm, target, guess) cell once and write a checkpointed summary.
 
     Checkpointing after each target matters: these runs are hours long and the learned
@@ -320,6 +321,28 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     record["setup_time"] = time.time() - t0
                     record.update(start_diagnostics(program, guesses[gi]))
                     record["correction_bound"] = getattr(program.options, "correction_bound", None)
+                    # The paired protocol means starting AT q_init. A formulation whose
+                    # variables cannot represent q_init (an analytic chart that does not
+                    # cover it) has no paired start to be given, and quietly starting it
+                    # from a projection instead is a different experiment -- so the cell
+                    # is an immediate failure, by decision, with no solve attempted.
+                    # start_q_error is the round-trip residual of expressing q_init in the
+                    # arm's own variables; representable arms sit at <=1e-6, the analytic
+                    # chart's uncharted region at >=0.4 rad, so the threshold is not
+                    # delicate.
+                    if (unrepresentable_tol is not None
+                            and record.get("start_q_error") is not None
+                            and record["start_q_error"] > unrepresentable_tol):
+                        record["feasible"] = False
+                        record["fail_reason"] = "unrepresentable_start"
+                        record["solver_success"] = False
+                        record["wall_time"] = 0.0
+                        records[arm.name].append(record)
+                        if progress is not None:
+                            progress(arm.name, ti, gi, record)
+                        if cell_timeout:
+                            faulthandler.cancel_dump_traceback_later()
+                        continue
                     program.options.file_print_name = log_path
                     start = time.time()
                     result = program.Solve()
