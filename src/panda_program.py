@@ -253,12 +253,23 @@ class PandaMugProgram(PandaIKProgram):
         # meaningless. Orientation stays free (+-2*pi avoids clipping rpy wraparound).
         centre = self.target_mug.middle.translation()
         slack = self.options.c_position_slack
-        self.c_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            np.concatenate([centre - slack, -2 * np.pi * np.ones(3)]),
-            np.concatenate([centre + slack, 2 * np.pi * np.ones(3)]),
-            self.c
-        )
-        self.c_bounding_box_constraint.evaluator().set_description("CBoundingBoxConstraint")
+        # A general linear constraint, deliberately NOT a bounding box, and the
+        # distinction is load-bearing. IPOPT (an interior-point method) requires every
+        # iterate to sit strictly inside the *variable bounds* -- its bound_push projects
+        # the initial guess into the box before evaluating anything, which silently
+        # destroyed the exact paired start: `c` was teleported to the box face while the
+        # latent stayed tuned to the unprojected pose, so the first evaluated point was
+        # 1-3 rad from q_init and bit-identical to the old pre-clipped protocol (measured:
+        # identical iterate-0 lines in the IPOPT logs). General constraints carry no such
+        # interiority requirement -- they may start violated, the violation just lands in
+        # inf_pr -- so with the box written this way the solver genuinely starts at the
+        # guess and walks `c` into the region continuously while `z` and the correction
+        # adapt, instead of being jolted onto the face at iterate 0.
+        self.c_box = (np.concatenate([centre - slack, -2 * np.pi * np.ones(3)]),
+                      np.concatenate([centre + slack, 2 * np.pi * np.ones(3)]))
+        self.c_box_constraint = self.prog.AddLinearConstraint(
+            np.eye(6), self.c_box[0], self.c_box[1], self.c)
+        self.c_box_constraint.evaluator().set_description("CBoxConstraint")
         bound = self.options.correction_bound
         self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
             -bound * np.ones(7), bound * np.ones(7), self.correction
