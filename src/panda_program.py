@@ -48,7 +48,6 @@ class PandaIKProgram(IKFlowProgram):
         self.constraints = []
         # Size of the first block of decision variables, from which the conditioning pose
         # is built. Six either way: a free conditioning pose (xyz + rpy), or the grasp
-        # pose in the mug frame under c_parameterization="task".
         self.num_task_vars = 6
 
 
@@ -277,12 +276,6 @@ class PandaMugProgram(PandaIKProgram):
         self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
 
 
-
-class PandaMugProgramTaskParam(GraspTaskParamMixin, PandaMugProgram):
-    '''The Panda grasp with the task folded into the decision variables.
-
-    All of the work is in `GraspTaskParamMixin`; it is robot-agnostic, so the iiwa gets the
-    same formulation from the same code.'''
 
 
 class PandaIKProgramNumerical(PandaIKProgram):

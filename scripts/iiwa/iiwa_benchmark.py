@@ -26,8 +26,7 @@ from src.utils import (RepoDir, BuildEnv, GenerateDiagramWithMug, HiddenPrints,
 from src import benchmark as bm
 from src.generic_program import ProgramOptions, orientation_error_rpy
 from src.iiwa_program import (Iiwa14IKProgram, Iiwa14IKProgramNumerical,
-                              IiwaMugProgram, IiwaMugProgramNumerical,
-                              IiwaMugProgramTaskParam)
+                              IiwaMugProgram, IiwaMugProgramNumerical)
 from pydrake.all import Quaternion, RigidTransform, RollPitchYaw, RotationMatrix
 from pydrake.geometry import Meshcat
 from tqdm import tqdm
@@ -36,11 +35,9 @@ CONFIGS = {
     "baseline": dict(calibrate_flow_frame=False, share_flow_evaluations=False),
     "frame":    dict(share_flow_evaluations=False),
     "eval":     dict(share_flow_evaluations=True),
-    "task":     dict(share_flow_evaluations=True, c_parameterization="task"),
-    # The Panda ladder's winner. The iiwa latent is 8-dimensional, so the trust-region
-    # radius is sqrt(8) + ~1.5 rather than the Panda's sqrt(7) + ~1.4.
-    "latent":   dict(share_flow_evaluations=True, c_parameterization="task",
-                     latent_trust_region=4.3),
+    # The iiwa latent is 8-dimensional, so the trust-region radius is sqrt(8) + ~1.5
+    # rather than the Panda's sqrt(7) + ~1.4.
+    "latent":   dict(share_flow_evaluations=True, latent_trust_region=4.3),
 }
 
 
@@ -202,8 +199,7 @@ def main():
 
     learned_cls = Iiwa14IKProgram
     if mug:
-        learned_cls = (IiwaMugProgramTaskParam
-                       if base_options.c_parameterization == "task" else IiwaMugProgram)
+        learned_cls = IiwaMugProgram
     all_arms = {
         "learned": bm.Arm("learned",
                           lambda t, g, c: build(learned_cls, base_options, t, g, c),

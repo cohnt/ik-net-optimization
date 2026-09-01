@@ -9,7 +9,6 @@ Research code (ROS-style package `combining_kinematics`) for solving inverse kin
 | Formulation | Decision variables | `VarsToQ` |
 | --- | --- | --- |
 | **learned** (`Panda/IiwaIKProgram`, `...MugProgram`) | conditioning pose `c` (xyz+rpy, 6), latent `z` (`network_width`), `correction` (7) | forward pass of the IKFlow model + `correction` |
-| **learned, task-parameterised** (`...MugProgramTaskParam`) | grasp pose in the mug frame `X_MG` (6), latent `z`, `correction` (7) | `c` computed from `X_MG`, then as above |
 | **numerical** (`...ProgramNumerical`) | joint angles `q` (7) | identity |
 | **analytic** (`...ProgramAnalytic`) | end-effector pose `xyz_rpy` (6) + redundancy parameter `psi` (1) | closed-form S-R-S IK (`src/*_analytic_ik.py`) |
 
@@ -126,21 +125,30 @@ value alone would hand back a Jacobian computed against the wrong seed matrix), 
 bit-identical values and derivatives, so there is no reason to run without it except to
 reproduce a pre-overhaul measurement.
 
-### Task-parameterised conditioning (`c_parameterization="task"`)
+### The task-parameterised variant: removed, and its results are void
 
-`GraspTaskParamMixin` in `src/generic_program.py` replaces the free 6-vector `c` with the
-grasp pose in the mug frame, `X_MG`, and *computes* the conditioning pose as
-`c = X_WM . X_MG . X_GE`. Every `c` the optimiser can name is then a valid grasp, and the
-task constraint on `c` becomes a plain bounding box (`x = y = 0`, `z` within the mug
-height, orientation free) instead of two nonlinear equality rows -- the shape
-`../../minimal-coordinates/ift/eaik-experiment` uses for the same grasp. What stays
-nonlinear is the flow's *chart error*, which is what the correction `q_c` exists to
-absorb; `q_c` remains a 7-vector in joint space and is untouched by this.
+A "task-parameterised" grasp reformulation (`GraspTaskParamMixin`,
+`PandaMugProgramTaskParam`, `IiwaMugProgramTaskParam`: decision variable = the grasp pose
+in the mug frame, conditioning pose computed from it) existed in this repo and was fielded
+as the benchmark's "learned" arm on the grasp task. **It is not the paper's formulation
+and should never have existed** -- Thomas: "You were *never* supposed to do the
+task-parameterized version... Constructing new formulations and passing them off as ones
+I've already written is completely unacceptable." The learned formulation is eq. (6) of
+the draft, exactly as `PandaMugProgram`/`IiwaMugProgram` implement it: free conditioning
+pose `c`, latent `z`, correction `q_c`, the grasp imposed as constraint rows through
+`FK(q)` (mug-axis equality, height band, orientation free).
 
-Note `X_GE`, not `X_EG`: converting the grasp pose to the frame the flow speaks in is a
-conjugation that does not cancel, and getting it backwards is a bug that survived a long
-time in the sibling project. `PandaMugProgramTaskParam` and `IiwaMugProgramTaskParam` are
-one-line subclasses of the mixin.
+The machinery is **removed outright** (mixin, both subclasses, `c_parameterization`,
+the `task` and `latent-free-c` ladder rungs), mirroring the seeding precedent.
+Consequently **every grasp-task "learned" number produced while it was fielded is void**:
+the final3 and final4 mug tables' learned columns, the ladder's `task`/`latent` rungs (in
+both ladder3 and ladder4), and the knob sweeps that ran on top of it (`correction_bound`,
+`latent_trust_region` -- both swept on the task-param arm). The pose-task learned numbers
+are unaffected (the pose task always ran the draft's formulation). Grasp-task learned
+results must be re-measured with `--config latent` (which now selects the draft
+formulation plus the latent trust region) before any claim is made. The `latent_trust_region`
+knob itself is also not in the draft and awaits Thomas's ruling.
+
 
 ### Benchmarking (`src/benchmark.py`, `scripts/*/[a-z]*_benchmark.py`)
 
@@ -221,7 +229,6 @@ projections were unnecessary and have been removed:
 | learned, free `c` | ~1e-6 (pose task: 0.0 measured) | exact: unclipped conditioning pose + inverted latent + correction |
 | analytic, 8 branches | 1e-11, or several radians on ~0.6% of starts | exact where the chart covers the configuration |
 | analytic, 4 branches | 1e-11, or several radians on ~10% of starts | the historical chart; kept as the `analytic` column |
-| learned, task-parameterised | ~3 rad, occasionally 1e16 | `c` encodes a grasp and `q_init` is not one -- exact matching impossible by construction |
 
 A third defect surfaced while verifying the repair: **the pose task's analytic arm was
 never given the paired start either.** Its formulation pins `xyz_rpy` to the target with a
@@ -238,13 +245,6 @@ and `clip_distance` now records exactly that projection distance per cell. "Pair
 exact at the guess; how much of it survives the solver's own bound projection is a
 per-formulation property that the two numbers together describe honestly.
 
-The **task-parameterised learned arm** keeps the latent from inverting at `q_init`'s own
-conditioning pose and then moves `c` onto the mug axis; holding `z` fixed while `c` moves
-that far can put the flow's output at 1e16 (GLOW's clamped exponentials amplify by up to
-`exp(2.5)` per coupling block, twelve blocks deep). Re-inverting at the projected pose is
-worse, not better -- the ordering note above measures `|z| ~ 1e7` -- so the start stands as
-a projection, the correction closes the (at most +-0.1 rad per joint) part it can
-representably close, and `start_q_error` reports the rest per cell.
 
 ### The analytic chart: eight branches, and what the last 0.6% is (2026-08-31)
 
@@ -281,6 +281,8 @@ coverage is reported as the curve above, never as "100% up to singularities".
 
 
 ### The ablation ladder, re-run (2026-08-29, RTX 3080 Ti laptop, IPOPT, 20 s cap, compiled)
+
+**VOID (2026-09-01): the `task`/`latent` rungs and every conclusion about the task parameterisation ran an unauthorized formulation -- see "The task-parameterised variant: removed".**
 
 Panda grasp, learned arm only, 15 targets x 2 guesses, paired start, `--compile`, one grid
 for every rung (`grid_hash 64f0c9cdf9be`), so the rungs are comparable cell by cell. Each
@@ -326,6 +328,8 @@ these two design choices would need, and that is a cheaper experiment than it lo
 a rung costs about six minutes.
 
 ### The three-way comparison, both start protocols (2026-08-29, IPOPT, 20 s cap, compiled)
+
+**VOID in part (2026-09-01): every grasp-row "learned" number here is the unauthorized task-param formulation. Pose rows are valid.**
 
 15 targets x 2 guesses, one grid per experiment, `--compile`, feasibility-verified success.
 `paired` starts every arm at the same `q_init`; `native` gives each formulation its own
@@ -376,6 +380,8 @@ qualitative conclusions above are robust to the choice.
 
 ### What the wall-clock cap was actually measuring (20 s against 45 s)
 
+**VOID in part (2026-09-01): the learned grasp rows (including the 30/30-at-45 s parity claim) are the unauthorized task-param formulation.**
+
 The same eight experiments at a 45 s cap. **Every baseline is bit-identical at both caps in
 all four experiments**, and so is every arm on the pose task -- same successes, same
 iteration counts, same solver exit strings. Only the learned arm on the grasp task moves:
@@ -404,6 +410,8 @@ rather than arithmetic. That is an implementation property; the iteration count 
 formulation property, and it is the one to report.
 
 ### The two knob sweeps: both are inert (2026-08-29, 20 s cap, paired, learned only)
+
+**VOID (2026-09-01): both sweeps ran the unauthorized task-param formulation on the grasp task.**
 
 One factor at a time on the grasp task, 15 x 2 on the same grid as the finals, whose learned
 column supplies the default point rather than re-running it.
@@ -442,6 +450,8 @@ about the provenance of `iiwa14__lemon-haze-7__global_step_4.25M.pkl` the next t
 doing, and a cheap one.
 
 ### The final4 comparison, 20 s cap (2026-09-01, exact paired start, 8-branch column)
+
+**VOID in part (2026-09-01): the grasp rows' learned column is the unauthorized task-param formulation. Pose rows and the analytic/numerical columns are valid.**
 
 15 x 2, `--compile`, seed 0, same grid as final3 (`64f0c9cdf9be` on the Panda mug), so
 `collate.py --pair` compares cell by cell. `analytic` is the historical 4-branch chart;
@@ -490,6 +500,8 @@ grasp deficit at 20 s is the budget, and at 45 s it reaches parity with joint sp
 analytic8 trails analytic at 45 s too (5/0 and 6/0 native, 9/2 paired pose).
 
 ### The ablation ladder under the exact start: the stack is worth zero, and why
+
+**VOID in part (2026-09-01): the `task` and `latent` rows below are the unauthorized task-param formulation; only `baseline`/`frame`/`latent-free-c` (all free-`c`) describe the draft's formulation.**
 
 15 x 2, learned arm only, Panda grasp, 20 s, one grid (`64f0c9cdf9be`), exact paired
 start protocol. `eval` was lost to a suspend and is queued.

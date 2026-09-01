@@ -21,7 +21,7 @@ run() {
 echo "== queue (pass 2, reordered) started $(date)"
 
 # C. The ablation ladder (load-bearing).
-for CFG in baseline frame eval task latent latent-free-c; do
+for CFG in baseline frame eval latent; do
     run panda "ladder4_${CFG}" --task mug --wall-time 20 --arms learned --config "$CFG"
 done
 
