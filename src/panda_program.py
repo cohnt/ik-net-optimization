@@ -389,8 +389,13 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         pose = self.frame.CalcPoseInWorld(self.plant_context)
         xyz_rpy = np.concatenate([pose.translation(),
                                   pose.rotation().ToRollPitchYaw().vector()])
+        box = getattr(self, "xyz_rpy_box", None)  # pose task; the mug box stays a bound
+        dist = (float(np.linalg.norm(np.clip(xyz_rpy, *box) - xyz_rpy)) if box is not None
+                else self._BoxDistance(self.xyz_rpy, xyz_rpy))
         if self.options.legacy_paired_start:
-            clipped = self._SetClipped(self.xyz_rpy, xyz_rpy)
+            self.prog.SetInitialGuess(
+                self.xyz_rpy, np.clip(xyz_rpy, *box) if box is not None else xyz_rpy)
+            clipped = dist if box is not None else self._SetClipped(self.xyz_rpy, xyz_rpy)
             clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])
             return clipped
         # Unclipped, like the learned arm's conditioning pose: the pose formulation pins
@@ -401,7 +406,7 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         # guess may sit outside the bounds; IPOPT's own projection is the solver's first
         # move and its size is returned as the clip distance.
         self.prog.SetInitialGuess(self.xyz_rpy, xyz_rpy)
-        clipped = self._BoxDistance(self.xyz_rpy, xyz_rpy)
+        clipped = dist
         clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])
         return clipped
 
@@ -444,9 +449,19 @@ class PandaIKProgramAnalytic(PandaIKProgram):
     def BoundingBoxConstraint(self):
         ik_tol = self.options.ik_constraint_tol
         ik_bb = np.array([ik_tol[0], ik_tol[0], ik_tol[0], ik_tol[1], ik_tol[1], ik_tol[1]])
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-                    self.target_rpy - ik_bb, self.target_rpy + ik_bb, self.xyz_rpy
-        )
+        # A general linear constraint, deliberately NOT a bounding box: this row pins the
+        # pose variables to the target, and as a *variable bound* IPOPT's bound_push
+        # projected every initial guess into it before evaluating anything -- so the
+        # paired start silently became (target pose, psi(q_init)), a median 2.7 rad from
+        # the shared q_init, and the arm was flattered by a head start it was never given
+        # on purpose. As a general constraint the guess may start outside (the violation
+        # lands in inf_pr) and the solver walks the pose to the target itself. Same
+        # reasoning as the learned arm's CBoxConstraint. The psi box below stays a bound:
+        # starts never violate it.
+        self.xyz_rpy_box = (self.target_rpy - ik_bb, self.target_rpy + ik_bb)
+        self.xyz_rpy_box_constraint = self.prog.AddLinearConstraint(
+            np.eye(6), self.xyz_rpy_box[0], self.xyz_rpy_box[1], self.xyz_rpy)
+        self.xyz_rpy_box_constraint.evaluator().set_description("PoseTargetBoxConstraint")
         self.bounding_box_constraint_psi = self.prog.AddBoundingBoxConstraint(
                     -5., 5., self.psi
         )
