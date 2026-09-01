@@ -203,6 +203,43 @@ default tag. And the grid is drawn from a generator local to the script and hash
 compared by accident -- `python scripts/collate.py --pair learned '<glob>'` runs exact
 McNemar between runs on matching cells and refuses a grid mismatch.
 
+### The latent box was a variable bound too, and it voided every paired learned column (2026-09-01)
+
+The conditioning-pose box was converted to a general linear constraint so that an initial
+guess could sit outside it. **The latent's own `+-5` box was left as a bounding box**, and
+`SetStartFromQ` clipped the inverted latent into it before the solver ever ran -- so this
+one was worse than `bound_push`: the projection was ours, not IPOPT's.
+
+The flow is a bijection, so `flow(c, InvertFlow(q, c))` reproduces `q` exactly -- but only
+at the *unclipped* latent. The inversion routinely returns components past `+-5`, so the
+clip moved the start by radians, the `+-0.1` correction could not close the residual, and
+the cell was then scored `unrepresentable_start` by the immediate-failure rule: an arm
+recorded as unable to represent a configuration it represents exactly.
+
+Measured on the iiwa pose task, paired, 20 s, same grid:
+
+| | before | after |
+| --- | --- | --- |
+| learned success | 11/60 | **40/60** |
+| cells scored `unrepresentable_start` | 49 | 0 |
+| median `\|q(start) - q_init\|` | 3.79 | 0.0000 |
+
+The arm starts at `\|z\| ~ 7.9`, outside the region, and the solver walks it to `\|z\| ~ 2.9`
+on its own -- which is the whole point of the region being a constraint rather than a bound.
+The Panda grasp gained 7 cells (28 -> 35); the Panda pose was unaffected, its inversion
+already landing inside `+-5`.
+
+**Consequence: every archived paired learned column is void**, not only the grasp ones the
+task-param removal already voided. The iiwa pose paired numbers in the final3/final4 tables
+(16/30, 18/30) are this artefact.
+
+Two structural notes. The box now lives in **one** method, `LatentBoxConstraint()`, because
+the first repair fixed `generic_program.py` while `PandaMugProgram` and `IiwaMugProgram`
+override `BoundingBoxConstraint` and carried their own copies -- the pose arms were fixed
+and the grasp arms silently were not. And the general rule this is the second instance of:
+**a region an initial guess is allowed to violate must be a general constraint, never a
+variable bound**, and nothing may project a guess without recording that it did.
+
 ### How paired the paired start actually is (repaired 2026-08-31)
 
 `SetStartFromQ` gives every arm the same `q_init` expressed in its own variables, but a
@@ -279,6 +316,67 @@ parameterisations (arXiv:2503.03992) is the suggested starting point -- and unti
 coverage is reported as the curve above, never as "100% up to singularities".
 
 
+
+### The final5 comparison, 20 s cap (2026-09-01) -- the first fully corrected measurement
+
+**This supersedes every table below it.** It is the first run in which all of the
+following hold at once: the learned arm is the draft's eq. (6) formulation (task-param
+removed), the conditioning-pose *and* latent regions are general constraints so the exact
+paired start survives to the solver, guesses are drawn per target, an unrepresentable
+paired start is an immediate failure rather than a silent projection, and the machine held
+a sleep inhibitor throughout.
+
+15 targets x 4 per-target guesses = 60 cells, `--compile`, seed 0, feasibility-verified
+success. Joint space is the comparison's target; the analytic columns are baselines.
+
+| experiment | start | learned | joint space | analytic4 | analytic8 | learned vs js (b/w) | p |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda pose | paired | **41/60** | 29/60 | 29/60 | 31/60 | 21 / 9 | **0.043** |
+| Panda pose | native | **60/60** | 29/60 | 37/60 | 28/60 | 31 / 0 | **9.3e-10** |
+| Panda grasp | paired | 35/60 | **56/60** | 52/60 | 57/60 | 2 / 23 | 1.9e-5 |
+| Panda grasp | native | 34/60 | **56/60** | 58/60 | 53/60 | 3 / 25 | 2.7e-5 |
+| iiwa pose | paired | 40/60 | 39/60 | -- | -- | 12 / 11 | 1.0 (tie) |
+| iiwa pose | native | **59/60** | 39/60 | -- | -- | 21 / 1 | **1.1e-5** |
+| iiwa grasp | paired | 12/60 | **59/60** | -- | -- | 0 / 47 | 1.4e-14 |
+| iiwa grasp | native | 7/60 | **59/60** | -- | -- | 0 / 52 | 4.4e-16 |
+
+**The pose result is the draft's central claim and it now holds on both robots.** The
+Panda is decisive under both protocols (60/60 native, 31 cells won and none lost); the
+iiwa wins native and ties paired. Nothing about it depends on the initialisation scheme,
+which is what the two protocols were added to establish.
+
+**The grasp rows are not yet readable, because they are largely measuring the cap**: 24-26
+of the 60 learned cells on the Panda and 47-52 of 60 on the iiwa exit at the 20 s wall
+clock. The 45 s stage is what separates budget from formulation, and no valid 45 s grasp
+measurement exists yet -- the archived one ran the task-parameterised arm.
+
+Three things the harness checks about itself, all of which passed:
+
+- **The joint-space arm is cell-for-cell identical between the two protocols** (56/60 both
+  ways on the Panda grasp, same grid hash). It must be: its native start *is* a random
+  configuration. Any difference in the other columns is therefore attributable to their
+  initialisation and not to the grid.
+- **`start_q_error` is 0.0000 for every learned and joint-space arm, every experiment.**
+  The paired start is exact, not approximately exact.
+- **The correction stays small and off its box**: median `|q_c|` 0.045-0.071 against a
+  +-0.1 bound, 0.00-0.08 of solutions on the box. The learned arm is not quietly becoming
+  a reparameterised joint-space arm.
+
+**analytic8 now beats analytic4 under the paired protocol** (Panda grasp 5 cells to 0,
+p = 0.0625), reversing the final4 finding -- and the reversal is explained by the confound
+that run had. With one guess shared across all targets, a single draw into the mirrored
+near-limit bundle swung whole columns; with per-target guesses the 8-branch chart is
+simply the better chart, and the 4-branch arm forfeits 6 grasp and 13 pose cells outright
+as `unrepresentable_start`. Under `native` the ranking flips back (58 vs 53), because a
+uniform draw over eight branches lands in the narrow near-limit bundles half the time
+against roughly 10% of configuration-space volume. Both directions are the same
+unbalanced-bundle pathology seen from opposite ends, which is what the analytic8 column
+was added to expose.
+
+One wart worth knowing: on the iiwa the mug and pose experiments report the *same*
+`grid_hash` (`9f5953e3c669`), so the hash is not capturing the task. Nothing here
+cross-compares tasks, but `collate.py --pair` would not refuse a mug-vs-pose pairing on
+that robot the way it should.
 
 ### The ablation ladder, re-run (2026-08-29, RTX 3080 Ti laptop, IPOPT, 20 s cap, compiled)
 
