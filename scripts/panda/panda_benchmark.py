@@ -329,6 +329,11 @@ def main():
         tol=slack, cell_timeout=5 * args.wall_time + 300,
         cells=([tuple(map(int, c.split(":"))) for c in args.cells.split(",")]
                if args.cells else None),
+        # Paired means starting AT q_init: a cell whose q_init the arm's variables cannot
+        # represent is an immediate failure (fail_reason "unrepresentable_start"), not a
+        # solve from a projection. Native starts are the formulation's own draw, so the
+        # rule does not apply there.
+        unrepresentable_tol=(1e-3 if args.start == "paired" else None),
         progress=lambda *a: bar.update(1),
         metadata=dict(task=args.task, solver=args.solver, config=args.config,
                       wall_time=args.wall_time, seed=args.seed, grid_hash=grid_hash,
