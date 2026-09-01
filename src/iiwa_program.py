@@ -46,7 +46,6 @@ class Iiwa14IKProgram(IKFlowProgram):
         self.num_pos = self.plant.num_positions()
         self.num_arm_dof = 7
         # Size of the first block of decision variables, from which the conditioning pose
-        # is built: the pose itself, or the grasp parameters under c_parameterization="task".
         self.num_task_vars = 6
 
         if model is None:
@@ -139,7 +138,7 @@ class Iiwa14IKProgram(IKFlowProgram):
 
     def TaskVarsToPose7(self, task_vars, t):
         '''Task variables -> the (xyz, wxyz) the flow is conditioned on. Default: they are
-        the conditioning pose, written as xyz + rpy. Overridden by GraspTaskParamMixin.'''
+        the conditioning pose, written as xyz + rpy.'''
         xyz = task_vars[:3]
         quaternion = RotationMatrix_[t](RollPitchYaw_[t](task_vars[3:6])).ToQuaternion().wxyz()
         return xyz, quaternion
@@ -349,6 +348,3 @@ class IiwaMugProgramNumerical(IiwaMugProgram):
         self.bounding_box_constraint.evaluator().set_description("QBoundingBoxConstraint")
 
 
-class IiwaMugProgramTaskParam(GraspTaskParamMixin, IiwaMugProgram):
-    '''The iiwa grasp with the task folded into the decision variables; the formulation
-    is identical to the Panda's and lives in `GraspTaskParamMixin`.'''

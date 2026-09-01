@@ -30,8 +30,7 @@ from src import benchmark as bm
 from src.generic_program import ProgramOptions, orientation_error_rpy
 from src.panda_program import (PandaIKProgram, PandaIKProgramNumerical,
                                PandaIKProgramAnalytic, PandaMugProgram,
-                               PandaMugProgramNumerical, PandaMugProgramAnalytic,
-                               PandaMugProgramTaskParam)
+                               PandaMugProgramNumerical, PandaMugProgramAnalytic)
 from pydrake.all import Quaternion, RigidTransform, RollPitchYaw, RotationMatrix
 from pydrake.geometry import Meshcat
 from tqdm import tqdm
@@ -68,12 +67,8 @@ CONFIGS = {
     "baseline":     dict(calibrate_flow_frame=False, share_flow_evaluations=False),
     "frame":        dict(share_flow_evaluations=False),
     "eval":         dict(share_flow_evaluations=True),
-    "task":         dict(share_flow_evaluations=True, c_parameterization="task"),
-    "latent":       dict(share_flow_evaluations=True, c_parameterization="task",
+    "latent":       dict(share_flow_evaluations=True,
                          latent_trust_region=4.0),
-    # The clean control for the task parameterisation: identical to "latent" but with the
-    # free conditioning pose, so the difference between the two rows is that change alone.
-    "latent-free-c": dict(share_flow_evaluations=True, latent_trust_region=4.0),
 }
 
 
@@ -299,8 +294,7 @@ def main():
         "between_fingers" if mug else "panda_hand")
     learned_cls = PandaIKProgram
     if mug:
-        learned_cls = (PandaMugProgramTaskParam
-                       if base_options.c_parameterization == "task" else PandaMugProgram)
+        learned_cls = PandaMugProgram
     all_arms = {
         "learned": bm.Arm(
             "learned",

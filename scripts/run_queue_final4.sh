@@ -43,7 +43,7 @@ finals 20
 
 # C. The ablation ladder, re-run under the exact paired start (the start repair changes
 # what every rung measures, so the attribution table must be regenerated, not reused).
-for CFG in baseline frame eval task latent latent-free-c; do
+for CFG in baseline frame eval latent; do
     run panda "ladder4_${CFG}" --task mug --wall-time 20 --arms learned --config "$CFG"
 done
 

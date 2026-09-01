@@ -83,7 +83,6 @@ class ProgramOptions:
     latent_trust_region: float = field(default=None, metadata={"help": "Bound on ||z||; None keeps the per-component box only"})
     latent_cost_weight: float = field(default=0.0, metadata={"help": "Weight on ||z||^2, keeping the latent in the flow's typical set"})
     correction_bound: float = field(default=0.1, metadata={"help": "Half-width of the box on the joint-space correction"})
-    c_parameterization: str = field(default="free", metadata={"help": "'free': c is a free 6-vector constrained through FK. 'task': c is computed from task parameters so the conditioning pose satisfies the task by construction"})
 
     ## Solver behaviour ##
     ipopt_mu_strategy: str = field(default=None, metadata={"help": "IPOPT 'mu_strategy'; 'adaptive' often helps on badly scaled problems"})
@@ -255,122 +254,6 @@ class IKFlowConstraints:
         self.description = description
     def __len__(self):
         return len(self.lb)
-
-class GraspTaskParamMixin:
-    '''The mug grasp with the task folded into the decision variables.
-
-    The baseline program leaves `c` a free 6-vector inside a 0.5 m box around the mug and
-    asks a nonlinear constraint on `FK(q)` to put the gripper on the mug's axis. Here the
-    decision variables are the grasp pose *in the mug frame*, `X_MG = (x, y, z, r, p, y)`,
-    and the conditioning pose is computed from them:
-
-        c  =  X_WM . X_MG . X_GE
-
-    so every `c` the optimiser can name is already a valid grasp. The task constraint on
-    `c` is then a plain bounding box -- `x = y = 0`, `z` within the mug height, orientation
-    free -- which an NLP solver handles exactly and for free, instead of two nonlinear
-    equality rows. This is the shape `eaik-experiment` uses for the same grasp
-    (`AddBoundingBoxConstraint([0, 0, -h2, -pi, -pi, -pi], [0, 0, h2, pi, pi, pi], p)`),
-    and it is the project's own thesis written literally: optimise in end-effector space,
-    treat the flow as an approximate chart, and leave only the chart's error to the
-    correction.
-
-    What remains nonlinear is exactly that chart error: `FK(IKFlow(c, z) + q_c)` is not
-    `c`, so the mug-axis constraint on `FK(q)` stays. The difference is that it now starts
-    small and stays small, rather than being the thing that drags `c` around.
-
-    Note `X_GE`, not `X_EG`: `X_MG` is the pose of the *grasp* frame, and converting it to
-    the frame the flow was conditioned on is a conjugation that does not cancel. Getting
-    this backwards is a bug that survived a long time in the sibling project.
-    '''
-
-    def TaskVarsToPose7(self, task_vars, t):
-        X_MG = RigidTransform_[t](RollPitchYaw_[t](task_vars[3:6]), task_vars[:3])
-        X_W_ee = self._Templated(self.target_mug.middle, t) @ X_MG @ self._Templated(self.X_grasp_ee, t)
-        return X_W_ee.translation(), X_W_ee.rotation().ToQuaternion().wxyz()
-
-    @staticmethod
-    def _Templated(transform, t):
-        if t is float:
-            return transform
-        return transform.cast[AutoDiffXd]()
-
-    def _GraspParamsFromQ(self, q_arm):
-        '''`X_MG` of the configuration `q_arm`, i.e. the inverse of `TaskVarsToPose7`.'''
-        self.plant.SetPositions(self.plant_context, self.PadQ(np.asarray(q_arm, dtype=float)[:self.num_arm_dof]))
-        X_W_grasp = self.frame.CalcPoseInWorld(self.plant_context)
-        X_MG = self.target_mug.middle.inverse() @ X_W_grasp
-        return np.concatenate([X_MG.translation(), X_MG.rotation().ToRollPitchYaw().vector()])
-
-    def create_prog(self, *args, **kwargs):
-        super().create_prog(*args, **kwargs)
-        # The inherited guess is a conditioning pose; here the variables are grasp
-        # parameters, and the centre of the mug's axis is the natural default. Callers
-        # that want a specific start use SetStartFromQ.
-        self.prog.SetInitialGuess(self.c, np.zeros(6))
-
-    def SetStartFromQ(self, q_arm):
-        # Same ordering point as the free-c version: the latent is taken at the
-        # configuration's own conditioning pose, and only the grasp parameters are
-        # projected onto the manifold the box describes.
-        q_arm = np.asarray(q_arm, dtype=float)[:self.num_arm_dof]
-        self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
-        # FlowPoseInWorld, not FlowFrame().CalcPoseInWorld: the latter drops X_ee_flow, the
-        # 27 mm / 120 degree offset between the scene's panda_hand and the frame the network
-        # was trained on. Inverting at the uncalibrated frame returns |z| between 40 and
-        # 5.7e7 (measured over six random configurations) against 2.8-4.1 here, i.e. the
-        # network correctly reporting that the configuration is impossible for that pose --
-        # and the start was then clipped from |z| ~ 1e5 into the +-5 box, so the arm began
-        # at an arbitrary latent. Identity offset when calibrate_flow_frame is off, so the
-        # ladder's baseline rung still measures the uncalibrated frame on purpose.
-        X_W_ee = self.FlowPoseInWorld()
-        c = np.concatenate([X_W_ee.translation(), X_W_ee.rotation().ToRollPitchYaw().vector()])
-        z = self.InvertFlow(q_arm, c)
-        clipped = self._SetClipped(self.c, self._GraspParamsFromQ(q_arm))
-        clipped += self._SetClipped(self.z, z)
-        self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
-        # An exact paired start is impossible here by construction -- these variables
-        # encode a grasp and q_arm is not one, so the start is genuinely a projection.
-        # The correction still closes what it can representably close (at most
-        # correction_bound per joint, and clipped to noise when the flow's output at the
-        # projected grasp parameters is far from any configuration); start_q_error keeps
-        # reporting the remaining distance per cell, which is the honest number.
-        residual = q_arm - np.asarray(
-            self.VarsToQ(self.prog.GetInitialGuess(self.lumped_vars)), dtype=float)[:self.num_arm_dof]
-        bound = self.options.correction_bound
-        residual = np.nan_to_num(residual, nan=0.0, posinf=bound, neginf=-bound)
-        self.prog.SetInitialGuess(self.correction, np.clip(residual, -bound, bound))
-        return clipped
-
-    def BoundingBoxConstraint(self):
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -5. * np.ones(self.ik_solver.network_width),
-            5. * np.ones(self.ik_solver.network_width), self.z)
-        self.bounding_box_constraint.evaluator().set_description("ZBoundingBoxConstraint")
-        # The grasp itself: exactly on the mug's axis, within its height, orientation
-        # free. x and y are pinned because that is what the task is -- the gripper origin
-        # lies *on* the axis -- not because a tolerance happened to be chosen.
-        height = self.MugHeight()
-        self.c_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            np.array([0.0, 0.0, -height, -2 * np.pi, -2 * np.pi, -2 * np.pi]),
-            np.array([0.0, 0.0, height, 2 * np.pi, 2 * np.pi, 2 * np.pi]),
-            self.c)
-        self.c_bounding_box_constraint.evaluator().set_description("GraspParamBoundingBox")
-        bound = self.options.correction_bound
-        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -bound * np.ones(self.num_arm_dof), bound * np.ones(self.num_arm_dof), self.correction)
-        self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
-
-    def MugHeight(self):
-        '''Half-height of the graspable band along the mug axis.
-
-        `ProgramOptions.mug_height` is the single source of truth. `Mug.height` exists too
-        and defaults to 0.04 against the option's 0.035, which is a latent disagreement --
-        the grasp constraint and the bound on the grasp parameter have to be the same
-        number or the box and the constraint describe different problems.
-        '''
-        return self.options.mug_height
-
 
 
 class IKFlowProgram:
