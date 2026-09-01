@@ -473,59 +473,43 @@ historical 4-branch chart was, in effect, performing branch selection for free -
 a genuine finding about unbalanced discrete solution bundles in optimization-IK, and
 exactly the phenomenon the `analytic8` column was added to expose.
 
-### The 6106-second cell, diagnosed (2026-08-31): a rare C++ wedge, and what now bounds a solve
+### The 6106-second "wedge", solved: the laptop was suspending (2026-09-01)
 
-The cell (`sweep3_panda_latent_None`, target 0 guess 1) is fully explained and its
-watchdog has been **removed**, not tuned. The evidence:
+Every multi-hour stall this repo has recorded -- the archived 6106 s cell, and four
+overnight "wedges" of 2-5 hours during the final4 queue -- was **the machine going to
+sleep**. GNOME on this laptop suspends after 900 s idle *even on AC*
+(`sleep-inactive-ac-type='suspend'`), and `journalctl` matches every stall to the minute:
+"The system will suspend now!" at 19:10:48 against a run whose logs stop at 19:10, with
+suspend/resume cycles all night (19:10-20:55, 21:38-23:01, ...). Thomas identified the
+cause by asking the right question; the diagnosis had gone through three wrong
+solver-level theories first (SPRAL, GPU runtime-D3, a torch spin), each fitting part of
+the evidence:
 
-- Its IPOPT log ends after iteration 125 (an `H` step -- regularised Hessian) with no
-  `EXIT:` line, and nothing was written for 102 minutes; IPOPT writes one line per
-  iteration, so the process was wedged **inside a single iteration**, below Python.
-- Re-running the cell (`--cells 0:1`, same grid hash) is **bit-identical through iteration
-  125** -- same objective, infeasibility, and step sizes line for line -- and then simply
-  continues, solving in 8 s / 154 iterations. Sixteen consecutive attempts all did exactly
-  that. So the computation is deterministic and the wedge is not: a rare scheduling-level
-  stall (once in 1740 cells), not a numerical pathology of the iterate. The kernel journal
-  shows nothing in the window.
-- The wedge **released on its own**: the old `SolveTimeout` fired from the constraint
-  callback at 6106 s, which is the deadline check finally being *reachable* again -- proof
-  that a callback-based kill can never catch this class of stall, only add insult by
-  discarding the iterate afterwards.
+- it struck only *unattended* runs -- the machine never idles while someone is typing --
+  which made 16/16 attended reproductions run clean and look like nondeterminism;
+- suspended wall-clock lands on whichever cell was in flight, as one absurd `wall_time`
+  with the trajectory bit-identical up to that point;
+- `timeout`/`sleep` run on CLOCK_MONOTONIC, which pauses across suspend, so OS kills
+  stretch by the slept duration -- what looked like SIGTERM-proof uninterruptibility;
+- after resume, a CUDA context that straddled the suspend can leave torch spinning at
+  100% CPU in userspace, so even the post-resume state mimics a compute pathology.
 
-The design that replaced it, per the standing rule that a watchdog must not throw away the
-solver's point:
+Consequences and rules:
 
-- `Solve()`'s per-iteration callback stores `program.last_iterate` (in memory, always).
-- On any exception, `run_grid` re-verifies that iterate exactly as a returned solution
-  (`recovered_feasible`, `recovered_fail_reason`, `recovered_detail` in the record).
-- A wedge that releases now ends *cleanly*: the next iteration trips IPOPT's own
-  `max_wall_time` and the solve returns its point, which is verified normally. The only
-  remaining bound on a wedge that never releases is the OS (`timeout` in the queue
-  script), which is where such a bound belongs.
-- `SolveTimeout`, `CheckDeadline`, `hard_time_factor` and the `QAndPose` deadline poll are
-  deleted -- the poll cost a `time.time()` on the hottest path in the program and could not
-  fire when it mattered.
-
-**The mechanism, caught live the same night (2026-09-01, ~00:20).** The first `final4`
-iiwa grasp run wedged for five hours at its fourth learned cell, and this time the
-per-cell `faulthandler` dumps caught it: eighteen identical stack dumps over the whole
-window show the main thread inside a *torch op in the eager float forward pass*
-(`VarsToQ` -> `QAndPose` -> `EvalJointCenteringCost`), i.e. **a CUDA call that never
-returned** -- and the process survived `timeout`'s SIGTERM for three hours, the signature
-of an *uninterruptible* ioctl. The machine runs the GPU with fine-grained **Runtime D3
-enabled**, runtime PM `auto`, persistence mode off: when the solver spends minutes in the
-numerical/analytic arms (zero GPU work), the device autosuspends, and the learned arm's
-next torch op must resume it -- a resume that occasionally hangs for hours and then
-releases. That fits every observation: the nondeterminism, the bit-identical re-runs that
-sail through, no Python for the whole window, the self-release, SIGTERM immunity, both
-robots, an empty kernel journal, and the timing (the wedge struck immediately after a
-long GPU-idle numerical solve). Mitigation while the queue runs, root-free: a sidecar
-process launching one trivial CUDA kernel per second so the device never goes idle long
-enough to suspend. The durable fix needs root -- persistence mode (`nvidia-smi -pm 1`) or
-`NVreg_DynamicPowerManagement=0x00` -- and is recorded as an open item. Note the OS-level
-`timeout` is *also* powerless against the wedge itself (nothing delivers a signal to a
-process stuck in an uninterruptible syscall); it fires when the wedge releases, which is
-another reason the recovery path, not a kill, is the right design.
+- **Any long unattended run on this machine must hold a sleep inhibitor**:
+  `systemd-inhibit --what=sleep:idle --mode=block sleep infinity &` (root-free,
+  self-cleaning). The final4 queue ran under one from 09:25 on.
+- Wall-clock-capped results from a night without an inhibitor are suspect; verified: **no
+  completed final4/ladder4/dose4 summary contains a suspend-bloated cell** (every struck
+  run died before writing its summary, so the published tables are clean).
+- The recovery design stands on its own merits and is unchanged: `Solve()` keeps
+  `program.last_iterate`; any abnormal exit is verified from that point
+  (`recovered_feasible` etc.); `SolveTimeout`/`CheckDeadline`/`hard_time_factor` remain
+  deleted -- a callback deadline poll was doubly wrong here, unable to fire while the
+  machine slept and destroying the iterate when it finally did.
+- When an unattended process on this machine appears hung, check
+  `journalctl -b | grep "suspend now"` against the stall window *before* any solver- or
+  GPU-level theory.
 
 ### Measured results (2026-08-28, RTX 3080 Ti laptop, IPOPT, 20 s cap)
 
