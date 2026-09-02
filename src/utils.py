@@ -65,6 +65,12 @@ def BuildEnv(meshcat, directives_file=None, extra_directives=None):
     Build the diagram described by `directives_file`, optionally with additional
     `ModelDirective`s appended in memory. `extra_directives` exists so callers can add
     models to a scene without ever writing to the (tracked) YAML file on disk.
+
+    `meshcat=None` builds the diagram with no visualization at all. That is not the same
+    as passing None through to `ApplyVisualizationConfig`, which would have Drake start a
+    Meshcat instance of its own -- the point is that a headless sweep should stand up no
+    websocket server. It matters at scale: a benchmark process built two Meshcat servers,
+    so forty ranks on one node meant eighty of them.
     """
     builder = DiagramBuilder()
 
@@ -82,12 +88,13 @@ def BuildEnv(meshcat, directives_file=None, extra_directives=None):
     ProcessModelDirectives(directives, plant, parser)
 
     plant.Finalize()
-    vis_config = VisualizationConfig()
-    vis_config.publish_illustration = True
-    vis_config.publish_proximity = True
-    vis_config.publish_inertia = True
-    vis_config.delete_on_initialization_event = True   # Clear old visualizations
-    ApplyVisualizationConfig(vis_config, builder, meshcat=meshcat)
+    if meshcat is not None:
+        vis_config = VisualizationConfig()
+        vis_config.publish_illustration = True
+        vis_config.publish_proximity = True
+        vis_config.publish_inertia = True
+        vis_config.delete_on_initialization_event = True   # Clear old visualizations
+        ApplyVisualizationConfig(vis_config, builder, meshcat=meshcat)
 
     diagram = builder.Build()
     return diagram
@@ -245,7 +252,8 @@ def GenerateDiagramWithMug(q, program, yaml_file, meshcat):
         X_PC=SchemaTransform(target),
     )
 
-    meshcat.Delete()
+    if meshcat is not None:
+        meshcat.Delete()
     diagram_with_mug = BuildEnv(
         meshcat=meshcat,
         directives_file=yaml_file,

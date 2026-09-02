@@ -108,6 +108,17 @@ def parse_args():
     p.add_argument("--cells", default=None, metavar="TI:GI[,TI:GI...]",
                    help="run only these (target, guess) cells of the seeded grid -- "
                         "a debugging aid for reproducing a single archived cell")
+    p.add_argument("--shard", default=None, metavar="K/N",
+                   help="run shard K of N of the seeded grid, split target-major (whole "
+                        "targets per shard). The grid is drawn and hashed before any "
+                        "filtering, so a shard is bit-identical to those cells of the "
+                        "unsharded run; '_shardKofN' is appended to the tag so shards "
+                        "cannot overwrite each other, and cluster/merge_shard_summaries.py "
+                        "pools them and recomputes the summary over the whole grid.")
+    p.add_argument("--cell-timeout", type=float, default=None,
+                   help="seconds before a stalled cell dumps every thread's stack to "
+                        "stalls.txt (default 5*wall_time + 300). Worth raising when "
+                        "--wall-time is deliberately non-binding, e.g. under --set max_iter.")
     p.add_argument("--compile", action="store_true",
                    help="torch.compile the flow Jacobian (1.33x on it, ~1.5x on an "
                         "AutoDiffXd VarsToQ). Compiled once per process and warmed up "
@@ -139,10 +150,18 @@ def apply_overrides(options, overrides):
 
 def main():
     args = parse_args()
+    if args.shard and args.cells:
+        raise SystemExit("--shard and --cells are mutually exclusive")
+    shard = bm.parse_shard(args.shard)
     tag = args.tag or "_".join(
         [args.task, args.config, args.solver, args.start]
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
         + (["compiled"] if args.compile else []))
+    # The suffix is what makes a shard shard-safe: without it every shard of a run
+    # resolves to the same log_dir and the same summary.json and they overwrite one
+    # another. Matches the `_shard(\d+)of(\d+)$` convention the merger keys on.
+    if shard is not None:
+        tag = f"{tag}_shard{shard[0]}of{shard[1]}"
     log_dir = os.path.join(RepoDir(), "results/panda/benchmark", tag)
     out_path = os.path.join(log_dir, "summary.json")
 
@@ -170,7 +189,9 @@ def main():
     # and no cross-rung comparison was paired. The global seed stays for incidental draws.
     rng = np.random.default_rng(args.seed)
     np.random.seed(args.seed)
-    meshcat = Meshcat()
+    # No visualization means no Meshcat server. This process used to stand up two of them
+    # unconditionally, so forty ranks on a cluster node meant eighty websocket servers.
+    meshcat = Meshcat() if base_options.visualize else None
     scene = "panda_finray_collision.yaml" if args.task == "mug" else "panda_collision.yaml"
     yaml_file = os.path.join(RepoDir(), "models/panda", scene)
 
@@ -219,17 +240,32 @@ def main():
     grid_hash = hashlib.sha1(np.asarray(
         target_qs + [g for row in guesses for g in row]).tobytes()).hexdigest()[:12]
 
+    # Resolved here, before the scenes are built, because the mug loop below only builds
+    # the targets this shard will actually solve.
+    if shard is not None:
+        cells = bm.shard_cells(*shard, args.targets, args.guesses)
+    elif args.cells:
+        cells = [tuple(map(int, c.split(":"))) for c in args.cells.split(",")]
+    else:
+        cells = None
+
     compile_seconds = None
     if args.compile:
         compile_seconds = sampler.WarmUpJacobian()
         print(f"compiled the flow Jacobian in {compile_seconds:.1f} s")
 
     if args.task == "mug":
-        mug_meshcat = Meshcat()
-        targets = []
-        for q in tqdm(target_qs, desc="mugs"):
+        mug_meshcat = Meshcat() if base_options.visualize else None
+        # Only this shard's targets need a scene built. The draws above are unconditional,
+        # so the grid and its hash are untouched; without this gate an N-shard split would
+        # pay N times the (expensive) mug-scene construction for scenes it never solves.
+        wanted = {ti for ti, _ in cells} if cells is not None else set(range(args.targets))
+        targets = [None] * len(target_qs)
+        for ti, q in enumerate(tqdm(target_qs, desc="mugs")):
+            if ti not in wanted:
+                continue
             with HiddenPrints():
-                targets.append(GenerateDiagramWithMug(q, sampler, yaml_file, mug_meshcat))
+                targets[ti] = GenerateDiagramWithMug(q, sampler, yaml_file, mug_meshcat)
     else:
         targets = []
         for q in target_qs:
@@ -328,12 +364,12 @@ def main():
     }
     arms = [all_arms[name] for name in args.arms.split(",")]
 
-    bar = tqdm(total=len(arms) * args.targets * args.guesses, desc=tag)
+    n_cells = len(cells) if cells is not None else args.targets * args.guesses
+    bar = tqdm(total=len(arms) * n_cells, desc=tag)
     records = bm.run_grid(
         arms, targets, guesses, task_gate, log_dir, out_path,
-        tol=slack, cell_timeout=5 * args.wall_time + 300,
-        cells=([tuple(map(int, c.split(":"))) for c in args.cells.split(",")]
-               if args.cells else None),
+        tol=slack, cell_timeout=args.cell_timeout or (5 * args.wall_time + 300),
+        cells=cells,
         # Paired means starting AT q_init: a cell whose q_init the arm's variables cannot
         # represent is an immediate failure (fail_reason "unrepresentable_start"), not a
         # solve from a projection. Native starts are the formulation's own draw, so the
@@ -344,7 +380,8 @@ def main():
                       wall_time=args.wall_time, seed=args.seed, grid_hash=grid_hash,
                       compiled=args.compile, compile_seconds=compile_seconds,
                       overrides=overrides, start=args.start, guess_filter=args.guess_filter,
-                      n_targets=args.targets, n_guesses=args.guesses))
+                      n_targets=args.targets, n_guesses=args.guesses,
+                      shard=args.shard, **bm.provenance()))
     bar.close()
 
     summary = bm.summarise(records, arms, args.targets, args.guesses)

@@ -80,6 +80,87 @@ def is_timeout(exit_string):
     return "wallclock" in lowered or "time" in lowered and "exceeded" in lowered
 
 
+def is_iteration_cap(exit_string):
+    """Did the solve stop because it ran out of iterations rather than seconds?
+
+    `is_timeout` deliberately does not match IPOPT's "Maximum Number of Iterations
+    Exceeded" (no "time" in it), so without this a run under `--set max_iter=N` reports
+    `timeouts: 0` and looks as if nothing hit a cap at all.
+    """
+    if not exit_string:
+        return False
+    lowered = exit_string.lower()
+    return ("iteration" in lowered and "exceeded" in lowered) or "iteration limit" in lowered
+
+
+## --------------------------------- sharding ---------------------------------- ##
+
+def parse_shard(spec):
+    """`"K/N"` -> `(K, N)`, validated."""
+    if spec is None:
+        return None
+    try:
+        index, _, count = spec.partition("/")
+        index, count = int(index), int(count)
+    except ValueError:
+        raise SystemExit(f"--shard expects K/N, got {spec!r}")
+    if count < 1 or not 0 <= index < count:
+        raise SystemExit(f"--shard: need 0 <= K < N and N >= 1, got {spec!r}")
+    return index, count
+
+
+def shard_cells(index, count, n_targets, n_guesses):
+    """The `(target, guess)` cells of shard `index` of `count`, split **target-major**.
+
+    Whole targets go to a shard; a target's guesses are never split across shards. Two
+    things depend on that. The bootstrap CI resamples whole targets (guesses within a
+    target are correlated) and `solved_within_k` counts restarts within a target, so a
+    shard holding half of a target's guesses would make both meaningless on the merged
+    run. And a shard that dies drops a legible set of whole targets rather than silently
+    truncating every one of them.
+
+    The grid itself is drawn identically in every shard -- the seeded draws and
+    `grid_hash` happen before any filtering -- so a shard is bit-identical to those cells
+    of the unsharded run.
+    """
+    return [(ti, gi) for ti in range(n_targets) if ti % count == index
+            for gi in range(n_guesses)]
+
+
+def provenance():
+    """Where and with what this run was measured.
+
+    Recorded in every summary because performance numbers are not comparable across
+    machines: without `host` nothing stops a cluster run being paired cell-for-cell
+    against a laptop one, and without `device` there is no record of whether a table was
+    measured on a GPU or on CPU (which also differ at the ulp level, so a single table
+    must be one device).
+    """
+    import platform
+    out = {"host": platform.node(), "platform": platform.platform()}
+    try:
+        import torch
+        out["torch_version"] = torch.__version__
+    except Exception:
+        pass
+    try:
+        from ikflow.config import DEVICE
+        out["device"] = str(DEVICE)
+    except Exception:
+        pass
+    try:
+        # A source build reports "unknown"/0.0.0 here while a release tarball reports its
+        # tag, which is exactly the distinction worth recording: the laptop runs a local
+        # build and the cluster runs the official noble tarball.
+        from pydrake.common import GetDrakePath
+        import pydrake
+        out["drake_version"] = getattr(pydrake, "__version__", None) or "unknown"
+        out["drake_path"] = GetDrakePath()
+    except Exception:
+        pass
+    return out
+
+
 ## ------------------------------- verification -------------------------------- ##
 
 def binding_violations(prog, x, tol):
@@ -185,9 +266,11 @@ def verify(program, result, task_gate, tol, x_lumped=None):
         return Verdict(False, "constraint", detail)
     # An interior-point method parks *on* an active constraint, so a converged solve
     # routinely reports a collision value of 1 + 1e-7. The gate has to carry the same
-    # slack the program's own binding does: the collision row is scaled by 0.1, so `tol`
-    # in constraint units is `10 * tol` in Drake's smoothed-distance units.
-    if collision > 1.0 + 10.0 * tol:
+    # slack the program's own binding does: the collision row is scaled by
+    # `collision_row_scale`, so `tol` in constraint units is `tol / scale` in Drake's
+    # smoothed-distance units (10 * tol at the default scale of 0.1).
+    scale = getattr(program.options, "collision_row_scale", 0.1)
+    if collision > 1.0 + tol / scale:
         return Verdict(False, "collision", detail)
     if not ok:
         return Verdict(False, "task_error", detail)
@@ -377,6 +460,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     record["solver_success"] = bool(result.is_success())
                     record.update(parse_log(log_path))
                     record["timed_out"] = is_timeout(record.get("exit"))
+                    record["hit_iteration_cap"] = is_iteration_cap(record.get("exit"))
                     verdict = verify(program, result, task_gate, tol)
                     record["feasible"] = verdict.feasible
                     record["fail_reason"] = verdict.fail_reason
@@ -439,6 +523,7 @@ def summarise(records, arms, n_targets, n_guesses):
             success_ci=bootstrap_success_ci(per_target),
             solver_successes=sum(1 for r in recs if r.get("solver_success")),
             timeouts=sum(1 for r in recs if r.get("timed_out")),
+            iteration_capped=sum(1 for r in recs if r.get("hit_iteration_cap")),
             fail_reasons=modes,
             mean_wall_time=_mean(recs, "wall_time", ok_only=False),
             mean_wall_time_success=_mean(ok, "wall_time", ok_only=False),
@@ -535,7 +620,7 @@ def _json_default(obj):
 
 def print_table(summary, arm_names):
     header = (f"{'formulation':<14} {'success':>10} {'95% CI':>16} {'solver ok':>10} "
-              f"{'t/out':>6} {'iters':>8} {'jac':>8} {'wall(s)':>9} {'cost':>8}")
+              f"{'t/out':>6} {'i/cap':>6} {'iters':>8} {'jac':>8} {'wall(s)':>9} {'cost':>8}")
     print(header)
     print("-" * len(header))
     for name in arm_names:
@@ -543,6 +628,7 @@ def print_table(summary, arm_names):
         lo, hi = s["success_ci"]
         print(f"{name:<14} {s['successes']:>4}/{s['n']:<5} [{lo:.2f}, {hi:.2f}]".ljust(42)
               + f"{s['solver_successes']:>10} {s['timeouts']:>6} "
+              f"{s.get('iteration_capped', 0):>6} "
               f"{s['mean_iterations']:>8.0f} {s['mean_jacobian_evals']:>8.0f} "
               f"{s['mean_wall_time']:>9.2f} {s['median_cost']:>8.2f}")
     print(f"\ncost on the {len(summary['_common_cells'])} cells every formulation solved:")
