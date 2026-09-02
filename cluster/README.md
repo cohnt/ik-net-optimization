@@ -136,6 +136,14 @@ measured, not just how long it takes. `PROCS=1` is always safe.
   `Robot()` construction**, then klampt reads it back. With several workers
   starting at once on a shared `$HOME` that is a truncate-while-reading race, so
   every worker gets its own `$HOME` under `$TMPDIR`.
+- **Drake downloads `drake_models` lazily, inside `ProcessModelDirectives`.**
+  Every mesh the scenes reference as `package://drake_models/...` comes from
+  there, so a compute node fails with "Network is unreachable" *after* passing
+  every other check. Setup warms it by building all three scenes; it must be
+  warmed with the cluster's Drake, since the cache key includes the models commit
+  that Drake version pins.
+- **Slurm exports `CUDA_VISIBLE_DEVICES` as GPU UUIDs, not indices.** Pin a
+  worker by selecting an entry from Slurm's own list, never by writing `0`/`1`.
 - **Compute nodes have no internet.** The panda weights auto-download from GCS
   and must be warmed on the `download` partition first; ikflow computes its
   cache dir from `expanduser("~")` at import, so `HOME` must be set explicitly
