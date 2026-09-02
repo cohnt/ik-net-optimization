@@ -32,6 +32,15 @@ from pydrake.all import (
 class ProgramOptions:
     joint_centering_cost: float = field(default=0.0, metadata={"help": "Weight for joint centering cost"})
     collision_avoidance: bool = field(default=True, metadata={"help": "Add collision avoidance constraints"})
+    # The shape of the collision row, exposed so it can be swept. The defaults are the
+    # values that were hardcoded in CreateCollisionFreeConstraint, so nothing moves unless
+    # they are set. `collision_influence_offset` is the distance at which a geometry pair
+    # starts contributing to Drake's smooth penalty, i.e. it sets the gradient the solver
+    # has to follow while it is still far from contact; `collision_row_scale` scales the
+    # whole row (and its upper bound with it, since the binding's own threshold is 1).
+    collision_bound: float = field(default=1e-3, metadata={"help": "MinimumDistanceLowerBoundConstraint 'bound' (metres)"})
+    collision_influence_offset: float = field(default=1e-1, metadata={"help": "MinimumDistanceLowerBoundConstraint 'influence_distance_offset' (metres)"})
+    collision_row_scale: float = field(default=0.1, metadata={"help": "Scaling applied to the collision constraint row and its upper bound"})
     joint_limits: bool = field(default=True, metadata={"help": "Enforce joint limits"})
     ik_constraint_tol: tuple = field(default=(1e-4, 0.01), metadata={"help": "Tolerance for IK constraints: tuple of (position tol, orientation tol in radians). The orientation entry is used only by orientation_error_form='rpy_boxed'; 'rpy' pins the residual to zero"})
     orientation_error_form: str = field(default="rpy", metadata={"help": "'rpy' pins the roll-pitch-yaw residual to zero, as ../codebase's pose constraint does; 'rpy_boxed' allows +-ori_tol on each row"})
@@ -696,16 +705,20 @@ class IKFlowProgram:
         return self.ik_constraint
 
     def CreateCollisionFreeConstraint(self):
+        scale = self.options.collision_row_scale
         self.collision_free_constraint_eval = MinimumDistanceLowerBoundConstraint(
             plant=self.plant,
-            bound=1e-3,
-            influence_distance_offset=1e-1,
+            bound=self.options.collision_bound,
+            influence_distance_offset=self.options.collision_influence_offset,
             plant_context=self.plant_context
         )
         def eval_func(vars = None, q = np.zeros(7), pose = None):
-            return 0.1 * self.collision_free_constraint_eval.Eval(q)
+            return scale * self.collision_free_constraint_eval.Eval(q)
         lb = np.array([-np.inf])
-        ub = np.array([0.1])
+        # The binding's raw value is "in collision" above 1, so the scaled bound is the
+        # scale itself; keeping the two coupled means changing the scale reshapes the
+        # gradient without moving the feasible set.
+        ub = np.array([scale])
         self.collision_free_constraint = IKFlowConstraints(lb, ub, eval_func, description="CollisionFreeConstraint")
         self.constraints.append(self.collision_free_constraint)
         return self.collision_free_constraint

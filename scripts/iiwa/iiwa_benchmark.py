@@ -64,6 +64,12 @@ def parse_args():
     p.add_argument("--tag", default=None)
     p.add_argument("--cells", default=None, metavar="TI:GI[,TI:GI...]",
                    help="run only these (target, guess) cells of the seeded grid")
+    p.add_argument("--shard", default=None, metavar="K/N",
+                   help="run shard K of N of the seeded grid, split target-major. See the "
+                        "panda script; '_shardKofN' is appended to the tag and "
+                        "cluster/merge_shard_summaries.py pools the shards.")
+    p.add_argument("--cell-timeout", type=float, default=None,
+                   help="seconds before a stalled cell dumps stacks (default 5*wall_time + 300)")
     p.add_argument("--compile", action="store_true",
                    help="torch.compile the flow Jacobian, once per process, warmed up "
                         "before the grid. Moves the learned arm's success rate inside a "
@@ -91,10 +97,15 @@ def apply_overrides(options, overrides):
 
 def main():
     args = parse_args()
+    if args.shard and args.cells:
+        raise SystemExit("--shard and --cells are mutually exclusive")
+    shard = bm.parse_shard(args.shard)
     tag = args.tag or "_".join(
         ["iiwa", args.task, args.config, args.start]
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
         + (["compiled"] if args.compile else []))
+    if shard is not None:
+        tag = f"{tag}_shard{shard[0]}of{shard[1]}"
     log_dir = os.path.join(RepoDir(), "results/iiwa/benchmark", tag)
     out_path = os.path.join(log_dir, "summary.json")
 
@@ -112,7 +123,8 @@ def main():
     # program construction used to shift which targets a configuration was measured on.
     rng = np.random.default_rng(args.seed)
     np.random.seed(args.seed)
-    meshcat = Meshcat()
+    # No visualization means no Meshcat server; see the note in the Panda script.
+    meshcat = Meshcat() if base_options.visualize else None
     yaml_file = os.path.join(RepoDir(), "models/iiwa14/iiwa14_collision.yaml")
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
@@ -133,8 +145,22 @@ def main():
     target_qs = [sample_collision_free() for _ in tqdm(range(args.targets), desc="targets")]
     # Per-target guesses; see the panda script for the rationale.
     guesses = [[sample_collision_free() for _ in range(args.guesses)] for _ in range(args.targets)]
+    # The task is a suffix rather than part of the hash input: the mug and pose grids are
+    # drawn from the same seed over the same joint limits, so they hashed *identically*
+    # (9f5953e3c669 for both) and `collate.py --pair` would happily have compared a mug run
+    # against a pose one. Appending keeps the hash of the cells themselves unchanged, so
+    # pairing against archived runs still works once their task is taken into account.
     grid_hash = hashlib.sha1(np.asarray(
         target_qs + [g for row in guesses for g in row]).tobytes()).hexdigest()[:12]
+    grid_hash = f"{grid_hash}-{args.task}"
+
+    # Resolved before the scenes are built: the mug loop only builds this shard's targets.
+    if shard is not None:
+        cells = bm.shard_cells(*shard, args.targets, args.guesses)
+    elif args.cells:
+        cells = [tuple(map(int, c.split(":"))) for c in args.cells.split(",")]
+    else:
+        cells = None
 
     compile_seconds = None
     if args.compile:
@@ -142,11 +168,16 @@ def main():
         print(f"compiled the flow Jacobian in {compile_seconds:.1f} s")
 
     if args.task == "mug":
-        mug_meshcat = Meshcat()
-        targets = []
-        for q in tqdm(target_qs, desc="mugs"):
+        mug_meshcat = Meshcat() if base_options.visualize else None
+        # Only this shard's targets need a scene; the draws above are unconditional, so the
+        # grid and its hash are untouched.
+        wanted = {ti for ti, _ in cells} if cells is not None else set(range(args.targets))
+        targets = [None] * len(target_qs)
+        for ti, q in enumerate(tqdm(target_qs, desc="mugs")):
+            if ti not in wanted:
+                continue
             with HiddenPrints():
-                targets.append(GenerateDiagramWithMug(q, sampler, yaml_file, mug_meshcat))
+                targets[ti] = GenerateDiagramWithMug(q, sampler, yaml_file, mug_meshcat)
 
         def task_gate(program, q):
             program.plant.SetPositions(program.plant_context, q)
@@ -214,10 +245,11 @@ def main():
     }
     arms = [all_arms[name] for name in args.arms.split(",")]
 
-    bar = tqdm(total=len(arms) * args.targets * args.guesses, desc=tag)
-    records = bm.run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol=slack, cell_timeout=5 * args.wall_time + 300,
-        cells=([tuple(map(int, c.split(":"))) for c in args.cells.split(",")]
-               if args.cells else None),
+    n_cells = len(cells) if cells is not None else args.targets * args.guesses
+    bar = tqdm(total=len(arms) * n_cells, desc=tag)
+    records = bm.run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol=slack,
+        cell_timeout=args.cell_timeout or (5 * args.wall_time + 300),
+        cells=cells,
         # Paired means starting AT q_init: a cell whose q_init the arm's variables cannot
         # represent is an immediate failure (fail_reason "unrepresentable_start"), not a
         # solve from a projection. Native starts are the formulation's own draw, so the
@@ -230,7 +262,8 @@ def main():
                                         grid_hash=grid_hash, compiled=args.compile,
                                         compile_seconds=compile_seconds,
                                         overrides=overrides, start=args.start,
-                                        n_targets=args.targets, n_guesses=args.guesses))
+                                        n_targets=args.targets, n_guesses=args.guesses,
+                                        shard=args.shard, **bm.provenance()))
     bar.close()
     print()
     bm.print_table(bm.summarise(records, arms, args.targets, args.guesses),
