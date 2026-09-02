@@ -41,7 +41,20 @@ SHARD_RE = re.compile(r"_shard(\d+)of(\d+)$")
 # one run and merging them would fabricate a table that was never measured.
 MUST_MATCH = ("robot", "task", "solver", "config", "wall_time", "seed", "grid_hash",
               "compiled", "overrides", "start", "guess_filter", "n_targets", "n_guesses",
-              "device", "torch_version", "host")
+              "device", "torch_version")
+
+# `host` is deliberately NOT in MUST_MATCH. Shards of one run are distributed across
+# nodes -- that is the entire point of sharding -- so their hostnames can never agree,
+# and requiring it to made every real multi-node merge fail. What `host` exists to
+# prevent is pairing a CLUSTER run against a LAPTOP one, and that is a different check:
+# the shards must agree on the things that make timings comparable (`device`,
+# `torch_version`, and the node class implied by them), which MUST_MATCH still enforces.
+# The merged summary records every host that contributed, under `hosts`.
+#
+# This could not be caught by cluster/verify_sharding.sh, which runs every shard on one
+# machine and therefore always sees one hostname. Any metadata key whose whole purpose
+# is to differ per node is invisible to a single-machine round-trip test.
+HOSTS_KEY = "host"
 
 
 def find_shard_groups(root):
@@ -90,6 +103,10 @@ def validate(base, group):
         seen = {json.dumps(m[key], sort_keys=True) for m in metas.values() if key in m}
         if len(seen) > 1:
             raise SystemExit(f"{base}: shards disagree on metadata[{key!r}]: {sorted(seen)}")
+
+    # Record the set of nodes that contributed, so a merged table still says where it
+    # was measured even though no single hostname describes it.
+    hosts = sorted({m[HOSTS_KEY] for m in metas.values() if HOSTS_KEY in m})
 
     # Order, not just membership: `summarise` emits `_mcnemar` keys and pair
     # directions in the order the arms are given, so re-sorting here would flip the
@@ -142,6 +159,10 @@ def validate(base, group):
     merged_meta = dict(ref)
     merged_meta.pop("cells", None)
     merged_meta.pop("shard", None)
+    ## No single hostname describes a merged run, so replace the reference shard's
+    ## with every node that contributed.
+    merged_meta.pop(HOSTS_KEY, None)
+    merged_meta["hosts"] = hosts
     merged_meta["merged_from_shards"] = [
         os.path.basename(os.path.dirname(shards[i][0])) for i in range(count)]
     merged_meta["compile_seconds"] = [metas[i].get("compile_seconds") for i in range(count)]
