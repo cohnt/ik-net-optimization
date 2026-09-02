@@ -248,6 +248,7 @@ def main():
     n_cells = len(cells) if cells is not None else args.targets * args.guesses
     bar = tqdm(total=len(arms) * n_cells, desc=tag)
     records = bm.run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol=slack,
+                          relaxed_tol=args.task_tol,
         cell_timeout=args.cell_timeout or (5 * args.wall_time + 300),
         cells=cells,
         # Paired means starting AT q_init: a cell whose q_init the arm's variables cannot

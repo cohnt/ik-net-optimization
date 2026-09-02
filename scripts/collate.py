@@ -89,7 +89,10 @@ def main(patterns):
                 cost=s["median_cost"], reasons=s["fail_reasons"],
                 start_err=s.get("median_start_q_error", float("nan")),
                 qc=s.get("median_correction_inf", float("nan")),
-                binding=s.get("correction_binding", float("nan"))))
+                binding=s.get("correction_binding", float("nan")),
+                ok_relaxed=s.get("successes_relaxed"),
+                gain=s.get("relaxation_gain"),
+                maxviol=s.get("median_max_violation")))
 
     header = (f"{'run':<26} {'arm':<10} {'success':>9} {'rate':>6} {'95% CI':>14} "
               f"{'t/out':>6} {'i/cap':>6} {'iters':>7} {'jac':>7} {'wall':>7} {'cost':>7}")
@@ -100,6 +103,20 @@ def main(patterns):
               f"[{r['lo']:.2f},{r['hi']:.2f}]".ljust(len(header) - 44)
               + f"{r['timeouts']:>6} {r['icap']:>6} {r['iters']:>7.0f} {r['jac']:>7.0f} "
                 f"{r['wall']:>7.2f} {r['cost']:>7.2f}")
+    ## Both success criteria, side by side. `strict` gates on the program's own
+    ## constraint rows at ik_constraint_tol; `task-tol` relaxes that to the task gate's
+    ## tolerance, which is the open question about what should count as a solve. Only
+    ## printed when a run actually carries the relaxed scoring, so archived summaries
+    ## still collate.
+    if any(r["ok_relaxed"] is not None for r in rows):
+        print("\nsuccess under both criteria (strict = program rows; task-tol = relaxed to the task gate)")
+        for r in rows:
+            if r["ok_relaxed"] is None:
+                continue
+            mv = "n/a" if r["maxviol"] is None else f"{r['maxviol']:.2e}"
+            print(f"  {r['run']:<26} {r['arm']:<10} strict {r['ok']:>3}/{r['n']:<4} "
+                  f"task-tol {r['ok_relaxed']:>3}/{r['n']:<4} "
+                  f"gained {r['gain']:>3}   median max violation {mv}")
     print("\nstart fidelity and correction use")
     for r in rows:
         print(f"  {r['run']:<26} {r['arm']:<10} |q(start)-q_init| {r['start_err']:>8.4f}   "
