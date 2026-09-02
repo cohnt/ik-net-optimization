@@ -1302,6 +1302,78 @@ correction free rather than a property of the formulation. The iiwa grasp arm go
 to 11. Both statements are on a 60-cell grid and on the *same* grid the weight was chosen
 on, which is why Stage D re-measures them at 480 cells on a different seed.
 
+### Stage D: the correction penalty holds out of sample, at 480 cells (2026-09-02)
+
+The big-N replication, and the first table in this repo measured on a grid that no
+tuning decision was made on. 60 targets x 8 per-target guesses = **480 cells**, 45 s cap,
+`--compile`, both start protocols, both robots, both tasks, learned arm only in the
+paired penalty/no-penalty form. **Seed 1**, deliberately: targets are drawn sequentially
+from the seed, so the 60-target *seed-0* grid literally contains the 15-target seed-0
+sweep grid as a prefix, and reporting the headline table there would quote a weight that
+was chosen on a quarter of the very cells being reported.
+
+`correction_cost_weight = 10` (Thomas's approved penalty) against the same formulation
+with the penalty off, exact McNemar on all 480 shared cells:
+
+| experiment | start | penalty | no penalty | better / worse | p |
+| --- | --- | --- | --- | --- | --- |
+| Panda grasp | paired | **417/480** | 347/480 | 114 / 44 | **2.4e-08** |
+| Panda grasp | native | **437/480** | 377/480 | 94 / 34 | **1.1e-07** |
+| iiwa grasp | paired | **237/480** | 98/480 | 169 / 30 | **1.1e-24** |
+| iiwa grasp | native | **227/480** | 77/480 | 169 / 19 | **3.0e-31** |
+| Panda pose | paired | 338/480 | 331/480 | 71 / 64 | 0.61 (tie) |
+| Panda pose | native | 466/480 | 468/480 | 6 / 8 | 0.79 (tie) |
+| iiwa pose | paired | 296/480 | 280/480 | 90 / 74 | 0.24 (tie) |
+| iiwa pose | native | 407/480 | 394/480 | 37 / 24 | 0.12 (tie) |
+
+**The penalty is a grasp-task effect and only a grasp-task effect**, which is exactly
+what the mechanism predicts. The `c`/`q_c` redundancy costs the solver most where the
+active constraint set is largest, and the pose task's four rows are a tie under every
+protocol -- so the penalty is not a general success multiplier being read off a lucky
+grid, and it costs the pose task nothing to adopt.
+
+The instrumentation reproduces the Stage B mechanism at 8x the cells:
+
+| | penalty off | penalty (w = 10) |
+| --- | --- | --- |
+| median `\|q_c\|` (Panda / iiwa) | 0.074 / 0.072 | 1.8e-05 / 1.9e-05 |
+| fraction on the +-0.1 box, Panda | 0.012-0.013 | **0.000** |
+| median max violation, Panda paired | 4.4e-05 | **3.7e-08** |
+| median max violation, iiwa paired | 9.4e-02 | **2.5e-04** |
+| timeouts of 480, iiwa paired | 355 | **235** |
+| timeouts of 480, Panda paired | 135 | **79** |
+
+Two cautions carried forward from Stage B and still applying here. The **`cost` column is
+not comparable across the two arms** -- the penalty is part of the objective, and median
+cost rises 2.53 -> 4.88 on the Panda paired grasp as a direct consequence. And the
+relaxed criterion is worth +10 to +18 cells of 480 on the grasp task and **exactly zero
+on the pose task**, moving no ordering anywhere.
+
+**The baseline columns of this run are void and are being re-measured** -- see the
+correction-cost guard below. The learned columns are unaffected.
+
+### `correction_cost_weight` silently voided every baseline column of Stage D
+
+`IKFlowProgram.add_costs` applied `correction_cost_weight` unconditionally, but
+`correction` is a **learned-only decision variable** and all three formulations share one
+`ProgramOptions` object. So `--set correction_cost_weight=10` raised
+`AttributeError: 'PandaIKProgramNumerical' object has no attribute 'correction'` inside
+every numerical/analytic/analytic8 program's construction, and each of those columns
+scored **0 of 480 in about 10 ms per cell**.
+
+The guard is the one `latent_cost_weight` and `latent_trust_region` already carry, and
+the comment sitting directly above them already stated the rule -- *"options that name
+learned-only variables must be guarded"*. This cost was simply missed when it was added.
+It is fixed, and a baselines-only re-run (`--stage Dbase`) re-measures those columns on
+the same seed, grid, cap and start protocols, so they pair cell for cell against the
+learned records above.
+
+The failure mode is worth remembering because of how it presents: a whole column of
+zeroes with `median_max_violation = nan` and `mean_iterations = nan`, at ~10 ms a cell.
+**Any arm reporting a per-cell wall time three orders of magnitude below the cap is not
+solving badly, it is not solving at all** -- and `fail_reason` was `"error"` rather than
+any of the named task gates, which is the tell.
+
 ### The dual success criterion, first measurements (2026-09-02)
 
 Every record now carries `max_violation` (the largest constraint violation at the returned
