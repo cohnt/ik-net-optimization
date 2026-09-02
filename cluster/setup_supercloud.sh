@@ -124,8 +124,14 @@ fi
 # the cu126 build installed above. Install from GitHub, not PyPI -- the PyPI
 # ikflow (0.0.8) predates the jkinpylib -> jrl rename this repo depends on.
 echo "===== [5/6] python deps ====="
-"$PIP" install --quiet numpy==2.5.2 klampt roma more-itertools FrEIA tqdm pyyaml \
-    matplotlib meshcat PyOpenGL || Fail "pip deps"
+# Pinned to this workstation's versions. The unpinned resolve happened to land on
+# exactly these, but that is luck, not reproducibility -- and numpy in particular has
+# broken this project's sibling before (2.5 removed 2-D np.cross). torch is the one
+# deliberate exception: the laptop runs 2.11.0+cu128, which cannot execute on a V100
+# at all, so the cluster necessarily runs a cu126 build (measured: 2.14.0+cu126).
+"$PIP" install --quiet numpy==2.5.2 klampt==0.10.1.post1 roma==1.6.1 \
+    more-itertools==11.1.0 FrEIA==0.2 tqdm==4.70.0 pyyaml==6.0.3 \
+    matplotlib==3.11.1 meshcat==0.3.2 PyOpenGL==3.1.10 || Fail "pip deps"
 "$PIP" install --quiet --no-deps "jrl @ git+https://github.com/jstmn/Jrl.git" \
     || Fail "jrl"
 # --ignore-requires-python: ikflow 0.2.0 declares Requires-Python "<3.12,>=3.10", and the
