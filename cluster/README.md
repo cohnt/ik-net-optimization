@@ -140,6 +140,12 @@ measured, not just how long it takes. `PROCS=1` is always safe.
   and must be warmed on the `download` partition first; ikflow computes its
   cache dir from `expanduser("~")` at import, so `HOME` must be set explicitly
   when warming.
+- **Two GPUs take code paths one GPU never does.** `jrl.config._get_device()`
+  polls nvml (via `torch.cuda.memory_usage`) to pick the least-used card, and
+  short-circuits only when one device is visible — always true on the laptop,
+  false on a node holding `-g volta:2`, where the ikflow import then dies with
+  "nvidia-ml-py does not seem to be installed". Setup installs `nvidia-ml-py`
+  and every job script pins `CUDA_VISIBLE_DEVICES` to a single device.
 - **`ikflow` declares `Requires-Python "<3.12,>=3.10"` and pip believes it.** The
   cluster's only cp312 interpreter is 3.12.3, so pip refuses the install. The pin
   is stale rather than real — the laptop runs that same ikflow 0.2.0 on 3.12.3
