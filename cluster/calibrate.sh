@@ -41,6 +41,18 @@
 source /etc/profile
 set -uo pipefail
 
+## --- GPU selection --------------------------------------------------------
+## Slurm exports CUDA_VISIBLE_DEVICES as a comma-separated list, and on this cluster
+## the entries are GPU **UUIDs**, not indices -- so exporting "0" or "1" is not a
+## valid selector for the allocated cards. Capture the list once, before any worker
+## narrows it, and hand each worker one entry from it.
+SLURM_GPUS="${CUDA_VISIBLE_DEVICES:-}"
+PinGpu() {   ## $1 = worker index; empty $SLURM_GPUS means "no GPU was allocated"
+    if [ -z "$SLURM_GPUS" ]; then export CUDA_VISIBLE_DEVICES=""; return; fi
+    local n; n=$(echo "$SLURM_GPUS" | tr ',' '\n' | grep -c .)
+    export CUDA_VISIBLE_DEVICES="$(echo "$SLURM_GPUS" | cut -d, -f$(( $1 % n + 1 )))"
+}
+
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
 ARM="${CALIB_ARM:-gpu-procs}"
@@ -68,6 +80,7 @@ RunOne() {   # RunOne <local-index> <tag> <device> <wall-time>
     export HOME="${TMPDIR:-/tmp}/home.$i"
     mkdir -p "$HOME/.cache"
     ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null || true
+    ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null || true
     export PYTHONPATH="$BASE_PYTHONPATH"
     export LD_LIBRARY_PATH="$BASE_LDPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
@@ -77,7 +90,7 @@ RunOne() {   # RunOne <local-index> <tag> <device> <wall-time>
     export TRITON_CACHE_DIR="${TMPDIR:-/tmp}/triton.$i"
     mkdir -p "$MPLCONFIGDIR" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
     if [ "$device" = "cpu" ]; then export CUDA_VISIBLE_DEVICES=""
-    else export CUDA_VISIBLE_DEVICES=$(( i % 2 )); fi
+    else PinGpu "$i"; fi
     "$PY" -u scripts/panda/panda_benchmark.py "${WORKLOAD[@]}" \
         --wall-time "$wall" --tag "$tag" > "$OUT/$tag.log" 2>&1
     HOME="$REAL_HOME"
@@ -115,6 +128,7 @@ case "$ARM" in
     for ((i = 0; i < 40; i++)); do
         ( export HOME="${TMPDIR:-/tmp}/home.imp.$i"; mkdir -p "$HOME/.cache"
           ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null
+          ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null
           PYTHONPATH="$BASE_PYTHONPATH" LD_LIBRARY_PATH="$BASE_LDPATH" \
           CUDA_VISIBLE_DEVICES=$((i % 2)) "$PY" -c \
             "import torch, pydrake.all, ikflow, jrl" ) &
