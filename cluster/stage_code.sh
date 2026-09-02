@@ -26,6 +26,24 @@ if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]; then
     echo "WARNING: tracked files are dirty; staging the working tree anyway." >&2
 fi
 
+## Refuse to restage under a live campaign unless explicitly forced. rsync has no
+## --inplace here, so it renames over the tree and a RUNNING script keeps its own
+## inode -- but any .py an item imports when it STARTS is re-read from disk, so a
+## mid-stage restage silently produces one result set built from two code
+## versions. That is the same hazard as changing a result schema mid-campaign,
+## and it is invisible afterwards. Calibration and smoke jobs are exempt: they
+## produce no campaign records.
+## Match on the payload script name, which LLstat shows when a job is submitted
+## without -J, AND on the lik_<stage>_n<i> convention used when it is. Calibration
+## and smoke are named lik_cal_* / smoke.sh and deliberately do not match.
+RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
+if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
+    echo "REFUSING: $RUNNING campaign job(s) are on the cluster right now." >&2
+    echo "Restaging would change the code later items import mid-stage." >&2
+    echo "Wait for the stage to drain, or re-run with FORCE_STAGE=1 if you are sure." >&2
+    exit 3
+fi
+
 sc_run "mkdir -p ~/$SC_ROOT/repo ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/home/.cache"
 
 sc_rsync -az --delete \
