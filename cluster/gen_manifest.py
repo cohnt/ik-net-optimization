@@ -100,22 +100,31 @@ def stage_B(wall, targets, guesses, shards):
     return items
 
 
+## The correction penalty Thomas approved on 2026-09-02. B2/B3 chart the curve; this is
+## the value the headline table fields.
+D_CORRECTION_COST = 10.0
+
 def stage_C(caps, targets, guesses, shards):
-    """Success against the wall-clock cap, as a curve rather than two points (#7)."""
+    """Success against the wall-clock cap, as a curve rather than two points (#7).
+
+    Run against the **approved** learned formulation, i.e. with the correction penalty
+    (`D_CORRECTION_COST`). An earlier version of this stage was generated before Thomas
+    approved the penalty and was killed unrun: a cap curve measured on a formulation
+    nobody is fielding answers a question nobody asked, and the penalty changes the
+    quantity the curve is about -- it more than halves the iiwa's timeouts, which is
+    precisely what a cap curve measures.
+    """
     items = []
     for robot in ("panda", "iiwa"):
         for task in ("mug", "pose"):
             for start in ("paired", "native"):
                 for cap in caps:
                     items += item(robot, f"sc_C_{robot}_{task}_{int(cap)}_{start}",
-                                  ["--task", task, "--config", "latent", "--start", start],
+                                  ["--task", task, "--config", "latent", "--start", start,
+                                   "--set", f"correction_cost_weight={D_CORRECTION_COST}"],
                                   targets, guesses, ALL_ARMS[robot], cap, shards)
     return items
 
-
-## The correction penalty Thomas approved on 2026-09-02. B2/B3 chart the curve; this is
-## the value the headline table fields.
-D_CORRECTION_COST = 10.0
 
 ## Stage D runs on a DIFFERENT SEED from every sweep that chose this weight. Targets are
 ## drawn sequentially from the seed, so a 60-target seed-0 grid literally contains the
