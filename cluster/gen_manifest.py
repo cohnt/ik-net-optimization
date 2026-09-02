@@ -44,13 +44,13 @@ ALL_ARMS = {"panda": "learned,numerical,analytic,analytic8", "iiwa": "learned,nu
 SEC_PER_CELL_ARM = 0.55
 
 
-def item(robot, tag, flags, targets, guesses, arms, wall_time, shards=1, env="-"):
+def item(robot, tag, flags, targets, guesses, arms, wall_time, shards=1, env="-", seed=0):
     """One logical run, expanded into `shards` manifest items."""
     n_arms = len(arms.split(","))
     est = targets * guesses * n_arms * wall_time * SEC_PER_CELL_ARM / shards
     base = ["--targets", str(targets), "--guesses", str(guesses),
             "--wall-time", str(wall_time), "--arms", arms,
-            "--seed", "0", "--compile", "--tag", tag] + flags
+            "--seed", str(seed), "--compile", "--tag", tag] + flags
     out = []
     for k in range(shards):
         args = base + (["--shard", f"{k}/{shards}"] if shards > 1 else [])
@@ -113,16 +113,38 @@ def stage_C(caps, targets, guesses, shards):
     return items
 
 
+## The correction penalty Thomas approved on 2026-09-02. B2/B3 chart the curve; this is
+## the value the headline table fields.
+D_CORRECTION_COST = 10.0
+
+## Stage D runs on a DIFFERENT SEED from every sweep that chose this weight. Targets are
+## drawn sequentially from the seed, so a 60-target seed-0 grid literally contains the
+## 15-target seed-0 sweep grid as a prefix -- reporting the headline table on it would be
+## quoting a weight that was selected on a quarter of the very cells being reported.
+## Seed 1 makes the choice out-of-sample.
+D_SEED = 1
+
+
 def stage_D(wall, targets, guesses, shards):
     """The big-N replication of the finals -- the statistical power the design
-    questions actually need (a 5-cell difference at 60 cells is undetectable)."""
+    questions actually need (a 5-cell difference at 60 cells is undetectable).
+
+    Two learned arms, run as separate items on the same grid so they pair cell for cell:
+    the approved formulation with the correction penalty, and the same formulation with
+    the penalty off. The second is not optional -- once the penalty is adopted, every
+    table still has to show what it buys, and this is where that comparison gets its
+    power.
+    """
     items = []
     for robot in ("panda", "iiwa"):
         for task in ("mug", "pose"):
             for start in ("paired", "native"):
+                base = ["--task", task, "--config", "latent", "--start", start]
                 items += item(robot, f"sc_D_{robot}_{task}_{int(wall)}_{start}",
-                              ["--task", task, "--config", "latent", "--start", start],
-                              targets, guesses, ALL_ARMS[robot], wall, shards)
+                              base + ["--set", f"correction_cost_weight={D_CORRECTION_COST}"],
+                              targets, guesses, ALL_ARMS[robot], wall, shards, seed=D_SEED)
+                items += item(robot, f"sc_D_{robot}_{task}_{int(wall)}_{start}_nopenalty",
+                              base, targets, guesses, "learned", wall, shards, seed=D_SEED)
     return items
 
 
@@ -144,6 +166,24 @@ def stage_B2(wall, targets, guesses, shards):
                               ["--task", "mug", "--config", "latent", "--start", start,
                                "--set", f"correction_cost_weight={w}"],
                               targets, guesses, "learned", wall, shards)
+    return items
+
+
+def stage_B3(wall, targets, guesses, shards):
+    """Bound the top of the `correction_cost_weight` curve.
+
+    B2 left it ambiguous: the Panda paired arm peaks at 3.0 and falls at 10.0, while the
+    iiwa and the Panda native arm are still climbing at 10.0. Weight 30 says whether 10
+    is near the optimum or merely the largest value anyone tried, which is the difference
+    between reporting an optimum and reporting an edge of a sweep.
+    """
+    items = []
+    for robot in ("panda", "iiwa"):
+        for start in ("paired", "native"):
+            items += item(robot, f"sc_B3_{robot}_corrcost_30_{start}",
+                          ["--task", "mug", "--config", "latent", "--start", start,
+                           "--set", "correction_cost_weight=30.0"],
+                          targets, guesses, "learned", wall, shards)
     return items
 
 
@@ -209,7 +249,7 @@ def selftest():
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", choices=["A", "B", "B2", "C", "D"])
+    p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D"])
     p.add_argument("--wall-time", type=float, default=20.0,
                    help="the solver's per-cell cap, in seconds. Choose it from "
                         "cluster/calibrate.sh on THIS hardware -- the laptop's 20/45 s "
@@ -237,6 +277,7 @@ def main():
     caps = [float(c) for c in args.caps.split(",")]
     items = {"A": lambda: stage_A(args.wall_time, args.targets, args.guesses, args.shards),
              "B2": lambda: stage_B2(args.wall_time, args.targets, args.guesses, args.shards),
+             "B3": lambda: stage_B3(args.wall_time, args.targets, args.guesses, args.shards),
              "B": lambda: stage_B(args.wall_time, args.targets, args.guesses, args.shards),
              "C": lambda: stage_C(caps, args.targets, args.guesses, args.shards),
              "D": lambda: stage_D(args.wall_time, args.targets, args.guesses, args.shards),
