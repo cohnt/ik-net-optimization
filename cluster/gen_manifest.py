@@ -148,6 +148,33 @@ def stage_D(wall, targets, guesses, shards):
     return items
 
 
+def stage_D_baselines(wall, targets, guesses, shards):
+    """Stage D's baseline columns, re-measured after the correction-cost guard.
+
+    Stage D applied `--set correction_cost_weight=10` to every arm, but `correction` is
+    a learned-only decision variable and the formulations share one `ProgramOptions`, so
+    each numerical/analytic/analytic8 program raised AttributeError during construction
+    and its whole column scored 0. The learned columns are unaffected -- `run_grid`
+    builds a fresh program per cell per arm -- so only the baselines are re-run, on the
+    same seed, grid, cap and start protocol, which is what lets them pair cell for cell
+    against the Stage D learned records.
+
+    The override is kept even though it is now a no-op for these arms: it keeps
+    `metadata["overrides"]` identical to the run these will be paired against.
+    """
+    items = []
+    for robot in ("panda", "iiwa"):
+        arms = ",".join(a for a in ALL_ARMS[robot].split(",") if a != "learned")
+        for task in ("mug", "pose"):
+            for start in ("paired", "native"):
+                items += item(
+                    robot, f"sc_D_{robot}_{task}_{int(wall)}_{start}_baselines",
+                    ["--task", task, "--config", "latent", "--start", start,
+                     "--set", f"correction_cost_weight={D_CORRECTION_COST}"],
+                    targets, guesses, arms, wall, shards, seed=D_SEED)
+    return items
+
+
 def stage_B2(wall, targets, guesses, shards):
     """Extension of the `correction_cost_weight` sweep, which had not peaked at 1.0.
 
@@ -249,7 +276,7 @@ def selftest():
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D"])
+    p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D", "Dbase"])
     p.add_argument("--wall-time", type=float, default=20.0,
                    help="the solver's per-cell cap, in seconds. Choose it from "
                         "cluster/calibrate.sh on THIS hardware -- the laptop's 20/45 s "
@@ -281,6 +308,8 @@ def main():
              "B": lambda: stage_B(args.wall_time, args.targets, args.guesses, args.shards),
              "C": lambda: stage_C(caps, args.targets, args.guesses, args.shards),
              "D": lambda: stage_D(args.wall_time, args.targets, args.guesses, args.shards),
+             "Dbase": lambda: stage_D_baselines(args.wall_time, args.targets,
+                                                args.guesses, args.shards),
              }[args.stage]()
 
     lines = render(items)
