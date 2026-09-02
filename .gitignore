@@ -8,3 +8,6 @@ workshop-paper-draft.pdf
 __pycache__/
 *.pyc
 ikflow_solver_log.txt
+
+# cluster audit log and job logs
+logs/
