@@ -451,6 +451,52 @@ iterations in one and 286 in the other. Cells that exit at the cap are therefore
 only up to machine load, which is worth remembering before reading a one-cell difference
 anywhere in these tables as a real effect.
 
+### `collision_value` is a penalty, not a clearance (2026-09-02)
+
+`detail["collision_value"]` in every benchmark record is the **raw** value of Drake's
+`MinimumDistanceLowerBoundConstraint` -- a smooth penalty aggregated over every geometry
+pair inside the influence distance (`bound=1e-3`, `influence_distance_offset=0.1`). It is a
+pure number, not a length, so "1.26 against a limit of 1.0" says nothing about how deep the
+penetration is. Calibrated against the true minimum signed distance over 4000 random
+configurations of the iiwa scene:
+
+| raw value | true minimum signed distance |
+| --- | --- |
+| < 1.0 | clear (the binding's threshold is ~0 to +2 mm) |
+| 1.00-1.02 | ~ +0.4 mm |
+| 1.02-1.05 | ~ -0.8 mm |
+| 1.05-1.10 | ~ -2.7 mm |
+| 1.10-1.20 | ~ -6.6 mm |
+| 1.20-1.30 | ~ -11.9 mm |
+| 1.30-1.50 | ~ -19 mm |
+| 2.00-2.40 | ~ -59 mm |
+| 2.40-4.00 | -70 to -124 mm |
+
+(Sampled in the base scene without a target mug welded; with more pairs in play the raw
+value at a given worst-case distance reads slightly higher, so depths read off this table
+are mild over-estimates.)
+
+Applied to the iiwa grasp failures at 45 s, paired: the deepest penetrations are **10-12 cm**
+(raw 4.8 and 4.3), both on diverged cells whose gripper is a metre off the mug axis -- not
+grasps at all. Of the 40 failures, 8 are clear of collision, 10 within 3 mm, 9 between 6 and
+19 mm, and 11 deeper than 25 mm. Every *success* sits at raw 0.9997-1.0005: parked exactly
+on contact, which is why the gate carries the binding's own slack.
+
+**A definitional gap this surfaced.** Nine failures have an axis error below 1 mm, and four
+of those are collision-free. They fail only because `AllIKFlowConstraints` is violated by
+2e-4 to 6e-4 -- the program's constraint rows use `ik_constraint_tol = 1e-4` while the
+benchmark's task gate uses `task_tol = 1e-3`. Such a cell satisfies the *task* but not the
+*program*, and is scored a failure. Which of the two tolerances the paper's success
+criterion should be is an open question, not a bug, but it must be settled before these
+numbers are quoted: it is worth several cells on this grid.
+
+**Instrumentation added.** `verify()` now also records `min_distance` (true signed distance
+in metres, negative when geometry overlaps) and `min_distance_pair` next to
+`collision_value`, and the returned configuration `q` is **persisted** per record instead of
+being dropped -- without it no geometric quantity can be recomputed after a run without
+re-solving the whole grid, which is exactly what blocked answering this question from the
+archive.
+
 ### The ablation ladder under the corrected protocol: the frame fix is the whole stack (2026-09-02)
 
 Panda grasp, learned arm only, 15 targets x 4 per-target guesses = 60 cells, 20 s, paired,
