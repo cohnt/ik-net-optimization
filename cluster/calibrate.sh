@@ -53,6 +53,18 @@ PinGpu() {   ## $1 = worker index; empty $SLURM_GPUS means "no GPU was allocated
     export CUDA_VISIBLE_DEVICES="$(echo "$SLURM_GPUS" | cut -d, -f$(( $1 % n + 1 )))"
 }
 
+## --- waiting on workers ---------------------------------------------------
+## `wait` with NO arguments does not do what it looks like it does here. This
+## script sends its own stdout through a process substitution
+## (`exec > >(tee "$LOG")`), and bash counts that `tee` as one of its background
+## children -- but `tee` cannot exit until the script does, because it holds the
+## script's stdout open. So a bare `wait` blocks forever, having already reaped
+## every worker it was actually meant to wait for. Three of the four arms of the
+## first calibration attempt hung on exactly this, holding a GPU node each and
+## doing nothing; `caps` survived only because it never forks. Always wait on the
+## PIDs we collected ourselves.
+WaitPids() { local p rc=0; for p in "$@"; do wait "$p" || rc=1; done; return $rc; }
+
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
 ARM="${CALIB_ARM:-gpu-procs}"
@@ -71,9 +83,18 @@ BASE_PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages"
 BASE_LDPATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu"
 REAL_HOME="$HOME"
 
-# The fixed workload every arm measures. Small, learned-arm-only (the only arm
-# whose cost depends on the machine), and wall-clock capped so contention shows.
-WORKLOAD=(--task pose --targets 2 --guesses 2 --arms learned --config latent --compile --seed 0)
+# The fixed workload every arm measures. Learned-arm-only (the only arm whose
+# cost depends on the machine), and -- critically -- the GRASP task, because the
+# measurement only works on a workload that BINDS against the wall-clock cap.
+#
+# The first attempt used --task pose and measured nothing: a pose cell converges
+# in ~74 iterations and ~6 s, so its iteration count is identical at 10, 20, 45,
+# 90 and 180 s. A converged solve takes the same iterations however contended the
+# machine is -- only its wall time moves -- so a contention probe run on it
+# reports "no contention" no matter how bad the contention is. On the grasp task
+# roughly 40% of cells exit at the cap, so iterations achieved inside a fixed cap
+# is a direct throughput measurement and contention is visible in it.
+WORKLOAD=(--task mug --targets 4 --guesses 2 --arms learned --config latent --compile --seed 0)
 
 RunOne() {   # RunOne <local-index> <tag> <device> <wall-time>
     local i=$1 tag=$2 device=$3 wall=$4
@@ -101,8 +122,11 @@ Sweep() {    # Sweep <device>
     for P in 1 2 4 8 20 40; do
         echo "--- $device, $P worker(s), $(date -Is)"
         local T0=$SECONDS
-        for ((i = 0; i < P; i++)); do RunOne "$i" "calib_${device}_p${P}_w${i}" "$device" 20 & done
-        wait
+        local pids=()
+        for ((i = 0; i < P; i++)); do
+            RunOne "$i" "calib_${device}_p${P}_w${i}" "$device" 20 & pids+=($!)
+        done
+        WaitPids "${pids[@]}"
         echo "    $P worker(s) took $((SECONDS - T0)) s wall"
     done
 }
@@ -124,16 +148,16 @@ case "$ARM" in
     T0=$SECONDS; cp -r "$REPO" "${TMPDIR:-/tmp}/repo" >/dev/null 2>&1
     echo "    repo -> TMPDIR: $((SECONDS - T0)) s"
     echo "--- import cost at 40-way concurrency (Lustre read amplification)"
-    T0=$SECONDS
+    T0=$SECONDS; imp_pids=()
     for ((i = 0; i < 40; i++)); do
         ( export HOME="${TMPDIR:-/tmp}/home.imp.$i"; mkdir -p "$HOME/.cache"
           ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null
           ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null
           PYTHONPATH="$BASE_PYTHONPATH" LD_LIBRARY_PATH="$BASE_LDPATH" \
           CUDA_VISIBLE_DEVICES=$((i % 2)) "$PY" -c \
-            "import torch, pydrake.all, ikflow, jrl" ) &
+            "import torch, pydrake.all, ikflow, jrl" ) & imp_pids+=($!)
     done
-    wait
+    WaitPids "${imp_pids[@]}"
     echo "    40 concurrent imports: $((SECONDS - T0)) s"
     echo "--- a small grid at the archived seed, all arms, for qualitative parity"
     RunOne 0 "calib_parity" gpu 20

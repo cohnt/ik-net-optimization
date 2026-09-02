@@ -161,6 +161,21 @@ measured, not just how long it takes. `PROCS=1` is always safe.
   with `uv`, which does not enforce `Requires-Python`. Hence
   `--ignore-requires-python` in setup, which makes the cluster match the laptop
   rather than depart from it.
+- **A bare `wait` never returns in a script that does `exec > >(tee ...)`.**
+  Bash counts the `tee` of a process substitution as one of its background
+  children, and that `tee` cannot exit while it holds the script's stdout — so
+  `wait` blocks forever *after* having already reaped every worker it was meant
+  to wait for. `jobs -p` has the same defect. This hung three of the four
+  calibration arms, each holding a GPU node and doing nothing, and it is
+  invisible from the outside: the job stays RUNNING with a live bash and no
+  compute. Collect worker PIDs with `pid=$!` and wait on those.
+- **A contention or cap probe must run a workload that BINDS against the cap.**
+  The first calibration measured the pose task, where a cell converges in ~74
+  iterations and ~6 s; its iteration count is therefore identical at 10, 20, 45,
+  90 and 180 s, and identical however contended the node is, because a converged
+  solve takes the iterations it takes. Such a probe reports "no effect" whatever
+  is true. The grasp task, where ~40% of cells exit at the cap, is the workload
+  that makes throughput visible.
 - **Quote the triples spec** if you ever use triples mode (`"[4,1,40]"`) —
   unquoted brackets are a bash glob.
 - **`LLstat` shows placeholder resources (1 CPU / 4 G) for PENDING jobs.** That

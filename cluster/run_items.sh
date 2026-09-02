@@ -174,7 +174,14 @@ Worker() {
 
 echo "run_items: $PROCS worker(s) on $(hostname), manifest $MANIFEST_NAME, TMPDIR=$TMPDIR"
 RC=0
-for ((i = 0; i < PROCS; i++)); do Worker "$i" & done
-for job in $(jobs -p); do wait "$job" || RC=1; done
+## Wait on PIDs we collected ourselves, never on a bare `wait` and never on
+## `jobs -p`. Both of those also pick up the `tee` of an `exec > >(tee ...)`
+## redirection, which can never exit while the script holds its stdout -- see
+## the WaitPids comment in calibrate.sh, where exactly that hung three GPU nodes.
+## This script has no such redirection today; collecting PIDs keeps it correct
+## if one is ever added.
+WORKER_PIDS=()
+for ((i = 0; i < PROCS; i++)); do Worker "$i" & WORKER_PIDS+=($!); done
+for job in "${WORKER_PIDS[@]}"; do wait "$job" || RC=1; done
 echo "run_items: done on $(hostname) at $(date -Is), rc=$RC"
 exit $RC
