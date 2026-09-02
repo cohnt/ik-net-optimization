@@ -128,8 +128,14 @@ echo "===== [5/6] python deps ====="
     matplotlib meshcat PyOpenGL || Fail "pip deps"
 "$PIP" install --quiet --no-deps "jrl @ git+https://github.com/jstmn/Jrl.git" \
     || Fail "jrl"
-"$PIP" install --quiet --no-deps "ikflow @ git+https://github.com/jstmn/ikflow.git" \
-    || Fail "ikflow"
+# --ignore-requires-python: ikflow 0.2.0 declares Requires-Python "<3.12,>=3.10", and the
+# only cp312 interpreter here is 3.12.3, so pip refuses it. The pin is stale, not a real
+# incompatibility: this laptop runs that exact version on 3.12.3 and imports it fine --
+# uv (which built the local venv) does not enforce Requires-Python, which is why the
+# constraint never surfaced before. Overriding it reproduces the local environment rather
+# than departing from it. Drop the flag if ikflow ever republishes with a corrected pin.
+"$PIP" install --quiet --no-deps --ignore-requires-python \
+    "ikflow @ git+https://github.com/jstmn/ikflow.git" || Fail "ikflow"
 
 # Warm the model caches. Compute nodes have no internet, and ikflow computes its
 # MODELS_DIR from expanduser("~") at import, so HOME must point at the tree the
