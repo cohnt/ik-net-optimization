@@ -77,9 +77,11 @@ Worker() {
     local REAL_HOME="$HOME"
     export HOME="$TMPDIR/home.$LOCAL"
     mkdir -p "$HOME/.cache"
-    ## The ikflow weight cache is warmed on the login node and used read-only.
+    ## The ikflow weight cache is warmed on the download partition (compute nodes have
+    ## no internet) and used read-only from here. jrl's cache is deliberately NOT shared:
+    ## it is regenerated from package data with no network, and sharing it is exactly the
+    ## race described above.
     ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null || true
-    ln -sfn "$ROOT/home/.cache/jrl" "$HOME/.cache/jrl.seed" 2>/dev/null || true
 
     export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages"
