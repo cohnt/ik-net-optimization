@@ -1130,6 +1130,74 @@ reports a CUDA device, and fails only at the first kernel launch, which is why
 `cluster/smoke.sh` launches a real kernel rather than trusting `get_arch_list()`.
 
 
+### The SuperCloud calibration (2026-09-02, `xeon-g6-volta`, V100)
+
+Four arms, one per node, each a full job on a real partition. The workload is the
+**Panda grasp** task, learned arm only, 4 targets x 2 guesses, `--compile` -- the
+grasp task specifically, because it is the one that binds against the wall-clock
+cap. A first attempt ran the *pose* task and measured nothing: a pose cell
+converges in ~74 iterations and ~6 s here, so its iteration count is identical at
+10, 20, 45, 90 and 180 s and identical however contended the node is. A converged
+solve takes the iterations it takes; only its wall time moves. Both the cap sweep
+and the contention sweep were therefore structurally incapable of showing an
+effect, whatever the truth.
+
+**Workers per node.** Median iterations achieved inside a fixed 20 s cap, against
+the single-worker run. The node has 40 cores and 2 V100s.
+
+| workers | median iters (GPU) | vs P=1 | median iters (CPU-only) | vs P=1 |
+| --- | --- | --- | --- | --- |
+| 1 | 202 | 1.00x | 62 | 1.00x |
+| 2 | 196 | 0.97x | 62 | 1.00x |
+| 4 | **194** | **0.96x** | 62 | 0.99x |
+| 8 | 186 | 0.92x | 61 | 0.97x |
+| 20 | 114 | 0.56x | 58 | 0.93x |
+| 40 | 70 | 0.35x | 46 | 0.74x |
+
+**`PROCS=4` is the campaign's setting**: four workers per node cost 4% of the
+per-cell iteration count, where 8 costs 8% and 20 costs 44%. Note the P=1 row is
+the *noisiest* in the table (it is one worker's median, against forty at P=40),
+so the 0.96-0.97x at P=2 and P=4 is within noise of unity while the collapse at
+P>=20 plainly is not. Since the benchmark is wall-clock capped, a worker that
+gets less done is a *different measurement*, not merely a slower one.
+
+**CPU-only is not competitive and the campaign runs on the GPU.** At one worker
+the GPU reaches 202 median iterations against 62, and solves 4 of 8 cells against
+1 of 8. This does not contradict the profiling result that the flow is CPU-bound
+at batch 1 -- that says the GPU is never the bottleneck *while a GPU is present*,
+not that torch on CPU is as fast. CPU-only does degrade far more gracefully
+(0.74x at P=40 against 0.35x), but from a starting point 3.3x worse, and its
+aggregate node throughput is lower at every P.
+
+**The cap.** Single worker, same grid, 8 cells:
+
+| cap (s) | median iters | median wall (s) | feasible of 8 |
+| --- | --- | --- | --- |
+| 10 | 142 | 10.04 | 3 |
+| 20 | 203 | 17.21 | 4 |
+| 45 | **338** | 22.62 | 5 |
+| 90 | 338 | 23.47 | 5 |
+| 180 | 338 | 21.56 | 6 |
+
+**45 s is the campaign's cap.** Median iterations saturate at 338 by 45 s and do
+not move at 90 or 180, and the median cell finishes at ~22 s -- so at 45 s the
+median cell has converged with 2x headroom. Beyond 45 s only the tail gains (one
+further cell of eight between 45 s and 180 s), which is what the Stage C cap
+curve is for rather than something to buy with a bigger default. The laptop's
+20/45 s were not inherited; this is measured on this hardware, and cluster and
+laptop timings are never compared.
+
+**Staging and startup**, from the parity arm: 40 concurrent `import torch,
+pydrake, ikflow, jrl` take **10 s** total, so Lustre read amplification is not a
+problem and the venv can stay on the shared filesystem -- copying it to node-local
+`$TMPDIR` costs 231 s against Drake's 13 s and the repo's 1 s, and buys nothing.
+`torch.compile` of the flow Jacobian costs ~35 s cold and ~17 s warm per process.
+
+Qualitative parity holds: a pose grid and a grasp grid at the archived seed give
+202 and 206 median iterations with 4 of 8 feasible, and the paired-start invariant
+(`start_q_error == 0` for the learned and joint-space arms) reproduces on this
+hardware with a different torch build and a different GPU.
+
 ### Next steps
 
 Ordered by what the evidence actually supports. Nothing here weakens the problem: the
