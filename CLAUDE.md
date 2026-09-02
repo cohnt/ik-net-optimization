@@ -1374,6 +1374,65 @@ zeroes with `median_max_violation = nan` and `mean_iterations = nan`, at ~10 ms 
 solving badly, it is not solving at all** -- and `fail_reason` was `"error"` rather than
 any of the named task gates, which is the tell.
 
+### Stage D, the three-way comparison at 480 cells (2026-09-02)
+
+The baseline columns, re-measured after the correction-cost guard on the same seed-1
+grid, cap and start protocols as the learned columns above, so every pairing below is
+exact McNemar over all 480 shared cells. The learned arm is the draft's eq. (6) with the
+approved correction penalty (`correction_cost_weight = 10`); joint space is the
+comparison's target and the analytic columns are baselines.
+
+| experiment | start | learned | joint space | analytic4 | analytic8 | L vs js (b/w) | p |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda pose | paired | **338/480** | 249/480 | 221/480 | 228/480 | 156 / 67 | **2.3e-09** |
+| Panda pose | native | **466/480** | 249/480 | 242/480 | 142/480 | 224 / 7 | **3.8e-57** |
+| iiwa pose | native | **407/480** | 332/480 | -- | -- | 122 / 47 | **7.2e-09** |
+| iiwa pose | paired | 296/480 | **332/480** | -- | -- | 87 / 123 | 0.016 |
+| Panda grasp | native | 437/480 | **457/480** | 450/480 | 387/480 | 20 / 40 | 0.013 |
+| Panda grasp | paired | 417/480 | **457/480** | 376/480 | 418/480 | 19 / 59 | 6.4e-06 |
+| iiwa grasp | paired | 237/480 | **462/480** | -- | -- | 7 / 232 | 1.9e-59 |
+| iiwa grasp | native | 227/480 | **462/480** | -- | -- | 11 / 246 | 5.9e-59 |
+
+**The harness checks itself and passes.** The joint-space arm is bit-identical between the
+two protocols in all four experiments -- 249/249, 457/457, 332/332, 462/462, with the same
+mean iteration counts -- as it must be, since its native start *is* a random
+configuration. Every difference in the other columns is therefore attributable to their
+initialisation. `median_start_q_error` is **0.0 exactly** for the learned and joint-space
+arms under `paired`, and 1e-11 for the analytic arms where the chart covers `q_init`.
+
+**The pose result is the draft's central claim and it holds on both robots under
+`native`, and on the Panda under both protocols** -- decisively so (466/480 against
+249/480, 224 cells won and 7 lost). It also wins on **cost** wherever it wins on success:
+median 9.46 against joint space's 10.55 on the Panda paired pose, 6.40 against 6.79 on
+the iiwa native pose.
+
+**One conclusion changes at this sample size, and it changes against us.** The iiwa pose
+under `paired` read as a tie at 60 cells (40/60 vs 39/60, p = 1.0); at 480 cells it is a
+**modest loss**, 296 against 332 (p = 0.016). The extra power resolved it rather than
+confirming it, which is exactly what Stage D was run for, and it should be reported that
+way. Note the learned arm still has the *lower* median cost on that row (6.54 against
+6.79) and **172 of its 480 cells exit at the cap** against zero for joint space, so this
+row is at least partly a budget statement -- which is what Stage C's cap curve is for.
+
+**The Panda grasp deficit is now small.** With the penalty the learned arm reaches 437/480
+and 417/480 against joint space's 457/480 -- 20 and 40 cells of 480, against the 110-cell
+gap the same grid shows without the penalty. The iiwa grasp remains the outlier at
+237/480, with 235 cells at the cap and a median max violation of 2.5e-04, still above
+`ik_constraint_tol`.
+
+**analytic8 against analytic4, at 8x the power, is still the unbalanced-bundle
+pathology** and it now shows both signs cleanly. Under `paired` the 8-branch chart wins
+the grasp task (418 against 376) because it can represent starts the 4-branch chart
+forfeits; under `native` it loses badly on both tasks (387 against 450, and **142 against
+242** on the pose task), because a uniform draw over eight branches lands in the narrow
+near-limit bundles half the time against roughly 10% of configuration-space volume. Its
+median max violation on that worst row is **1.2e-01** -- those cells are not near-misses,
+they are solves begun inside a bundle pinned against the joint limits.
+
+The relaxed criterion (`task_tol = 1e-3` instead of `ik_constraint_tol = 1e-4`) is worth
++13 to +18 cells of 480 to the learned arm on the grasp task, +2 to +6 to the baselines,
+and **exactly zero to anything on the pose task**. It moves no ordering in the table.
+
 ### The dual success criterion, first measurements (2026-09-02)
 
 Every record now carries `max_violation` (the largest constraint violation at the returned
