@@ -1246,11 +1246,15 @@ are. And the smallest weight, 0.001, is *worse* than zero on both robots (38 vs 
 13 vs 18) -- either noise at this grid size or a weak penalty perturbing without
 regularising, and not currently distinguishable.
 
-**This is a formulation question, not a tuning one, and it is Thomas's call.** The draft
-says `q_c ~ 0` without specifying how that is imposed, so a penalty is arguably what
-implements it -- but changing the objective changes what is being compared, so nothing here
-adopts a nonzero default. The sweep has also not peaked, which is what `sc_B2` extends
-(weights 3.0 and 10.0, both start protocols).
+**Thomas approved the penalty on 2026-09-02** ("A penalty on the correction term is
+acceptable"), so a nonzero `correction_cost_weight` is now part of the learned
+formulation rather than an unauthorised change to it. The draft says `q_c ~ 0` without
+specifying how that is imposed, and this is what imposes it. Two consequences for how it
+is reported: the weight is a *stated* part of the formulation and must appear wherever
+the learned arm is described, and every table must still show what the penalty buys --
+the with/against-without comparison is paired on the same grid (`sc_A` against
+`sc_B_*_corrcost_*`, and at full power in Stage D), never dropped once the penalty is
+adopted.
 
 ### The dual success criterion, first measurements (2026-09-02)
 
