@@ -35,12 +35,20 @@ ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null || true
 export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages"
 export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export OMP_NUM_THREADS=1 TQDM_DISABLE=1 PYTHONUNBUFFERED=1
+# Record what Slurm actually allocated ("0,1" for -g volta:2) before narrowing it: that
+# string is the evidence the GPU request was honoured.
+SLURM_GAVE_US="${CUDA_VISIBLE_DEVICES:-unset}"
+# Then pin to ONE device, as every other job script does. jrl.config._get_device()
+# otherwise polls nvml to pick the "least used" GPU -- which needs nvidia-ml-py, and
+# which would stampede concurrent workers onto whichever card it judged least used.
+export CUDA_VISIBLE_DEVICES="$(echo "${CUDA_VISIBLE_DEVICES:-0}" | cut -d, -f1)"
 export MPLBACKEND=Agg MPLCONFIGDIR="${TMPDIR:-/tmp}/mpl.smoke"
 mkdir -p "$MPLCONFIGDIR"
 PY="$ROOT/venv/bin/python"
 cd "$REPO" || { echo "no repo at $REPO"; echo FAIL > "$DONE"; exit 1; }
 
-hostname; date -Is; nvidia-smi -L; echo "CUDA_VISIBLE_DEVICES=[${CUDA_VISIBLE_DEVICES:-unset}]"
+hostname; date -Is; nvidia-smi -L
+echo "Slurm allocated CUDA_VISIBLE_DEVICES=[$SLURM_GAVE_US]; pinned to [$CUDA_VISIBLE_DEVICES]"
 echo "staged commit: $(cat .staged-commit 2>/dev/null || echo UNKNOWN)"
 
 Fail() { set +x; echo "SMOKE FAILED: $*"; echo "FAIL $*" > "$DONE"; exit 1; }

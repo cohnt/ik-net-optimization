@@ -132,6 +132,14 @@ echo "===== [5/6] python deps ====="
 "$PIP" install --quiet numpy==2.5.2 klampt==0.10.1.post1 roma==1.6.1 \
     more-itertools==11.1.0 FrEIA==0.2 tqdm==4.70.0 pyyaml==6.0.3 \
     matplotlib==3.11.1 meshcat==0.3.2 PyOpenGL==3.1.10 || Fail "pip deps"
+# nvidia-ml-py is NOT in the laptop's venv and is needed here. jrl.config._get_device()
+# picks the "least used" GPU by polling nvml through torch.cuda.memory_usage(), and only
+# short-circuits when a single device is visible -- which is always true on the laptop's
+# one GPU and false on a node with two, where the import then dies with "nvidia-ml-py
+# does not seem to be installed". Every job script also pins CUDA_VISIBLE_DEVICES to one
+# device, which avoids the poll entirely; this is the belt to that pair of braces, so an
+# interactive session or a stray script cannot fail on an import.
+"$PIP" install --quiet nvidia-ml-py || Fail "nvidia-ml-py"
 "$PIP" install --quiet --no-deps "jrl @ git+https://github.com/jstmn/Jrl.git" \
     || Fail "jrl"
 # --ignore-requires-python: ikflow 0.2.0 declares Requires-Python "<3.12,>=3.10", and the
