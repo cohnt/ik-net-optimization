@@ -1198,6 +1198,89 @@ Qualitative parity holds: a pose grid and a grasp grid at the archived seed give
 (`start_q_error == 0` for the learned and joint-space arms) reproduces on this
 hardware with a different torch build and a different GPU.
 
+### Stage B on SuperCloud: the correction cost is the one knob that works (2026-09-02)
+
+Panda and iiwa grasp, learned arm only, 15 x 4 = 60 cells, 45 s cap, paired start,
+`--compile`, 8 workers per node. One factor at a time; the sc_A grasp finals on the same
+grid supply the default point rather than being re-run. Success is the strict criterion
+(the program's own rows at `ik_constraint_tol`).
+
+| knob | value | Panda | iiwa |
+| --- | --- | --- | --- |
+| *(default)* | | 41/60 | 18/60 |
+| `collision_influence_offset` (0.1) | 0.02 / 0.05 / 0.2 / 0.4 | 37 / 42 / 44 / 44 | 13 / 18 / **25** / 20 |
+| `collision_row_scale` (0.1) | 0.02 / 0.05 / 0.2 / 0.5 | 39 / 40 / 42 / 39 | 19 / 15 / 24 / 17 |
+| `ipopt_mu_strategy` | adaptive | 43 | 17 |
+| `latent_cost_weight` (0) | 0.001 / 0.01 / 0.1 | 40 / 44 / **50** | 11 / 12 / 15 |
+| **`correction_cost_weight` (0)** | 0.001 / 0.01 / 0.1 / 1.0 | 38 / 44 / 47 / **50** | 13 / 24 / 30 / **33** |
+
+**`correction_cost_weight` is the only knob with a strong, monotone effect in the same
+direction on both robots** -- +9 cells on the Panda and +15 on the iiwa, rising all the
+way to the largest weight tested. Everything else is either mild, non-monotone, or
+robot-specific: `mu_strategy=adaptive` does nothing on either robot despite the archived
+IPOPT logs looking like its textbook case; the collision-shaping knobs peak weakly around
+0.2 and are within noise of the default; and `latent_cost_weight` **helps the Panda by 9
+cells and hurts the iiwa by 3**, so it is not a general win and should not be read as one.
+
+The mechanism is visible in the instrumentation, and it is not that the correction box was
+binding (it never is -- `on the box` is 0.00 at every point of the sweep):
+
+| `correction_cost_weight` | 0 | 0.001 | 0.01 | 0.1 | 1.0 |
+| --- | --- | --- | --- | --- | --- |
+| median `\|q_c\|` | 0.0797 | 0.0133 | 0.0045 | 0.0006 | 0.0001 |
+| median max constraint violation, Panda | 5.7e-05 | 7.2e-05 | 4.1e-05 | 2.0e-05 | **3.6e-06** |
+| median max constraint violation, iiwa | 1.7e-02 | 3.5e-02 | 8.7e-03 | 2.7e-04 | **2.9e-05** |
+| median `\|\|z\|\|` | 1.78 | 1.33 | 1.81 | 1.55 | 1.60 |
+
+As the weight rises the correction is driven to zero and **the median constraint violation
+falls by three orders of magnitude on the iiwa**, from grossly infeasible to feasible,
+while the latent stays put. That is the signature of a degeneracy being removed rather
+than of a better search: with `c` and `q_c` both free, many pairs give the same `q`, so the
+active constraint gradients are rank-deficient -- exactly the redundancy recorded as
+next-steps #14 and never before tested. Penalising `q_c` breaks it.
+
+Two cautions on reading this table. **The `cost` column is not comparable across the
+`corrcost` sweep**, because the penalty is part of the objective being reported (median
+cost rises 2.63 -> 4.87 on the Panda as the weight rises); only success and the violation
+are. And the smallest weight, 0.001, is *worse* than zero on both robots (38 vs 41,
+13 vs 18) -- either noise at this grid size or a weak penalty perturbing without
+regularising, and not currently distinguishable.
+
+**This is a formulation question, not a tuning one, and it is Thomas's call.** The draft
+says `q_c ~ 0` without specifying how that is imposed, so a penalty is arguably what
+implements it -- but changing the objective changes what is being compared, so nothing here
+adopts a nonzero default. The sweep has also not peaked, which is what `sc_B2` extends
+(weights 3.0 and 10.0, both start protocols).
+
+### The dual success criterion, first measurements (2026-09-02)
+
+Every record now carries `max_violation` (the largest constraint violation at the returned
+point), `detail["violations_all"]` (every binding's worst *signed* violation, so slack
+reads as negative), and a second verdict `feasible_relaxed` scored with the program's
+constraint tolerance relaxed from `ik_constraint_tol = 1e-4` to the task gate's
+`task_tol = 1e-3`. Which of the two the paper's criterion should be is open; recording the
+continuous quantity means settling it later is a re-analysis and not a re-run.
+
+What the relaxation is worth on the sc_A grasp finals, per 60 cells: learned +1 to +3,
+numerical 0 to +2, analytic 0 to +1. **It moves no qualitative conclusion** -- the iiwa
+learned arm goes 18 -> 21 against numerical's 58 -> 60.
+
+The more informative number turned out to be `median_max_violation`, which separates the
+arms by six orders of magnitude:
+
+| arm | median max violation |
+| --- | --- |
+| analytic / analytic8 | 2e-16 to 5e-09 (machine precision) |
+| numerical | ~1.1e-08 |
+| learned, Panda | 4e-05 to 6e-05 (below `ik_constraint_tol`) |
+| **learned, iiwa** | **1.7e-02 to 2.9e-02** |
+
+The iiwa learned arm's *median* cell is three orders of magnitude outside tolerance, so
+**its deficit is not a near-miss story and no tolerance choice rescues it** -- the typical
+cell is grossly infeasible when the clock runs out, not sitting just outside the gate.
+That is consistent with 40-42 of its 60 cells exiting at the cap, and it is what the
+correction-cost result above then largely repairs (2.9e-05 at weight 1.0).
+
 ### Next steps
 
 Ordered by what the evidence actually supports. Nothing here weakens the problem: the
