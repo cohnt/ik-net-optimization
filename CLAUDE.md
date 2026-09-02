@@ -347,8 +347,9 @@ which is what the two protocols were added to establish.
 
 **The grasp rows are not yet readable, because they are largely measuring the cap**: 24-26
 of the 60 learned cells on the Panda and 47-52 of 60 on the iiwa exit at the 20 s wall
-clock. The 45 s stage is what separates budget from formulation, and no valid 45 s grasp
-measurement exists yet -- the archived one ran the task-parameterised arm.
+clock. The 45 s stage separates budget from formulation and is now complete: see "The
+final5 45 s stage, complete" below -- the Panda grasp deficit narrows to 46/60 vs 56/60 and
+stops there, and the iiwa's does not close at all.
 
 Three things the harness checks about itself, all of which passed:
 
@@ -378,58 +379,209 @@ One wart worth knowing: on the iiwa the mug and pose experiments report the *sam
 cross-compares tasks, but `collate.py --pair` would not refuse a mug-vs-pose pairing on
 that robot the way it should.
 
-### The final5 45 s stage: three of eight runs, and the cap only ever moves one arm (2026-09-01)
+### The final5 45 s stage, complete: the cap only ever moves one arm (2026-09-02)
 
-Same grids, same seeds, same `--compile`, only `--wall-time` changed, so these pair cell for
-cell against the 20 s tables above. Three of the eight runs are done -- all `paired` -- and
-the queue was paused at a run boundary; the remaining five are the `native` half plus
-`iiwa_pose_45_paired`.
+All eight runs, same grids, same seeds, same `--compile`, only `--wall-time` changed, so
+they pair cell for cell against the 20 s tables above.
 
-| experiment (paired) | arm | 20 s | 45 s | +/- | p | at the 45 s cap | mean iters |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp | learned | 35/60 | **46/60** | +11 / -0 | 0.00098 | 13 | 229 |
-| | joint space | 56/60 | 56/60 | 0 / 0 | 1.0 | 0 | 102 |
-| | analytic4 | 52/60 | 52/60 | 0 / 0 | 1.0 | 0 | 188 |
-| | analytic8 | 57/60 | 57/60 | 0 / 0 | 1.0 | 0 | 194 |
-| Panda pose | learned | 41/60 | 43/60 | +2 / -0 | 0.5 | 16 | 91 |
-| | joint space | 29/60 | 29/60 | 0 / 0 | 1.0 | 0 | 41 |
-| | analytic4 | 29/60 | 29/60 | 0 / 0 | 1.0 | 0 | 47 |
-| | analytic8 | 31/60 | 31/60 | 0 / 0 | 1.0 | 0 | 45 |
-| iiwa grasp | learned | 12/60 | **20/60** | +8 / -0 | 0.0078 | 39 | 299 |
-| | joint space | 59/60 | 59/60 | 0 / 0 | 1.0 | 0 | 143 |
+| experiment | start | learned 20 s | learned 45 s | +/- | p | at the 45 s cap | learned iters | joint space (both caps) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda grasp | paired | 35/60 | **46/60** | +11 / -0 | 0.00098 | 13 | 229 | 56/60, 102 |
+| Panda grasp | native | 34/60 | **46/60** | +12 / -0 | 0.00049 | 13 | 195 | 56/60, 102 |
+| Panda pose | paired | 41/60 | 43/60 | +2 / -0 | 0.5 | 16 | 91 | 29/60, 41 |
+| Panda pose | native | 60/60 | 60/60 | 0 / 0 | 1.0 | 0 | 26 | 29/60, 41 |
+| iiwa grasp | paired | 12/60 | **20/60** | +8 / -0 | 0.0078 | 39 | 299 | 59/60, 143 |
+| iiwa grasp | native | 7/60 | **15/60** | +8 / -0 | 0.0078 | 44 | 364 | 59/60, 143 |
+| iiwa pose | paired | 40/60 | 43/60 | +3 / -0 | 0.25 | 14 | 114 | 39/60, 31 |
+| iiwa pose | native | 59/60 | 59/60 | 0 / 0 | 1.0 | 0 | 40 | 39/60, 31 |
 
-**Every baseline is bit-identical at both caps, in all three experiments** -- same cells, same
-iteration counts. The extra budget reaches only the arm that evaluates a network, which is
-simultaneously the expected result and a check that nothing else differed between the runs.
-Note also that no cell is ever *lost* to the larger cap (`-0` everywhere): more time is
-monotone here, which is not guaranteed for an interior-point method whose iterates it
-changes.
+**Every baseline is bit-identical at both caps, in all eight runs** -- same cells, same
+iteration counts, for `numerical`, `analytic` and `analytic8` alike. The extra budget
+reaches only the arm that evaluates a network, which is both the expected result and a
+check that nothing else differed between the runs. No cell is ever *lost* to the larger cap
+(`-0` in every row): more time is monotone here, which is not guaranteed for an
+interior-point method whose iterates it changes.
+
+Learned against joint space at 45 s, exact McNemar on the 60 shared cells:
+
+| experiment | start | learned | joint space | better / worse | p |
+| --- | --- | --- | --- | --- | --- |
+| Panda pose | native | **60/60** | 29/60 | 31 / 0 | 9.3e-10 |
+| Panda pose | paired | **43/60** | 29/60 | 22 / 8 | 0.016 |
+| iiwa pose | native | **59/60** | 39/60 | 21 / 1 | 1.1e-5 |
+| iiwa pose | paired | 43/60 | 39/60 | 13 / 9 | 0.52 (tie) |
+| Panda grasp | either | 46/60 | **56/60** | 3 / 13 | 0.021 |
+| iiwa grasp | paired | 20/60 | **59/60** | 0 / 39 | 3.6e-12 |
+| iiwa grasp | native | 15/60 | **59/60** | 1 / 45 | 1.3e-12 |
+
+**The pose result is the draft's central claim and it survives the larger budget on both
+robots and both protocols** -- decisively under `native` (60/60 and 59/60), significantly on
+the Panda under `paired`, a tie on the iiwa under `paired`. Note that the extra budget
+*strengthened* the Panda pose paired result rather than washing it out (p = 0.043 at 20 s,
+0.016 at 45 s): the learned arm gains two cells and joint space gains none.
 
 **The grasp deficit is a budget effect in part, and not only a budget effect.** On the Panda
-the learned arm gains 11 cells but still trails joint space 46 vs 56 (3 better / 13 worse,
-p = 0.021) with 13 cells still at the cap. This contradicts the void task-param result, which
-claimed parity at 45 s: **the draft's own formulation does not reach parity on this grid**,
-and the honest statement is that the gap narrows with budget without closing.
-
-On the iiwa the picture is starker: 20/60 against 59/60 (0 better / 39 worse, p = 3.6e-12)
-with **39 of 60 cells still at the cap**. The success curve is nowhere near flat there, so
-45 s does not bound that arm's asymptote either -- but the gap is far too large for the cap
-to be the explanation, and it should be read against the iiwa flow being a 4-8x worse chart
-than the Panda's from a checkpoint of unknown provenance. That row is provisional until the
-network is retrained.
+the learned arm gains 11-12 cells at 45 s and lands on 46/60 under *both* protocols, still
+trailing joint space 56/60 (3 better / 13 worse, p = 0.021) with 13 cells at the cap. This
+contradicts the void task-param result, which claimed parity at 45 s: **the draft's own
+formulation does not reach parity on this grid**, and the honest statement is that the gap
+narrows with budget without closing. On the iiwa it is 20/60 (paired) and 15/60 (native)
+against 59/60, with 39-44 of 60 cells still at the cap -- so 45 s does not bound that arm's
+asymptote either, but the gap is far too large for the cap to explain it. The dose-response
+experiment below now rules out the standing explanation for that row as well.
 
 The comparison worth reporting for the grasp rows is **iterations**, which are
-hardware-independent. The learned arm averages 229 (Panda) and 299 (iiwa) against joint
-space's 102 and 143: it is not merely paying more per iteration, it is taking two to three
-times as many steps. That points at the grasp constraint geometry seen through the flow,
-not at the flow's per-iteration cost. On the pose task, where it wins, the ordering is the
-same (91 against 41) but both are small -- it wins there despite taking more steps.
+hardware-independent. The learned arm averages 195-229 (Panda) and 299-364 (iiwa) against
+joint space's 102 and 143: it is not merely paying more per iteration, it is taking two to
+three times as many steps. That points at the grasp constraint geometry seen through the
+flow, not at the flow's per-iteration cost. On the pose task, where it wins, the ordering
+reverses under `native` (26 iterations against joint space's 41 on the Panda, 40 against
+31 on the iiwa) -- it wins there while also taking *fewer* steps.
 
-Two collateral notes from this stage. `analytic4` forfeits 6 grasp and 13 pose cells
-outright as `unrepresentable_start`, unchanged by the cap, which is chart coverage and not
-solver budget. And the learned arm's correction stays off its box at 45 s too (median
-`\|q_c\|` 0.073 on the iiwa against +-0.1, 0.10 of solutions on the box), so the extra
-iterations are not being spent quietly turning it into a joint-space arm.
+Two collateral notes. `analytic4` forfeits 6 grasp and 13 pose cells outright as
+`unrepresentable_start`, unchanged by the cap, which is chart coverage and not solver
+budget. And the learned arm's correction stays off its box at 45 s (median `|q_c|`
+0.073-0.075 against +-0.1, 0.00-0.10 of solutions on the box), so the extra iterations are
+not being spent quietly turning it into a joint-space arm.
+
+**Reproducibility at the cap is +-1 cell.** `ladder5_latent` and the 20 s paired Panda grasp
+finals are the same configuration on the same grid and scored 34/60 and 35/60. The single
+differing cell (target 9, guess 2) hit the 20 s wall clock in both runs, reaching 264
+iterations in one and 286 in the other. Cells that exit at the cap are therefore reproducible
+only up to machine load, which is worth remembering before reading a one-cell difference
+anywhere in these tables as a real effect.
+
+### The ablation ladder under the corrected protocol: the frame fix is the whole stack (2026-09-02)
+
+Panda grasp, learned arm only, 15 targets x 4 per-target guesses = 60 cells, 20 s, paired,
+`--compile`, one grid for every rung (`grid_hash a480c9c9590e`, the same grid as the finals),
+so the rungs are cell-comparable with each other and with the finals' learned column. The
+two task-parameterised rungs are gone with the formulation; four remain, each adding one
+change to the one above it.
+
+| rung | success | iters | at the cap | `\|z\|` at start | median start error | median `\|q_c\|` |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline (uncalibrated frame, no sharing) | 11/60 | 135 | 41 | **426** | 0 (exact) | 0.090 |
+| + conditioning-frame calibration | **29/60** | 126 | 31 | 2.81 | 0 (exact) | 0.086 |
+| + shared flow evaluation | 30/60 | 134 | 31 | 2.81 | 0 (exact) | 0.085 |
+| + latent trust region | 34/60 | 155 | 26 | 2.81 | 0 (exact) | 0.074 |
+
+Exact McNemar, each rung against the one below it:
+
+| change | success | better / worse | p |
+| --- | --- | --- | --- |
+| conditioning-frame calibration | 29 vs 11 | 26 / 8 | **0.0029** |
+| shared flow evaluation | 30 vs 29 | 1 / 0 | 1.0 |
+| latent trust region | 34 vs 30 | 15 / 11 | 0.56 |
+| the whole stack | 34 vs 11 | 28 / 5 | **6.6e-5** |
+
+**This is the first ladder in the repo that measures what it claims to.** Both earlier
+ladders were confounded -- ladder3 by the latent bounding box (which silently projected
+every start), ladder4 by that *and* by two rungs running the unauthorized task
+parameterisation. With the box a general constraint and the start exact at every rung, the
+attribution is clean and it is almost entirely one change:
+
+- **The conditioning-frame calibration is worth 18 cells and is the only significant rung.**
+  Its mechanism is visible in the `|z|` column: uncalibrated, `SetStartFromQ` inverts the
+  flow at a pose 27 mm and 120 degrees from the frame the network was trained on, and the
+  network answers with a latent of norm **426** -- and, now that the latent region is a
+  constraint rather than a bound, the solver actually *starts* there instead of being
+  quietly clipped to something arbitrary. The old ladders could not see this because the
+  clip hid it.
+- **Sharing the flow evaluation is worth one cell**, as it must be: it returns bit-identical
+  values and derivatives, so its only effect is throughput inside a fixed cap.
+- **The latent trust region is +4 cells and still not significant** (15 better, 11 worse,
+  p = 0.56). Its direction is now positive on this grid, where under the void ladder4 it
+  read negative on the free-`c` arm; neither measurement distinguishes it from noise. It
+  stays for the reason recorded separately -- IPOPT is poorly behaved on unbounded variables
+  -- and remains a stated deviation from eq. (6) rather than a proven improvement.
+
+Note also that the ladder's baseline is 11/60 here against 19-22/30 in the two void ladders.
+That is not a regression: those baselines were being handed a *clipped* start, which is a
+different (and, at an uncalibrated frame, accidentally better) initial point than the honest
+one.
+
+### The charted-bundle grid: restricting `q_init` helps the baselines, not the learned arm (2026-09-02)
+
+A separate 15 x 4 grid on the Panda, 20 s, paired, in which the shared `q_init` is drawn by
+rejection so that it falls in the four *wide* branch bundles the historical 4-branch analytic
+chart covers. The filter is applied once to the shared guess list before any solve, so
+pairing across arms is preserved and nothing is scored against the problem -- but it changes
+the cells, so **this table is not cell-comparable with the finals** (`grid_hash 055c55c0f7a2`
+for the grasp task, `919011a4c36a` for the pose task, against the finals' `a480c9c9590e` /
+`b906a542f383`). Read the two columns as two different populations of starting
+configurations, not as a paired comparison.
+
+| experiment | arm | charted grid | full grid |
+| --- | --- | --- | --- |
+| Panda grasp | learned | 32/60 | 35/60 |
+| | joint space | **59/60** | 56/60 |
+| | analytic4 | **59/60** | 52/60 |
+| | analytic8 | **59/60** | 57/60 |
+| Panda pose | learned | **46/60** | 41/60 |
+| | joint space | 33/60 | 29/60 |
+| | analytic4 | 34/60 | 29/60 |
+| | analytic8 | 34/60 | 31/60 |
+
+Two things this establishes, both about the analytic column rather than about the learned
+one:
+
+- **`analytic4` and `analytic8` become identical when the start is charted** -- 59/60 and
+  59/60 on the grasp task, 34/60 and 34/60 on the pose task, with the same mean iteration
+  counts (218 and 37) and the same `start_q_error` (1.8e-11). They must be: on this grid
+  every `q_init` lies in a bundle both charts cover, so the two arms are handed the same
+  point and solve the same problem. That is the filter checking itself, and it confirms the
+  `analytic4`/`analytic8` differences in the finals are entirely about *which* configurations
+  each chart can represent, not about how each solves once started.
+- **The 4-branch chart's whole disadvantage in the finals was start coverage.** It goes
+  52 -> 59 on the grasp task and 29 -> 34 on the pose task once its uncharted starts are
+  removed, matching `analytic8` exactly. Nothing about the near-limit bundles makes the
+  *solve* harder; they are simply configurations that arm cannot be given.
+
+The learned arm moves in opposite directions on the two tasks (-3 on the grasp, +5 on the
+pose), which is what one would expect of a filter that is defined by another formulation's
+chart and has no particular meaning for a flow. The joint-space arm gains 3-4 cells on both,
+so the charted population is mildly easier overall; that alone accounts for most of the
+column and is the reason this table is kept separate from the headline ones.
+
+### Chart accuracy is not what is wrong with the iiwa (2026-09-02)
+
+The dose-response experiment the iiwa deficit has been waiting on. `chart_error_scale = eps`
+adds a deterministic, smooth, seeded perturbation `eps * sin(W [c; z] + b)` to the flow's
+joint-space output -- degrading the chart's accuracy while holding the scene, the kinematics,
+the solver, the grid and the start protocol fixed. Panda grasp, learned arm only, 15 x 4,
+20 s, paired, on the finals' own grid (`a480c9c9590e`), so the `eps = 0` point is the finals'
+learned column.
+
+| `eps` (rad) | nominal median chart error | success | at the cap | median `\|q_c\|` |
+| --- | --- | --- | --- | --- |
+| 0 (the Panda flow as trained) | 3.8 mm | 35/60 | 25 | 0.071 |
+| 0.016 | ~12 mm | 34/60 | 26 | 0.066 |
+| 0.032 | ~20 mm | 32/60 | 30 | 0.075 |
+| 0.064 | ~43 mm | 22/60 | 40 | 0.057 |
+| 0.128 | ~83 mm | 1/60 | 1 | 0.047 |
+
+(The millimetre column is the calibration recorded in `scripts/run_queue_final5.sh`; the
+decision-relevant comparisons below rest on the ordering, not on those figures.)
+
+**This refutes the standing explanation for the iiwa grasp row.** The iiwa's measured chart
+is 16.6 mm median / 64.5 mm p90 against the Panda's 3.8 / 9.4 -- so the iiwa sits between the
+`eps = 0.016` and `eps = 0.032` doses. At those doses the Panda still solves **34/60 and
+32/60**. The iiwa solves **12/60**. Degrading the Panda's chart to the iiwa's accuracy costs
+it one to three cells; the iiwa is twenty-three cells worse. Chart accuracy is therefore *not*
+the mechanism, and the hypothesis that has been carried since the 2026-08-28 chart-accuracy
+table -- that the iiwa grasp deficit is a statement about the checkpoint's precision -- does
+not survive its own experiment. (Asking Julia about the checkpoint's provenance remains worth
+doing; it is simply no longer the explanation this row needs.)
+
+The curve is also informative about *how* the learned formulation degrades. Between 0 and
+0.032 it is nearly flat, and every cell lost is lost to the wall clock (25 -> 30 at the cap)
+rather than to infeasibility: a worse chart costs iterations first. Between 0.032 and 0.064
+it falls off, and at 0.128 it collapses -- but that last point measures something else
+entirely: **58 of its 60 cells fail as `unrepresentable_start`**, because a perturbation of
+0.128 rad per joint exceeds what the +-0.1 rad correction can absorb, so the arm cannot
+express the shared `q_init` at all. That row is a statement about the correction box, not
+about solving, and should not be read as part of the dose curve.
 
 ### The ablation ladder, re-run (2026-08-29, RTX 3080 Ti laptop, IPOPT, 20 s cap, compiled)
 
@@ -906,18 +1058,25 @@ collision. So target the collision constraint and the iteration budget, not the 
    "solved within k restarts". This is the only honest form of multi-start and the harness
    already does it.
 
-**iiwa -- model quality first, optimisation second**
+**iiwa -- and the chart-accuracy hypothesis is now dead**
 
 The iiwa flow is a 4-8x worse chart than the Panda's (16.6 mm / 6.4 deg median against
-3.8 mm / 0.71 deg). Optimisation cannot repair that, so establish it before tuning.
+3.8 mm / 0.71 deg), and that was the standing explanation for its grasp deficit. **The
+dose-response experiment refutes it** (see "Chart accuracy is not what is wrong with the
+iiwa"): degrading the Panda's own chart to the iiwa's accuracy costs 1-3 cells of 60, where
+the iiwa is 23 cells worse. Whatever the iiwa row is, it is not chart precision, so the
+open question is now *what* it is -- start with the 39-44 cells that exit at the cap having
+taken 299-364 iterations, roughly 2.5x the joint-space arm.
 
 9. ~~Sweep `correction_bound` upward~~ **done, and the premise was wrong**: the box is not
    binding on either robot (0.00 of solutions sit on it; median `|q_c|` is 0.054 against a
    bound of 0.1), and widening it to 0.8 changes nothing.
-10. Ask Julia about `iiwa14__lemon-haze-7__global_step_4.25M.pkl`. It is a local checkpoint
-    of unknown provenance against the Panda's published weights; if it is undertrained then
-    the iiwa grasp row is a statement about the checkpoint, not about the method. Cheap and
-    decisive.
+10. ~~Ask Julia about `iiwa14__lemon-haze-7__global_step_4.25M.pkl` -- if it is
+    undertrained the iiwa grasp row is a statement about the checkpoint~~ **the premise is
+    refuted, but the question is still worth asking**. The dose-response experiment shows
+    chart error of the iiwa's magnitude costs the Panda 1-3 cells, not 23, so the checkpoint's
+    *accuracy* cannot be the mechanism. Its provenance is still worth knowing (retraining is
+    already planned) -- it simply is not the explanation this row needs.
 11. Only then, the divergent cells -- a few reach 3.4e7 constraint violation, which is the
     latent or the conditioning pose escaping despite the trust region.
 
