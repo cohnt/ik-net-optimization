@@ -168,7 +168,24 @@ for name in ("panda", "iiwa14"):
     r = jrl.robots.get_robot(name)
     print("jrl urdf cache warmed:", name)
 PYWARM
-du -sh "$ROOT/home/.cache" 2>/dev/null
+# Drake fetches its `drake_models` remote package (the meshes the scenes reference as
+# package://drake_models/...) LAZILY, at scene-load time, into ~/.cache/drake/package_map.
+# Compute nodes have no internet, so a job would die inside ProcessModelDirectives with
+# "Network is unreachable". Warm it here by actually building every scene. It has to be
+# warmed with the CLUSTER's Drake, not copied from the laptop: the cache key includes the
+# models commit that Drake version pins, and the two builds differ.
+echo "--- warming the Drake model cache (drake_models) into $ROOT/home"
+HOME="$ROOT/home" CUDA_VISIBLE_DEVICES="" "$PY" - <<'PYDRAKE' || Fail "drake model warm-up"
+import os, sys
+sys.path.insert(0, os.environ["PWD"])
+from src.utils import BuildEnv, RepoDir
+for scene in ("models/panda/panda_collision.yaml",
+              "models/panda/panda_finray_collision.yaml",
+              "models/iiwa14/iiwa14_collision.yaml"):
+    BuildEnv(meshcat=None, directives_file=os.path.join(RepoDir(), scene))
+    print("scene builds offline:", scene)
+PYDRAKE
+du -sh "$ROOT/home/.cache" "$ROOT/home/.cache/drake" 2>/dev/null
 
 ## --------------------------------------------------------- 6. verification --
 echo "===== [6/6] verification ====="

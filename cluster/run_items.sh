@@ -44,6 +44,18 @@
 source /etc/profile
 set -uo pipefail
 
+## --- GPU selection --------------------------------------------------------
+## Slurm exports CUDA_VISIBLE_DEVICES as a comma-separated list, and on this cluster
+## the entries are GPU **UUIDs**, not indices -- so exporting "0" or "1" is not a
+## valid selector for the allocated cards. Capture the list once, before any worker
+## narrows it, and hand each worker one entry from it.
+SLURM_GPUS="${CUDA_VISIBLE_DEVICES:-}"
+PinGpu() {   ## $1 = worker index; empty $SLURM_GPUS means "no GPU was allocated"
+    if [ -z "$SLURM_GPUS" ]; then export CUDA_VISIBLE_DEVICES=""; return; fi
+    local n; n=$(echo "$SLURM_GPUS" | tr ',' '\n' | grep -c .)
+    export CUDA_VISIBLE_DEVICES="$(echo "$SLURM_GPUS" | cut -d, -f$(( $1 % n + 1 )))"
+}
+
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="${TEST_REPO:-$ROOT/repo}"
 STATE_ROOT="${TEST_STATE_DIR:-$ROOT/state}"
@@ -82,6 +94,9 @@ Worker() {
     ## it is regenerated from package data with no network, and sharing it is exactly the
     ## race described above.
     ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null || true
+    ## Drake's drake_models package, fetched during setup: compute nodes cannot download
+    ## it, and ProcessModelDirectives would fail with "Network is unreachable".
+    ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null || true
 
     export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages"
@@ -99,7 +114,7 @@ Worker() {
     if [ "${DEVICE:-gpu}" = "cpu" ]; then
         export CUDA_VISIBLE_DEVICES=""
     else
-        export CUDA_VISIBLE_DEVICES=$(( LOCAL % 2 ))
+        PinGpu "$LOCAL"
     fi
     local PY="${TEST_PYTHON:-$ROOT/venv/bin/python}"
 

@@ -32,6 +32,7 @@ set -x
 export HOME="${TMPDIR:-/tmp}/home.smoke"
 mkdir -p "$HOME/.cache"
 ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null || true
+ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null || true
 export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages"
 export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export OMP_NUM_THREADS=1 TQDM_DISABLE=1 PYTHONUNBUFFERED=1
