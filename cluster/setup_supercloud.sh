@@ -175,9 +175,11 @@ PYWARM
 # warmed with the CLUSTER's Drake, not copied from the laptop: the cache key includes the
 # models commit that Drake version pins, and the two builds differ.
 echo "--- warming the Drake model cache (drake_models) into $ROOT/home"
-HOME="$ROOT/home" CUDA_VISIBLE_DEVICES="" "$PY" - <<'PYDRAKE' || Fail "drake model warm-up"
+# $PWD is $ROOT here (this script cd'd there), not the repo, so pass the repo explicitly.
+HOME="$ROOT/home" CUDA_VISIBLE_DEVICES="" LEARNED_IK_REPO="$ROOT/repo" \
+    "$PY" - <<'PYDRAKE' || Fail "drake model warm-up"
 import os, sys
-sys.path.insert(0, os.environ["PWD"])
+sys.path.insert(0, os.environ["LEARNED_IK_REPO"])
 from src.utils import BuildEnv, RepoDir
 for scene in ("models/panda/panda_collision.yaml",
               "models/panda/panda_finray_collision.yaml",
