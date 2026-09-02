@@ -182,12 +182,21 @@ def main():
     args = p.parse_args()
 
     groups, unsharded = find_shard_groups(args.root)
+    failures = []
     if not groups:
         print(f"no sharded runs under {args.root}")
     for base, group in sorted(groups.items()):
         if args.only and args.only not in base:
             continue
-        records, meta, arm_names, n_targets, n_guesses = validate(base, group)
+        ## One bad group must not stop the rest: a single incomplete tag left over from a
+        ## killed stage used to abort the whole walk, so every alphabetically-later run
+        ## silently went unmerged. Report it and carry on; the exit code still flags it.
+        try:
+            records, meta, arm_names, n_targets, n_guesses = validate(base, group)
+        except Exception as exc:
+            print(f"{base}: SKIPPED -- {exc}")
+            failures.append(base)
+            continue
         arms = [SimpleNamespace(name=n) for n in arm_names]
         n_cells = len(records[arm_names[0]])
         print(f"{base}: {group['count']} shards, {n_cells} cells x {len(arm_names)} arms")
@@ -206,6 +215,11 @@ def main():
     for tag, path, _ in unsharded:
         print(f"unsharded, left alone: {tag}")
 
+    if failures:
+        print(f"\n{len(failures)} group(s) could not be merged: {', '.join(failures)}")
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
