@@ -99,7 +99,7 @@ Worker() {
     ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null || true
 
     export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages"
+    export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}"
     ## One thread per process: the node is filled with processes, not threads.
     export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
     export TQDM_DISABLE=1 PYTHONUNBUFFERED=1
