@@ -1058,6 +1058,78 @@ with cotangent `dcost/dq` would have replaced seven passes. Sharing the constrai
 Jacobian captured that instead. The remaining runtime levers are iteration count and
 `torch.compile` (~1.3x on the `jacrev`), not the AD mode.
 
+### Running on MIT SuperCloud (`cluster/`, 2026-09-02)
+
+The laptop is not big enough for what is left to measure, so the campaign moves to
+Thomas's SuperCloud allocation: **4 nodes on `xeon-g6-volta`**, each 40 Xeon Gold 6248
+cores and 2x V100 32 GB. `cluster/README.md` is the playbook and
+`~/.claude/skills/supercloud/SKILL.md` carries the standing rules; what follows is only
+what a reader of this file needs to know about the *harness*.
+
+**Timing is never compared across machines.** Thomas's rule: *"There's never a need to
+compare wall-clock (or really, performance in general) between laptop and cluster. But
+wall clock limits can be adjusted on the cluster."* So the wall-clock cap stays as the
+measurement -- no switch to iteration caps for portability's sake -- but its value is
+chosen from `cluster/calibrate.sh` on that hardware rather than inherited from the
+laptop's 20/45 s. Cluster tables are self-contained; `metadata.host` and
+`metadata.device` now exist so a cluster run cannot be paired cell-for-cell against a
+laptop one. The corollary is that **CPU contention still corrupts the measurement**, so
+how many worker processes may share a node is a measured quantity, not a guess.
+
+**`--shard K/N` is the sharding primitive**, and it is a no-op by construction. `--cells`
+already filtered the seeded grid; what it lacked is that the tag ignored it, so two
+shards of one run resolved to the same `summary.json` and overwrote each other. `--shard`
+appends `_shardKofN` and splits **target-major** -- whole targets per shard, never a
+target's guesses split -- because `success_ci` bootstraps over whole targets and
+`solved_within_k` counts restarts within one. `cluster/merge_shard_summaries.py` pools
+the records and **re-runs `summarise`** rather than stitching per-shard numbers (every
+aggregate in it is shard-local), preserving arm order so `_mcnemar`'s pair directions
+survive.
+
+`bash cluster/verify_sharding.sh` proves the round trip locally in about two minutes:
+every record field including the returned `q`, and every paired statistic, identical
+apart from per-process timings. It bounds solves with `max_iter` rather than the wall
+clock deliberately -- a wall-clock-capped solve stops wherever the clock runs out, which
+is this repo's documented +-1-cell sensitivity and a property of the *cap*, not of
+sharding. **Run it after any change to sharding, the merger, or grid construction.**
+
+Four harness changes went in alongside it, each a defect the local harness could afford:
+
+- **Meshcat is optional.** Both benchmark scripts constructed `Meshcat()`
+  unconditionally, twice per process, for runs with `visualize=False`; forty workers on a
+  node would have been eighty websocket servers. `BuildEnv(meshcat=None)` now skips
+  visualization outright, which is *not* the same as passing `None` through to
+  `ApplyVisualizationConfig` (Drake would start its own).
+- **Mug scenes are built only for the shard's targets.** Both loops run after every RNG
+  draw and after `grid_hash`, so gating them moves no number; ungated, an N-shard split
+  paid N times the scene cost.
+- **The collision row's shape is now three `ProgramOptions` fields**
+  (`collision_bound`, `collision_influence_offset`, `collision_row_scale`), defaulting to
+  the values that were hardcoded in `CreateCollisionFreeConstraint`. Next-steps #2 was
+  otherwise unreachable without a code edit. `verify()`'s collision slack follows the
+  scale rather than assuming 0.1.
+- **`hit_iteration_cap`** counterpart to `timed_out`. `is_timeout` does not match IPOPT's
+  "Maximum Number of Iterations Exceeded" (no "time" in it), so a `--set max_iter` run
+  reported `timeouts: 0` and looked as though nothing had hit a cap.
+
+Also fixed: the iiwa's mug and pose grids hashed **identically** (`9f5953e3c669` for
+both), because they are drawn from the same seed over the same joint limits, so
+`collate.py --pair` would have compared a mug run against a pose one. The task is now a
+*suffix* on `grid_hash`, leaving the hash of the cells themselves alone so pairing
+against archived runs still works.
+
+**Two cluster facts that shaped the design.** The account's `xeon-g6-volta` limit is a
+Slurm **`GrpTRES` group** cap (`node=4`, `MaxSubmit=240`), not a per-job `MaxNodes`: work
+beyond it is accepted and **queued**, not rejected, so a whole stage is submitted at once
+and Slurm meters it -- and the cap is shared with everything else the account runs.
+Because jobs therefore start at different times, there is no stable rank space to deal
+work into, so `cluster/run_items.sh` claims items with an atomic `mkdir <id>.claim`
+instead of the sibling project's golden-ratio rank stride. And **PyTorch 2.11's cu128
+wheels dropped sm_70**, so the V100s need a cu126 build; the wrong wheel imports cleanly,
+reports a CUDA device, and fails only at the first kernel launch, which is why
+`cluster/smoke.sh` launches a real kernel rather than trusting `get_arch_list()`.
+
+
 ### Next steps
 
 Ordered by what the evidence actually supports. Nothing here weakens the problem: the
