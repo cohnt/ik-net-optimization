@@ -1256,6 +1256,52 @@ the with/against-without comparison is paired on the same grid (`sc_A` against
 `sc_B_*_corrcost_*`, and at full power in Stage D), never dropped once the penalty is
 adopted.
 
+### The complete correction-cost curve, and where it peaks (2026-09-02)
+
+Sweeps B, B2 and B3 together, grasp task, learned arm only, 60 cells at 45 s on one grid
+(`grid_hash a480c9c9590e`, seed 0), so every point pairs cell for cell.
+
+| robot / start | 0 | 0.001 | 0.01 | 0.1 | 1 | 3 | 10 | 30 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda paired | 41 | 38 | 44 | 47 | 50 | **54** | 48 | 51 |
+| Panda native | 42 | | | | | 52 | **58** | 50 |
+| iiwa paired | 18 | 13 | 24 | 30 | 33 | 37 | **47** | 42 |
+| iiwa native | 16 | | | | | 37 | 39 | **40** |
+| total of the four | 117 | | | | | 180 | **192** | 183 |
+
+**The curve turns over between 10 and 30**, which is what B3 was run to establish: at 30
+three of the four experiments are flat or worse, so 10 is near the optimum rather than
+merely the largest value anyone tried. Stage D fields 10 on that basis.
+
+Read the per-experiment wobble as noise, not structure. Panda paired goes 54 -> 48 -> 51
+across weights 3, 10 and 30, which is a +-3 to 6 cell swing on a 60-cell grid; the
+aggregate and the monotone rise out of 0 are the real signal, and resolving the top of
+the curve properly is one of the things 480 cells buys in Stage D.
+
+What the penalty does, from the instrumentation rather than by inference:
+
+| | w = 0 | w = 10 |
+| --- | --- | --- |
+| median `\|q_c\|` | 0.080 | 0.0000 |
+| median max constraint violation, Panda | 5.7e-05 | 6.4e-08 |
+| median max constraint violation, iiwa | 1.7e-02 | 2.6e-08 |
+| timeouts, iiwa paired (of 60) | 40 | 15 |
+| median `\|\|z\|\|` | 1.78 | ~1.6 |
+
+The correction is driven to zero, the median constraint violation falls to the
+**joint-space arm's own level** (1.1e-08), and the timeouts more than halve, while the
+latent does not move. This is the `c`/`q_c` redundancy of next-steps #14 being removed:
+with both free many pairs give the same `q`, so the active constraint gradients are
+rank-deficient, and IPOPT spends its budget on a degenerate direction.
+
+**The headline consequence.** On the Panda grasp task under `native`, the learned arm
+reaches **58/60 against joint space's 55/60** -- the grasp task was the one place the
+learned formulation lost, and the deficit is substantially an artefact of leaving the
+correction free rather than a property of the formulation. The iiwa grasp arm goes
+18/60 to 47/60 against joint space's 58/60: still behind, but the gap falls from 40 cells
+to 11. Both statements are on a 60-cell grid and on the *same* grid the weight was chosen
+on, which is why Stage D re-measures them at 480 cells on a different seed.
+
 ### The dual success criterion, first measurements (2026-09-02)
 
 Every record now carries `max_violation` (the largest constraint violation at the returned
