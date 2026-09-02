@@ -140,6 +140,13 @@ measured, not just how long it takes. `PROCS=1` is always safe.
   and must be warmed on the `download` partition first; ikflow computes its
   cache dir from `expanduser("~")` at import, so `HOME` must be set explicitly
   when warming.
+- **`ikflow` declares `Requires-Python "<3.12,>=3.10"` and pip believes it.** The
+  cluster's only cp312 interpreter is 3.12.3, so pip refuses the install. The pin
+  is stale rather than real — the laptop runs that same ikflow 0.2.0 on 3.12.3
+  and imports it fine; it never surfaced there because the local venv was built
+  with `uv`, which does not enforce `Requires-Python`. Hence
+  `--ignore-requires-python` in setup, which makes the cluster match the laptop
+  rather than depart from it.
 - **Quote the triples spec** if you ever use triples mode (`"[4,1,40]"`) —
   unquoted brackets are a bash glob.
 - **`LLstat` shows placeholder resources (1 CPU / 4 G) for PENDING jobs.** That
