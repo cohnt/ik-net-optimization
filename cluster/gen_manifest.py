@@ -126,6 +126,27 @@ def stage_D(wall, targets, guesses, shards):
     return items
 
 
+def stage_B2(wall, targets, guesses, shards):
+    """Extension of the `correction_cost_weight` sweep, which had not peaked at 1.0.
+
+    Stage B found the only knob with a strong, monotone, same-signed effect on BOTH
+    robots: success rises all the way to the largest weight tested, so the sweep has to
+    be pushed further before anything can be said about where the optimum is. Run on
+    both start protocols this time, because a regulariser that changes the objective
+    could plausibly interact with where the solve begins.
+    """
+    items = []
+    for robot in ("panda", "iiwa"):
+        for start in ("paired", "native"):
+            for w in (3.0, 10.0):
+                tagw = str(w).replace(".", "p")
+                items += item(robot, f"sc_B2_{robot}_corrcost_{tagw}_{start}",
+                              ["--task", "mug", "--config", "latent", "--start", start,
+                               "--set", f"correction_cost_weight={w}"],
+                              targets, guesses, "learned", wall, shards)
+    return items
+
+
 def render(items):
     lines = []
     for it in sorted(items, key=lambda i: (-i["seconds"], i["id"])):
@@ -188,7 +209,7 @@ def selftest():
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", choices=["A", "B", "C", "D"])
+    p.add_argument("--stage", choices=["A", "B", "B2", "C", "D"])
     p.add_argument("--wall-time", type=float, default=20.0,
                    help="the solver's per-cell cap, in seconds. Choose it from "
                         "cluster/calibrate.sh on THIS hardware -- the laptop's 20/45 s "
@@ -215,6 +236,7 @@ def main():
 
     caps = [float(c) for c in args.caps.split(",")]
     items = {"A": lambda: stage_A(args.wall_time, args.targets, args.guesses, args.shards),
+             "B2": lambda: stage_B2(args.wall_time, args.targets, args.guesses, args.shards),
              "B": lambda: stage_B(args.wall_time, args.targets, args.guesses, args.shards),
              "C": lambda: stage_C(caps, args.targets, args.guesses, args.shards),
              "D": lambda: stage_D(args.wall_time, args.targets, args.guesses, args.shards),
