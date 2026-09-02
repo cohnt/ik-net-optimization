@@ -156,6 +156,20 @@ Worker() {
         STATUS=$?
         if [ $STATUS -eq 0 ]; then
             touch "$MARKER"; OK=$((OK + 1))
+            ## Publish the item's output to $RESULTS_ROOT, which is what
+            ## collect_results.sh tars. The benchmark writes under RepoDir(),
+            ## i.e. $REPO/results, because that is how the scripts locate
+            ## themselves; without this copy the collection point stays empty and
+            ## a stage looks like it produced nothing. The item id IS the run's
+            ## tag (gen_manifest.py passes the base tag and the shard suffix the
+            ## script appends reproduces it), so one glob finds the directory
+            ## whichever robot it belongs to.
+            for RD in "$REPO"/results/*/benchmark/"$ID"; do
+                [ -d "$RD" ] || continue
+                REL="${RD#"$REPO"/results/}"
+                mkdir -p "$RESULTS_ROOT/$(dirname "$REL")"
+                cp -r "$RD" "$RESULTS_ROOT/$(dirname "$REL")/" 2>>"$LOG"
+            done
         else
             FAIL=$((FAIL + 1))
         fi
