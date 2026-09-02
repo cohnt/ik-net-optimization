@@ -102,7 +102,7 @@ RunOne() {   # RunOne <local-index> <tag> <device> <wall-time>
     mkdir -p "$HOME/.cache"
     ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null || true
     ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null || true
-    export PYTHONPATH="$BASE_PYTHONPATH"
+    export PYTHONPATH="$BASE_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
     export LD_LIBRARY_PATH="$BASE_LDPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
     export TQDM_DISABLE=1 PYTHONUNBUFFERED=1 MPLBACKEND=Agg
