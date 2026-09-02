@@ -301,7 +301,12 @@ class IKFlowProgram:
     def add_costs(self):
         if self.options.joint_centering_cost > 0.0:
             self.JointCenteringCost()
-        if self.options.correction_cost_weight > 0.0:
+        ## `correction` is a learned-only decision variable, so this must be guarded the
+        ## same way `latent_cost_weight` and `latent_trust_region` are -- the baseline
+        ## programs share this options object. Ungated, a `--set correction_cost_weight`
+        ## run raises AttributeError inside every numerical/analytic program's
+        ## construction and scores that whole column 0 in about 10 ms per cell.
+        if self.options.correction_cost_weight > 0.0 and hasattr(self, "correction"):
             self.CorrectionCost()
         if self.options.latent_cost_weight > 0.0 and hasattr(self, "z"):
             self.LatentCost()
