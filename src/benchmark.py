@@ -146,6 +146,28 @@ def verify(program, result, task_gate, tol, x_lumped=None):
     collision = float(np.asarray(program.collision_free_constraint_eval.Eval(q)).flatten()[0])
     detail["collision_value"] = collision
 
+    # `collision_value` is the RAW value of Drake's MinimumDistanceLowerBoundConstraint: a
+    # smooth penalty aggregated over every geometry pair inside the influence distance, and
+    # a pure number, not a length. It is the right thing to gate on (it is what the binding
+    # sees) but it cannot be quoted as clearance, and "1.26 against a limit of 1.0" says
+    # nothing about how deep the penetration is. So also record the actual minimum signed
+    # distance in metres, negative when geometry overlaps, with the pair that attains it.
+    try:
+        scene_graph = program.diagram.GetSubsystemByName("scene_graph")
+        sg_context = scene_graph.GetMyContextFromRoot(program.diagram_context)
+        program.plant.SetPositions(program.plant_context, q)
+        pairs = scene_graph.get_query_output_port().Eval(
+            sg_context).ComputeSignedDistancePairwiseClosestPoints()
+        if pairs:
+            worst = min(pairs, key=lambda p: p.distance)
+            inspector = scene_graph.model_inspector()
+            detail["min_distance"] = float(worst.distance)
+            detail["min_distance_pair"] = [
+                inspector.GetName(inspector.GetFrameId(worst.id_A)),
+                inspector.GetName(inspector.GetFrameId(worst.id_B))]
+    except Exception as exc:                      # never let instrumentation kill a cell
+        detail["min_distance_error"] = f"{type(exc).__name__}: {exc}"
+
     # How much of its own budget the learned formulation used: |q_c| against
     # correction_bound says whether the correction box is binding, and ||z|| says whether
     # the latent left the flow's typical set (sqrt(latent_dim), so ~2.65 and ~2.83).
@@ -359,7 +381,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     record["feasible"] = verdict.feasible
                     record["fail_reason"] = verdict.fail_reason
                     detail = dict(verdict.detail)
-                    detail.pop("q", None)
+                    record["q"] = detail.pop("q", None)
                     for key in ("correction_inf", "z_norm"):
                         record[key] = _finite(detail.pop(key, None))
                     record["detail"] = detail
@@ -380,7 +402,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                             record["recovered_feasible"] = verdict.feasible
                             record["recovered_fail_reason"] = verdict.fail_reason
                             detail = dict(verdict.detail)
-                            detail.pop("q", None)
+                            record["recovered_q"] = detail.pop("q", None)
                             record["recovered_detail"] = detail
                         except Exception as exc2:
                             record["recovered_error"] = f"{type(exc2).__name__}: {exc2}"
