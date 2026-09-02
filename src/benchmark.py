@@ -163,14 +163,20 @@ def provenance():
 
 ## ------------------------------- verification -------------------------------- ##
 
-def binding_violations(prog, x, tol):
-    """Largest violation of each binding of `prog` at `x`, keyed by description.
+def binding_worst(prog, x):
+    """Worst *signed* violation of every binding of `prog` at `x`, keyed by description.
 
-    Mirrors ../codebase's `CheckConstraints`: the point is not only whether the returned
-    point is feasible but *which* constraint it misses, since "timed out" and "converged
-    to something infeasible" call for different fixes.
+    Signed and unconditional: a negative value is slack (the binding is satisfied with
+    room to spare), a positive value is the amount by which it is missed. Nothing is
+    filtered by a tolerance here, which is the point -- the tolerance at which a solve
+    counts as feasible is a contested choice (`ik_constraint_tol = 1e-4` for the
+    program's own rows against `task_tol = 1e-3` for the task gate, and the two are not
+    obviously commensurate once a solver applies its own scaling), so the *continuous*
+    quantity is what gets recorded and any threshold is applied to it afterwards.
+    Recording only "violations above 1e-4" would make that a re-run rather than a
+    re-analysis.
     """
-    violations = {}
+    worst = {}
     for binding in prog.GetAllConstraints():
         evaluator = binding.evaluator()
         value = np.asarray(prog.EvalBinding(binding, x), dtype=float).flatten()
@@ -178,21 +184,39 @@ def binding_violations(prog, x, tol):
         ub = np.asarray(evaluator.upper_bound(), dtype=float).flatten()
         below = np.where(np.isfinite(lb), lb - value, -np.inf)
         above = np.where(np.isfinite(ub), value - ub, -np.inf)
-        worst = float(np.max(np.maximum(below, above)))
-        if worst > tol:
-            name = evaluator.get_description() or type(evaluator).__name__
-            violations[name] = max(worst, violations.get(name, -np.inf))
-    return violations
+        w = float(np.max(np.maximum(below, above)))
+        name = evaluator.get_description() or type(evaluator).__name__
+        worst[name] = max(w, worst.get(name, -np.inf))
+    return worst
+
+
+def binding_violations(prog, x, tol):
+    """Bindings of `prog` violated by more than `tol` at `x`, keyed by description.
+
+    Mirrors ../codebase's `CheckConstraints`: the point is not only whether the returned
+    point is feasible but *which* constraint it misses, since "timed out" and "converged
+    to something infeasible" call for different fixes.
+    """
+    return {k: v for k, v in binding_worst(prog, x).items() if v > tol}
 
 
 @dataclass
 class Verdict:
     feasible: bool
     fail_reason: str = ""          # "" | nan | constraint | task_error | collision
+    ## `detail` stays third: existing call sites construct a Verdict positionally as
+    ## Verdict(False, "nan", detail), so any new field has to go AFTER it.
     detail: dict = field(default_factory=dict)
+    # The same point scored again with the program's constraint tolerance relaxed to the
+    # task gate's. Both are recorded because which one the paper's success criterion
+    # should be is an open question: a cell can satisfy the task (axis error < 1 mm,
+    # collision-free) while missing the program's own rows by 2e-4 to 6e-4, and it is not
+    # obvious that those two tolerances are commensurate once a solver scales the problem.
+    feasible_relaxed: bool = False
+    fail_reason_relaxed: str = ""
 
 
-def verify(program, result, task_gate, tol, x_lumped=None):
+def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
     """Score a solve from the returned point, independently of the solver's own status.
 
     `task_gate(q)` returns `(ok, detail_dict)` and is where the experiment states what
@@ -220,9 +244,19 @@ def verify(program, result, task_gate, tol, x_lumped=None):
         return Verdict(False, "nan", {})
 
     detail = {"q": [float(v) for v in q]}
-    violations = binding_violations(program.prog, x, tol)
+
+    # Every binding's worst signed violation, unconditionally: this is the continuous
+    # quantity from which any feasibility threshold can be recomputed later, so a change
+    # of mind about the success criterion is a re-analysis and not a re-run of the grid.
+    worst = binding_worst(program.prog, x)
+    detail["violations_all"] = {k: float(v) for k, v in worst.items()}
+    detail["max_violation"] = _finite(max(worst.values())) if worst else None
+
+    violations = {k: v for k, v in worst.items() if v > tol}
     if violations:
         detail["violations"] = {k: float(v) for k, v in violations.items()}
+    relaxed_tol = tol if relaxed_tol is None else float(relaxed_tol)
+    relaxed_violations = {k: v for k, v in worst.items() if v > relaxed_tol}
 
     collision = float(np.asarray(program.collision_free_constraint_eval.Eval(q)).flatten()[0])
     detail["collision_value"] = collision
@@ -262,19 +296,26 @@ def verify(program, result, task_gate, tol, x_lumped=None):
     ok, task_detail = task_gate(program, q)
     detail.update(task_detail)
 
-    if violations:
-        return Verdict(False, "constraint", detail)
     # An interior-point method parks *on* an active constraint, so a converged solve
     # routinely reports a collision value of 1 + 1e-7. The gate has to carry the same
     # slack the program's own binding does: the collision row is scaled by
     # `collision_row_scale`, so `tol` in constraint units is `tol / scale` in Drake's
     # smoothed-distance units (10 * tol at the default scale of 0.1).
     scale = getattr(program.options, "collision_row_scale", 0.1)
-    if collision > 1.0 + tol / scale:
-        return Verdict(False, "collision", detail)
-    if not ok:
-        return Verdict(False, "task_error", detail)
-    return Verdict(True, "", detail)
+
+    def _score(viol, t):
+        """The same three gates at a given constraint tolerance, in the same order."""
+        if viol:
+            return False, "constraint"
+        if collision > 1.0 + t / scale:
+            return False, "collision"
+        if not ok:
+            return False, "task_error"
+        return True, ""
+
+    feasible, reason = _score(violations, tol)
+    feasible_relaxed, reason_relaxed = _score(relaxed_violations, relaxed_tol)
+    return Verdict(feasible, reason, detail, feasible_relaxed, reason_relaxed)
 
 
 def _finite(value):
@@ -379,7 +420,7 @@ class Arm:
 
 def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
              progress=None, metadata=None, cell_timeout=None, cells=None,
-             unrepresentable_tol=None):
+             unrepresentable_tol=None, relaxed_tol=None):
     """Run every (arm, target, guess) cell once and write a checkpointed summary.
 
     Checkpointing after each target matters: these runs are hours long and the learned
@@ -461,11 +502,18 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     record.update(parse_log(log_path))
                     record["timed_out"] = is_timeout(record.get("exit"))
                     record["hit_iteration_cap"] = is_iteration_cap(record.get("exit"))
-                    verdict = verify(program, result, task_gate, tol)
+                    verdict = verify(program, result, task_gate, tol,
+                                     relaxed_tol=relaxed_tol)
                     record["feasible"] = verdict.feasible
                     record["fail_reason"] = verdict.fail_reason
+                    record["feasible_relaxed"] = verdict.feasible_relaxed
+                    record["fail_reason_relaxed"] = verdict.fail_reason_relaxed
                     detail = dict(verdict.detail)
                     record["q"] = detail.pop("q", None)
+                    ## Promoted out of `detail` because it is the quantity the success
+                    ## criterion is argued over, and it should be one key away in every
+                    ## record rather than nested.
+                    record["max_violation"] = detail.pop("max_violation", None)
                     for key in ("correction_inf", "z_norm"):
                         record[key] = _finite(detail.pop(key, None))
                     record["detail"] = detail
@@ -482,9 +530,11 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     last = getattr(program, "last_iterate", None) if program is not None else None
                     if last is not None:
                         try:
-                            verdict = verify(program, None, task_gate, tol, x_lumped=last)
+                            verdict = verify(program, None, task_gate, tol,
+                                             x_lumped=last, relaxed_tol=relaxed_tol)
                             record["recovered_feasible"] = verdict.feasible
                             record["recovered_fail_reason"] = verdict.fail_reason
+                            record["recovered_feasible_relaxed"] = verdict.feasible_relaxed
                             detail = dict(verdict.detail)
                             record["recovered_q"] = detail.pop("q", None)
                             record["recovered_detail"] = detail
@@ -533,6 +583,24 @@ def summarise(records, arms, n_targets, n_guesses):
             mean_cost=_mean(ok, "cost", ok_only=False),
             median_cost=_median(ok, "cost"),
             solved_within_k=solved_within_k(per_target),
+            ## The same grid scored with the program's constraint tolerance relaxed to
+            ## the task gate's, reported alongside rather than instead of the strict
+            ## count. Which of the two the paper's success criterion should be is open;
+            ## `max_violation` per record lets any other threshold be applied later.
+            successes_relaxed=sum(1 for r in recs if r.get("feasible_relaxed")),
+            success_rate_relaxed=(sum(1 for r in recs if r.get("feasible_relaxed"))
+                                  / len(recs) if recs else float("nan")),
+            success_ci_relaxed=bootstrap_success_ci(
+                [[bool(r.get("feasible_relaxed")) for r in recs if r["target"] == t]
+                 for t in range(n_targets)]),
+            solved_within_k_relaxed=solved_within_k(
+                [[bool(r.get("feasible_relaxed")) for r in recs if r["target"] == t]
+                 for t in range(n_targets)]),
+            ## Cells the relaxation turns from failure into success -- the size of the
+            ## definitional question, per run.
+            relaxation_gain=sum(1 for r in recs
+                                if r.get("feasible_relaxed") and not r.get("feasible")),
+            median_max_violation=_median(recs, "max_violation"),
             median_clip_distance=_median(recs, "clip_distance"),
             median_start_q_error=_median(recs, "start_q_error"),
             max_start_q_error=_max(recs, "start_q_error"),
