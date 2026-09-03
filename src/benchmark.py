@@ -26,10 +26,13 @@ Three things distinguish it from the older per-script harnesses:
     a success by any definition that matters.
 """
 import faulthandler
+import glob
 import json
 import math
 import os
 import re
+import shutil
+import tarfile
 import time
 from dataclasses import dataclass, field, replace
 
@@ -477,7 +480,10 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     # A dedicated file rather than stderr: program construction runs under HiddenPrints,
     # which redirects fd 2 to /dev/null, and a dump that lands in that window is simply
     # lost -- which is what happened to the one stall this was meant to catch.
-    stalls = open(os.path.join(log_dir, "stalls.txt"), "a") if cell_timeout else None
+    # Per-cell solver logs go to node-local scratch and are rolled into one archive
+    # per run at the end; see `_log_scratch_dir`.
+    scratch_dir = _log_scratch_dir(log_dir)
+    stalls = open(os.path.join(scratch_dir, "stalls.txt"), "a") if cell_timeout else None
     n_targets, n_guesses = len(targets), len(guesses[0])
     assert len(guesses) == n_targets and all(len(row) == n_guesses for row in guesses)
 
@@ -491,7 +497,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
             if cells is not None and (ti, gi) not in cells:
                 continue
             for arm in arms:
-                log_path = os.path.join(log_dir, f"{arm.name}_{ti}_{gi}.txt")
+                log_path = os.path.join(scratch_dir, f"{arm.name}_{ti}_{gi}.txt")
                 if os.path.exists(log_path):
                     os.remove(log_path)
                 record = dict(target=ti, guess=gi)
@@ -601,6 +607,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
 
     if stalls is not None:
         stalls.close()
+    _roll_up_logs(scratch_dir, log_dir)
     return records
 
 
@@ -746,6 +753,63 @@ def _binding_fraction(recs, tol=1e-6):
     if not vals:
         return float("nan")
     return float(np.mean([c >= b - tol for c, b in vals]))
+
+
+def _log_scratch_dir(log_dir):
+    """Where the per-cell solver logs are written while a run is in flight.
+
+    One 20 KB file per (cell x arm) is the shared-filesystem anti-pattern SuperCloud's
+    own guidance names: a campaign accumulated 35,596 of them, 87% of every archive's
+    file count, and made a routine collection metadata-bound at thirty minutes instead
+    of three. They are written to node-local $TMPDIR instead and rolled into a single
+    archive per run by `_roll_up_logs`.
+
+    The subdirectory is keyed on the run's tag AND the pid because $TMPDIR is per-node,
+    not per-process, and a node runs several workers at once (PROCS=8 in this campaign).
+    Without a scratch directory -- a laptop run, say -- the logs stay in `log_dir` and
+    are rolled up in place, so behaviour is identical either way apart from where the
+    intermediate files live.
+    """
+    tmp = os.environ.get("TMPDIR")
+    if not tmp or not os.path.isdir(tmp):
+        return log_dir
+    scratch = os.path.join(tmp, "solver_logs",
+                           f"{os.path.basename(log_dir)}_{os.getpid()}")
+    os.makedirs(scratch, exist_ok=True)
+    return scratch
+
+
+def _roll_up_logs(scratch, log_dir):
+    """Collapse a run's per-cell solver logs into one `solver_logs.tar.gz`.
+
+    Called once at the end of a run. Measured at 3.7x compression on real IPOPT logs,
+    so the archive is both a single file and a quarter of the bytes; the per-cell logs
+    remain individually recoverable with `tar xf`, which is what keeps this a storage
+    change rather than a loss of diagnostic detail.
+
+    Failure here must never lose a run: the summary is already written by the time this
+    is called, and the logs are a diagnostic. So any error leaves the loose files where
+    they are and reports, rather than raising into the caller.
+    """
+    files = sorted(glob.glob(os.path.join(scratch, "*.txt")))
+    if not files:
+        if scratch != log_dir:
+            shutil.rmtree(scratch, ignore_errors=True)
+        return None
+    archive = os.path.join(log_dir, "solver_logs.tar.gz")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        with tarfile.open(archive, "w:gz") as tar:
+            for f in files:
+                tar.add(f, arcname=os.path.basename(f))
+    except OSError as exc:                     # out of space, unwritable dir, ...
+        print(f"warning: could not roll up solver logs into {archive}: {exc}")
+        return None
+    for f in files:
+        os.remove(f)
+    if scratch != log_dir:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return archive
 
 
 def _write_summary(records, arms, n_targets, n_guesses, out_path, metadata, partial):
