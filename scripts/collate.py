@@ -85,6 +85,13 @@ def main(patterns):
                 solver_ok=s["solver_successes"], timeouts=s["timeouts"],
                 icap=s.get("iteration_capped", 0),
                 iters=s["mean_iterations"], jac=s["mean_jacobian_evals"],
+                ## Seconds are this machine's; iterations are the formulation's. Reporting
+                ## both is a standing rule (see CLAUDE.md, "Iterations alongside wall
+                ## clock"), and ms/iter is what separates the two -- the learned arm's
+                ## iteration costs ~30x the joint-space arm's, so equal iteration counts
+                ## are not equal solves.
+                ms_it=(1000.0 * s["mean_wall_time"] / s["mean_iterations"]
+                       if s["mean_iterations"] else float("nan")),
                 wall=s["mean_wall_time"], wall_ok=s["mean_wall_time_success"],
                 cost=s["median_cost"], reasons=s["fail_reasons"],
                 start_err=s.get("median_start_q_error", float("nan")),
@@ -95,13 +102,15 @@ def main(patterns):
                 maxviol=s.get("median_max_violation")))
 
     header = (f"{'run':<26} {'arm':<10} {'success':>9} {'rate':>6} {'95% CI':>14} "
-              f"{'t/out':>6} {'i/cap':>6} {'iters':>7} {'jac':>7} {'wall':>7} {'cost':>7}")
+              f"{'t/out':>6} {'i/cap':>6} {'iters':>7} {'ms/it':>7} {'jac':>7} "
+              f"{'wall':>7} {'cost':>7}")
     print(header)
     print("-" * len(header))
     for r in rows:
         print(f"{r['run']:<26} {r['arm']:<10} {r['ok']:>4}/{r['n']:<4} {r['rate']:>6.2f} "
               f"[{r['lo']:.2f},{r['hi']:.2f}]".ljust(len(header) - 44)
-              + f"{r['timeouts']:>6} {r['icap']:>6} {r['iters']:>7.0f} {r['jac']:>7.0f} "
+              + f"{r['timeouts']:>6} {r['icap']:>6} {r['iters']:>7.0f} "
+                f"{r['ms_it']:>7.1f} {r['jac']:>7.0f} "
                 f"{r['wall']:>7.2f} {r['cost']:>7.2f}")
     ## Both success criteria, side by side. `strict` gates on the program's own
     ## constraint rows at ik_constraint_tol; `task-tol` relaxes that to the task gate's
