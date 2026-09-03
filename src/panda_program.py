@@ -164,6 +164,9 @@ class PandaIKProgram(IKFlowProgram):
             jacobian, q_tensor = self.jacobian_gen(vars_tensor)
             jacobian_np = jacobian.detach().cpu().numpy()
 
+            # Apply gradient regularization if enabled (LM damping, norm clipping, etc.)
+            jacobian_np = regularize_jacobian(jacobian_np, self.options)
+
             q_values = np.zeros(self.num_pos)
             q_values[7:] = [0.04] * (self.num_pos - 7)
             q_values[:7] = q_tensor.detach().cpu().numpy()
