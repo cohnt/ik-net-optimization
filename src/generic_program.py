@@ -161,7 +161,7 @@ class ProgramOptions:
     # runaway cells are attracted to these regions because the Jacobian there is as large
     # as the returned configuration. These knobs damp the Jacobian before the chain rule.
     jacobian_max_norm: float = field(default=None, metadata={"help": "Clip the Jacobian's Frobenius norm to this value; None disables"})
-    jacobian_tikhonov_lambda: float = field(default=0.0, metadata={"help": "Tikhonov/LM damping: replace singular values s with s/(1 + λ/s²); 0 disables"})
+    jacobian_tikhonov_lambda: float = field(default=0.0, metadata={"help": "Tikhonov/LM damping: replace singular values s with s*λ/(s+λ), bounded by λ; 0 disables"})
     jacobian_svd_floor: float = field(default=0.0, metadata={"help": "Floor on singular values (pseudoinverse-style truncation); 0 disables"})
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
