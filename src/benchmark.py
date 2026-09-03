@@ -48,6 +48,42 @@ _IPOPT_PATTERNS = {
 }
 
 
+## Cost bindings that regularise the *learned* arm's own decision variables rather than
+## expressing the task. They are part of the solve -- they change where the solver goes,
+## deliberately -- but they must not be part of the number a cost *table* reports, because
+## the baselines have no such variables and so can never carry the corresponding term. A
+## column that included them would compare the learned arm's objective-plus-penalties
+## against the baselines' bare objective and call the difference a result.
+##
+## `LatentCost`'s docstring has always claimed this exclusion; nothing implemented it, and
+## `result.get_optimal_cost()` returned the total. That was immaterial while both weights
+## were zero and material as soon as they were swept: at `latent_cost_weight = 0.1` with
+## `||z|| ~ 1.6` the term is ~0.26 against a reported cost of ~3, i.e. 8% of the column.
+## At the approved `correction_cost_weight = 10` the correction term is negligible by
+## comparison (median 2e-08, because the penalty drives `|q_c|` to ~2e-05), so this
+## changes no published learned-arm cost materially -- but it makes the column exactly
+## what it says it is instead of nearly so.
+_REGULARIZER_COSTS = ("LatentRegularizerCost", "CorrectionCost")
+
+
+def reported_cost(program, result, weight):
+    """The objective every formulation shares, at the returned point.
+
+    Sums the program's cost bindings except the learned-only regularizers, so the number
+    is comparable across arms. Falls back to `get_optimal_cost()` if the bindings cannot
+    be walked, which keeps a cell scoring rather than erroring.
+    """
+    try:
+        total = 0.0
+        for binding in program.prog.GetAllCosts():
+            if binding.evaluator().get_description() in _REGULARIZER_COSTS:
+                continue
+            total += float(np.asarray(result.EvalBinding(binding)).sum())
+        return total / weight
+    except Exception:
+        return float(result.get_optimal_cost()) / weight
+
+
 def parse_log(path):
     """Iteration and evaluation counts from a solver log.
 
@@ -518,7 +554,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                         record[key] = _finite(detail.pop(key, None))
                     record["detail"] = detail
                     if verdict.feasible:
-                        record["cost"] = float(result.get_optimal_cost()) / arm.weight
+                        record["cost"] = reported_cost(program, result, arm.weight)
                 except Exception as exc:            # never let one cell kill a sweep
                     record["error"] = f"{type(exc).__name__}: {exc}"
                     record["feasible"] = False
