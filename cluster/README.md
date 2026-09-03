@@ -118,6 +118,28 @@ What keeps it in compliance now:
 Measured effect: a full collection went from 40,733 files / 950 MB / ~30 min to
 2,964 files / 316 MB / **43 s**.
 
+Note the compaction is done by **the benchmark job itself** — `run_grid` rolls its logs
+up before it returns — so no separate pass is needed for new runs.
+`cluster/compact_logs.sh` exists only to backfill runs made before that change.
+
+### Retention: logs are deleted once mined
+
+Thomas's rule: *"once obsolete or mined, they can be deleted, since we can always
+recreate them and you have saved their knowledge."* Lots of files temporarily is fine;
+keeping them forever is not. `cluster/prune_logs.sh` does it (`--dry-run` first,
+`--cluster` to include the cluster's copy, which is deliberately not the default).
+
+What is kept, and why the line falls there: **`summary.json` is the primary record** —
+per-cell entries, the returned `q`, every binding's violation, and the statistics — and a
+wall-clock-capped run would *not* reproduce it bit for bit, so it is not recreatable in
+the way the logs are. A `summary.json.partial` with no completed sibling is the only
+record of a crashed run and is kept for the same reason. The solver logs are traces of
+solves the summaries already describe, and every table in `CLAUDE.md` is written up
+before the logs behind it are dropped.
+
+First application, 2026-09-03: local `results/` went from **845 MB to 95 MB** (370
+summaries), and the Stage G aggregate still reproduces exactly from what remains.
+
 **Any check that asks the cluster whether it is busy must be scoped to this project.**
 The account is shared with Thomas's other campaigns, so `LLstat | grep -c RUNNI` refuses
 whenever anything at all is running — it fired on an unrelated `run_matrix.sh`. Filter by
