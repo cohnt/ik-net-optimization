@@ -1965,10 +1965,12 @@ characterising something already ruled out. The negative result is complete at 6
 measured and none works: the latent trust region, the `c` box, all of IPOPT's scaling
 options (Stage E), a joint-limit penalty (Stage F, inert), and lifting `q` (Stage F2, net
 negative). **A better iiwa chart remains the preferred remedy and is now also the only
-untried one**, alongside the least-squares domain extension and gradient regularization
-deferred to a later session -- for which the finding above is suggestive, since what fails
-here is the conditioning of an equality row carrying the chart's Jacobian, which is
-precisely what Levenberg-Marquardt-style damping addresses.
+untried one.** Gradient regularization was the remaining hope when this was written --
+the finding above looked suggestive, since what fails in F2 is the conditioning of an
+equality row carrying the chart's Jacobian, which is precisely what
+Levenberg-Marquardt-style damping addresses. Stage G measured it across all eight
+experiments and it is a clear negative; see that section for why damping an exact
+derivative cannot work. The least-squares domain extension remains deferred.
 
 ### Stage G: Jacobian regularization (2026-09-03)
 
