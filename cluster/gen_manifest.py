@@ -312,6 +312,55 @@ def stage_B3(wall, targets, guesses, shards):
     return items
 
 
+G_ROWS = [
+    ("panda", "mug", "paired"), ("panda", "mug", "native"),
+    ("panda", "pose", "paired"), ("panda", "pose", "native"),
+    ("iiwa", "mug", "paired"), ("iiwa", "mug", "native"),
+    ("iiwa", "pose", "paired"), ("iiwa", "pose", "native"),
+]
+
+# Jacobian regularization settings: (name, list of --set args)
+# Cross with correction_cost_weight: 0 (no penalty) and 10 (approved penalty)
+G_SETTINGS = [
+    # Norm clipping
+    ("jnorm10", ["jacobian_max_norm=10"]),
+    ("jnorm100", ["jacobian_max_norm=100"]),
+    ("jnorm1k", ["jacobian_max_norm=1000"]),
+    ("jnorm10k", ["jacobian_max_norm=10000"]),
+    # Tikhonov/LM damping
+    ("jtik0p1", ["jacobian_tikhonov_lambda=0.1"]),
+    ("jtik1", ["jacobian_tikhonov_lambda=1.0"]),
+    ("jtik10", ["jacobian_tikhonov_lambda=10.0"]),
+    ("jtik100", ["jacobian_tikhonov_lambda=100.0"]),
+    # SVD floor
+    ("jsvd0p1", ["jacobian_svd_floor=0.1"]),
+    ("jsvd1", ["jacobian_svd_floor=1.0"]),
+]
+
+
+def stage_G(wall, targets, guesses, shards, corr_cost=10.0):
+    """Gradient regularization: Jacobian damping / clipping / SVD floor.
+
+    The flow's worst-case gain is ~1e13; this damps the Jacobian before the chain rule
+    so the solver sees bounded gradients while the value q is unchanged. Three strategies:
+    - jacobian_max_norm: clip the Frobenius norm (isotropic)
+    - jacobian_tikhonov_lambda: LM damping on singular values (anisotropic)
+    - jacobian_svd_floor: floor on singular values (pseudoinverse-style)
+
+    All 8 experiments, learned arm only, compared against Stage C's 45s column.
+    """
+    items = []
+    for robot, task, start in G_ROWS:
+        for name, sets in G_SETTINGS:
+            flags = ["--task", task, "--config", "latent", "--start", start,
+                     "--set", f"correction_cost_weight={corr_cost}"]
+            for kv in sets:
+                flags += ["--set", kv]
+            items += item(robot, f"sc_G_{robot}_{task}_{int(wall)}_{start}_{name}",
+                          flags, targets, guesses, "learned", wall, shards)
+    return items
+
+
 def render(items):
     lines = []
     for it in sorted(items, key=lambda i: (-i["seconds"], i["id"])):
@@ -346,7 +395,8 @@ def selftest():
                                         settings=_f_variant("liftq"), tag="F2")),
                          ("F3", stage_F(45, 60, 8, 8, rows=F2_ROWS,
                                         settings=_f_variant("jlpen10"), seed=D_SEED,
-                                        tag="F3"))):
+                                        tag="F3")),
+                         ("G", stage_G(45, 15, 4, 4))):
         ids = [i["id"] for i in items]
         if len(ids) != len(set(ids)):
             dupes = {i for i in ids if ids.count(i) > 1}
@@ -381,7 +431,7 @@ def selftest():
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D", "Dbase", "E",
-                                   "F", "F2", "F3"])
+                                   "F", "F2", "F3", "G"])
     p.add_argument("--wall-time", type=float, default=20.0,
                    help="the solver's per-cell cap, in seconds. Choose it from "
                         "cluster/calibrate.sh on THIS hardware -- the laptop's 20/45 s "
@@ -430,6 +480,7 @@ def main():
              "F3": lambda: stage_F(args.wall_time, args.targets, args.guesses, args.shards,
                                    rows=F2_ROWS, settings=_f_variant(args.f_variant),
                                    seed=D_SEED, tag="F3"),
+             "G": lambda: stage_G(args.wall_time, args.targets, args.guesses, args.shards),
              }[args.stage]()
 
     lines = render(items)

@@ -156,6 +156,14 @@ class ProgramOptions:
     chart_error_scale: float = 0.0
     snopt_function_precision: float = field(default=None, metadata={"help": "SNOPT 'Function precision'. Leave None in float64; set ~1e-6 if evaluating the flow in float32"})
 
+    ## Gradient regularization for the flow Jacobian ##
+    # The flow's worst-case gain is ~1e13 (12 coupling blocks at rnvp_clamp 2.5), and the
+    # runaway cells are attracted to these regions because the Jacobian there is as large
+    # as the returned configuration. These knobs damp the Jacobian before the chain rule.
+    jacobian_max_norm: float = field(default=None, metadata={"help": "Clip the Jacobian's Frobenius norm to this value; None disables"})
+    jacobian_tikhonov_lambda: float = field(default=0.0, metadata={"help": "Tikhonov/LM damping: replace singular values s with s/(1 + λ/s²); 0 disables"})
+    jacobian_svd_floor: float = field(default=0.0, metadata={"help": "Floor on singular values (pseudoinverse-style truncation); 0 disables"})
+
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
     visualize: bool = field(default=False, metadata={"help": "If true, visualizes the IK solving process in Meshcat"})
 
@@ -278,6 +286,38 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
     if key not in _COMPILED_JACOBIANS:
         _COMPILED_JACOBIANS[key] = torch.compile(jacobian_gen)
     return _COMPILED_JACOBIANS[key]
+
+
+def regularize_jacobian(jacobian_np, options):
+    """Apply gradient regularization to the flow Jacobian before the chain rule.
+
+    The flow's worst-case gain is ~1e13 (12 coupling blocks at rnvp_clamp 2.5), and the
+    runaway cells are attracted to these regions because the Jacobian there is as large
+    as the returned configuration. These knobs damp the Jacobian so the solver sees
+    bounded gradients while the value `q` is unchanged.
+
+    Three strategies, applied in order if enabled:
+    - jacobian_max_norm: clip the Frobenius norm (isotropic)
+    - jacobian_tikhonov_lambda: Tikhonov/LM damping on singular values (anisotropic)
+    - jacobian_svd_floor: floor on singular values (pseudoinverse-style)
+    """
+    if options.jacobian_max_norm:
+        norm = np.linalg.norm(jacobian_np)
+        if norm > options.jacobian_max_norm:
+            jacobian_np = jacobian_np * (options.jacobian_max_norm / norm)
+
+    if options.jacobian_tikhonov_lambda > 0 or options.jacobian_svd_floor > 0:
+        U, s, Vh = np.linalg.svd(jacobian_np, full_matrices=False)
+        if options.jacobian_tikhonov_lambda > 0:
+            # Tikhonov/LM: s_damped = s * λ / (s + λ)
+            # As s → ∞, s_damped → λ (bounded); as s → 0, s_damped → 0 (no amplification)
+            lam = options.jacobian_tikhonov_lambda
+            s = s * lam / (s + lam)
+        if options.jacobian_svd_floor > 0:
+            s = np.maximum(s, options.jacobian_svd_floor)
+        jacobian_np = U @ np.diag(s) @ Vh
+
+    return jacobian_np
 
 
 class IKFlowConstraints:
