@@ -1239,10 +1239,12 @@ than of a better search: with `c` and `q_c` both free, many pairs give the same 
 active constraint gradients are rank-deficient -- exactly the redundancy recorded as
 next-steps #14 and never before tested. Penalising `q_c` breaks it.
 
-Two cautions on reading this table. **The `cost` column is not comparable across the
-`corrcost` sweep**, because the penalty is part of the objective being reported (median
-cost rises 2.63 -> 4.87 on the Panda as the weight rises); only success and the violation
-are. And the smallest weight, 0.001, is *worse* than zero on both robots (38 vs 41,
+Two cautions on reading this table, the first of which has since been **corrected**.
+The `cost` column *is* comparable across the `corrcost` sweep: the rise from 2.63 to 4.87
+on the Panda is not the penalty term entering the reported objective (at `w >= 1` that
+term is ~1e-08, the penalty having driven `|q_c|` to ~1e-05) but a real change in which
+solutions come back, and it is the price the penalty charges for its feasibility. See
+"What the correction penalty costs" further down. And the smallest weight, 0.001, is *worse* than zero on both robots (38 vs 41,
 13 vs 18) -- either noise at this grid size or a weak penalty perturbing without
 regularising, and not currently distinguishable.
 
@@ -1343,9 +1345,12 @@ The instrumentation reproduces the Stage B mechanism at 8x the cells:
 | timeouts of 480, iiwa paired | 355 | **235** |
 | timeouts of 480, Panda paired | 135 | **79** |
 
-Two cautions carried forward from Stage B and still applying here. The **`cost` column is
-not comparable across the two arms** -- the penalty is part of the objective, and median
-cost rises 2.53 -> 4.88 on the Panda paired grasp as a direct consequence. And the
+Two cautions carried forward from Stage B, one of which has since been **corrected**.
+The rise in median cost from 2.53 to 4.88 on the Panda paired grasp is *not* the penalty
+term appearing in the objective -- at `w = 10` that term is about 2e-08 -- it is a real
+change in which solutions the solver returns, and the columns are comparable. See
+"What the correction penalty costs" above: the penalty trades objective value for
+feasibility, and on the grasp task the trade is 30-100%. And the
 relaxed criterion is worth +10 to +18 cells of 480 on the grasp task and **exactly zero
 on the pose task**, moving no ordering anywhere.
 
@@ -1402,9 +1407,14 @@ arms under `paired`, and 1e-11 for the analytic arms where the chart covers `q_i
 
 **The pose result is the draft's central claim and it holds on both robots under
 `native`, and on the Panda under both protocols** -- decisively so (466/480 against
-249/480, 224 cells won and 7 lost). It also wins on **cost** wherever it wins on success:
-median 9.46 against joint space's 10.55 on the Panda paired pose, 6.40 against 6.79 on
-the iiwa native pose.
+249/480, 224 cells won and 7 lost). It also wins on **cost** wherever it wins on success --
+10.383 against joint space's 10.643 on the Panda paired pose and 6.457 against 6.776 on
+the iiwa native pose, medians on the 182 and 285 cells *both* arms solved. (The figures
+this section previously quoted, 9.46 and 6.40, were medians over each arm's own
+successes, which compares different cell sets; the direction is unchanged.) On the
+**grasp** task the ordering reverses and the learned arm costs roughly twice what joint
+space does -- see "Iterations, cost and wall clock" above, which also shows that gap is
+the correction penalty being paid for in objective value.
 
 **One conclusion changes at this sample size, and it changes against us.** The iiwa pose
 under `paired` read as a tie at 60 cells (40/60 vs 39/60, p = 1.0); at 480 cells it is a
@@ -1665,14 +1675,16 @@ real time. This has now cost two whole columns of cluster campaigns (the
 `correction_cost_weight` guard incident and this one), both caught only during analysis
 after the compute was spent.
 
-### Iterations alongside wall clock: what the learned arm actually costs (2026-09-02)
+### Iterations, cost and wall clock: the three numbers a result is told in (2026-09-02)
 
-**Standing reporting rule, Thomas's: every result is told in iteration count as well as
-runtime.** Iterations are the hardware-independent quantity and the one that describes the
-*formulation*; seconds describe this implementation on this machine, and are never compared
-across machines. Reporting only seconds makes the cap story look arbitrary; reporting only
-iterations hides that the learned arm's iteration is thirty times more expensive than joint
-space's. Both, always.
+**Standing reporting rule, Thomas's: every result is told in iteration count and in
+objective cost, as well as in runtime.** Iterations are the hardware-independent quantity
+and the one that describes the *formulation*; seconds describe this implementation on this
+machine, and are never compared across machines; cost says what the solution is worth,
+which success alone cannot. Reporting only seconds makes the cap story look arbitrary;
+reporting only iterations hides that the learned arm's iteration is thirty times more
+expensive than joint space's; reporting only success hides that on the grasp task the
+learned arm's solutions cost roughly twice what the baseline's do. All three, always.
 
 Median over each arm's *succeeded* cells, Stage C at the 180 s cap (60 cells, seed 0,
 `--compile`, `correction_cost_weight = 10`), so every arm has converged and the cap binds
@@ -1720,7 +1732,83 @@ applies in the learned arm's favour on the pose task, where 466/480 against 249/
 at 52 iterations against 34 -- a win on success, on cost, and on step count, but still
 ~45x the wall clock.
 
-Two cautions on the table. The medians are over each arm's *succeeded* cells, and that set
+#### Cost, on the cells both arms solved
+
+Success says how often a formulation returns a valid configuration; cost says what that
+configuration is worth. They can and here do point in different directions, so the cost
+column is not optional.
+
+Two things had to be right before the number meant anything. **Costs are compared only on
+cells *both* arms solved** -- a median over each arm's own successes compares different
+cell sets, and the easy cells are exactly the ones a weaker arm also solves, so that form
+flatters whichever arm fails more. And **the learned-only regularizers are excluded from
+the reported objective** (`reported_cost` in `src/benchmark.py`), so the column measures
+the objective every formulation shares -- the joint-centering cost -- rather than the
+learned arm's objective plus its penalties.
+
+Stage D, 480 cells, 45 s, `correction_cost_weight = 10`, median cost on the cells both
+arms solved:
+
+| experiment | start | n both | learned | joint space |
+| --- | --- | --- | --- | --- |
+| Panda pose | native | 242 | **10.459** | 10.567 |
+| Panda pose | paired | 182 | **10.383** | 10.643 |
+| iiwa pose | native | 285 | **6.457** | 6.776 |
+| iiwa pose | paired | 209 | **6.367** | 7.112 |
+| Panda grasp | native | 417 | 5.322 | **2.826** |
+| Panda grasp | paired | 398 | 4.858 | **2.687** |
+| iiwa grasp | native | 216 | 5.952 | **2.647** |
+| iiwa grasp | paired | 230 | 5.299 | **2.618** |
+
+**On the pose task the learned arm wins on cost as well as on success**, on both robots
+and under both protocols -- modestly (1-10%) but with the same sign in all four rows, and
+on 182-285 shared cells rather than on the whole-run medians the earlier claim quoted.
+This is the draft's central claim holding on the second of its two axes.
+
+**On the grasp task it loses on cost by roughly a factor of two, in every row.** This was
+not being reported at all, and it changes how the grasp result reads: the honest statement
+is no longer "the learned arm reaches parity at a large enough budget" but "it reaches
+parity in *success* at a large enough budget, at roughly 4x the iterations, 30x the
+seconds per iteration, and 2x the objective value."
+
+#### What the correction penalty costs, and it is not nothing
+
+The same comparison against the penalty-free arm, on the cells both solved -- the paired
+form of the Stage D penalty table, which previously reported success only:
+
+| experiment | start | n both | `w = 10` | `w = 0` |
+| --- | --- | --- | --- | --- |
+| Panda pose | native | 460 | 9.893 | **9.372** |
+| Panda pose | paired | 267 | 9.502 | **9.459** |
+| iiwa pose | native | 370 | 6.364 | **6.061** |
+| iiwa pose | paired | 206 | 6.476 | **6.352** |
+| Panda grasp | native | 343 | 5.441 | **2.903** |
+| Panda grasp | paired | 303 | 4.815 | **2.444** |
+| iiwa grasp | native | 58 | 6.168 | **4.606** |
+| iiwa grasp | paired | 68 | 7.185 | **4.663** |
+
+**The penalty is nearly free on the pose task (0.5-5%) and expensive on the grasp task
+(30-100%)** -- and the grasp task is exactly where it buys its 70-169 cells of success.
+So the penalty is a *trade*, not a free improvement, and it must be reported as one: it
+converts objective value into feasibility. The mechanism is the same redundancy it was
+adopted to break -- with `q_c` free the arm can nudge `q` toward a well-centred
+configuration for nothing, and pinning `q_c` to zero means `q` is whatever the flow emits
+at `(c, z)`, which is less centred. The whole grasp cost gap against joint space above is
+this: 5.32 against 2.83 with the penalty, 2.90 without it.
+
+Note this is *not* a bookkeeping artefact of the penalty term appearing in the objective.
+At `w = 10` the correction is driven to `|q_c|_inf ~ 1.8e-05`, so the term itself
+contributes about **2e-08** to a cost of ~5 -- six orders of magnitude too small to
+explain the gap. The superseded caution in the Stage B and D sections ("the `cost` column
+was long said not to be comparable across the sweep on the grounds that the penalty is
+part of the objective being reported; that reasoning is wrong (the term is ~1e-08 at the
+weights adopted) and the column is comparable -- what it shows is the objective value the
+penalty costs") named the wrong mechanism: the columns *are* comparable, and the rise in cost
+with the weight is a real change in which solutions the solver returns.
+
+#### Two cautions on the iteration table
+
+The medians are over each arm's *succeeded* cells, and that set
 grows with the cap, so a median that rises from 5 s to 180 s is partly composition (harder
 cells joining the set) rather than the same cells taking longer -- which is why the
 comparison above is drawn at the one cap where every arm has saturated. And the ms/iter
