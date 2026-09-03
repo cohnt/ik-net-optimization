@@ -544,6 +544,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     if cell_timeout:
                         faulthandler.cancel_dump_traceback_later()
                 records[arm.name].append(record)
+                _abort_on_dead_arm(arm.name, records[arm.name])
                 if progress is not None:
                     progress(arm.name, ti, gi, record)
 
@@ -553,6 +554,42 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     if stalls is not None:
         stalls.close()
     return records
+
+
+## How many identical, instantaneous errors at the head of an arm's records are taken as
+## proof that the arm is misconfigured rather than merely failing.
+_DEAD_ARM_STREAK = 3
+
+
+def _abort_on_dead_arm(name, recs):
+    """Fail loudly when an arm cannot be constructed at all, instead of scoring it zero.
+
+    This has now cost two whole columns of a cluster campaign. `--set
+    correction_cost_weight=10` raised `AttributeError: no attribute 'correction'` inside
+    every baseline program's construction, and `--set
+    ipopt_nlp_scaling_method=equilibration-based` raised `RuntimeError: Error setting
+    IPOPT string option` (Drake's IPOPT is built without the HSL MC19 routine it needs).
+    Both scored 0 of every cell at about 10 ms each and were only caught during analysis,
+    after the compute had been spent.
+
+    The signature is unmistakable and worth trapping: a *configuration* error is
+    deterministic, so it is byte-identical on every cell and returns instantly, whereas a
+    genuine numerical failure varies between cells and costs real time. Requiring the
+    streak to start at the arm's very first record keeps a sporadic mid-run exception from
+    tripping it.
+    """
+    if len(recs) != _DEAD_ARM_STREAK:
+        return
+    errs = [r.get("error") for r in recs]
+    if not all(errs) or len(set(errs)) != 1:
+        return
+    if any((r.get("wall_time") or 0.0) > 1.0 for r in recs):
+        return
+    raise SystemExit(
+        f"benchmark: arm {name!r} failed identically on its first {_DEAD_ARM_STREAK} "
+        f"cells in under a second each -- this is a misconfiguration, not a hard problem, "
+        f"and the run would score the whole column zero. Fix it and re-run.\n"
+        f"    {errs[0]}")
 
 
 def summarise(records, arms, n_targets, n_guesses):
