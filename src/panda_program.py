@@ -59,6 +59,13 @@ class PandaIKProgram(IKFlowProgram):
         self.correction = self.prog.NewContinuousVariables(7) ## small correction term to q
 
         self.lumped_vars = np.hstack([self.c, self.z, self.correction])
+        ## Stage F (`lift_q`): the configuration as a bounded decision variable, appended
+        ## LAST so `LiftedQ` can find it as the final `num_arm_dof` entries. Allocated in
+        ## all four learned programs rather than in a mixin, because these `create_prog`s
+        ## own their variable declarations and a mixin would have to reach into them.
+        if getattr(self.options, "lift_q", False):
+            self.q_lift = self.prog.NewContinuousVariables(self.num_arm_dof, "q_lift")
+            self.lumped_vars = np.hstack([self.lumped_vars, self.q_lift])
 
         ## TODO: Change the initial guess to something smarter
 
@@ -136,7 +143,9 @@ class PandaIKProgram(IKFlowProgram):
         vars[:3] = xyz
         vars[3:7] = quaternion
         vars[7:7 + width] = rpy_vars[n:n + width]
-        vars[7 + width:] = rpy_vars[n + width:]
+        ## Explicit end index: under `lift_q` the lumped vector carries the lifted
+        ## configuration after the correction, so an open-ended slice would be 14 wide.
+        vars[7 + width:] = rpy_vars[n + width:n + width + self.num_arm_dof]
 
 
         if not ad:
@@ -199,6 +208,13 @@ class PandaMugProgram(PandaIKProgram):
         self.correction = self.prog.NewContinuousVariables(7) ## small correction term to q
 
         self.lumped_vars = np.hstack([self.c, self.z, self.correction])
+        ## Stage F (`lift_q`): the configuration as a bounded decision variable, appended
+        ## LAST so `LiftedQ` can find it as the final `num_arm_dof` entries. Allocated in
+        ## all four learned programs rather than in a mixin, because these `create_prog`s
+        ## own their variable declarations and a mixin would have to reach into them.
+        if getattr(self.options, "lift_q", False):
+            self.q_lift = self.prog.NewContinuousVariables(self.num_arm_dof, "q_lift")
+            self.lumped_vars = np.hstack([self.lumped_vars, self.q_lift])
 
         self.target_mug = target_mug
         if q_nominal is None:

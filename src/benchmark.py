@@ -63,7 +63,7 @@ _IPOPT_PATTERNS = {
 ## comparison (median 2e-08, because the penalty drives `|q_c|` to ~2e-05), so this
 ## changes no published learned-arm cost materially -- but it makes the column exactly
 ## what it says it is instead of nearly so.
-_REGULARIZER_COSTS = ("LatentRegularizerCost", "CorrectionCost")
+_REGULARIZER_COSTS = ("LatentRegularizerCost", "CorrectionCost", "JointLimitPenaltyCost")
 
 
 def reported_cost(program, result, weight):
@@ -546,6 +546,18 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     record["fail_reason_relaxed"] = verdict.fail_reason_relaxed
                     detail = dict(verdict.detail)
                     record["q"] = detail.pop("q", None)
+                    ## Stage F: under `lift_q` the returned configuration and the flow's
+                    ## own output are different quantities, and their difference is the
+                    ## equality residual -- the thing the intervention is measured by. It
+                    ## cannot be recomputed later without re-solving, so persist it.
+                    if getattr(program, "_LiftingQ", None) is not None and program._LiftingQ():
+                        try:
+                            x = result.GetSolution(program.lumped_vars)
+                            record["q_lift"] = [float(v) for v in x[-program.num_arm_dof:]]
+                            record["q_flow"] = [float(v) for v in
+                                                np.asarray(program.VarsToQ(x), dtype=float)]
+                        except Exception:
+                            record["q_lift"] = record["q_flow"] = None
                     ## Promoted out of `detail` because it is the quantity the success
                     ## criterion is argued over, and it should be one key away in every
                     ## record rather than nested.
