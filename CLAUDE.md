@@ -1433,6 +1433,87 @@ The relaxed criterion (`task_tol = 1e-3` instead of `ik_constraint_tol = 1e-4`) 
 +13 to +18 cells of 480 to the learned arm on the grasp task, +2 to +6 to the baselines,
 and **exactly zero to anything on the pose task**. It moves no ordering in the table.
 
+### Stage C, the success-vs-cap curve: the cap only ever bound one arm, and now it is spent (2026-09-02)
+
+Next-steps #7, finally a curve instead of two points. Eight experiments x six caps
+(5 / 10 / 20 / 45 / 90 / 180 s), 15 targets x 4 per-target guesses = 60 cells, seed 0,
+`--compile`, both start protocols, all arms, against the **approved formulation**
+(`correction_cost_weight = 10`). One grid per experiment across all six caps, so every
+column pairs cell for cell.
+
+| experiment | start | 5 s | 10 s | 20 s | 45 s | 90 s | 180 s | joint space (all caps) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda pose | native | 39 | 53 | 56 | 58 | 58 | **58** | 29 |
+| Panda pose | paired | 18 | 32 | 36 | 40 | 41 | **41** | 29 |
+| iiwa pose | native | 44 | 51 | 59 | 60 | 60 | **60** | 39 |
+| iiwa pose | paired | 21 | 34 | 40 | 40 | 40 | **40** | 39 |
+| Panda grasp | native | 21 | 30 | 45 | 57 | 59 | **58** | 55 |
+| Panda grasp | paired | 15 | 24 | 35 | 50 | 53 | **55** | 55 |
+| iiwa grasp | native | 11 | 17 | 30 | 39 | 42 | **45** | 58 |
+| iiwa grasp | paired | 13 | 21 | 31 | 45 | 52 | **53** | 58 |
+
+**Every baseline is flat at every cap, in all eight experiments.** Joint space scores
+identically at 5 s and at 180 s (29, 39, 55, 58) with the same mean iteration counts, and
+the analytic arms saturate by 10-20 s. Thirty-six baseline measurements, one number each.
+This is the strongest form of a result the laptop saw at two points: **the wall-clock cap
+is not a shared budget, it is a budget for the arm that evaluates a network**, and any
+comparison that quotes one cap is quoting a point on one curve against four constants.
+
+**The Panda grasp deficit closes.** At 180 s, paired, the learned arm scores **55/60
+against joint space's 55/60** -- exact parity, 5 cells better and 5 worse, p = 1.0 -- and
+under `native` 58/60 against 55/60 (5/2, p = 0.45, a nominal lead that this grid cannot
+resolve). This supersedes the standing statement that "the gap narrows with budget without
+closing": that was measured without the correction penalty. With the penalty *and* an
+adequate budget it closes on the Panda. The iiwa grasp gap narrows the same way without
+closing -- 53/60 against 58/60 paired is **no longer significant** (2/7, p = 0.18), where
+at 45 s it was 18/60 against 58/60.
+
+**The pose result strengthens with budget rather than washing out**: Panda 58 vs 29 native
+(30/1, p = 3.0e-08) and 41 vs 29 paired (22/10, p = 0.050); iiwa 60/60 vs 39 native
+(21/0, p = 9.5e-07) and 40 vs 39 paired (13/12, p = 1.0, a tie).
+
+**What the curve costs Stage D.** Stage D ran at 45 s, and the two grasp rows are still
+climbing there: 45 -> 180 s is worth +5 cells on the Panda paired grasp, +6 on the iiwa
+native and +8 on the iiwa paired. **The Stage D grasp columns are therefore
+budget-limited**, and the iiwa grasp row in particular (237/480 with 235 cells at the cap)
+should be read as a lower bound, not as that formulation's asymptote. The pose rows are
+unaffected -- they saturate by 45 s under `native` and by 20 s under `paired`.
+
+#### The residual failures are divergence, not slowness (next-steps #11, measured)
+
+The cells still at the cap at 180 s are the same cells that were at the cap at 20 s and at
+45 s -- literally the same `(target, guess)` pairs, checked as sets -- and they are not
+converging slowly. On iiwa pose paired the cap-bound set is **frozen at 19 cells from 20 s
+through 180 s** and success never moves off 40, which is why that row saturates so early.
+
+| | diverged (at the 180 s cap) | succeeded |
+| --- | --- | --- |
+| n (iiwa pose paired) | 19 | 40 |
+| median `\|q_c\|` | **0.082**, against the +-0.1 box | 1.3e-05 |
+| median `\|z\|` at exit | 3.58 | 1.54 |
+| median position error | **0.81 m** | 1.0e-04 |
+| median true min distance | **-0.085 m** (in collision) | clear |
+| median iterations | 587 | -- |
+
+Three things this settles. The violated binding is `AllIKFlowConstraints` on **19 of 19**
+cells, while *every* variable region reports slack -- latent trust region -5.7, `c` box
+-0.24, correction box -0.018 -- so this is not the latent or the conditioning pose
+escaping, which is what next-steps #11 assumed. The **correction is pinned near its box**
+(0.082 of 0.1) on exactly the cells the penalty fails to drive it to zero on, against
+1e-05 on the successes: the penalty is winning or losing per cell, not on average. And the
+returned point is deeply in collision (median -8.5 cm, worst -17.8 cm) and roughly a metre
+off target -- these solves wandered somewhere infeasible and stayed there.
+
+One thing it does *not* settle, and Stage E should: the aggregate `max_violation` on these
+cells is 1e7 to 1e11, and it does **not** track `collision_value` (Spearman -0.15 across
+the 19), so some row inside `AllIKFlowConstraints` reaches magnitudes nothing else in this
+repo does. `q` is now persisted per record, so identifying that row is a re-analysis and
+not a re-run.
+
+Finally, note the numbers here are on **cluster hardware at PROCS=8**, and per the
+standing rule are never compared cell-for-cell against a laptop table; `metadata.host` and
+`metadata.device` make that mechanical.
+
 ### The dual success criterion, first measurements (2026-09-02)
 
 Every record now carries `max_violation` (the largest constraint violation at the returned
@@ -1501,9 +1582,11 @@ collision. So target the collision constraint and the iteration budget, not the 
    on the Panda; 9, 12, 13, 13 on the iiwa). No measurement in this repo supports it now.
    The soft form (`latent_cost_weight`) is still unmeasured, but there is little reason to
    expect more of it than of the hard form.
-7. Report success against the wall-clock cap as a curve rather than one number, plus
-   iteration counts, which are hardware-independent. Successes take 5.8 s median of a 20 s
-   cap, so the single number is mostly describing the tail.
+7. ~~Report success against the wall-clock cap as a curve rather than one number~~
+   **done** -- Stage C, six caps from 5 s to 180 s on all eight experiments. Every
+   baseline is flat at every cap; only the learned arm moves. The Panda grasp deficit
+   closes at 180 s and the residual failures turn out to be a frozen divergent set rather
+   than slow convergence.
 8. More guesses per target in the paired grid -- same guesses for every arm -- reported as
    "solved within k restarts". This is the only honest form of multi-start and the harness
    already does it.
@@ -1527,8 +1610,13 @@ taken 299-364 iterations, roughly 2.5x the joint-space arm.
     chart error of the iiwa's magnitude costs the Panda 1-3 cells, not 23, so the checkpoint's
     *accuracy* cannot be the mechanism. Its provenance is still worth knowing (retraining is
     already planned) -- it simply is not the explanation this row needs.
-11. Only then, the divergent cells -- a few reach 3.4e7 constraint violation, which is the
-    latent or the conditioning pose escaping despite the trust region.
+11. The divergent cells -- **the premise was wrong and this is now the open question**.
+    Stage C measured them: the violated binding is `AllIKFlowConstraints` on 19 of 19
+    cells while every variable region reports slack, so it is *not* the latent or the
+    conditioning pose escaping the trust region. The cells are deeply in collision
+    (median -8.5 cm) about a metre off target, with the correction pinned near its box.
+    Identify which row inside `AllIKFlowConstraints` reaches 1e7-1e11 -- it does not track
+    `collision_value` -- which is a re-analysis of the persisted `q`, not a re-run.
 
 **Fairness repairs owed to the baselines** (12 and 13 done; 16 is new and open)
 
