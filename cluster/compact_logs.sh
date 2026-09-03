@@ -1,6 +1,6 @@
 #!/bin/bash
-# One-time (and safely repeatable) compaction of the per-cell solver logs already on
-# the cluster, into one `solver_logs.tar.gz` per run directory.
+# Compact the per-cell solver logs already on the cluster into one
+# `solver_logs.tar.gz` per run directory. Repeatable and idempotent.
 #
 # ============================ STANDING REMINDER ============================
 # If even REMOTELY unsure about a SuperCloud action, STOP and ask Thomas.
@@ -8,61 +8,52 @@
 #
 # Why: src/benchmark.py used to write one ~20 KB IPOPT log per (cell x arm) straight
 # onto the shared filesystem. By Stage G that was 35,596 files -- 87% of every
-# collection's file count and 78% of its bytes -- and it is exactly the many-small-files
-# pattern SuperCloud's guidance warns about, which is metadata-bound rather than
-# bandwidth-bound on Lustre. The benchmark now writes them to node-local $TMPDIR and
-# rolls them up itself; this script fixes the runs that predate that change.
+# collection's file count and 78% of its bytes -- which is the many-small-files pattern
+# SuperCloud's guidance warns about and is metadata-bound rather than bandwidth-bound on
+# Lustre. The benchmark now writes them to node-local $TMPDIR and rolls them up itself;
+# this fixes the runs that predate that change.
 #
 #   cluster/compact_logs.sh --dry-run   report what would be compacted, change nothing
-#   cluster/compact_logs.sh             compact, removing the loose logs it archived
+#   cluster/compact_logs.sh             submit the compaction as a debug-cpu job
+#   cluster/compact_logs.sh --status    has the job finished?
 #
-# Safety properties:
-#   - It refuses to run while any job is active, so it cannot race a run that is still
-#     writing logs into a directory it is archiving.
-#   - It archives first and removes only the files it successfully added, per directory.
-#   - A directory that already has solver_logs.tar.gz is folded into that archive rather
-#     than overwriting it, so re-running is safe and idempotent.
-#   - Nothing outside a benchmark run directory is touched, and no summary.json is read
-#     or written.
+# The compaction itself runs INSIDE A JOB (cluster/compact_logs_job.sh), never on the
+# login node: compressing several hundred megabytes is exactly the work the login nodes
+# are not for. Only the dry run and the status check are done over ssh, and both are
+# read-only.
+#
+# Safety: it refuses to submit while a benchmark job is active (a live run may still be
+# writing into a directory it would archive); it archives before removing, and removes
+# only the names it archived; and it folds into an existing archive rather than
+# overwriting, so a re-run after a partial pass cannot destroy earlier work.
 set -uo pipefail
 source "$(dirname "$0")/ssh_common.sh"
 
-DRY=0
-[ "${1:-}" = "--dry-run" ] && DRY=1
+case "${1:-}" in
+--dry-run)
+    sc_run "cd ~/$SC_ROOT || exit 1
+N=\$(find results -name '*.txt' | wc -l)
+D=\$(find results -name '*.txt' -printf '%h\n' | sort -u | wc -l)
+B=\$(find results -name '*.txt' -printf '%s\n' | awk '{s+=\$1} END {printf \"%.0f\", s/1048576}')
+echo \"DRY RUN: \$N loose logs (\$B MB) across \$D run directories would be compacted\"
+echo \"total files under results/ now: \$(find results -type f | wc -l)\""
+    exit 0
+    ;;
+--status)
+    sc_run "cd ~/$SC_ROOT || exit 1
+if [ -f compact_logs.DONE ]; then echo \"DONE at \$(stat -c %y compact_logs.DONE)\"; else echo 'not finished'; fi
+echo \"loose .txt remaining: \$(find results -name '*.txt' | wc -l)\"
+echo \"total files under results/: \$(find results -type f | wc -l)\"
+ls -t compact_logs_job.sh.log-* 2>/dev/null | head -1 | xargs -r tail -6"
+    exit 0
+    ;;
+esac
 
-sc_run "cd ~/$SC_ROOT || exit 1
+sc_run "cd ~/$SC_ROOT/repo || exit 1
 RUNNING=\$(LLstat 2>/dev/null | grep -c RUNNI || true)
-if [ \"\$RUNNING\" -gt 0 ] && [ $DRY -eq 0 ]; then
+if [ \"\$RUNNING\" -gt 0 ]; then
     echo \"REFUSING: \$RUNNING job(s) running -- a live run may still be writing logs.\"
     exit 1
 fi
-
-TOTAL_FILES=0; TOTAL_DIRS=0
-for d in results/*/benchmark/*/; do
-    [ -d \"\$d\" ] || continue
-    N=\$(find \"\$d\" -maxdepth 1 -name '*.txt' | wc -l)
-    [ \"\$N\" -eq 0 ] && continue
-    TOTAL_DIRS=\$((TOTAL_DIRS+1)); TOTAL_FILES=\$((TOTAL_FILES+N))
-    if [ $DRY -eq 1 ]; then continue; fi
-    # Fold into any existing archive rather than clobbering it: -r appends, and an
-    # absent archive is created by -c. Both need the plain .tar, so gzip separately.
-    A=\"\$d/solver_logs.tar\"
-    [ -f \"\$A.gz\" ] && gunzip -f \"\$A.gz\"
-    if [ -f \"\$A\" ]; then
-        tar rf \"\$A\" -C \"\$d\" \$(cd \"\$d\" && ls *.txt) 2>/dev/null
-    else
-        tar cf \"\$A\" -C \"\$d\" \$(cd \"\$d\" && ls *.txt) 2>/dev/null
-    fi
-    if [ \$? -eq 0 ] && [ -f \"\$A\" ]; then
-        gzip -f \"\$A\" && find \"\$d\" -maxdepth 1 -name '*.txt' -delete
-    else
-        echo \"WARNING: archiving failed for \$d -- loose logs left in place\"
-    fi
-done
-if [ $DRY -eq 1 ]; then
-    echo \"DRY RUN: \$TOTAL_FILES loose logs across \$TOTAL_DIRS run directories would be compacted\"
-else
-    echo \"compacted \$TOTAL_FILES loose logs across \$TOTAL_DIRS run directories\"
-    echo \"remaining loose .txt under results/: \$(find results -name '*.txt' | wc -l)\"
-    echo \"total files under results/ now:     \$(find results -type f | wc -l)\"
-fi"
+rm -f ~/$SC_ROOT/compact_logs.DONE
+cd ~/$SC_ROOT && LLsub ~/$SC_ROOT/repo/cluster/compact_logs_job.sh -s 8 -q debug-cpu -T 2:00:00"
