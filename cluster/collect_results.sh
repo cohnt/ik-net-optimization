@@ -49,10 +49,16 @@ fi
 
 if [ "${1:-}" = "--reclaim" ]; then
     MANIFEST_NAME="${2:?usage: --reclaim <manifest-basename>}"
+# Only this project's workers can be writing into ~/learned-ik/results, and the
+# SuperCloud account is shared with Thomas's other projects -- a broad any-job-running
+# check refuses whenever an unrelated campaign is on the cluster, which is most of the
+# time (it fired on a run_matrix.sh job belonging to another project). Filter by the
+# worker script's job name, and count PENDING too: a queued run_items.sh could start
+# part way through and write into a directory already archived.
     sc_run "cd ~/$SC_ROOT/state/$MANIFEST_NAME 2>/dev/null || { echo 'no such manifest state'; exit 1; }
-RUNNING=\$(LLstat 2>/dev/null | grep -c RUNNI || true)
-if [ \"\$RUNNING\" -gt 0 ]; then
-    echo \"REFUSING: \$RUNNING job(s) still running -- a live item must not be stolen.\"
+BUSY=\$(squeue -u \$USER -h -n run_items.sh -t RUNNING,PENDING 2>/dev/null | wc -l)
+if [ \"\$BUSY\" -gt 0 ]; then
+    echo \"REFUSING: \$BUSY run_items.sh job(s) queued or running -- a live item must not be stolen.\"
     echo 'Wait for the queue to drain (collect_results.sh --status), then retry.'
     exit 1
 fi
