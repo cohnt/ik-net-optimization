@@ -1815,6 +1815,91 @@ comparison above is drawn at the one cap where every arm has saturated. And the 
 column is cluster hardware at `PROCS=8`; per the standing rule it is never compared against
 a laptop figure, only against the other arms measured beside it.
 
+### Stage F: the two `q`-side interventions, and what each of them actually does (2026-09-03)
+
+**Both arms below are STATED DEVIATIONS from the draft's eq. (6)**, run as diagnostics of
+the runaway diagnosed above. Thomas authorised both while saying he dislikes both, and
+ranked them **below simply getting a better iiwa chart**; nothing here is fielded as "the
+learned formulation". `lift_q` adds `q` as a decision variable whose bounding box is the
+joint limits and imposes the chart as a 7-row equality; `joint_limit_penalty_weight` adds a
+quadratic hinge on limit violation to the objective.
+
+A framing correction first, because it governs how this whole thread should be described.
+The earlier claim that the learned arm "imposes joint limits on an output it does not
+control" is **wrong**, and Thomas said so: *"the network does get to control the joint
+limits a bit, since it can adjust z. That's the whole point of differentiating through the
+network -- we take the constraint gradient for joint limits and pull it back through the
+network to z."* The arm controls `q` exactly and analytically. The pathology is
+**attraction**: where the chart's gain is ~1e13, `dq/dz` is as large as `q`, so a Newton
+step is drawn into the region rather than repelled from it.
+
+Pilot: 4 rows (the three where the pathology lives, plus a Panda control), learned arm only,
+15 x 4 = 60 cells, 45 s, seed 0, `--compile`, `correction_cost_weight = 10`, on Stage C's
+own grids -- so **Stage C's 45 s learned column is the default point and was not re-run**.
+Exact McNemar against it on the 60 shared cells.
+
+| experiment | variant | success | vs default | b/w | p | median iters | median cost | cells returning `\|q\|_inf > 1000` | median max violation |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| iiwa grasp paired | *(default)* | 45/60 | | | | 170 | 5.56 | 6 | 2.6e-08 |
+| | `liftq` | 43 | -2 | 9/11 | 0.82 | 209 | 5.51 | **0** | 3.9e-08 |
+| | `jlpen1` / `10` / `100` | 37 / 37 / 40 | -8 / -8 / -5 | | 0.12-0.41 | 172-214 | | 11 / 9 / 5 | ~1e-07 |
+| iiwa grasp native | *(default)* | 39/60 | | | | 201 | 5.94 | 14 | 5.4e-08 |
+| | `liftq` | 45 | +6 | 11/5 | 0.21 | 151 | 7.63 | **0** | 1.2e-07 |
+| | `jlpen1` / `10` / `100` | 39 / 40 / 35 | 0 / +1 / -4 | | 0.45-1.0 | 166-199 | | 10 / 11 / 12 | ~1e-07 |
+| iiwa pose paired | *(default)* | 40/60 | | | | 126 | 7.83 | 18 | 5.9e-08 |
+| | `liftq` | **3** | **-37** | **1/38** | **2e-11** | 606 | 4.79 | **0** | **7.0e+06** |
+| | `jlpen1` / `10` / `100` | 39 / 45 / 40 | -1 / +5 / 0 | | 0.42-1.0 | 118-148 | | 19 / 13 / 18 | ~6e-08 |
+| Panda grasp paired | *(default)* | 50/60 | | | | 188 | 5.26 | 4 | 4.7e-08 |
+| | `liftq` | **59** | **+9** | **9/0** | **0.004** | **137** | 5.65 | **0** | 8.7e-09 |
+| | `jlpen1` / `10` / `100` | 52 / 54 / 53 | +2 / +4 / +3 | | 0.39-0.75 | 177-204 | | 6 / 2 / 2 | ~3e-08 |
+
+**The penalty is inert, and that vindicates Thomas's objection to it.** He said *"we should
+be able to rely on the constraint to handle it"*, and across twelve measurements the
+smallest p against the default is **0.115**, no weight has a consistent direction on either
+robot, the runaway counts do not move (11/9/5 against 6; 10/11/12 against 14; 19/13/18
+against 18), and the median max violation is unchanged at ~1e-08. Adding a penalty on a
+quantity a constraint row already governs buys nothing. The knob stays in the tree, off,
+with this table as the reason not to revisit it.
+
+**Lifting does exactly what it promises and does not fix the problem.** Read its two
+columns together:
+
+- **The returned configuration is never out of limits again** -- 0 cells above 1000 rad in
+  all four rows, with `max |q_lift|` = 3.05 rad on the iiwa (its joint-7 limit is 3.054) and
+  3.41 on the Panda, across 240 cells. That is a hard guarantee the default formulation
+  cannot make, and it is the one thing lifting genuinely delivers.
+- **But the runaway does not stop; it relocates.** The flow still reaches **1.19e10**, and
+  since the chart is now an equality row, that lands in `max_violation` instead of in `q`.
+  On the iiwa pose row the median violation is **7.0e+06**. The cell fails either way; only
+  the row it fails in has changed.
+
+Because `verify()` records `q` from the flow rather than from the lifted variable, the two
+agree on converged cells (57 of 60 on the Panda grasp) and diverge on exactly the cells that
+never converge -- which is what makes `q_lift` and `q_flow` being persisted separately worth
+the two extra fields.
+
+**The result splits by task, sharply, and in opposite directions:**
+
+- **iiwa pose paired collapses to 3/60 against 40/60** (1 better, 38 worse, p = 2e-11), at
+  **606 median iterations**. This is Thomas's objection measured: the badly scaled Jacobian
+  moves out of an inequality row and into an equality one, and an interior-point method
+  handles it worse there. It is worst on precisely the row where the flow's poles are worst.
+- **Panda grasp paired improves to 59/60 against 50/60** (9 better, **0 worse**, p = 0.004)
+  and takes **fewer** iterations (137 against 188) -- the only intervention anywhere in this
+  campaign to gain cells while also getting cheaper.
+- The two iiwa grasp rows are ties (-2 at p = 0.82, +6 at p = 0.21).
+
+So lifting is not a fix for the runaway and is not adoptable as a formulation -- an arm that
+scores 3/60 on one of the eight experiments is disqualified whatever it does elsewhere. What
+it is, is evidence that **the grasp task and the pose task want different things from the
+chart's algebraic presentation**, which is a more interesting finding than the one the stage
+was run to get. Stage F2 expands `liftq` alone to all eight experiments to see whether the
+Panda grasp gain is general and the iiwa pose collapse isolated.
+
+**Neither intervention changes the standing conclusion**, which is unchanged from the
+diagnosis: the flow's own gain is the mechanism, and a better iiwa chart is the remedy
+Thomas prefers over anything done on the optimization side.
+
 ### The dual success criterion, first measurements (2026-09-02)
 
 Every record now carries `max_violation` (the largest constraint violation at the returned
