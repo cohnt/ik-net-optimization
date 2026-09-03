@@ -1591,6 +1591,30 @@ gradients, and `dq/dvars` in these regions is as large as `q` is. A Newton step 
 are the same cells that were cap-bound at 20 s, and on iiwa pose paired the set is frozen at
 19 cells across every cap tested.
 
+**Neither existing region knob avoids them, because they are not at the edges.** Fraction
+of the region with `|q|_inf > 1000`, sweeping the two knobs that already exist:
+
+| latent trust-region radius | 1.0 | 2.0 | 3.0 | 4.3 | 6.0 | 8.0 |
+| --- | --- | --- | --- | --- | --- | --- |
+| iiwa | 0.033 | 0.026 | 0.032 | 0.035 | 0.040 | 0.071 |
+| Panda | 0.0018 | 0.0020 | 0.0020 | 0.0018 | 0.0018 | 0.0018 |
+
+| `c_position_slack` | 0.05 | 0.10 | 0.25 (default) | 0.50 |
+| --- | --- | --- | --- | --- |
+| iiwa | 0.039 | 0.041 | 0.035 | **0.225** |
+| Panda | 0.000 | 0.000 | 0.0018 | **0.137** |
+
+Shrinking the trust region to `R = 1` leaves the iiwa's exposure unchanged at 3.3%: the
+blow-up regions are spread through the domain, including at `|z| <= 1`, not banished to its
+outskirts. **This is why the trust-region sweep measured inert** -- it was never able to
+exclude them, so its only effect was on conditioning, which is the reason it stays (IPOPT
+and unbounded variables) rather than a success argument.
+
+The `c` box tells a different and mildly alarming story: flat from 0.05 to 0.25 and then a
+**cliff** at 0.5, where exposure jumps 6x on the iiwa and 76x on the Panda. The default
+`c_position_slack = 0.25` sits just under that cliff, which is luck rather than design --
+worth knowing before anyone widens it.
+
 **What this does not license.** Adding a bound or a penalty that keeps `q` in range would be
 a change to the formulation under test, not tuning, so it is Thomas's call and not one to
 make here -- see Stage E below. Note also that the learned arm is structurally alone in
