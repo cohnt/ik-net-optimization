@@ -1627,10 +1627,17 @@ worth knowing before anyone widens it.
 
 **What this does not license.** Adding a bound or a penalty that keeps `q` in range would be
 a change to the formulation under test, not tuning, so it is Thomas's call and not one to
-make here -- see Stage E below. Note also that the learned arm is structurally alone in
-this: joint space carries joint limits as *variable bounds*, satisfied at every iterate by
-construction, and the analytic arm's chart is a closed form with no such regions. Only the
-learned arm imposes joint limits on an output it does not directly control.
+make here -- see Stage E below. (He has since authorised both as *diagnostics*, disliking
+both; Stage F measures them and neither fixes this. The penalty is inert; lifting bounds the
+returned configuration but relocates the runaway into the equality residual.) Note also that
+the learned arm is structurally alone in this: joint space carries joint limits as *variable
+bounds*, satisfied at every iterate by construction, and the analytic arm's chart is a closed
+form with no such regions. The learned arm is the only one whose limits are imposed on the
+output of a map -- but **not**, as an earlier revision of this file claimed, on something it
+cannot control: the limit row's gradient is pulled back through the network to `z` exactly,
+which is the whole point of differentiating through the flow. What differs is *when* the
+limits hold (only at convergence), and that the gradient into a high-gain region is itself
+enormous, so the Newton step is attracted rather than repelled.
 
 ### Stage E: IPOPT's scaling is not the lever either (2026-09-02)
 
