@@ -1999,7 +1999,120 @@ nodes at PROCS=8. All compared against Stage C's 45s learned column. The variant
 | `jacobian_tikhonov_lambda` | 0.1, 1.0, 10.0, 100.0 |
 | `jacobian_svd_floor` | 0.1, 1.0 |
 
-Results pending.
+**Result: a clear negative, and the line of investigation is closed.** All eight
+experiments, 60 cells each, 45 s, seed 0, `--compile`, `correction_cost_weight = 10`,
+learned arm only, on Stage C's own grids -- so Stage C's 45 s learned column is the
+default point and was not re-run. Exact McNemar on the 60 shared cells per row;
+success is pooled over all eight rows below (480 cells per variant).
+
+| variant | success / 480 | delta | better / worse | p | runaway cells / 480 |
+| --- | --- | --- | --- | --- | --- |
+| *(default)* | 389 | | | | 56 |
+| `jacobian_max_norm=1000` | 395 | +6 | 47 / 41 | 0.59 | 48 |
+| `jacobian_svd_floor=0.1` | 382 | -7 | 43 / 50 | 0.53 | 64 |
+| `jacobian_svd_floor=1.0` | 378 | -11 | 45 / 56 | 0.32 | 63 |
+| `jacobian_max_norm=10000` | 376 | -13 | 14 / 27 | 0.060 | 54 |
+| `jacobian_max_norm=100` | 362 | -27 | 51 / 78 | 0.022 | 35 |
+| `jacobian_tikhonov_lambda=100` | 362 | -27 | 45 / 72 | 0.016 | 40 |
+| `jacobian_tikhonov_lambda=10` | 232 | -157 | 34 / 191 | 1.0e-27 | 42 |
+| `jacobian_max_norm=10` | 202 | -187 | 30 / 217 | 3.7e-36 | 77 |
+| `jacobian_tikhonov_lambda=1` | 2 | -387 | 1 / 388 | 6.2e-115 | 106 |
+| `jacobian_tikhonov_lambda=0.1` | **0** | -389 | 0 / 389 | 1.6e-117 | 142 |
+
+Aggregated over every row and variant: **310 cells better against 1,509 worse.** Not one
+setting is a significant improvement, and the only one that is not net-worse
+(`jacobian_max_norm = 1000`, +6, p = 0.59) is indistinguishable from no regularization
+and does not reduce the runaway it was introduced to prevent (48 against 56).
+
+**Why it cannot work, which is the part to remember.** The flow's Jacobian is the
+*exact* derivative of an explicit function. Where the network's gain approaches its
+architectural ceiling of ~1e13, a sensitivity of 1e13 is the correct answer, not an
+artifact to be regularized away. Damping it does not regularize the problem -- it breaks
+the correspondence between the constraint values IPOPT evaluates and the gradients it is
+handed, leaving an inconsistent nonlinear program. That is why the *most* aggressive
+damping fails hardest, scoring 0 and 2 of 480 while *increasing* the runaway count to 142
+and 106: with the gradient scaled to nothing, the solver has neither the signal that
+would carry it into a high-gain region nor the one that would carry it out.
+
+Levenberg-Marquardt damping is sound where it applies to the **Newton step** -- the
+linear system -- rather than to a reported derivative. Drake's IPOPT does not expose the
+step computation, so the well-posed version of the idea is not reachable from this repo,
+and the reachable version is the one measured and refuted here.
+
+One post-hoc pattern, recorded as post-hoc rather than as a finding: on the two
+runaway-heavy rows (paired pose, 13 and 18 runaway cells at the default), moderate
+damping is positive -- `jacobian_max_norm=100` is +4 on the Panda and +8 on the iiwa,
+pooled 27 / 15, p = 0.088, with runaway cells 31 -> 11. It was chosen after seeing the
+data and is not significant. Note also that `jacobian_tikhonov_lambda=10` cuts the
+runaway hardest on those rows (31 -> 7) while scoring exactly 19 / 19 on success:
+**suppressing the runaway does not buy success**, the same conclusion Stage F2 reached
+about lifting `q`.
+
+**Thomas's ruling (2026-09-03): "I think we can conclude gradient regularization and the
+other strategies isn't worth it."** The knobs stay in the tree, off, with this table as
+the reason not to revisit them.
+
+**Stage H was built and not run.** It would have crossed the winning regularization
+against the other knobs this campaign has swept (`correction_cost_weight` at 0 and 30,
+`latent_cost_weight`, `collision_influence_offset`, `ipopt_mu_strategy=adaptive`,
+`lift_q`), 256 items. Its premise is a regularization setting worth crossing, and there
+is none, so it dies with Stage G. `stage_H` in `cluster/gen_manifest.py` is a generic
+cross-test harness and is kept for whatever knob next needs one.
+
+**Where this leaves the runaway.** Every remedy that does not touch the chart has now
+been measured and none works: the latent trust region and the `c` box (inert, and unable
+to exclude the regions at all), IPOPT's scaling options (Stage E), a joint-limit penalty
+(Stage F), lifting `q` (Stage F2, net negative), and Jacobian regularization (here).
+**A better iiwa checkpoint remains the preferred remedy and is now the only untried
+one.**
+
+### Solver logs: node-local, and one archive per run (2026-09-03)
+
+`src/benchmark.py` wrote one ~20 KB IPOPT log per (cell x arm) straight into the run
+directory on the shared filesystem. By Stage G the campaign had accumulated **35,596 of
+them -- 87% of every collection's file count and 78% of its bytes** -- which is exactly
+the many-small-files pattern SuperCloud's guidance warns against. Lustre is metadata-op
+bound on files that size, so a routine collection had drifted from three minutes to
+**thirty**, and it got worse with every stage.
+
+Three changes, and the numbers they bought:
+
+| | before | after |
+| --- | --- | --- |
+| files in a collection | 40,733 | 2,964 |
+| bytes | 950 MB | 316 MB |
+| wall clock, full collection | ~30 min | **43 s** |
+| loose `.txt` under `results/` on the cluster | 35,596 | **0** |
+
+- **Per-cell logs go to node-local `$TMPDIR`** (keyed on the run tag *and* the pid --
+  `$TMPDIR` is per node and a node runs eight workers) and are rolled into one
+  `solver_logs.tar.gz` per run at the end of `run_grid`. Measured 3.7x compression on
+  real IPOPT logs, and every log stays individually recoverable with `tar xf`, so this is
+  a storage change and not a loss of diagnostic detail. With no scratch directory -- a
+  laptop run -- the logs stay in `log_dir` and are rolled up in place, so the two
+  environments differ only in where the intermediates live.
+- **`collect_results.sh` is incremental by default**, shipping only what has been written
+  since the last *successful* collection (`.last_collect` on the cluster; the watermark
+  advances only after the extract and merge succeed, so a half-finished transfer is
+  retried in full rather than silently skipping data). `--full` forces the old behaviour.
+  `state/` is no longer shipped at all -- its done markers and claim directories are
+  load-bearing for resume *on the cluster* and are never read locally.
+- **`cluster/compact_logs.sh`** retroactively folds the logs of runs predating the change
+  into the same archives. It runs **inside a debug-cpu job**, not on the login node
+  (compression is a job's work); only `--dry-run` and `--status` go over ssh. It archives
+  before removing, removes only the names it archived, and folds into an existing archive
+  rather than clobbering it, so it is safe to re-run. It compacted all 35,596 logs across
+  1,360 run directories with 0 failures; all 1,360 archives were then verified to contain
+  exactly the loose files they replaced, with content hashes checked on a random sample.
+
+**A guard bug this surfaced, worth remembering.** Both `compact_logs.sh` and
+`collect_results.sh --reclaim` refused while *any* job was running, via
+`LLstat | grep -c RUNNI`. SuperCloud accounts are **shared across Thomas's projects**, so
+that check fired on a `run_matrix.sh` job belonging to an unrelated campaign. Only
+`run_items.sh` writes into `~/learned-ik/results`; both guards now filter by that job
+name, and count `PENDING` as well as `RUNNING` since a queued worker could start part way
+through. Any cluster-wide check on a shared account must be scoped to this project's own
+jobs.
 
 ### The dual success criterion, first measurements (2026-09-02)
 
