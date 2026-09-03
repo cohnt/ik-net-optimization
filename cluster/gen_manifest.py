@@ -361,6 +361,52 @@ def stage_G(wall, targets, guesses, shards, corr_cost=10.0):
     return items
 
 
+# Stage H: cross-testing the best Jacobian regularization against the other knobs
+# this campaign has swept. The regularization setting is chosen from Stage G and
+# passed in by name (--reg), so the cross is against a measured winner rather than
+# a guess. Each entry is (name, list of --set args) layered on top of the
+# regularization; the "none" entry is the regularization alone, which is Stage G's
+# own cell and the control for every cross below it.
+H_CROSSES = [
+    ("alone",        []),                                   # regularization by itself
+    ("corr0",        ["correction_cost_weight=0"]),         # does reg substitute for the penalty?
+    ("corr30",       ["correction_cost_weight=30"]),        # ...or does it move the curve's peak?
+    ("latcost0p01",  ["latent_cost_weight=0.01"]),          # helped Panda, hurt iiwa in Stage B
+    ("latcost0p1",   ["latent_cost_weight=0.1"]),
+    ("collinf0p2",   ["collision_influence_offset=0.2"]),   # Stage B's weak peak
+    ("muadaptive",   ["ipopt_mu_strategy=adaptive"]),       # inert alone; maybe not with bounded gradients
+    ("liftq",        ["lift_q=True"]),                      # Stage F2's pose collapse is an equality-row
+                                                            # conditioning failure -- exactly what LM damping
+                                                            # addresses, so this is the sharpest cross here
+]
+
+
+def stage_H(wall, targets, guesses, shards, reg, corr_cost=10.0):
+    """Cross-test the winning Jacobian regularization against the other knobs.
+
+    `reg` names an entry of G_SETTINGS. Every item carries that regularization plus
+    one further change, so each row is a paired comparison against the `alone` cell
+    (which is Stage G's own measurement of the same setting, re-run here so the
+    cross is against a cell from this queue rather than across queues).
+
+    correction_cost_weight defaults to the approved 10 and is overridden by the
+    corr0/corr30 crosses, which come later in the --set list and therefore win.
+    """
+    reg_sets = dict(G_SETTINGS).get(reg)
+    if reg_sets is None:
+        raise SystemExit(f"--reg must be one of {sorted(dict(G_SETTINGS))}")
+    items = []
+    for robot, task, start in G_ROWS:
+        for name, sets in H_CROSSES:
+            flags = ["--task", task, "--config", "latent", "--start", start,
+                     "--set", f"correction_cost_weight={corr_cost}"]
+            for kv in reg_sets + sets:
+                flags += ["--set", kv]
+            items += item(robot, f"sc_H_{robot}_{task}_{int(wall)}_{start}_{reg}_{name}",
+                          flags, targets, guesses, "learned", wall, shards)
+    return items
+
+
 def render(items):
     lines = []
     for it in sorted(items, key=lambda i: (-i["seconds"], i["id"])):
@@ -396,7 +442,8 @@ def selftest():
                          ("F3", stage_F(45, 60, 8, 8, rows=F2_ROWS,
                                         settings=_f_variant("jlpen10"), seed=D_SEED,
                                         tag="F3")),
-                         ("G", stage_G(45, 15, 4, 4))):
+                         ("G", stage_G(45, 15, 4, 4)),
+                         ("H", stage_H(45, 15, 4, 4, "jtik10"))):
         ids = [i["id"] for i in items]
         if len(ids) != len(set(ids)):
             dupes = {i for i in ids if ids.count(i) > 1}
@@ -430,8 +477,10 @@ def selftest():
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--reg", default=None,
+                   help="Stage H only: the G_SETTINGS name to cross-test")
     p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D", "Dbase", "E",
-                                   "F", "F2", "F3", "G"])
+                                   "F", "F2", "F3", "G", "H"])
     p.add_argument("--wall-time", type=float, default=20.0,
                    help="the solver's per-cell cap, in seconds. Choose it from "
                         "cluster/calibrate.sh on THIS hardware -- the laptop's 20/45 s "
@@ -481,6 +530,10 @@ def main():
                                    rows=F2_ROWS, settings=_f_variant(args.f_variant),
                                    seed=D_SEED, tag="F3"),
              "G": lambda: stage_G(args.wall_time, args.targets, args.guesses, args.shards),
+             ## H crosses the winning regularization (--reg, a G_SETTINGS name)
+             ## against the other knobs this campaign has swept.
+             "H": lambda: stage_H(args.wall_time, args.targets, args.guesses,
+                                  args.shards, args.reg),
              }[args.stage]()
 
     lines = render(items)
