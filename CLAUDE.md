@@ -1665,6 +1665,68 @@ real time. This has now cost two whole columns of cluster campaigns (the
 `correction_cost_weight` guard incident and this one), both caught only during analysis
 after the compute was spent.
 
+### Iterations alongside wall clock: what the learned arm actually costs (2026-09-02)
+
+**Standing reporting rule, Thomas's: every result is told in iteration count as well as
+runtime.** Iterations are the hardware-independent quantity and the one that describes the
+*formulation*; seconds describe this implementation on this machine, and are never compared
+across machines. Reporting only seconds makes the cap story look arbitrary; reporting only
+iterations hides that the learned arm's iteration is thirty times more expensive than joint
+space's. Both, always.
+
+Median over each arm's *succeeded* cells, Stage C at the 180 s cap (60 cells, seed 0,
+`--compile`, `correction_cost_weight = 10`), so every arm has converged and the cap binds
+on nothing:
+
+| experiment | start | arm | solved | median iters | median s | ms / iter |
+| --- | --- | --- | --- | --- | --- | --- |
+| Panda pose | native | **learned** | 58 | 52 | 4.57 | **69.7** |
+| | | joint space | 29 | 34 | 0.10 | 2.9 |
+| | | analytic4 / analytic8 | 37 / 27 | 10 / 13 | 0.07 / 0.09 | 6.5 / 6.4 |
+| Panda pose | paired | **learned** | 41 | 101 | 7.26 | **72.3** |
+| | | joint space | 29 | 34 | 0.10 | 2.9 |
+| Panda grasp | native | **learned** | 58 | 187 | 15.00 | **83.8** |
+| | | joint space | 55 | 48 | 0.14 | 2.8 |
+| | | analytic4 / analytic8 | 59 / 53 | 113 / 98 | 0.91 / 0.74 | 8.1 / 8.0 |
+| Panda grasp | paired | **learned** | 55 | 215 | 18.12 | **84.2** |
+| | | joint space | 55 | 48 | 0.14 | 2.8 |
+| iiwa pose | native | **learned** | 60 | 57 | 3.71 | **59.0** |
+| | | joint space | 39 | 30 | 0.06 | 2.3 |
+| iiwa pose | paired | **learned** | 40 | 126 | 6.50 | **52.6** |
+| iiwa grasp | native | **learned** | 45 | 207 | 15.77 | **83.4** |
+| | | joint space | 58 | 66 | 0.17 | 2.6 |
+| iiwa grasp | paired | **learned** | 53 | 213 | 19.07 | **82.2** |
+
+**The per-iteration cost is the honest headline, and it is a factor of 25-30.** The learned
+arm pays **53-84 ms** an iteration against joint space's **2.3-2.9 ms** and the analytic
+arms' **6-8 ms**, and the ratio is remarkably stable across robots, tasks and protocols --
+as it must be, since it is one network Jacobian per iteration against Drake kinematics. The
+profiling section says that gap is CPU dispatch through PyTorch/FrEIA rather than
+arithmetic, and that even zero-overhead execution leaves only a ~3x ceiling, so it is an
+implementation property with a known floor rather than something tuning will remove.
+
+**Iteration count is the formulation property, and it splits by task.** On the pose task
+the learned arm wins on success while taking a comparable number of steps -- 52 against 34
+on the Panda under `native`, 57 against 30 on the iiwa -- so its advantage there is that it
+finds solutions the joint-space arm does not, not that it grinds longer. On the grasp task
+it takes **3-4x** as many steps (187-215 against 48, 207-213 against 66) *and* pays 30x per
+step, which together are the whole of the wall-clock cap story: the two multiply to roughly
+100x, which is why 5 s is not a measurement of the grasp task and 180 s barely is.
+
+**So "the learned arm reaches parity on the Panda grasp at 180 s" should always be stated
+as: parity in success at 55/60 each, at 215 median iterations against 48, and 18.1 s
+against 0.14 s.** All three numbers are true and only the set of them is honest. The same
+applies in the learned arm's favour on the pose task, where 466/480 against 249/480 comes
+at 52 iterations against 34 -- a win on success, on cost, and on step count, but still
+~45x the wall clock.
+
+Two cautions on the table. The medians are over each arm's *succeeded* cells, and that set
+grows with the cap, so a median that rises from 5 s to 180 s is partly composition (harder
+cells joining the set) rather than the same cells taking longer -- which is why the
+comparison above is drawn at the one cap where every arm has saturated. And the ms/iter
+column is cluster hardware at `PROCS=8`; per the standing rule it is never compared against
+a laptop figure, only against the other arms measured beside it.
+
 ### The dual success criterion, first measurements (2026-09-02)
 
 Every record now carries `max_violation` (the largest constraint violation at the returned
