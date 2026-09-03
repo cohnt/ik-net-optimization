@@ -1504,15 +1504,99 @@ escaping, which is what next-steps #11 assumed. The **correction is pinned near 
 returned point is deeply in collision (median -8.5 cm, worst -17.8 cm) and roughly a metre
 off target -- these solves wandered somewhere infeasible and stayed there.
 
-One thing it does *not* settle, and Stage E should: the aggregate `max_violation` on these
-cells is 1e7 to 1e11, and it does **not** track `collision_value` (Spearman -0.15 across
-the 19), so some row inside `AllIKFlowConstraints` reaches magnitudes nothing else in this
-repo does. `q` is now persisted per record, so identifying that row is a re-analysis and
-not a re-run.
+That row was identified from the persisted `q`, and it changes the reading of the table
+above: it is the **joint-limits row**, on configurations of 1e7 to 1e16 radians. The
+collision depth and the metre of position error are *consequences* of that, not causes --
+see "The residual failures are the flow's own gain" below, which is where this thread ends.
 
 Finally, note the numbers here are on **cluster hardware at PROCS=8**, and per the
 standing rule are never compared cell-for-cell against a laptop table; `metadata.host` and
 `metadata.device` make that mechanical.
+
+### The residual failures are the flow's own gain, and it is 51x worse on the iiwa (2026-09-02)
+
+Stage C left one question: which row inside `AllIKFlowConstraints` reaches 1e7-1e11 on the
+cells that never converge. It is the **joint-limits row**, and `max_violation` equals
+`|q|_inf` exactly on those cells (Spearman 1.0, values agreeing to the digit, on 55 of the
+64 badly-violating learned cells across all eight 180 s runs). The returned configurations
+have joint angles of **1e7 to 1e16 radians**.
+
+Everything else about those cells follows from that. A configuration of 1e8 rad puts the
+gripper anywhere, so the "deeply in collision, a metre off target" reading is a
+*consequence* of the blow-up, not the cause, and the collision penalty is a bystander --
+`max_violation` does not track `collision_value` at all (Spearman -0.15).
+
+**Every runaway lies on one ray, and it is a property of the network, not of the solve.**
+Normalising the exploded `q` vectors and taking pairwise `|cos|`:
+
+| | ray (unit, joint order) | pairwise `\|cos\|` |
+| --- | --- | --- |
+| iiwa, from the benchmark records (mug native, mug paired, pose paired) | `[0.001, -0.001, 0.016, -0.000, 0.003, 0.978, -0.208]` | **1.0000** across all three runs |
+| Panda, from the benchmark records (mug native, mug paired, pose paired) | `[-0.016, 0.033, 0.998, -0.032, -0.002, 0.027, 0.023]` | **1.0000** |
+
+The same ray on both tasks and under both start protocols. It is dominated by a single
+joint -- the iiwa's wrist (joint 6, coefficient 0.978) and the Panda's elbow (joint 3,
+0.998).
+
+**Sampling the network directly reproduces it, with no Drake and no solver involved.**
+Draw `c` position uniformly in its +-0.25 m box, a uniform unit quaternion, and `z`
+uniformly in the ball of radius 4.3 -- i.e. strictly inside the region the formulation
+allows -- and evaluate `MakeFlowInference` in float64:
+
+| | Panda `lp191_5.25m` | iiwa14 `lemon-haze-7` |
+| --- | --- | --- |
+| median `\|q\|_inf` | 2.65 | 2.50 |
+| p99 | 3.71 | 8.7e+05 |
+| p100 of 20000 | 4.1e+12 | 5.5e+16 |
+| fraction `> 3` rad (outside joint limits) | 0.159 | 0.142 |
+| **fraction `> 1000` rad** | **0.00065** | **0.0334** |
+| fraction `> 1e6` rad | 0.00060 | 0.00885 |
+| ray recovered from those samples | `[-0.017, 0.035, 0.998, -0.032, -0.002, 0.029, 0.025]` | `[0.008, 0.030, 0.017, -0.007, 0.047, 0.984, -0.167]` |
+| `\|cos\|` against the ray the *solver* landed on | **0.9999** | **0.9976** |
+
+The distribution is bimodal, not heavy-tailed: on the Panda, 14 of 20000 exceed 10 rad and
+13 of those exceed 1000. A draw is either an ordinary configuration or it is astronomical.
+
+**This is the answer to the iiwa grasp deficit**, the campaign's one open scientific
+question. The iiwa checkpoint puts **3.34% of the allowed region** into the blow-up regime
+against the Panda's **0.065% -- a factor of 51**. And it explains why the dose-response
+experiment refuted the chart-accuracy hypothesis: `chart_error_scale` adds smooth
+`eps*sin(...)` error, which degrades accuracy while adding no such regions, so it was never
+capable of reproducing this. The iiwa's problem was never that its chart is imprecise; it is
+that its chart has fifty times more of these regions to fall into.
+
+**The mechanism is architectural headroom, not a numerical bug.** FrEIA's coupling blocks
+soft-clamp the log-scale to `clamp * 0.636 * atan(s/clamp)`, bounded by `clamp * 0.636 *
+pi/2`, so with `rnvp_clamp = 2.5` over `nb_nodes = 12` the worst-case output gain is about
+`e^(2.5*12) ~ 1e13` -- which is exactly the scale of the observed maxima. These are
+near-worst-case gain regions of a bounded map, not poles. Both checkpoints have the same
+headroom; they differ only in how much of the conditioning domain sits near it.
+
+**`rnvp_clamp = 2.5` is confirmed correct**, which was worth checking because
+`src/iiwa_program.py` hardcodes the iiwa's hyperparameters and `rnvp_clamp` changes the
+forward pass without changing any parameter shape -- a wrong value would load silently.
+Sweeping it against the same weights:
+
+| `rnvp_clamp` | 1.0 | 1.5 | 2.0 | **2.5** | 3.0 | 5.0 |
+| --- | --- | --- | --- | --- | --- | --- |
+| median `\|q\|_inf` | 2.8e+06 | 28.3 | 4.24 | **2.49** | 2.00 | 6.9e+08 |
+| fraction `> 1000` | 0.893 | 0.410 | 0.090 | **0.035** | 0.126 | 0.999 |
+
+2.5 is a clear optimum, so the checkpoint is being loaded as trained and the 3.34% is a
+property of the weights.
+
+**Why the solver finds a 3%-measure set 30% of the time.** It does not sample; it follows
+gradients, and `dq/dvars` in these regions is as large as `q` is. A Newton step is
+*attracted* to them. That is also why more budget never helps: the cap-bound cells at 180 s
+are the same cells that were cap-bound at 20 s, and on iiwa pose paired the set is frozen at
+19 cells across every cap tested.
+
+**What this does not license.** Adding a bound or a penalty that keeps `q` in range would be
+a change to the formulation under test, not tuning, so it is Thomas's call and not one to
+make here -- see Stage E below. Note also that the learned arm is structurally alone in
+this: joint space carries joint limits as *variable bounds*, satisfied at every iterate by
+construction, and the analytic arm's chart is a closed form with no such regions. Only the
+learned arm imposes joint limits on an output it does not directly control.
 
 ### The dual success criterion, first measurements (2026-09-02)
 
@@ -1604,13 +1688,18 @@ taken 299-364 iterations, roughly 2.5x the joint-space arm.
 9. ~~Sweep `correction_bound` upward~~ **done, and the premise was wrong**: the box is not
    binding on either robot (0.00 of solutions sit on it; median `|q_c|` is 0.054 against a
    bound of 0.1), and widening it to 0.8 changes nothing.
-10. ~~Ask Julia about `iiwa14__lemon-haze-7__global_step_4.25M.pkl` -- if it is
-    undertrained the iiwa grasp row is a statement about the checkpoint~~ **the premise is
-    refuted, but the question is still worth asking**. The dose-response experiment shows
+10. Ask Julia about `iiwa14__lemon-haze-7__global_step_4.25M.pkl` -- **now the sharpest
+    question in the project**. The checkpoint puts 3.34% of the conditioning domain into
+    the network's worst-case-gain regime against the Panda's 0.065%, and that 51x is the
+    iiwa grasp deficit. `rnvp_clamp = 2.5` is confirmed correct, so this is the weights,
+    not the loading. The superseded note read: The dose-response experiment shows
     chart error of the iiwa's magnitude costs the Panda 1-3 cells, not 23, so the checkpoint's
     *accuracy* cannot be the mechanism. Its provenance is still worth knowing (retraining is
     already planned) -- it simply is not the explanation this row needs.
-11. The divergent cells -- **the premise was wrong and this is now the open question**.
+11. ~~The divergent cells~~ **solved** -- see "The residual failures are the flow's own
+    gain". The row is the joint-limits row on configurations of 1e7-1e16 rad; every
+    runaway on a given robot lies on one ray; and direct sampling of the network
+    reproduces it with no solver involved. The old note read:
     Stage C measured them: the violated binding is `AllIKFlowConstraints` on 19 of 19
     cells while every variable region reports slack, so it is *not* the latent or the
     conditioning pose escaping the trust region. The cells are deeply in collision
