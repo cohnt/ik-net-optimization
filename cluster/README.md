@@ -86,8 +86,42 @@ ssh ... 'cd ~/learned-ik/repo && MANIFEST=cluster/manifest_stageA.txt PROCS=<K> 
 # 5. mop up, then collect (cluster storage is NOT backed up)
 cluster/collect_results.sh --status
 cluster/collect_results.sh --reclaim manifest_stageA   # only once the queue is idle
-cluster/collect_results.sh
+cluster/collect_results.sh                             # incremental since the last success
+cluster/collect_results.sh --full                      # ...or the whole results tree
 ```
+
+## Keeping the file count down (this is a policy requirement, not an optimisation)
+
+SuperCloud's guidance is explicit: prefer fewer, larger files (1 MB minimum, ~100 MB
+target), under 1000 per directory. Lustre is metadata-op bound, so tens of thousands of
+small files are slow in a way that has nothing to do with their size.
+
+This campaign drifted badly out of compliance before anyone noticed. `src/benchmark.py`
+wrote one ~20 KB IPOPT log per (cell x arm) directly into the run directory, and by
+Stage G there were **35,596 of them — 87% of every collection's file count** and 78% of
+its bytes. A routine collection had gone from three minutes to **thirty**, and it got
+worse with every stage. The symptom looked like network contention and was not.
+
+What keeps it in compliance now:
+
+- **Per-cell solver logs go to node-local `$TMPDIR`** and are rolled into one
+  `solver_logs.tar.gz` per run at the end of `run_grid`. Recover an individual log with
+  `tar xzf solver_logs.tar.gz learned_3_2.txt`. Never write per-cell files straight into
+  a run directory on the shared filesystem.
+- **Collection is incremental** — `.last_collect` on the cluster is the watermark, and it
+  advances only after the local extract and merge succeed, so a failed transfer is
+  retried in full rather than silently skipped. `state/` is not shipped at all.
+- **`cluster/compact_logs.sh`** fixes runs that predate the change, as a debug-cpu job
+  (compression is a job's work, never the login node's). `--dry-run` and `--status` are
+  read-only ssh.
+
+Measured effect: a full collection went from 40,733 files / 950 MB / ~30 min to
+2,964 files / 316 MB / **43 s**.
+
+**Any check that asks the cluster whether it is busy must be scoped to this project.**
+The account is shared with Thomas's other campaigns, so `LLstat | grep -c RUNNI` refuses
+whenever anything at all is running — it fired on an unrelated `run_matrix.sh`. Filter by
+`squeue -u $USER -n run_items.sh`, and count `PENDING` as well as `RUNNING`.
 
 ## How work is claimed, and how to recover
 
