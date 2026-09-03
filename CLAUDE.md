@@ -1900,12 +1900,75 @@ So lifting is not a fix for the runaway and is not adoptable as a formulation --
 scores 3/60 on one of the eight experiments is disqualified whatever it does elsewhere. What
 it is, is evidence that **the grasp task and the pose task want different things from the
 chart's algebraic presentation**, which is a more interesting finding than the one the stage
-was run to get. Stage F2 expands `liftq` alone to all eight experiments to see whether the
-Panda grasp gain is general and the iiwa pose collapse isolated.
+was run to get. Stage F2 expanded `liftq` alone to all eight experiments; it
+reproduces both effects and settles them as a **task** split, net negative overall
+(38 better / 116 worse, p = 2.2e-10). See the next section.
 
 **Neither intervention changes the standing conclusion**, which is unchanged from the
 diagnosis: the flow's own gain is the mechanism, and a better iiwa chart is the remedy
 Thomas prefers over anything done on the optimization side.
+
+### Stage F2: lifting, on all eight experiments -- it is a task effect, and it is net negative (2026-09-03)
+
+`lift_q` alone, expanded from the pilot's four rows to all eight experiments. 15 x 4 = 60
+cells each, 45 s, seed 0, `--compile`, `correction_cost_weight = 10`, on Stage C's grids, so
+every row is exact McNemar against Stage C's 45 s learned column on 60 shared cells.
+
+| experiment | start | default | `liftq` | +/- | b/w | p | iters (def -> lift) | runaway cells (def -> lift) | median max violation |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda grasp | paired | 50 | **58** | +8 | 9/1 | **0.022** | 188 -> 136 | 4 -> 0 | 8.7e-09 |
+| iiwa grasp | native | 39 | 44 | +5 | 11/6 | 0.33 | 201 -> 150 | 14 -> 0 | 1.2e-07 |
+| Panda grasp | native | 57 | 59 | +2 | 3/1 | 0.63 | 185 -> 114 | 1 -> 0 | 8.3e-09 |
+| iiwa grasp | paired | 45 | 43 | -2 | 9/11 | 0.82 | 170 -> 209 | 6 -> 0 | 3.9e-08 |
+| Panda pose | native | 58 | 52 | -6 | 2/8 | 0.11 | 52 -> 44 | 0 -> 0 | 1.0e-08 |
+| iiwa pose | native | 60 | 44 | -16 | 0/16 | **3.1e-05** | 57 -> 30 | 0 -> 0 | 2.0e-08 |
+| Panda pose | paired | 40 | **9** | -31 | 4/35 | **3.3e-07** | 100 -> 161 | 13 -> 0 | **3.3e+06** |
+| iiwa pose | paired | 40 | **2** | -38 | 0/38 | **7.3e-12** | 126 -> 317 | 18 -> 0 | **7.1e+06** |
+| **all eight** | | | | | **38 / 116** | **2.2e-10** | | | |
+
+**Net, lifting is clearly worse: 38 cells better against 116 worse over 480 shared cells,
+p = 2.2e-10.** The pilot's one significant gain (Panda grasp paired, +8, p = 0.022)
+reproduces, and so does the collapse, and the collapse is much the larger effect.
+
+**It is a task effect, not a robot effect**, and that is the finding worth keeping:
+
+- **On the grasp task lifting is neutral-to-positive on both robots and both protocols**
+  (+8, +5, +2, -2; only the Panda paired row is significant), and it consistently takes
+  **fewer iterations** -- 136 against 188, 114 against 185, 150 against 201.
+- **On the pose task it is negative in all four rows** and catastrophic under `paired`
+  (Panda 40 -> 9, iiwa 40 -> 2), where it takes **2-3x more** iterations.
+
+The mechanism is visible in the violation column. The pose task already pins the
+end-effector with six equality rows; lifting adds seven more, so the solver faces thirteen
+equalities in 27 variables with the flow's badly scaled Jacobian inside seven of them, and
+on the two collapsing rows the median residual is **3e+06 to 7e+06** -- those solves never
+close the chart equality at all. The grasp task's rows are mostly inequalities (the height
+band, collision) with only the two mug-axis equalities, so the same seven rows are a much
+smaller addition. **An interior-point method's tolerance for a badly scaled row depends on
+how many equalities it is already carrying**, which is Thomas's objection with a mechanism
+attached: *"we're effectively adding a nonlinear equality constraint (whereas currently, one
+just has a free variable)."*
+
+**The one thing lifting delivers, it delivers universally: 0 runaway cells in all eight
+experiments**, against 0-18 for the default. The returned configuration is inside the joint
+limits by construction, everywhere, always. It simply does not follow that the solve
+succeeds -- the runaway moves into the equality residual and the cell fails there instead.
+
+**Stage F3 (the 480-cell replication) was NOT run, and should not be.** The expansion was
+gated on the pilot moving the runaway metric; F2 has now resolved that it does not -- the
+pathology is relocated, not removed -- and an arm that scores 2/60 and 9/60 on two of the
+eight experiments is disqualified as a formulation whatever it does on the other six.
+Replicating it at 480 cells would spend one to two hours of contended cluster time
+characterising something already ruled out. The negative result is complete at 60 cells.
+
+**Where this leaves the runaway.** Every remedy that does not touch the chart has now been
+measured and none works: the latent trust region, the `c` box, all of IPOPT's scaling
+options (Stage E), a joint-limit penalty (Stage F, inert), and lifting `q` (Stage F2, net
+negative). **A better iiwa chart remains the preferred remedy and is now also the only
+untried one**, alongside the least-squares domain extension and gradient regularization
+deferred to a later session -- for which the finding above is suggestive, since what fails
+here is the conditioning of an equality row carrying the chart's Jacobian, which is
+precisely what Levenberg-Marquardt-style damping addresses.
 
 ### The dual success criterion, first measurements (2026-09-02)
 
