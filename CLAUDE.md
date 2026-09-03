@@ -1622,6 +1622,49 @@ this: joint space carries joint limits as *variable bounds*, satisfied at every 
 construction, and the analytic arm's chart is a closed form with no such regions. Only the
 learned arm imposes joint limits on an output it does not directly control.
 
+### Stage E: IPOPT's scaling is not the lever either (2026-09-02)
+
+The one remaining thing that could be tried without changing the formulation. The runaway
+diagnosed above puts a constraint row reaching 1e11 in front of a scaling scheme that
+computes its factors from the gradients at the *starting* point and caps them at
+`nlp_scaling_max_gradient = 100` -- so a row that only becomes enormous later is scaled as
+though it were ordinary. Learned arm only, 15 x 4 = 60 cells, 45 s, `--compile`, seed 0, on
+the finals' grids. The default point is **not** re-run: Stage C's 45 s learned columns are
+exactly it, on the same grid, seed and cap.
+
+| experiment | default | `nlp_scaling_method=none` | `max_gradient=1e4` | `max_gradient=1e8` |
+| --- | --- | --- | --- | --- |
+| iiwa grasp paired | 45/60 | 45 | 45 | 45 |
+| iiwa grasp native | 39/60 | 38 | 38 | 39 |
+| iiwa pose paired | 40/60 | 41 | 41 | 41 |
+| Panda pose paired | 40/60 | 42 | 42 | 42 |
+| Panda grasp paired | 50/60 | 48 | 49 | 49 |
+
+**Every variant is inert.** The largest movement is +-2 cells and no comparison against the
+default reaches p < 0.5, let alone significance (exact McNemar, 60 shared cells). Note also
+that `max_gradient = 1e4` and `1e8` reproduce `none` almost cell for cell, which is what
+raising the cap far enough should do -- three settings, one behaviour.
+
+So the runaway is **not a scaling artefact**. IPOPT is not mis-scaling a row it could have
+handled; it is being handed a chart with regions of gain ~1e13 and following the gradient
+into them. Nothing in the solver's options fixes that, which -- with the trust region and
+the `c` box already ruled out -- leaves only the two remedies that are Thomas's to
+authorise: a different iiwa checkpoint, or something acting on `q`.
+
+**`equilibration-based` is unavailable in Drake's IPOPT** (it needs the HSL MC19 routine)
+and raised `RuntimeError: Error setting IPOPT string option` on construction, scoring
+0/60 in ~10 ms a cell. Its column is a crash, not a measurement, and is excluded above.
+IPOPT's own error message lists what it will accept: `user-scaling`, `gradient-based`,
+`none`.
+
+**That failure mode is now trapped.** `_abort_on_dead_arm` in `src/benchmark.py` aborts a
+run when an arm fails **identically, in under a second, on its first three cells** -- the
+unmistakable signature of a misconfiguration rather than a hard problem, since a
+configuration error is deterministic and instant while a numerical failure varies and costs
+real time. This has now cost two whole columns of cluster campaigns (the
+`correction_cost_weight` guard incident and this one), both caught only during analysis
+after the compute was spent.
+
 ### The dual success criterion, first measurements (2026-09-02)
 
 Every record now carries `max_violation` (the largest constraint violation at the returned
