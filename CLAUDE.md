@@ -1674,7 +1674,11 @@ collision. So target the collision constraint and the iteration budget, not the 
 2. Collision-constraint shaping: `influence_distance_offset` (0.1) and the 0.1 scaling on
    that row set the gradient the solver has to follow while it is far from contact. Never
    swept.
-3. IPOPT `mu_strategy="adaptive"`, `max_iter`, `nlp_scaling_method`. Plumbed, never swept.
+3. IPOPT `mu_strategy="adaptive"` swept (inert, both robots). `nlp_scaling_method` was
+   **not** in fact plumbed despite this list saying so; it and `nlp_scaling_max_gradient`
+   now are (`ipopt_nlp_scaling_method`, `ipopt_nlp_scaling_max_gradient`) and Stage E
+   sweeps them, because the runaway diagnosed above puts a 1e11 row in front of a scaling
+   scheme that computes its factors at the starting point and caps them at 100.
    The archived logs show `lg(mu)` collapsing to -8 within 50 iterations and then hundreds
    of iterations of tiny steps, which is the signature `adaptive` exists for.
 4. ~~`torch.compile` on the `jacrev`~~ **done**: `--compile`, 1.48x on an AutoDiffXd

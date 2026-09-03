@@ -95,6 +95,14 @@ class ProgramOptions:
 
     ## Solver behaviour ##
     ipopt_mu_strategy: str = field(default=None, metadata={"help": "IPOPT 'mu_strategy'; 'adaptive' often helps on badly scaled problems"})
+    ## The learned arm's joint-limit row is evaluated on the flow's output, which has a
+    ## worst-case gain of ~1e13 (12 coupling blocks at rnvp_clamp 2.5), and the runaway
+    ## cells return configurations of 1e7-1e16 rad. IPOPT's default gradient-based scaling
+    ## computes its factors from the gradients at the *starting* point and caps them at
+    ## `nlp_scaling_max_gradient` (100), so a row that only becomes enormous later is
+    ## scaled as though it were ordinary. These two make that reachable from `--set`.
+    ipopt_nlp_scaling_method: str = field(default=None, metadata={"help": "IPOPT 'nlp_scaling_method': 'gradient-based' (default), 'none', 'equilibration-based'"})
+    ipopt_nlp_scaling_max_gradient: float = field(default=None, metadata={"help": "IPOPT 'nlp_scaling_max_gradient' (default 100)"})
     max_iter: int = field(default=None, metadata={"help": "Iteration cap (IPOPT max_iter / SNOPT Major iterations limit)"})
 
     ## Starting point ##
@@ -833,6 +841,12 @@ class IKFlowProgram:
             solver_options.SetOption(IpoptSolver().solver_id(), "max_wall_time", self.options.max_wall_time)
             if self.options.ipopt_mu_strategy is not None:
                 solver_options.SetOption(IpoptSolver().solver_id(), "mu_strategy", self.options.ipopt_mu_strategy)
+            if self.options.ipopt_nlp_scaling_method is not None:
+                solver_options.SetOption(IpoptSolver().solver_id(), "nlp_scaling_method",
+                                         self.options.ipopt_nlp_scaling_method)
+            if self.options.ipopt_nlp_scaling_max_gradient is not None:
+                solver_options.SetOption(IpoptSolver().solver_id(), "nlp_scaling_max_gradient",
+                                         float(self.options.ipopt_nlp_scaling_max_gradient))
             if self.options.max_iter is not None:
                 solver_options.SetOption(IpoptSolver().solver_id(), "max_iter", int(self.options.max_iter))
             

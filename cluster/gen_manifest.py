@@ -184,6 +184,43 @@ def stage_D_baselines(wall, targets, guesses, shards):
     return items
 
 
+## Stage E targets the runaway diagnosed in Stage C: the learned arm's joint-limit row is
+## evaluated on the flow's output, whose worst-case gain is ~1e13, and 0.065% (Panda) to
+## 3.34% (iiwa) of the allowed conditioning region sits in that regime. Neither existing
+## region knob avoids it -- the blow-up regions are spread through the domain, not at its
+## edges -- so what is left that does NOT change the formulation is how IPOPT scales a
+## problem containing such a row. Its default `gradient-based` scaling computes factors at
+## the starting point and caps them at `nlp_scaling_max_gradient = 100`, so a row that only
+## becomes enormous later is scaled as though it were ordinary.
+##
+## Learned arm only, on the five rows with a real deficit or a frozen cap-bound set. The
+## default point is NOT re-run: the Stage C 45 s learned columns are exactly it, on the
+## same grid, seed and cap.
+E_SETTINGS = [
+    ("scalenone",  ["ipopt_nlp_scaling_method=none"]),
+    ("scaleequil", ["ipopt_nlp_scaling_method=equilibration-based"]),
+    ("maxgrad1e4", ["ipopt_nlp_scaling_max_gradient=1e4"]),
+    ("maxgrad1e8", ["ipopt_nlp_scaling_max_gradient=1e8"]),
+]
+E_ROWS = [("iiwa", "mug", "paired"), ("iiwa", "mug", "native"),
+          ("iiwa", "pose", "paired"), ("panda", "pose", "paired"),
+          ("panda", "mug", "paired")]
+
+
+def stage_E(wall, targets, guesses, shards):
+    """Can IPOPT's scaling survive a constraint row that reaches 1e11? (solver options only)"""
+    items = []
+    for robot, task, start in E_ROWS:
+        for name, sets in E_SETTINGS:
+            flags = ["--task", task, "--config", "latent", "--start", start,
+                     "--set", f"correction_cost_weight={D_CORRECTION_COST}"]
+            for kv in sets:
+                flags += ["--set", kv]
+            items += item(robot, f"sc_E_{robot}_{task}_{int(wall)}_{start}_{name}",
+                          flags, targets, guesses, "learned", wall, shards)
+    return items
+
+
 def stage_B2(wall, targets, guesses, shards):
     """Extension of the `correction_cost_weight` sweep, which had not peaked at 1.0.
 
@@ -285,7 +322,7 @@ def selftest():
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D", "Dbase"])
+    p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D", "Dbase", "E"])
     p.add_argument("--wall-time", type=float, default=20.0,
                    help="the solver's per-cell cap, in seconds. Choose it from "
                         "cluster/calibrate.sh on THIS hardware -- the laptop's 20/45 s "
@@ -319,6 +356,7 @@ def main():
              "D": lambda: stage_D(args.wall_time, args.targets, args.guesses, args.shards),
              "Dbase": lambda: stage_D_baselines(args.wall_time, args.targets,
                                                 args.guesses, args.shards),
+             "E": lambda: stage_E(args.wall_time, args.targets, args.guesses, args.shards),
              }[args.stage]()
 
     lines = render(items)
