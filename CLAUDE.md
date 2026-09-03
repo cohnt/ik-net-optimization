@@ -1970,6 +1970,37 @@ deferred to a later session -- for which the finding above is suggestive, since 
 here is the conditioning of an equality row carrying the chart's Jacobian, which is
 precisely what Levenberg-Marquardt-style damping addresses.
 
+### Stage G: Jacobian regularization (2026-09-03)
+
+Three strategies for damping the flow's Jacobian before the chain rule, so the solver
+sees bounded gradients while the value `q` is unchanged. The implementation is
+`regularize_jacobian()` in `src/generic_program.py`, called from the AutoDiffXd branch
+of `VarsToQ` in both robot programs.
+
+**1. Frobenius norm clipping (`jacobian_max_norm`).**
+If `||J||_F > max_norm`, scale `J ← J * (max_norm / ||J||_F)`. Isotropic — damps all
+directions equally, including the well-conditioned ones.
+
+**2. Tikhonov / LM damping (`jacobian_tikhonov_lambda`).**
+Damp the singular values: `s_damped = s * λ / (s + λ)`. As `s → ∞`, `s_damped → λ`
+(bounded); as `s → 0`, `s_damped → 0` (no amplification). This is the correct shape for
+the runaway: large singular values are damped more than small ones.
+
+**3. Singular value floor (`jacobian_svd_floor`).**
+Truncated pseudoinverse: replace `s < floor` with `floor`. Prevents vanishing gradients
+(the IFT paper's problem) as well as exploding ones.
+
+**Sweep.** 10 variants × 8 experiments = 80 runs, 4 shards each = 320 items, ~1h on 4
+nodes at PROCS=8. All compared against Stage C's 45s learned column. The variants are:
+
+| knob | values |
+| --- | --- |
+| `jacobian_max_norm` | 10, 100, 1000, 10000 |
+| `jacobian_tikhonov_lambda` | 0.1, 1.0, 10.0, 100.0 |
+| `jacobian_svd_floor` | 0.1, 1.0 |
+
+Results pending.
+
 ### The dual success criterion, first measurements (2026-09-02)
 
 Every record now carries `max_violation` (the largest constraint violation at the returned
