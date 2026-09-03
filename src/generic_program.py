@@ -46,6 +46,23 @@ class ProgramOptions:
     orientation_error_form: str = field(default="rpy", metadata={"help": "'rpy' pins the roll-pitch-yaw residual to zero, as ../codebase's pose constraint does; 'rpy_boxed' allows +-ori_tol on each row"})
     correction_cost_weight: float = field(default=0.0, metadata={"help": "Weight for correction cost to keep close to zero"})
 
+    ## The two Stage F interventions against the flow's runaway regions. BOTH ARE STATED
+    ## DEVIATIONS from the draft's eq. (6), authorised by Thomas as experiments while he
+    ## said he dislikes them ("we should be able to rely on the constraint to handle it";
+    ## lifting "effectively adds a nonlinear equality constraint whereas currently one just
+    ## has a free variable"). They are diagnostics, not candidates to adopt silently: an
+    ## arm running either must be labelled as such wherever it is reported, and neither may
+    ## be fielded under the name of the paper's learned formulation.
+    ##
+    ## The pathology they address: the joint-limit row is imposed on `q = flow(c, z) + q_c`,
+    ## and in the flow's worst-case-gain regions `dq/dz` is as large as `q` is (~1e13 for 12
+    ## coupling blocks at rnvp_clamp 2.5), so a Newton step is *attracted* into them. Note
+    ## the arm does control `q` there -- the limit row's gradient is pulled back through the
+    ## network to `z` exactly, which is the point of differentiating through it -- so this is
+    ## a magnitude problem, not a blindness problem.
+    lift_q: bool = field(default=False, metadata={"help": "Stage F: add q as a bounded decision variable and impose the chart as an equality, so joint limits become variable bounds IPOPT satisfies at every iterate"})
+    joint_limit_penalty_weight: float = field(default=0.0, metadata={"help": "Stage F: weight on the quadratic hinge penalty for joint-limit violation; zero (with zero gradient) inside the limits"})
+
     mug_height: float = field(default=0.035, metadata={"help": "Mug height for valid grasp poses"})
 
     ## Network evaluation ##
@@ -296,10 +313,20 @@ class IKFlowProgram:
         self.CreateIKConstraint()
         if self.options.collision_avoidance:
             self.CreateCollisionFreeConstraint()
-        if self.options.joint_limits:
+        ## Under `lift_q` the limits are the lifted variable's own bounding box, so the
+        ## generic row would duplicate them -- and duplicating an active constraint is
+        ## exactly the rank-deficiency this repo has been bitten by before.
+        if self.options.joint_limits and not self._LiftingQ():
             self.CreateJointLimitsConstraint()
+        if self._LiftingQ():
+            self.CreateFlowConsistencyConstraint()
         self.ApplyConstraints()
         self.BoundingBoxConstraint()
+        ## Added here rather than inside BoundingBoxConstraint because the mug programs
+        ## override that method, and the last time a box lived in three places the pose
+        ## arms were repaired and the grasp arms silently were not.
+        if self._LiftingQ():
+            self.LiftedQBoxConstraint()
         # Only the learned formulations have a latent; the joint-space and analytic arms
         # share this options object so that budgets and tolerances stay identical between
         # them, which means options that name learned-only variables must be guarded.
@@ -318,6 +345,12 @@ class IKFlowProgram:
             self.CorrectionCost()
         if self.options.latent_cost_weight > 0.0 and hasattr(self, "z"):
             self.LatentCost()
+        ## Guarded like the others: it reaches `q` through the flow, so it means nothing to
+        ## an arm whose variables *are* the configuration (and whose limits are already
+        ## bounds). Pointless rather than fatal there, but the guard keeps the baselines
+        ## bit-identical, which is what the A/B test checks.
+        if self.options.joint_limit_penalty_weight > 0.0 and hasattr(self, "z"):
+            self.JointLimitPenaltyCost()
 
     def LatentCost(self):
         '''A quadratic pull towards the centre of the latent prior.
@@ -410,6 +443,14 @@ class IKFlowProgram:
         sharing them between the constraint binding and the cost binding is close to a
         factor of two on the whole solve.
         '''
+        ## Under `lift_q` the configuration IS a decision variable, so there is nothing to
+        ## evaluate: every task row and the joint-centering cost see the variable directly,
+        ## and the network appears only in `CreateFlowConsistencyConstraint`. This makes the
+        ## forward kinematics cheaper too (Drake trig on a plain variable rather than on a
+        ## network output), and it is why lifting costs no extra flow evaluation.
+        if self._LiftingQ():
+            q = self.LiftedQ(vars)
+            return q, self.fk(q)
         if not getattr(self.options, "share_flow_evaluations", False):
             q = self.VarsToQ(vars)
             return q, self.fk(q)
@@ -572,6 +613,12 @@ class IKFlowProgram:
         bound = self.options.correction_bound
         residual = np.nan_to_num(residual, nan=0.0, posinf=bound, neginf=-bound)
         self.prog.SetInitialGuess(self.correction, np.clip(residual, -bound, bound))
+        ## Under lifting the paired start is exact by construction: `q_lift` IS the
+        ## configuration, so it is set to `q_arm` itself and `start_q_error` must read 0.
+        ## `q_init` is drawn inside the joint limits, so this guess is inside the box too
+        ## and IPOPT has nothing to project.
+        if self._LiftingQ():
+            self.prog.SetInitialGuess(self.q_lift, q_arm)
         return clipped
 
     def SetNativeStart(self, q_init, rng):
@@ -593,6 +640,18 @@ class IKFlowProgram:
         """
         self.prog.SetInitialGuess(self.z, rng.standard_normal(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
+        ## Under lifting, start the lifted variable *consistent with the draw* -- i.e. at
+        ## the flow's own output -- so the equality begins satisfied and the native start
+        ## is still one sample with nothing scored. Set unclipped, on the same reasoning as
+        ## the conditioning pose: a Drake guess need not satisfy its bounds and IPOPT's own
+        ## projection is the solver's first move. A draw that lands in a runaway region
+        ## therefore shows up as a large projection rather than being hidden.
+        if self._LiftingQ():
+            q_flow = np.asarray(self.VarsToQ(
+                self.prog.GetInitialGuess(self.lumped_vars)), dtype=float)
+            q_flow = np.nan_to_num(q_flow[:self.num_arm_dof], nan=0.0)
+            self.prog.SetInitialGuess(self.q_lift, q_flow)
+            return self._BoxDistance(self.q_lift, q_flow)
         return 0.0
 
     def _VariableBounds(self, variables):
@@ -745,6 +804,104 @@ class IKFlowProgram:
         self.constraints.append(self.joint_limit_constraint)
         return self.joint_limit_constraint
 
+
+    ## ------------------------- Stage F: acting on q ------------------------ ##
+    ##
+    ## Both of the following are STATED DEVIATIONS from the draft's eq. (6), run as
+    ## diagnostics of the flow's runaway regions. See ProgramOptions.lift_q.
+
+    def _LiftingQ(self):
+        """True when this program actually carries a lifted configuration variable.
+
+        Tests the attribute as well as the option because the baselines share one
+        `ProgramOptions`, and a `--set lift_q=True` run must leave them untouched rather
+        than raise inside their construction -- the failure mode that scored two whole
+        columns zero before `_abort_on_dead_arm` existed.
+        """
+        return bool(getattr(self.options, "lift_q", False)) and hasattr(self, "q_lift")
+
+    def LiftedQ(self, vars):
+        """The lifted configuration, padded to the plant's position vector.
+
+        `q_lift` is appended last to `lumped_vars`, so it is the final `num_arm_dof`
+        entries of whatever Drake hands the callback.
+        """
+        n = self.num_arm_dof
+        ad = isinstance(vars[0], AutoDiffXd)
+        q = np.zeros(self.num_pos, dtype=AutoDiffXd if ad else float)
+        q[n:] = [0.04] * (self.num_pos - n)      # fixed gripper joints, as in VarsToQ
+        q[:n] = vars[-n:]
+        return q
+
+    def LiftedQBoxConstraint(self):
+        """The joint limits, as the lifted variable's own bounding box.
+
+        A bounding box is the point of the exercise, not an oversight of the rule that a
+        region an initial guess may violate must be a general constraint: the paired start
+        sets `q_lift = q_init`, which is drawn inside the limits, so this box is never
+        violated at the guess. What it buys is that IPOPT keeps the iterate inside it, so
+        a solve cannot return a configuration of 1e11 rad.
+        """
+        self.lifted_q_box = self.prog.AddBoundingBoxConstraint(
+            self.plant.GetPositionLowerLimits()[:self.num_arm_dof],
+            self.plant.GetPositionUpperLimits()[:self.num_arm_dof],
+            self.q_lift)
+        self.lifted_q_box.evaluator().set_description("LiftedQBox")
+
+    def CreateFlowConsistencyConstraint(self):
+        """`flow(c, z) + q_c - q_lift = 0`: the chart, as an explicit equality.
+
+        This is the whole content of the lifting. The feasible set is unchanged -- it is
+        the same problem written with the network's output named -- but the iterate path is
+        not: the joint limits are now `q_lift`'s own bounding box, which IPOPT satisfies at
+        every iterate, so a solve can no longer *return* a configuration of 1e11 rad.
+
+        Thomas's objection, which this is run to test rather than to dismiss: the badly
+        scaled Jacobian does not disappear, it moves out of an inequality row and into an
+        equality row, and an interior-point method need not be any happier with it there.
+        """
+        n = self.num_arm_dof
+        zeros = np.zeros(n)
+
+        def eval_func(vars=None, q=None, pose=None):
+            ## `q` is the LIFTED configuration here (QAndPose returns it under lifting), so
+            ## the flow must be evaluated separately -- this is the one place it enters.
+            return self.VarsToQ(vars)[:n] - vars[-n:]
+
+        self.flow_consistency_constraint = IKFlowConstraints(
+            zeros, zeros, eval_func, description="FlowConsistencyConstraint")
+        self.constraints.append(self.flow_consistency_constraint)
+        return self.flow_consistency_constraint
+
+    def JointLimitPenaltyCost(self):
+        self.joint_limit_penalty_cost = self.prog.AddCost(
+            func=self.EvalJointLimitPenaltyCost, vars=self.lumped_vars)
+        self.joint_limit_penalty_cost.evaluator().set_description("JointLimitPenaltyCost")
+
+    def EvalJointLimitPenaltyCost(self, vars):
+        """`w * sum(max(0, q - ub)^2 + max(0, lb - q)^2)`.
+
+        A quadratic hinge, so it is C^1 and -- unlike the correction penalty, which is
+        active everywhere -- **identically zero with zero gradient inside the limits**. A
+        cell that already satisfies them must therefore return a bit-identical solution at
+        every weight, which is the A/B test for this implementation.
+
+        Goes through `QAndPose`, never a second `VarsToQ`: the flow's forward pass and
+        `jacrev` are the dominant cost of the whole formulation, and a cost binding that
+        recomputed them would roughly double the solve.
+        """
+        q, _ = self.QAndPose(vars)
+        lower = self.plant.GetPositionLowerLimits()
+        upper = self.plant.GetPositionUpperLimits()
+        total = 0.0 * q[0]                       # keeps the AutoDiffXd type and its seeds
+        for i in range(len(q)):
+            over = q[i] - upper[i]
+            if over > 0.0:
+                total = total + over * over
+            under = lower[i] - q[i]
+            if under > 0.0:
+                total = total + under * under
+        return self.options.joint_limit_penalty_weight * total
 
     def LatentBoxConstraint(self):
         '''`-5 <= z <= 5`, as a general linear constraint rather than a variable bound.

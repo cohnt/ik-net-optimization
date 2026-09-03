@@ -221,6 +221,58 @@ def stage_E(wall, targets, guesses, shards):
     return items
 
 
+## ------------------------------- Stage F ---------------------------------- ##
+## The two `q`-side interventions against the flow's runaway regions. BOTH ARE STATED
+## DEVIATIONS from the draft's eq. (6), authorised by Thomas as experiments while he said
+## he dislikes both -- so these arms are diagnostics and must never be reported as "the
+## learned formulation". The preferred remedy is a better iiwa chart; this stage exists to
+## close out the alternatives that do not require one.
+##
+## The pilot rows are the three where the pathology lives plus one Panda control where the
+## exposure is 0.065% and nothing should move. The default point is NOT re-run: Stage C's
+## 45 s learned column is the same grid, seed, cap and formulation.
+F_ROWS = [("iiwa", "mug", "paired"),     # worst row: 39-44 of 60 cells at the cap
+          ("iiwa", "mug", "native"),
+          ("iiwa", "pose", "paired"),    # the frozen 19-cell divergent set
+          ("panda", "mug", "paired")]    # control: exposure 0.065%, expect no movement
+
+F_SETTINGS = [("liftq",    ["lift_q=True"]),
+              ("jlpen1",   ["joint_limit_penalty_weight=1.0"]),
+              ("jlpen10",  ["joint_limit_penalty_weight=10.0"]),
+              ("jlpen100", ["joint_limit_penalty_weight=100.0"])]
+
+## Stage F2/F3 expand the winning variant, gated on the pilot moving the runaway metric.
+## F3 runs on Stage D's seed and grid so Stage D's learned columns are the paired control.
+F2_ROWS = [(r, t, s) for r in ("panda", "iiwa")
+           for t in ("mug", "pose") for s in ("paired", "native")]
+
+
+def _f_variant(name):
+    """The single Stage F setting named, for the F2/F3 expansions."""
+    if name is None:
+        raise SystemExit("stages F2/F3 need --f-variant NAME (one of: "
+                         + ", ".join(n for n, _ in F_SETTINGS) + ")")
+    match = [(n, kv) for n, kv in F_SETTINGS if n == name]
+    if not match:
+        raise SystemExit(f"unknown --f-variant {name!r}; expected one of "
+                         + ", ".join(n for n, _ in F_SETTINGS))
+    return match
+
+
+def stage_F(wall, targets, guesses, shards, rows=None, settings=None, seed=0, tag="F"):
+    """Do either q-side intervention stop the runaway? (stated deviations, diagnostics)"""
+    items = []
+    for robot, task, start in (rows or F_ROWS):
+        for name, sets in (settings or F_SETTINGS):
+            flags = ["--task", task, "--config", "latent", "--start", start,
+                     "--set", f"correction_cost_weight={D_CORRECTION_COST}"]
+            for kv in sets:
+                flags += ["--set", kv]
+            items += item(robot, f"sc_{tag}_{robot}_{task}_{int(wall)}_{start}_{name}",
+                          flags, targets, guesses, "learned", wall, shards, seed=seed)
+    return items
+
+
 def stage_B2(wall, targets, guesses, shards):
     """Extension of the `correction_cost_weight` sweep, which had not peaked at 1.0.
 
@@ -288,7 +340,13 @@ def summarise(items, procs, nodes):
 def selftest():
     fails = 0
     for stage, items in (("A", stage_A(20, 15, 4, 2)), ("B", stage_B(20, 15, 4, 1)),
-                         ("C", stage_C([10, 20, 45], 15, 4, 1)), ("D", stage_D(20, 60, 8, 8))):
+                         ("C", stage_C([10, 20, 45], 15, 4, 1)), ("D", stage_D(20, 60, 8, 8)),
+                         ("E", stage_E(45, 15, 4, 4)), ("F", stage_F(45, 15, 4, 4)),
+                         ("F2", stage_F(45, 15, 4, 4, rows=F2_ROWS,
+                                        settings=_f_variant("liftq"), tag="F2")),
+                         ("F3", stage_F(45, 60, 8, 8, rows=F2_ROWS,
+                                        settings=_f_variant("jlpen10"), seed=D_SEED,
+                                        tag="F3"))):
         ids = [i["id"] for i in items]
         if len(ids) != len(set(ids)):
             dupes = {i for i in ids if ids.count(i) > 1}
@@ -322,7 +380,8 @@ def selftest():
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D", "Dbase", "E"])
+    p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D", "Dbase", "E",
+                                   "F", "F2", "F3"])
     p.add_argument("--wall-time", type=float, default=20.0,
                    help="the solver's per-cell cap, in seconds. Choose it from "
                         "cluster/calibrate.sh on THIS hardware -- the laptop's 20/45 s "
@@ -335,6 +394,11 @@ def main():
                         "cluster/merge_shard_summaries.py. Only worth more than 1 once "
                         "calibration says several workers per node do not perturb the "
                         "wall-clock-capped measurement.")
+    p.add_argument("--f-variant", default=None,
+                   help="stage F2/F3 only: which Stage F variant to expand, by name "
+                        "(liftq, jlpen1, jlpen10, jlpen100). Required for those stages -- "
+                        "there is no default, because expanding the wrong arm silently is "
+                        "exactly the kind of mistake that costs a whole campaign.")
     p.add_argument("--procs", type=int, default=1, help="workers per node, for --summary")
     p.add_argument("--nodes", type=int, default=4, help="nodes, for --summary")
     p.add_argument("-o", "--out", default=None)
@@ -357,6 +421,15 @@ def main():
              "Dbase": lambda: stage_D_baselines(args.wall_time, args.targets,
                                                 args.guesses, args.shards),
              "E": lambda: stage_E(args.wall_time, args.targets, args.guesses, args.shards),
+             "F": lambda: stage_F(args.wall_time, args.targets, args.guesses, args.shards),
+             ## F2/F3 take the winning variant via --f-variant; F3 additionally moves to
+             ## Stage D's seed and grid so that stage's learned columns are the control.
+             "F2": lambda: stage_F(args.wall_time, args.targets, args.guesses, args.shards,
+                                   rows=F2_ROWS, settings=_f_variant(args.f_variant),
+                                   tag="F2"),
+             "F3": lambda: stage_F(args.wall_time, args.targets, args.guesses, args.shards,
+                                   rows=F2_ROWS, settings=_f_variant(args.f_variant),
+                                   seed=D_SEED, tag="F3"),
              }[args.stage]()
 
     lines = render(items)
