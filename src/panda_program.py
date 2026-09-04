@@ -415,8 +415,8 @@ class PandaIKProgramAnalytic(PandaIKProgram):
             clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])
             return clipped
         # Unclipped, like the learned arm's conditioning pose: the pose formulation pins
-        # xyz_rpy to the target with a +-ik_tol bounding box, so clipping the guess into
-        # it silently replaced the paired start with (target pose, psi(q_init)) -- the
+        # xyz_rpy to the target exactly, so projecting the guess onto it replaced the
+        # paired start with (target pose, psi(q_init)) outright -- the
         # archived pose tables show the analytic arm starting a median 2.7 rad from the
         # shared q_init for exactly this reason, chart coverage notwithstanding. A Drake
         # guess may sit outside the bounds; IPOPT's own projection is the solver's first
@@ -463,21 +463,31 @@ class PandaIKProgramAnalytic(PandaIKProgram):
 
 
     def BoundingBoxConstraint(self):
-        ik_tol = self.options.ik_constraint_tol
-        ik_bb = np.array([ik_tol[0], ik_tol[0], ik_tol[0], ik_tol[1], ik_tol[1], ik_tol[1]])
-        # A general linear constraint, deliberately NOT a bounding box: this row pins the
-        # pose variables to the target, and as a *variable bound* IPOPT's bound_push
-        # projected every initial guess into it before evaluating anything -- so the
-        # paired start silently became (target pose, psi(q_init)), a median 2.7 rad from
-        # the shared q_init, and the arm was flattered by a head start it was never given
-        # on purpose. As a general constraint the guess may start outside (the violation
-        # lands in inf_pr) and the solver walks the pose to the target itself. Same
-        # reasoning as the learned arm's CBoxConstraint. The psi box below stays a bound:
-        # starts never violate it.
-        self.xyz_rpy_box = (self.target_rpy - ik_bb, self.target_rpy + ik_bb)
-        self.xyz_rpy_box_constraint = self.prog.AddLinearConstraint(
-            np.eye(6), self.xyz_rpy_box[0], self.xyz_rpy_box[1], self.xyz_rpy)
-        self.xyz_rpy_box_constraint.evaluator().set_description("PoseTargetBoxConstraint")
+        # A linear EQUALITY pinning the pose variables to the target, exactly as
+        # ../codebase's new formulation does with `AddConstraint(eq(xyzrpy_ee, goal))`.
+        #
+        # These rows used to be a `+-ik_constraint_tol` box, and that was the worst
+        # instance of the boxed-equality defect in the repo, because the tolerance tuple
+        # is (1e-4, 0.01): the analytic arm was handed +-0.01 rad of orientation freedom
+        # on every axis while the learned and joint-space arms were pinned to zero, so it
+        # was solving a materially easier problem than the formulations it is a baseline
+        # for. It used the whole of it -- median rpy_error 8.5e-03 and p90 sitting exactly
+        # on the 1e-2 bound, 90% of its pose successes more than 1e-3 off target -- while
+        # max_violation reported 0.00, because a box is satisfied right up to its face.
+        # The same defect was repaired on this class's mug rows and missed here.
+        #
+        # It stays a general linear constraint and never becomes a bounding box: as a
+        # *variable bound* IPOPT's bound_push projected every initial guess into it before
+        # evaluating anything, so the paired start silently became (target pose,
+        # psi(q_init)), a median 2.7 rad from the shared q_init, and the arm was flattered
+        # by a head start it was never given on purpose. As a general constraint the guess
+        # may start outside (the violation lands in inf_pr) and the solver walks the pose
+        # to the target itself. Same reasoning as the learned arm's CBoxConstraint. The
+        # psi box below stays a bound: starts never violate it.
+        self.xyz_rpy_box = (self.target_rpy.copy(), self.target_rpy.copy())
+        self.xyz_rpy_box_constraint = self.prog.AddLinearEqualityConstraint(
+            np.eye(6), self.target_rpy, self.xyz_rpy)
+        self.xyz_rpy_box_constraint.evaluator().set_description("PoseTargetConstraint")
         self.bounding_box_constraint_psi = self.prog.AddBoundingBoxConstraint(
                     -5., 5., self.psi
         )

@@ -132,12 +132,16 @@ def main():
     base_options = replace(base_options, **CONFIGS[args.config],
                            compile_flow_jacobian=args.compile)
     base_options, overrides = apply_overrides(base_options, args.overrides)
-    # `ori_tol` is read from ik_constraint_tol rather than scaled off the position
-    # tolerance. The gate used to say `10 * task_tol`, which equals ik_constraint_tol[1]
-    # only by coincidence at the default task_tol of 1e-3; moving the position tolerance
-    # would silently have dragged the orientation gate with it. Identical at the default,
-    # trap removed.
-    pos_tol, ori_tol = base_options.ik_constraint_tol
+    # `ik_constraint_tol` no longer forms any constraint bound -- the pose rows are a
+    # hard equality (see IKFlowProgram.CreateIKConstraint) -- so what survives of it here
+    # is purely a MEASUREMENT threshold: `ori_tol` is the pose gate's orientation bound.
+    # It is read from the option rather than scaled off the position tolerance, which is
+    # what the gate used to do (`10 * task_tol`, equal to ik_constraint_tol[1] only by
+    # coincidence at the default task_tol of 1e-3, so moving one would silently have
+    # dragged the other). The position entry is deliberately unused: the gate's position
+    # threshold is `task_tol`, kept an order of magnitude looser than any bound the
+    # solver optimises against.
+    _, ori_tol = base_options.ik_constraint_tol
     slack = base_options.acceptable_constr_viol_tol
 
     # A local generator for the grid: see the note in the Panda script -- draws made during
