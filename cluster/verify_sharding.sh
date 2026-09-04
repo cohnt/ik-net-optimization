@@ -76,8 +76,23 @@ for arm in arms:
         if k not in TIMING and not eq(ref["summary"][arm][k], mrg["summary"][arm][k]):
             print(f"  SUMMARY DIFF {arm}.{k}"); bad += 1
     print(f"  {arm:<11} {len(a)} cells: every record field (incl. q) and every statistic")
+def strip_timings(obj):
+    """Drop per-process timings wherever they are nested.
+
+    The `_common` block carries `mean_wall_time` per arm, and wall clock does not
+    reproduce across processes -- so comparing it raw reports a sharding failure for a
+    run whose every record is bit-identical. This went unnoticed until a change made a
+    cell solvable by all three arms: with `_common_cells` empty, the block was trivially
+    equal and the flaw could not fire.
+    """
+    if isinstance(obj, dict):
+        return {k: strip_timings(v) for k, v in obj.items() if k not in TIMING}
+    if isinstance(obj, list):
+        return [strip_timings(v) for v in obj]
+    return obj
+
 for k in ("_mcnemar", "_common_cells", "_common"):
-    if not eq(ref["summary"][k], mrg["summary"][k]):
+    if not eq(strip_timings(ref["summary"][k]), strip_timings(mrg["summary"][k])):
         print(f"  {k} DIFFERENT"); bad += 1
 if ref["metadata"]["grid_hash"] != mrg["metadata"]["grid_hash"]:
     print("  grid_hash differs"); bad += 1

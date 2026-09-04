@@ -791,10 +791,32 @@ class IKFlowProgram:
     def CreateIKConstraint(self):
         '''Six rows: the per-axis position error, then the roll-pitch-yaw residual.
 
-        "rpy" pins the orientation residual to zero, as ../codebase's EEPoseConstraint
-        does with lb == ub; "rpy_boxed" allows +-ori_tol on each row instead.
+        All six are an EQUALITY, lb == ub == 0: the end-effector is at the target or it
+        is not, and that is what the task says. This matches ../codebase's
+        EEPoseConstraint, which passes `lb=extract_xyzrpy(target), ub=extract_xyzrpy(target)`,
+        and eaik-experiment's reachability row, whose bounds are `lb=[0], ub=[0]` under a
+        comment reading "(no slack)".
+
+        The position rows used to be a `+-ik_constraint_tol[0]` box, which is not a
+        slightly looser equality but a different kind of constraint: an interior-point
+        method parks ON the face of an inequality instead of driving the residual to
+        zero. Measured over 480 Stage D cells, 67-97% of every arm's successful pose
+        solves sat at exactly 1e-4, while the orientation rows of this same constraint --
+        already an equality -- converged to ~1e-9. Same program, same solver, five orders
+        of magnitude apart, purely from how the bound was written. The mug task's axis
+        rows have always been `0 == 0` and the learned arm satisfies them to a median
+        9.5e-09, so this is well within what the flow can do; the old note about not
+        asking for a tolerance below the network's noise floor was refuted by its own
+        grasp numbers.
+
+        Numerical slack belongs in the solver (IPOPT's constr_viol_tol and the
+        acceptable_* family, SNOPT's Major feasibility tolerance) and in the benchmark's
+        post-hoc gate -- never here.
+
+        `orientation_error_form="rpy_boxed"` remains as an explicit, opt-in ablation and
+        is now the only way to obtain a boxed row; it has to be named to be had.
         '''
-        pos_tol, ori_tol = self.options.ik_constraint_tol
+        _, ori_tol = self.options.ik_constraint_tol
         form = self.options.orientation_error_form
         if form not in ORIENTATION_ERROR_FORMS:
             raise ValueError(f"Unknown orientation_error_form {form!r}; expected one of "
@@ -804,8 +826,8 @@ class IKFlowProgram:
         # The target's rpy is fixed for the life of the program, so compute it once
         # rather than per constraint evaluation.
         target_rpy = RollPitchYaw(RotationMatrix(Quaternion(self.target_pose[3:]))).vector()
-        lb = np.array([-pos_tol] * 3 + [-rpy_tol] * 3)
-        ub = np.array([pos_tol] * 3 + [rpy_tol] * 3)
+        lb = np.array([0.0] * 3 + [-rpy_tol] * 3)
+        ub = np.array([0.0] * 3 + [rpy_tol] * 3)
 
         def eval_func(vars, q, pose):
             position, orientation = pose
