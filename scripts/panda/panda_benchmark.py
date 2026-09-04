@@ -89,17 +89,20 @@ def parse_args():
     p.add_argument("--arms", default="learned,numerical,analytic")
     p.add_argument("--config", default="baseline")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--task-tol", type=float, default=None,
+    p.add_argument("--task-tol", type=float, default=1e-3,
                    help="task-space gate: metres off the mug axis / per-axis position "
-                        "error. Defaults to the program's own ik_constraint_tol, so the "
-                        "gate and the constraint rows agree -- Thomas's ruling of "
-                        "2026-09-03, closing the gap where a cell could satisfy the task "
-                        "at 1e-3 while violating the program at 1e-4. The gate carries "
-                        "the solver's acceptable_constr_viol_tol as slack, for the same "
-                        "reason the collision gate does: an interior-point method parks "
-                        "ON an active bound, so a gate at exactly the bound measures "
-                        "which way rounding fell (64%% of joint-space pose solutions sit "
-                        "a rounding error above the 1e-4 they are pinned to). The raw "
+                        "error. DELIBERATELY an order of magnitude looser than the "
+                        "solver's constraint tolerance (ik_constraint_tol = 1e-4), and "
+                        "that gap must not be closed -- Thomas, 2026-09-03: \"go back to "
+                        "1e-4 actual tol and 1e-3 task tol, to avoid this issue (that's "
+                        "why I did it in the first place)\". An interior-point method "
+                        "parks ON an active bound, so at convergence the gated quantity "
+                        "sits at the bound plus or minus rounding: measured over 480 iiwa "
+                        "pose cells, 64%% of joint-space solutions are a rounding error "
+                        "above the 1e-4 they are pinned to, and none are above 1.01e-4. A "
+                        "gate at the bound would score which way the last ulp fell, and "
+                        "appeared to reverse a real result. The gate measures whether the "
+                        "arm reached the target, not whose rounding is smaller. The raw "
                         "errors are stored per record, so any other gate can be "
                         "recomputed from the summary without re-running.")
     p.add_argument("--tag", default=None, help="subdirectory under results/")
@@ -185,15 +188,13 @@ def main():
                            compile_flow_jacobian=args.compile)
     base_options, overrides = apply_overrides(base_options, args.overrides)
 
-    # The task gate matches the program's own tolerances, and carries the solver's
-    # constraint slack on top -- see --task-tol. `ori_tol` is taken from
-    # ik_constraint_tol rather than scaled off the position tolerance, which is how the
-    # two used to be coupled (`10 * task_tol`): that coupling silently made the
-    # orientation gate 10x stricter than the program whenever the position gate moved.
+    # `ori_tol` is read from ik_constraint_tol rather than scaled off the position
+    # tolerance. The gate used to say `10 * task_tol`, which equals ik_constraint_tol[1]
+    # only by coincidence at the default task_tol of 1e-3; moving the position tolerance
+    # would silently have dragged the orientation gate with it. Identical at the default,
+    # trap removed.
     pos_tol, ori_tol = base_options.ik_constraint_tol
     slack = base_options.acceptable_constr_viol_tol
-    task_pos_tol = (pos_tol if args.task_tol is None else args.task_tol) + slack
-    task_ori_tol = ori_tol + slack
 
     # A local generator for the grid, so that the targets and guesses cannot be shifted by
     # anything else drawing from the global stream -- which is exactly what used to happen:
@@ -301,8 +302,8 @@ def main():
             p_M = program.target_mug.middle.inverse() @ p_W
             axis_error = float(np.linalg.norm(p_M[:2]))
             height = float(abs(p_M[2]))
-            ok = (axis_error <= task_pos_tol
-                  and height <= program.options.mug_height + task_pos_tol)
+            ok = (axis_error <= args.task_tol
+                  and height <= program.options.mug_height + args.task_tol)
             return ok, dict(axis_error=axis_error, height=height)
     else:
         def task_gate(program, q):
@@ -315,7 +316,7 @@ def main():
             angle, distance = CalculateError(
                 RigidTransform(Quaternion(wxyz), translation),
                 RigidTransform(Quaternion(target[3:]), target[:3]))
-            ok = axis_max <= task_pos_tol and rpy_max <= task_ori_tol
+            ok = axis_max <= args.task_tol and rpy_max <= ori_tol
             return ok, dict(pos_error=axis_max, rpy_error=rpy_max,
                             pos_dist=float(distance), ori_error=float(angle))
 
@@ -381,7 +382,7 @@ def main():
     bar = tqdm(total=len(arms) * n_cells, desc=tag)
     records = bm.run_grid(
         arms, targets, guesses, task_gate, log_dir, out_path,
-        tol=slack, relaxed_tol=pos_tol,
+        tol=slack, relaxed_tol=args.task_tol,
         cell_timeout=args.cell_timeout or (5 * args.wall_time + 300),
         cells=cells,
         # Paired means starting AT q_init: a cell whose q_init the arm's variables cannot
