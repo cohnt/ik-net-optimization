@@ -2516,6 +2516,40 @@ correction-cost result above then largely repairs (2.9e-05 at weight 1.0).
 
 ### Next steps
 
+**Thomas's roadmap, in priority order (2026-09-04)**, given once the corrected-formulation
+campaign finished: *"iiwa checkpoint training infra (and launching the multi-day training
+job), SNOPT and NLOPT, and then performance tuning and formulation tweaks for getting the
+best results with the learned formulation."*
+
+1. **Retrain the iiwa chart.** Build the training infrastructure, then launch the
+   multi-day run. This is the project's one open scientific question and it is a
+   *training* task -- new territory for a repo that has only ever run benchmarks. The
+   diagnosis it answers is recorded under "The residual failures are the flow's own
+   gain": `lemon-haze-7` puts **3.34% of the conditioning domain into the flow's
+   worst-case-gain regime against the Panda's 0.065%**, and that factor of fifty-one is
+   the whole of the iiwa grasp deficit. Every optimization-side remedy has been measured
+   and refuted (trust region, `c` box, IPOPT scaling, joint-limit penalty, lifting `q`,
+   Jacobian regularization), so the chart is what is left. Establish the checkpoint's
+   provenance with Julia first, and **plan the run around SuperCloud's monthly
+   maintenance** -- second Tuesday, compute down Monday evening to Wednesday morning,
+   nothing survives it.
+
+2. **SNOPT and NLOPT.** All ~395 archived runs are IPOPT. Both benchmark scripts already
+   accept `--solver snopt` and Drake supplies all three solvers on both machines. The
+   point is to *report* every solver, not to pick one. **Known blocker, found by a smoke
+   test and not fixed:** SNOPT runs, but `parse_log` matches only IPOPT's log format, so
+   `iterations`, all four evaluation counts, `solver_seconds` and `exit` come back
+   `None`. Iterations is the hardware-independent number and one of the four every result
+   is told in, so the parser needs per-solver formats before a solver comparison means
+   anything.
+
+3. **Performance tuning and formulation tweaks**, aimed at getting the best out of the
+   learned formulation. Note this is Thomas naming formulation work as a work item, not a
+   standing licence -- what is compared remains his call, made explicitly in advance.
+
+The list below predates that roadmap and is kept for the detail it carries.
+
+
 Ordered by what the evidence actually supports. Nothing here weakens the problem: the
 grasp axis stays an equality, every arm starts from the same `q_init`, and no formulation
 searches for a start.
