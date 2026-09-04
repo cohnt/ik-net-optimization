@@ -344,6 +344,45 @@ The same wobble is present in the boxed run (58 / 57 / 58 / ...), so it predates
 equality fix and was simply reported as flat. Everywhere else the baselines are flat to
 the cell across all six caps.
 
+### EQ4: the correction penalty replicates at 480 cells on the corrected program (2026-09-04)
+
+60 targets x 8 per-target guesses = **480 cells**, 45 s, `--compile`, both protocols,
+both robots, both tasks, **seed 1** -- deliberately the same out-of-sample seed Stage D
+used, so the grid is not one any tuning decision was made on. `correction_cost_weight =
+10` against the same formulation with the penalty off, exact McNemar over all 480 shared
+cells.
+
+| experiment | start | penalty | no penalty | better / worse | p |
+| --- | --- | --- | --- | --- | --- |
+| iiwa grasp | native | **229/480** | 72/480 | 173 / 16 | **1.8e-34** |
+| iiwa grasp | paired | **235/480** | 98/480 | 170 / 33 | **2.0e-23** |
+| Panda grasp | native | **447/480** | 379/480 | 93 / 25 | **2.1e-10** |
+| Panda grasp | paired | **424/480** | 345/480 | 116 / 37 | **1.1e-10** |
+| iiwa pose | paired | 299/480 | 277/480 | 82 / 60 | 0.078 (tie) |
+| iiwa pose | native | 408/480 | 397/480 | 33 / 22 | 0.18 (tie) |
+| Panda pose | native | 474/480 | 469/480 | 7 / 2 | 0.18 (tie) |
+| Panda pose | paired | 339/480 | 343/480 | 64 / 68 | 0.79 (tie) |
+
+**The penalty is a grasp-task effect and only a grasp-task effect**, exactly as the void
+Stage D found, and the split is if anything sharper here: every grasp row is significant
+at 1e-10 or below, every pose row is a tie. That is what the mechanism predicts -- the
+`c`/`q_c` redundancy costs the solver most where the active constraint set is largest --
+so the penalty is not a general success multiplier being read off a lucky grid, and it
+costs the pose task nothing to adopt.
+
+The instrumentation reproduces too (medians, grasp paired):
+
+| | penalty off | penalty (w = 10) |
+| --- | --- | --- |
+| median `\|q_c\|`, Panda / iiwa | 7.48e-02 / 6.72e-02 | **2.06e-05 / 5.39e-04** |
+| median max violation, Panda | 4.63e-05 | **3.44e-08** |
+| median max violation, iiwa | 9.04e-02 | **2.86e-04** |
+
+**So the approved penalty survives the equality fix at full power and on an out-of-sample
+grid.** Its three-way comparison against the baselines at 480 cells needs `EQ4base`,
+which is queued: stage D's baselines are a separate stage, and EQ4 covers only the
+learned and no-penalty arms.
+
 ### EVERY MEASUREMENT BELOW IS VOID: the pose rows were a box, not an equality (2026-09-03)
 
 **Read this before quoting any table in this file.** The end-effector pose constraint's
