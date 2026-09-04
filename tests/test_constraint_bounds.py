@@ -205,6 +205,41 @@ def main():
           "add_constraints must still call BoundingBoxConstraint; IPOPT is documented in "
           "this repo as behaving poorly on unbounded variables")
 
+    # ------------------------------------------------------------------ iiwa
+    # The iiwa shares the base CreateIKConstraint, so the pose rows must move with it.
+    # It has no analytic arm (src/iiwa_analytic_ik.py exposes a different signature and
+    # is deliberately outside the harness), so only the learned and numerical arms exist.
+    print("\n--- iiwa: the same base pose rows ---")
+    try:
+        from src.iiwa_program import Iiwa14IKProgram, Iiwa14IKProgramNumerical
+        with HiddenPrints():
+            idiagram = BuildEnv(
+                meshcat=None,
+                directives_file=os.path.join(REPO, "models/iiwa14/iiwa14_collision.yaml"))
+            isampler = Iiwa14IKProgram(idiagram, options=opts)
+            isampler.create_prog()
+            q_i = rng.uniform(isampler.plant.GetPositionLowerLimits(),
+                              isampler.plant.GetPositionUpperLimits())
+            itarget = np.concatenate(isampler.fk(q_i))
+        for cls, label in ((Iiwa14IKProgram, "iiwa learned"),
+                           (Iiwa14IKProgramNumerical, "iiwa numerical")):
+            with HiddenPrints():
+                ip = cls(idiagram, options=opts, model=isampler.ik_solver)
+                ip.create_prog(itarget)
+            lb, ub = stacked_rows(ip.prog, label)
+            if lb is None:
+                continue
+            check(f"{label}: position rows are an EQUALITY at 0",
+                  np.array_equal(lb[:3], np.zeros(3)) and np.array_equal(ub[:3], np.zeros(3)),
+                  f"lb={lb[:3]} ub={ub[:3]}")
+            check(f"{label}: orientation rows are an EQUALITY at 0",
+                  np.array_equal(lb[3:6], np.zeros(3)) and np.array_equal(ub[3:6], np.zeros(3)),
+                  f"lb={lb[3:6]} ub={ub[3:6]}")
+    except (ImportError, FileNotFoundError, RuntimeError) as exc:
+        # The iiwa checkpoint is a local pickle and gitignored; skipping is honest, but
+        # it must SAY so rather than passing silently.
+        print(f"  SKIP  iiwa checks unavailable: {type(exc).__name__}: {exc}")
+
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failures")
     for f in FAILURES:
         print(f"  - {f}")
