@@ -2116,7 +2116,68 @@ name, and count `PENDING` as well as `RUNNING` since a queued worker could start
 through. Any cluster-wide check on a shared account must be scoped to this project's own
 jobs.
 
+### The success criterion is settled: the gate matches the program (2026-09-03)
+
+**Thomas's ruling: "match the tolerances at 1e-4."** The task gate now derives from the
+program's own `ik_constraint_tol` instead of a separate, looser `task_tol`, closing the
+gap recorded below where a cell could satisfy the *task* at 1e-3 while violating the
+*program* at 1e-4 and be scored a failure. `--task-tol` still exists and still overrides,
+but it defaults to `None`, meaning "whatever the constraint rows use", so the two cannot
+drift apart again.
+
+**The gate carries the solver's slack, and it must.** Matching naively -- gating at
+exactly 1e-4 -- looks right and is badly wrong, because an interior-point method parks
+*on* an active bound. Measured on the Stage D iiwa pose paired run:
+
+| arm | median `pos_error` | > 1e-4 | > 1.01e-4 | > 2e-4 |
+| --- | --- | --- | --- | --- |
+| learned | 9.9971e-05 | 33% | 1% | 0% |
+| joint space | 1.0001e-04 | **64%** | 0% | 0% |
+
+Every solution sits at 1e-4 plus or minus rounding, so a gate at exactly 1e-4 scores
+which side of the bound the last ulp fell on. It is the identical problem the collision
+gate already solves by carrying `collision_row_scale`, and it is solved the same way: the
+gate is `ik_constraint_tol + acceptable_constr_viol_tol` = **1.01e-4** (and
+`1e-2 + 1e-6` for orientation), which is exactly where the rounding noise ends.
+
+**What a naive match would have done, as a warning.** At exactly 1e-4 the joint-space
+arm loses 64% of its pose successes to rounding, and the one row where the learned arm
+*lost* at 480 cells -- iiwa pose paired, 296 against 332 -- appears to reverse into a
+decisive win (199 against 120, p = 2.5e-08). That reversal is a coin toss dressed as a
+result. Anyone re-opening the success criterion should check the distribution of the
+gated quantity against the bound before believing a change in the tables.
+
+**At the correct gate, nothing moves.** Stage D, 480 cells, learned against joint space,
+current gate versus matched-plus-slack:
+
+| experiment | start | current L / js | matched L / js | p (current -> matched) |
+| --- | --- | --- | --- | --- |
+| Panda pose | native | 466 / 249 | 463 / 249 | 3.8e-57 -> 1.4e-54 |
+| Panda pose | paired | 338 / 249 | 337 / 249 | 2.3e-09 -> 3.9e-09 |
+| Panda grasp | native | 437 / 457 | 437 / 457 | 0.013 -> 0.013 |
+| Panda grasp | paired | 417 / 457 | 417 / 457 | 6.4e-06 -> 6.4e-06 |
+| iiwa pose | native | 407 / 332 | 405 / 332 | 7.2e-09 -> 2.3e-08 |
+| iiwa pose | paired | 296 / 332 | 294 / 332 | 0.016 -> 0.011 |
+| iiwa grasp | native | 227 / 462 | 226 / 462 | 5.9e-59 -> 3.1e-59 |
+| iiwa grasp | paired | 237 / 462 | 237 / 462 | 1.9e-59 -> 1.9e-59 |
+
+At most **3 cells of 480** in any row, no ordering changed, no conclusion changed --
+including the iiwa pose paired loss, which stays a loss. **Every table in this file
+therefore stands as written**, and the criterion behind them is now defensible rather
+than arbitrary. The grasp rows are untouched because the mug axis is an equality driven
+to ~1e-8, nowhere near either threshold.
+
+**A coupling bug repaired in passing.** The pose gate's orientation bound was
+`10 * task_tol`, which at `task_tol = 1e-3` happened to equal `ik_constraint_tol[1] = 0.01`
+exactly -- so the two were matched by coincidence. Moving the position tolerance would
+have silently dragged orientation to 1e-3, ten times stricter than the program. The
+orientation gate now reads `ik_constraint_tol[1]` directly and cannot be dragged.
+
 ### The dual success criterion, first measurements (2026-09-02)
+
+**Superseded by the ruling above**, which settles the open question this section
+records. Kept for the measurements.
+
 
 Every record now carries `max_violation` (the largest constraint violation at the returned
 point), `detail["violations_all"]` (every binding's worst *signed* violation, so slack
