@@ -60,7 +60,19 @@ def parse_args():
     # raised KeyError; "latent" is the configuration the Panda ladder settled on.
     p.add_argument("--config", default="latent")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--task-tol", type=float, default=1e-3)
+    p.add_argument("--task-tol", type=float, default=None,
+                   help="task-space gate: metres off the mug axis / per-axis position "
+                        "error. Defaults to the program's own ik_constraint_tol, so the "
+                        "gate and the constraint rows agree -- Thomas's ruling of "
+                        "2026-09-03, closing the gap where a cell could satisfy the task "
+                        "at 1e-3 while violating the program at 1e-4. The gate carries "
+                        "the solver's acceptable_constr_viol_tol as slack, for the same "
+                        "reason the collision gate does: an interior-point method parks "
+                        "ON an active bound, so a gate at exactly the bound measures "
+                        "which way rounding fell (64%% of joint-space pose solutions sit "
+                        "a rounding error above the 1e-4 they are pinned to). The raw "
+                        "errors are stored per record, so any other gate can be "
+                        "recomputed from the summary without re-running.")
     p.add_argument("--tag", default=None)
     p.add_argument("--cells", default=None, metavar="TI:GI[,TI:GI...]",
                    help="run only these (target, guess) cells of the seeded grid")
@@ -117,7 +129,15 @@ def main():
     base_options = replace(base_options, **CONFIGS[args.config],
                            compile_flow_jacobian=args.compile)
     base_options, overrides = apply_overrides(base_options, args.overrides)
+    # The task gate matches the program's own tolerances, and carries the solver's
+    # constraint slack on top -- see --task-tol. `ori_tol` is taken from
+    # ik_constraint_tol rather than scaled off the position tolerance, which is how the
+    # two used to be coupled (`10 * task_tol`): that coupling silently made the
+    # orientation gate 10x stricter than the program whenever the position gate moved.
+    pos_tol, ori_tol = base_options.ik_constraint_tol
     slack = base_options.acceptable_constr_viol_tol
+    task_pos_tol = (pos_tol if args.task_tol is None else args.task_tol) + slack
+    task_ori_tol = ori_tol + slack
 
     # A local generator for the grid: see the note in the Panda script -- draws made during
     # program construction used to shift which targets a configuration was measured on.
@@ -186,8 +206,8 @@ def main():
             p_M = program.target_mug.middle.inverse() @ p_W
             axis_error = float(np.linalg.norm(p_M[:2]))
             height = float(abs(p_M[2]))
-            ok = (axis_error <= args.task_tol
-                  and height <= program.options.mug_height + args.task_tol)
+            ok = (axis_error <= task_pos_tol
+                  and height <= program.options.mug_height + task_pos_tol)
             return ok, dict(axis_error=axis_error, height=height)
     else:
         targets = []
@@ -204,7 +224,7 @@ def main():
             target_rpy = RollPitchYaw(RotationMatrix(Quaternion(target[3:]))).vector()
             rpy_max = float(np.max(np.abs(
                 np.asarray(orientation_error_rpy(wxyz, target_rpy), dtype=float))))
-            ok = axis_max <= args.task_tol and rpy_max <= 10 * args.task_tol
+            ok = axis_max <= task_pos_tol and rpy_max <= task_ori_tol
             return ok, dict(pos_error=axis_max, rpy_error=rpy_max)
 
     numerical_options = replace(base_options, joint_centering_cost=1e0)
@@ -248,7 +268,7 @@ def main():
     n_cells = len(cells) if cells is not None else args.targets * args.guesses
     bar = tqdm(total=len(arms) * n_cells, desc=tag)
     records = bm.run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol=slack,
-                          relaxed_tol=args.task_tol,
+                          relaxed_tol=pos_tol,
         cell_timeout=args.cell_timeout or (5 * args.wall_time + 300),
         cells=cells,
         # Paired means starting AT q_init: a cell whose q_init the arm's variables cannot
