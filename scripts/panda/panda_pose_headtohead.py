@@ -39,7 +39,6 @@ base_options = ProgramOptions(
     # The orientation entry is unused by the rpy form, which pins the residual to zero.
     ik_constraint_tol=(1e-4, 0.01),
 )
-pos_tol, _ = base_options.ik_constraint_tol
 
 log_dir = os.path.join(RepoDir(), "results/panda/pose_headtohead")
 os.makedirs(log_dir, exist_ok=True)
@@ -107,7 +106,7 @@ def parse_log(path):
 def pose_error(prog, result, target):
     '''Achieved pose error, measured from the solution rather than from the solver's own
     constraint values. The position constraint is per-axis, so the per-axis maximum is
-    what compares against pos_tol; the Euclidean norm is up to sqrt(3) times larger.'''
+    what compares against the gate; the Euclidean norm is up to sqrt(3) times larger.'''
     q = prog.VarsToQ(result.GetSolution(prog.lumped_vars))
     translation, wxyz = prog.fk(q)
     achieved = RigidTransform(Quaternion(wxyz), translation)
@@ -222,15 +221,18 @@ for name, block in results.items():
         modes[key] = modes.get(key, 0) + 1
     print(f"{name}: {len(fails)} failures {modes if modes else ''}")
 
-# Sanity gate: the pose constraint is an equality, so a success may only miss it by the
-# solver's own constraint-violation slack.
+# Sanity gate: the pose constraint is an equality on all six rows, so a success may only
+# miss it by the solver's own constraint-violation slack. This comment used to say
+# "equality" while the code below conceded `pos_tol + slack` -- because the position rows
+# were in fact a +-1e-4 box at the time. They are now `lb = ub = 0` (see
+# IKFlowProgram.CreateIKConstraint), so the gate is the solver's slack on every row.
 slack = base_options.acceptable_constr_viol_tol
-print(f"\ntolerance gate: position {pos_tol + slack:.2e} m per axis, rpy residual {slack:.2e} rad")
+print(f"\ntolerance gate: {slack:.2e} on every row (position, m per axis; rpy, rad)")
 for name, block in results.items():
     if not isinstance(block, dict) or "records" not in block:
         continue
     bad = [r for r in block["records"] if r["success"] and r.get("rpy_error", 0) > slack]
-    bad_p = [r for r in block["records"] if r["success"] and r.get("pos_error", 0) > pos_tol + slack]
+    bad_p = [r for r in block["records"] if r["success"] and r.get("pos_error", 0) > slack]
     if bad or bad_p:
         print(f"WARNING {name}: {len(bad)} solves exceed the rpy residual gate, "
               f"{len(bad_p)} exceed the position gate")

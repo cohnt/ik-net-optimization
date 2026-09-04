@@ -64,7 +64,12 @@ Each robot implements `__init__` (frames, plant sizes, model loading), `create_p
 Numerical facts worth not rediscovering — several are recorded in code comments and encoded in `ProgramOptions` defaults:
 
 - Evaluate the flow in **float64** (`use_float64=True`). Gradients are analytic (`jacrev` through the flow, chain-ruled into `AutoDiffXd`), so this is not about the solver differencing anything: it is that a float32 network produces *values* with a ~1e-7 noise floor, which corrupts every quantity computed as a difference over a small step — line-search actual-vs-predicted reduction, convergence tests, and SNOPT's optional derivative verification. `snopt_function_precision` tells SNOPT that noise floor when running in float32.
-- Don't ask for a position tolerance below the flow's noise floor: `ik_constraint_tol=(1e-4, 0.01)`.
+- `ik_constraint_tol` no longer forms any constraint bound. The pose rows are a hard
+  equality (`lb = ub = 0`); what survives of the option is the benchmark's gate. This
+  line used to read "don't ask for a position tolerance below the flow's noise floor",
+  which was **wrong**: the grasp task's axis rows have always been an equality and the
+  learned arm satisfies them to a median 9.5e-09. The flow was never the limit; the
+  1e-4 was a box the solver parked on. See the void notice below.
 - The IK pose constraint is six rows: the per-axis position error, then the **roll-pitch-yaw residual** `rpy(FK(q)) - rpy(target)` wrapped to (-pi, pi] (`orientation_error_rpy` in `src/generic_program.py`). `ProgramOptions.orientation_error_form` picks the bounds: `rpy` (the default) pins the residual to zero, as `../codebase`'s `EEPoseConstraint` does with `lb == ub`; `rpy_boxed` allows `±ori_tol` per row. Three signed rows are deliberate. Earlier revisions used a single scalar angle `2*arccos(|q.q_target|)`, and taking a norm of a three-component error is exactly what puts a branch point at zero error — its derivative is infinite there, and its `eps` clamp additionally returned an `AutoDiffXd` with an *empty* derivative vector while freezing the row's value at 2.83e-4. Three rows have neither problem: the residual is smooth at the solution with a full-rank Jacobian, and the chart's degeneracies (gimbal lock at `pitch = ±pi/2`, the `±pi` wrap) are properties of the *target pose*, not of the error. Commit `0be5342` holds the retired scalar forms and the measurements behind the decision. `scripts/panda/panda_pose_headtohead.py` compares the joint-space and learned formulations under it.
 - Constraint rows with an identically-zero gradient (e.g. the homogeneous row of a transformed point) break LICQ — the mug constraints deliberately drop it.
 - The conditioning variable `c` is boxed near the target (`c_position_slack=0.25`) to keep the flow inside its trained workspace. This is a conditioning heuristic, not a correctness requirement — the IK constraint is imposed on `FK(q)`, so an out-of-distribution `c` cannot produce a false solution. It is also loose enough not to exclude valid grasps (`between_fingers` sits 0.1 m from `panda_hand`, so with free orientation and `mug_height=0.04` the valid `c` positions lie within 0.14 m of the mug centre). No sweep in this repo isolates its benefit.
@@ -202,6 +207,73 @@ default tag. And the grid is drawn from a generator local to the script and hash
 `metadata["grid_hash"]`, so runs that were not measured on the same cells cannot be
 compared by accident -- `python scripts/collate.py --pair learned '<glob>'` runs exact
 McNemar between runs on matching cells and refuses a grid mismatch.
+
+### EVERY MEASUREMENT BELOW IS VOID: the pose rows were a box, not an equality (2026-09-03)
+
+**Read this before quoting any table in this file.** The end-effector pose constraint's
+position rows were `lb = -1e-4, ub = +1e-4` rather than `lb = ub = 0`. That is not a
+slightly looser equality: it is an inequality, and an interior-point method parks *on*
+the face of one instead of driving the residual to zero.
+
+Thomas's ruling: *"IK constraint tol should always be zero. The whole point is that it's
+an equality constraint, satisfied exactly. Tolerance should be zero in the mathematical
+program, only appearing in solver tolerance."*
+
+**The evidence, from the persisted Stage D records (480 cells).** Orientation was already
+a true equality and converged five orders of magnitude tighter than position, in the same
+constraint, in the same solve:
+
+| arm | median `pos_error` (boxed) | median `rpy_error` | on the box |
+| --- | --- | --- | --- |
+| learned | 9.999e-05 | 1.38e-08 | 67-84% |
+| joint space | 1.000e-04 | 6.65e-10 | 93-97% |
+| analytic | 2.35e-05 | **8.46e-03** (p90 = 1.00e-02) | orientation, always |
+
+**The analytic arm's is a fairness defect, not merely a numerical one.** Its pose target
+was imposed by a box on its decision variables carrying the whole `ik_constraint_tol`
+tuple, so it received **±0.01 rad of orientation freedom per axis while the arms it is a
+baseline for were pinned to zero**. It used all of it: 90% of its pose successes are more
+than 1e-3 off target, p90 sits exactly on the bound — and `max_violation` reported
+**0.00**, because a box is satisfied right up to its face. It was solving an easier
+problem than the formulation under test.
+
+**What the fix measures instead** (pose pilot, all three arms still converging):
+
+| arm | `pos_error` before → after | `rpy_error` before → after |
+| --- | --- | --- |
+| learned | 1.0e-04 → **1.35e-08** | 1.38e-08 → 1.77e-07 |
+| joint space | 1.0e-04 → **1.44e-08** | 6.65e-10 → 5.69e-08 |
+| analytic | 2.35e-05 → **2.60e-12** | **8.46e-03 → 1.00e-11** |
+
+**Scope of the void.** Every pose-task column of every table, for every arm. Every
+analytic column on both tasks (23-32% of analytic *grasp* successes also sat at ≥1e-4).
+The grasp-task learned and joint-space columns were already true equalities — the mug
+axis rows have always been `0 == 0`, satisfied to ~1e-9 — and are technically sound, but
+are being re-measured with everything else so that one consistent program produces the
+whole campaign.
+
+**The re-measurement is tagged `sc_EQ_*`.** The grids and seeds are deliberately
+unchanged, so the tag is the only thing stopping `collate.py --pair` from comparing a
+corrected run against a pre-fix one; `--tag-prefix` in `cluster/gen_manifest.py` applies
+it. Stages: `FIN` (headline three-way), then the correction-cost curve, the cap curve,
+the 480-cell replication, and the ablation ladder.
+
+**The rule this establishes, which both sibling projects already follow.** The tolerance
+ladder is **constraint bounds exact → solver tolerance → post-hoc verification gate**.
+`../codebase`'s `EEPoseConstraint` passes `lb = ub = extract_xyzrpy(target)` (and
+`eq(...)` in its new formulation, reaching ~1e-17 feasibility);
+`eaik-experiment`'s reachability row is `lb=[0], ub=[0]` under a comment reading
+"(no slack)". This repo had collapsed the first two rungs into one.
+`tests/test_constraint_bounds.py` now reads the bounds Drake was actually handed and
+fails if any of them drifts back.
+
+Two claims elsewhere in this file were false and are corrected: the Stage F2 section said
+"the pose task already pins the end-effector with six equality rows" — only three of the
+six were — and `scripts/panda/panda_pose_headtohead.py` called the pose constraint an
+equality while its own check conceded `pos_tol + slack`. The note at the top of this file
+warning against "a position tolerance below the flow's noise floor" was also wrong: the
+grasp task's axis rows are an equality and the learned arm satisfies them to a median
+9.5e-09, so the flow was never the limit.
 
 ### The latent box was a variable bound too, and it voided every paired learned column (2026-09-01)
 
@@ -1939,7 +2011,8 @@ reproduces, and so does the collapse, and the collapse is much the larger effect
   (Panda 40 -> 9, iiwa 40 -> 2), where it takes **2-3x more** iterations.
 
 The mechanism is visible in the violation column. The pose task already pins the
-end-effector with six equality rows; lifting adds seven more, so the solver faces thirteen
+end-effector with six rows -- three of them equalities at the time, the position rows
+being a +-1e-4 box that has since been corrected; lifting adds seven more, so the solver faces thirteen
 equalities in 27 variables with the flow's badly scaled Jacobian inside seven of them, and
 on the two collapsing rows the median residual is **3e+06 to 7e+06** -- those solves never
 close the chart equality at all. The grasp task's rows are mostly inequalities (the height
