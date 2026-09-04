@@ -300,6 +300,50 @@ bound the top of the curve), EQ3 (the cap curve, six caps x eight experiments) a
 (480 cells at seed 1, with the no-penalty arms). Until then the tables below stand as
 described in the notice.
 
+### EQ3, the cap curve on the corrected program: the equality is neutral, and the draft's claim holds (2026-09-03)
+
+Eight experiments x six caps (5 / 10 / 20 / 45 / 90 / 180 s), 15 x 4 = 60 cells, seed 0,
+`--compile`, `correction_cost_weight = 10`, all arms. Same grids as Stage C, so every
+column pairs cell for cell against the boxed program. Ran in 46 minutes.
+
+**The equality changes nothing in success, now measured on 2,880 cells.** Learned arm,
+equality against boxed, pooled over all eight experiments and all six caps:
+**225 better, 204 worse, p = 0.334.** EQ1 said this at 60 cells; EQ3 says it with
+forty-eight times the data. The ~30% saving in iterations the equality buys does **not**
+convert into cells, which is consistent with the diagnosis that the learned arm's
+cap-bound failures are a frozen divergent set rather than slow convergence -- making a
+diverged solve 30% faster does not rescue it.
+
+**At 180 s, where every arm has saturated, on a correct program:**
+
+| experiment | start | learned | joint space | better / worse | p |
+| --- | --- | --- | --- | --- | --- |
+| Panda pose | native | **59/60** | 30/60 | 30 / 1 | **3.0e-08** |
+| Panda pose | paired | **41/60** | 30/60 | 18 / 7 | **0.043** |
+| iiwa pose | native | **60/60** | 41/60 | 19 / 0 | **3.8e-06** |
+| iiwa pose | paired | 44/60 | 41/60 | 13 / 10 | 0.68 (tie) |
+| Panda grasp | native | 58/60 | 55/60 | 5 / 2 | 0.45 (tie) |
+| Panda grasp | paired | 55/60 | 55/60 | 5 / 5 | 1.0 (exact parity) |
+| iiwa grasp | paired | 53/60 | 58/60 | 2 / 7 | 0.18 (tie) |
+| iiwa grasp | native | 45/60 | **58/60** | 1 / 14 | **0.00098** |
+
+**This is the draft's central claim, on a correct program, at an adequate budget**: the
+learned formulation wins the pose task on both robots under `native` and on the Panda
+under `paired`, and ties on the iiwa under `paired`. On the grasp task it reaches parity
+on the Panda under both protocols. **Only one row of eight now goes significantly
+against it** -- the iiwa grasp under `native` -- and its paired counterpart is no longer
+significant (53 vs 58, p = 0.18) where at 45 s it was 18 vs 58.
+
+**A correction to the earlier campaign's flatness claim.** Stage C reported that "every
+baseline is flat at every cap, in all eight experiments". That is very nearly true and
+the exception matters: on **iiwa grasp paired the joint-space arm is itself cap-bound
+below 20 s**, scoring 59 / 56 / 58 / 58 / 58 / 58 with three cells exiting at the wall
+clock at 5 s and 10 s. Those cells run 1300-1430 iterations against that arm's median of
+70 (p90 485, max 3000), so the joint-space arm is not uniformly cheap -- it has a tail.
+The same wobble is present in the boxed run (58 / 57 / 58 / ...), so it predates the
+equality fix and was simply reported as flat. Everywhere else the baselines are flat to
+the cell across all six caps.
+
 ### EVERY MEASUREMENT BELOW IS VOID: the pose rows were a box, not an equality (2026-09-03)
 
 **Read this before quoting any table in this file.** The end-effector pose constraint's
