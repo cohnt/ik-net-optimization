@@ -208,6 +208,98 @@ default tag. And the grid is drawn from a generator local to the script and hash
 compared by accident -- `python scripts/collate.py --pair learned '<glob>'` runs exact
 McNemar between runs on matching cells and refuses a grid mismatch.
 
+### The corrected campaign, EQ1 and EQ2: the fix is real, and no conclusion moves (2026-09-03)
+
+The first measurements on a program whose pose rows are a true equality. 15 targets x 4
+per-target guesses = 60 cells, 45 s, seed 0, `--compile`,
+`correction_cost_weight = 10`, all arms, both protocols, both robots, both tasks.
+Tagged `sc_EQ_FIN_*`; the grid and seed match Stage C's 45 s runs exactly, so every
+comparison below is paired cell for cell against the boxed program.
+
+**The residuals collapse, which is the fix doing what it was supposed to do.** Medians
+over solved cells:
+
+| experiment | arm | `pos_error` boxed -> equality | `rpy_error` boxed -> equality |
+| --- | --- | --- | --- |
+| Panda pose native | learned | 1.00e-04 -> **1.82e-09** | 1.77e-08 -> 7.03e-09 |
+| Panda pose native | joint space | 1.00e-04 -> **1.96e-09** | 7.21e-10 -> 4.88e-09 |
+| Panda pose native | analytic | 2.13e-05 -> **2.48e-12** | **9.18e-03 -> 9.29e-12** |
+| Panda pose paired | analytic8 | 1.02e-05 -> **2.45e-12** | **6.81e-03 -> 8.04e-12** |
+| iiwa pose native | learned | 9.97e-05 -> **8.75e-10** | 1.38e-08 -> 5.71e-09 |
+
+Five orders of magnitude on position for every arm, and **nine** on the analytic arm's
+orientation.
+
+**But no conclusion moves.** Twenty-four arm-by-arm paired comparisons against the boxed
+run, and **not one is significant** -- the smallest p is 0.52 and the largest change is
++-4 cells of 60. The grasp task is bit-identical, 0 better and 0 worse in every arm, as
+it must be: those rows were already `0 == 0` and the mug subclasses override
+`CreateIKConstraint` without calling the base.
+
+The reason is clear in hindsight and worth stating plainly: a boxed solution stopped at
+1e-4, and the task gate is 1e-3, so it **passed the gate anyway**. The box never made a
+cell easier to succeed at. What it did was return solutions four to nine orders of
+magnitude looser than the program claimed. **The defect was in solution quality and in
+fairness between the arms, not in the rankings.**
+
+The fairness half was real even though it cost no cells. The analytic arm was returning
+poses **half a degree off target** (median `rpy_error` 9.2e-03 rad) and scoring them as
+successes, because the gate's orientation threshold was the same 0.01 rad it was boxed
+at -- the "never gate at a bound the solver optimises against" rule, violated on the
+orientation axis. It now returns 9.3e-12.
+
+**The equality is also cheaper**, which is the opposite of what a tighter constraint
+suggests. Median iterations on cells both runs solved:
+
+| arm | boxed -> equality |
+| --- | --- |
+| learned (four pose rows) | 52 -> 34, 103 -> 75, 56 -> 38, 118 -> 83 |
+| joint space | 29 -> 24 |
+| analytic / analytic8 | 10 -> 8, 37 -> 26, 12 -> 8, 36 -> 26 |
+
+Roughly **30% fewer iterations and 30% less wall clock**, with the objective unchanged to
+within 3%. An equality is unambiguously active, so there is no active-set question and
+IPOPT handles it directly rather than through barrier terms on two inequality faces.
+
+#### EQ1, the three-way comparison on a correct program
+
+| experiment | start | learned | joint space | analytic4 | analytic8 | L vs js | p |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda pose | native | **58/60** | 30/60 | 39/60 | 26/60 | 29 / 1 | **5.8e-08** |
+| Panda pose | paired | 38/60 | 30/60 | 30/60 | 32/60 | 18 / 10 | 0.18 |
+| Panda grasp | native | 58/60 | 55/60 | **59/60** | 53/60 | 5 / 2 | 0.45 |
+| Panda grasp | paired | 50/60 | 55/60 | 51/60 | **56/60** | 4 / 9 | 0.27 |
+| iiwa pose | native | **59/60** | 41/60 | -- | -- | 18 / 0 | **7.6e-06** |
+| iiwa pose | paired | 44/60 | 41/60 | -- | -- | 13 / 10 | 0.68 |
+| iiwa grasp | native | 39/60 | **58/60** | -- | -- | 1 / 20 | **2.1e-05** |
+| iiwa grasp | paired | 45/60 | **58/60** | -- | -- | 2 / 15 | **0.0023** |
+
+The draft's central claim survives the correction: the learned formulation wins the pose
+task decisively under `native` on both robots, and leads without significance under
+`paired`. The grasp task still runs the other way on the iiwa.
+
+#### EQ2: the correction penalty is unchanged by the fix
+
+Grasp task, paired, learned only, same grid. Weight 10 comes from EQ1's own grasp column.
+
+| `correction_cost_weight` | 0.001 | 0.01 | 0.1 | 1.0 | 10 (adopted) |
+| --- | --- | --- | --- | --- | --- |
+| Panda success / 60 | 37 | 44 | 46 | **51** | 50 |
+| iiwa success / 60 | 13 | 24 | 31 | 34 | **45** |
+| median `\|q_c\|`, iiwa | 4.99e-02 | 3.32e-02 | 1.98e-03 | 2.29e-04 | **2.09e-05** |
+| median max violation, iiwa | 2.65e-02 | 1.28e-02 | 8.52e-05 | 2.90e-05 | **2.61e-08** |
+
+The curve, its mechanism and its optimum all reproduce, so **the approved weight of 10
+stands on the corrected program** and the stages that field it are sound. The other
+knobs keep their earlier character too: the collision-shaping pair peaks weakly around
+0.2-0.4, `mu_strategy=adaptive` is inert (42 and 19), and `latent_cost_weight` helps the
+Panda (48 at 0.1) while hurting the iiwa (14) -- still not a general win.
+
+**What still has to run** before the void notice below can be lifted: EQ2b (weight 30, to
+bound the top of the curve), EQ3 (the cap curve, six caps x eight experiments) and EQ4
+(480 cells at seed 1, with the no-penalty arms). Until then the tables below stand as
+described in the notice.
+
 ### EVERY MEASUREMENT BELOW IS VOID: the pose rows were a box, not an equality (2026-09-03)
 
 **Read this before quoting any table in this file.** The end-effector pose constraint's
