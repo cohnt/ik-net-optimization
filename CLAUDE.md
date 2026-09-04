@@ -383,9 +383,85 @@ grid.** Its three-way comparison against the baselines at 480 cells needs `EQ4ba
 which is queued: stage D's baselines are a separate stage, and EQ4 covers only the
 learned and no-penalty arms.
 
-### EVERY MEASUREMENT BELOW IS VOID: the pose rows were a box, not an equality (2026-09-03)
+### THE HEADLINE TABLE: the three-way comparison at 480 cells on a correct program (2026-09-04)
 
-**Read this before quoting any table in this file.** The end-effector pose constraint's
+**This supersedes every table below it.** 60 targets x 8 per-target guesses = **480
+cells**, 45 s, `--compile`, `correction_cost_weight = 10`, both protocols, both robots,
+both tasks, **seed 1** (out of sample -- no tuning decision was made on this grid), with
+the pose constraint a true equality on all six rows. Joint space is the comparison's
+target; the analytic columns are baselines.
+
+| experiment | start | learned | joint space | analytic4 | analytic8 | L vs js | p |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda pose | native | **474/480** | 228/480 | 259/480 | 155/480 | 250 / 4 | **1.2e-68** |
+| Panda pose | paired | **339/480** | 228/480 | 244/480 | 251/480 | 169 / 58 | **9.0e-14** |
+| iiwa pose | native | **408/480** | 325/480 | -- | -- | 130 / 47 | **3.4e-10** |
+| iiwa pose | paired | 299/480 | 325/480 | -- | -- | 92 / 118 | 0.084 (tie) |
+| Panda grasp | native | 447/480 | 457/480 | 450/480 | 387/480 | 20 / 30 | 0.20 (tie) |
+| Panda grasp | paired | 424/480 | **457/480** | 376/480 | 418/480 | 18 / 51 | **8.8e-05** |
+| iiwa grasp | native | 229/480 | **462/480** | -- | -- | 11 / 244 | **2.2e-58** |
+| iiwa grasp | paired | 235/480 | **462/480** | -- | -- | 7 / 234 | **5.0e-60** |
+
+**The harness checks itself and passes.** The joint-space arm is bit-identical between
+the two protocols in all four experiments -- 228/228, 457/457, 325/325, 462/462 -- as it
+must be, since its native start *is* a random configuration. Every difference in the
+other columns is therefore attributable to their initialisation.
+
+**Two conclusions move, both in the learned arm's favour**, against the void (boxed)
+Stage D on the same seed and grid:
+
+| experiment | start | boxed L / js | p | equality L / js | p |
+| --- | --- | --- | --- | --- | --- |
+| Panda pose | native | 466 / 249 | 3.8e-57 | 474 / 228 | **1.2e-68** |
+| Panda pose | paired | 338 / 249 | 2.3e-09 | 339 / 228 | **9.0e-14** |
+| **Panda grasp** | **native** | 437 / 457 | **0.013 (loss)** | 447 / 457 | **0.20 (tie)** |
+| iiwa pose | native | 407 / 332 | 7.2e-09 | 408 / 325 | **3.4e-10** |
+| **iiwa pose** | **paired** | 296 / 332 | **0.016 (loss)** | 299 / 325 | **0.084 (tie)** |
+| iiwa grasp | either | 227-237 / 462 | ~6e-59 | 229-235 / 462 | ~2e-59 |
+
+The learned columns barely move (466 -> 474, 338 -> 339, 407 -> 408, 227 -> 229). What
+moves is **joint space, and only on the pose task**: 249 -> 228 on the Panda and
+332 -> 325 on the iiwa, while its grasp columns are unchanged (457, 462). With the box
+gone that arm has to actually reach the target rather than stop 1e-4 away, and on the
+pose task it pays about 20 cells for it. That is enough to turn the two rows above from
+losses into ties.
+
+**So the draft's central claim is stronger on a correct program, not weaker.** The
+learned formulation wins the pose task on three of four rows -- decisively on the Panda
+under both protocols and on the iiwa under `native` -- and ties on the fourth. On the
+grasp task it ties on the Panda under `native` and loses under `paired`; the iiwa grasp
+row remains the one large, unexplained deficit, and its cause is the flow's own gain
+(see "The residual failures are the flow's own gain"), not anything in the optimization.
+
+`analytic8` against `analytic4` is still the unbalanced-bundle pathology, both signs
+intact: under `paired` the 8-branch chart wins the grasp task (418 against 376) because
+it can represent starts the 4-branch chart forfeits, and under `native` it loses badly on
+both tasks (387 against 450, and **155 against 259** on the pose task), because a uniform
+draw over eight branches lands in the narrow near-limit bundles half the time.
+
+### EQ2b: the correction-cost curve still turns over between 10 and 30 (2026-09-04)
+
+Grasp task, learned arm only, 60 cells at 45 s, on the corrected program:
+
+| robot / start | w = 1.0 | w = 10 | w = 30 |
+| --- | --- | --- | --- |
+| Panda paired | 51 | 50 | 49 |
+| Panda native | -- | **58** | 51 |
+| iiwa paired | 34 | **45** | 41 |
+| iiwa native | -- | 39 | **42** |
+
+Three of the four rows are flat or worse at 30, so **10 remains at or near the optimum**
+rather than being merely the largest value tried -- the same conclusion the void B3
+reached, reproduced on a correct program. Read the per-row wobble as noise at 60 cells;
+EQ4's 480-cell replication above is what carries the penalty's case.
+
+### Why everything below is void: the pose rows were a box, not an equality (2026-09-03)
+
+**The re-measurement is COMPLETE** -- see the corrected tables above (EQ1 finals, EQ2
+knob sweeps, EQ3 cap curve, EQ4 penalty replication, EQ4base three-way at 480 cells).
+This section records what was wrong and why every table *below* it is superseded.
+
+**Read this before quoting any table below.** The end-effector pose constraint's
 position rows were `lb = -1e-4, ub = +1e-4` rather than `lb = ub = 0`. That is not a
 slightly looser equality: it is an inequality, and an interior-point method parks *on*
 the face of one instead of driving the residual to zero.
