@@ -140,16 +140,24 @@ echo "===== [5/6] python deps ====="
 # device, which avoids the poll entirely; this is the belt to that pair of braces, so an
 # interactive session or a stray script cannot fail on an import.
 "$PIP" install --quiet nvidia-ml-py || Fail "nvidia-ml-py"
+# Training deps (iiwa retraining campaign). Pinned to the laptop's versions. wandb runs
+# WANDB_MODE=offline on compute nodes (no internet, no credentials there); syncing to
+# the dashboard happens from the laptop.
+"$PIP" install --quiet pytorch-lightning==2.6.5 wandb==0.29.0 || Fail "lightning/wandb"
 "$PIP" install --quiet --no-deps "jrl @ git+https://github.com/jstmn/Jrl.git" \
     || Fail "jrl"
-# --ignore-requires-python: ikflow 0.2.0 declares Requires-Python "<3.12,>=3.10", and the
-# only cp312 interpreter here is 3.12.3, so pip refuses it. The pin is stale, not a real
-# incompatibility: this laptop runs that exact version on 3.12.3 and imports it fine --
-# uv (which built the local venv) does not enforce Requires-Python, which is why the
-# constraint never surfaced before. Overriding it reproduces the local environment rather
-# than departing from it. Drop the flag if ikflow ever republishes with a corrected pin.
-"$PIP" install --quiet --no-deps --ignore-requires-python \
-    "ikflow @ git+https://github.com/jstmn/ikflow.git" || Fail "ikflow"
+# ikflow comes from the VENDORED FORK (third_party/ikflow, cohnt/ikflow), editable so a
+# restage of the repo tree updates the training code with no reinstall. The upstream
+# wheel is inference-only (no ikflow/training/), and the fork carries the DDP training
+# support and the pole-fraction metric. --no-deps remains mandatory (metadata would
+# replace the cu126 torch). Requires stage_code.sh to have run first.
+[ -d "$ROOT/repo/third_party/ikflow/ikflow" ] || Fail "vendored fork missing -- run cluster/stage_code.sh first"
+"$PIP" install --quiet --no-deps -e "$ROOT/repo/third_party/ikflow" || Fail "ikflow (vendored fork)"
+"$PY" - <<'PYFORK' || Fail "ikflow does not resolve to the vendored fork"
+import ikflow, os, sys
+path = os.path.realpath(ikflow.__file__)
+sys.exit(0 if "repo/third_party/ikflow" in path else 1)
+PYFORK
 
 # Warm the model caches. Compute nodes have no internet, and ikflow computes its
 # MODELS_DIR from expanduser("~") at import, so HOME must point at the tree the
