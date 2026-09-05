@@ -36,7 +36,7 @@ fi
 ## Match on the payload script name, which LLstat shows when a job is submitted
 ## without -J, AND on the lik_<stage>_n<i> convention used when it is. Calibration
 ## and smoke are named lik_cal_* / smoke.sh and deliberately do not match.
-RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
+RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|train_iiwa\|lik_train\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
 if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
     echo "REFUSING: $RUNNING campaign job(s) are on the cluster right now." >&2
     echo "Restaging would change the code later items import mid-stage." >&2
@@ -47,7 +47,7 @@ fi
 sc_run "mkdir -p ~/$SC_ROOT/repo ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/home/.cache"
 
 sc_rsync -az --delete \
-    --exclude='.git/' --exclude='.claude/' --exclude='.venv/' \
+    --exclude='.git/' --exclude='.git' --exclude='.claude/' --exclude='.venv/' \
     --exclude='results/' --exclude='logs/' --exclude='notebooks/artifacts/' \
     --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' \
     --exclude='workshop-paper-draft.pdf' \
