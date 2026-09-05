@@ -6,24 +6,28 @@
 # If even REMOTELY unsure about a SuperCloud action, STOP and ask Thomas.
 # ===========================================================================
 #
-# Submit through cluster/submit_train.sh (which guards against double-submission);
-# the raw form, from ~/learned-ik/repo on the login node:
+# Submit through cluster/submit_train.sh ONLY. It generates a launcher with
+# #SBATCH directives (--nodes=N --ntasks-per-node=1 --gres=gpu:volta:2) into
+# $RUN_DIR/launch.sh and LLsubs that; the launcher's `srun --ntasks-per-node=1
+# --kill-on-bad-exit=1` runs THIS script once per node inside one shared
+# allocation. LLsub triple mode must NOT be used: "[N,1,40]" is a job ARRAY of
+# N independent single-node jobs (no shared nodelist -> no c10d rendezvous, and
+# its bare-`wait` wrapper swallows payload exit codes). See submit_train.sh.
 #
-#   NNODES=4 RUN_NAME=iiwa14_ddp_r1 TRAIN_EXTRA_ARGS='--learning_rate=1.06e-4' \
-#     LLsub ./cluster/train_iiwa.sh "[4,1,40]" -g volta:2 -q xeon-g6-volta -T 96:00:00 -J lik_train_r1
+# Extra train_ddp.py args travel via TRAIN_EXTRA_ARGS (sbatch exports the
+# submission env by default and srun propagates it; trailing args do not pass).
 #
-# Extra train_ddp.py args travel via TRAIN_EXTRA_ARGS (env vars pass through LLsub;
-# trailing script args do not).
-#
-# Triples "[N,1,40]" = one task per node, 40 threads each; LLSUB_RANK is then the
-# node rank. Whether -g volta:2 composes with triples is settled by the 2-node
-# smoke (cluster/README).  The job is IDEMPOTENT: --ckpt_path=auto resumes from
+# The job is IDEMPOTENT: --ckpt_path=auto resumes from
 # $RUN_DIR/checkpoints/last.ckpt, so resubmitting the same RUN_NAME after a
 # walltime kill continues the run; a new RUN_NAME starts fresh.
 #
 # NOTE: source /etc/profile BEFORE enabling -u -- Z97-byobu.sh reads unset LC_BYOBU.
 source /etc/profile
 set -uo pipefail
+
+## First line of output BEFORE anything that can fail: the triple-mode postmortem
+## showed launcher plumbing can lose last-second stderr entirely.
+echo "train_iiwa: alive on $(hostname) date=$(date -Is) nodeid=${SLURM_NODEID:-?} job=${SLURM_JOB_ID:-?}"
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
@@ -55,7 +59,7 @@ export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8
 ## torchrun's LOCAL_RANK 0/1 index into the visible set via torch.cuda.set_device.
 
 PY="$ROOT/venv/bin/python"
-NODE_RANK="${LLSUB_RANK:-${SLURM_NODEID:-0}}"
+NODE_RANK="${SLURM_NODEID:-0}"   # srun sets it per task; 1 task per node => node rank
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -1)
 mkdir -p "$RUN_DIR/checkpoints"
 
