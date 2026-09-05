@@ -23,6 +23,7 @@ source "$(dirname "$0")/ssh_common.sh"
 RUN_NAME="${1:?usage: submit_train.sh <run_name> [nnodes] [walltime] [-- extra args]}"
 NNODES="${2:-4}"
 WALL="${3:-96:00:00}"
+PARTITION="${PARTITION:-xeon-g6-volta}"   # PARTITION=debug-gpu for smoke-sized runs ONLY
 shift $(( $# > 3 ? 3 : $# ))
 [ "${1:-}" = "--" ] && shift
 EXTRA_ARGS="$*"
@@ -37,5 +38,5 @@ fi
 echo "Submitting: RUN_NAME=$RUN_NAME NNODES=$NNODES WALL=$WALL EXTRA='$EXTRA_ARGS'"
 sc_run "cd ~/$SC_ROOT/repo && \
   RUN_NAME='$RUN_NAME' NNODES=$NNODES TRAIN_EXTRA_ARGS='$EXTRA_ARGS' \
-  LLsub ./cluster/train_iiwa.sh \"[$NNODES,1,40]\" -g volta:2 -q xeon-g6-volta \
+  LLsub ./cluster/train_iiwa.sh \"[$NNODES,1,40]\" -g volta:2 -q $PARTITION \
     -T $WALL -J 'lik_train_$RUN_NAME'"
