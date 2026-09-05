@@ -232,7 +232,18 @@ measured, not just how long it takes. `PROCS=1` is always safe.
   solve takes the iterations it takes. Such a probe reports "no effect" whatever
   is true. The grasp task, where ~40% of cells exit at the cap, is the workload
   that makes throughput visible.
-- **Quote the triples spec** if you ever use triples mode (`"[4,1,40]"`) —
-  unquoted brackets are a bash glob.
+- **LLsub triples mode cannot run a multi-node job.** `"[N,1,40]"` generates a
+  Slurm job ARRAY of N independent single-node jobs (`--array=1-N`), so the
+  nodes never share an allocation — no common `SLURM_JOB_NODELIST`, no c10d
+  rendezvous. Its generated wrapper also execs the payload directly (the exec
+  bit is load-bearing, unlike `-s` mode where sbatch spools the script) and
+  ends in a bare `wait`, which returns 0 whatever the payload did — a failed
+  payload reports COMPLETED 0:0 with empty logs (smoke_1g, job 5544517,
+  2026-09-05: chmod-less script, "Permission denied" lost in an unwaited
+  process substitution). Multi-node work uses `#SBATCH` directives + `srun`
+  via `cluster/submit_train.sh`'s generated launcher; in that directives mode
+  LLsub DROPS `-g/-q/-T/-J`, so resources must live in the directives. The
+  generated wrapper of any past job is recoverable:
+  `sacct -j <jobid> --batch-script`.
 - **`LLstat` shows placeholder resources (1 CPU / 4 G) for PENDING jobs.** That
   is not evidence of a bad submission; verify after it starts before killing it.
