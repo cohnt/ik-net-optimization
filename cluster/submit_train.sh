@@ -37,6 +37,6 @@ fi
 
 echo "Submitting: RUN_NAME=$RUN_NAME NNODES=$NNODES WALL=$WALL EXTRA='$EXTRA_ARGS'"
 sc_run "cd ~/$SC_ROOT/repo && \
-  RUN_NAME='$RUN_NAME' NNODES=$NNODES TRAIN_EXTRA_ARGS='$EXTRA_ARGS' \
+  RUN_NAME='$RUN_NAME' NNODES=$NNODES GPUS_PER_NODE=${GPUS_PER_NODE:-2} TRAIN_EXTRA_ARGS='$EXTRA_ARGS' \
   LLsub ./cluster/train_iiwa.sh \"[$NNODES,1,40]\" -g volta:2 -q $PARTITION \
     -T $WALL -J 'lik_train_$RUN_NAME'"
