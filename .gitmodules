@@ -1,3 +1,3 @@
 [submodule "third_party/ikflow"]
 	path = third_party/ikflow
-	url = https://github.com/cohnt/ikflow
+	url = git@github.com:cohnt/ikflow.git
