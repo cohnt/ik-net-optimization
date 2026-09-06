@@ -44,11 +44,17 @@ shift $(( $# > 3 ? 3 : $# ))
 [ "${1:-}" = "--" ] && shift
 EXTRA_ARGS="$*"
 
-LIVE=$(sc_run 'LLstat 2>/dev/null | grep -c "lik_train"' 2>/dev/null | tr -dc '0-9')
-if [ -n "${LIVE:-}" ] && [ "${LIVE:-0}" -gt 0 ]; then
-    echo "REFUSING: $LIVE lik_train job(s) already RUNNING/PENDING." >&2
-    echo "Two jobs on one RUN_DIR race the checkpoints. LLkill the old one or wait." >&2
-    exit 3
+## ALLOW_CONCURRENT=1 skips the one-at-a-time guard. Calibration-only: distinct
+## RUN_NAMEs cannot race each other's checkpoints, and the volta GrpTRES cap
+## meters however many jobs are queued. NEVER set it when resubmitting a run
+## that might still have a live job -- that is exactly the race the guard stops.
+if [ "${ALLOW_CONCURRENT:-0}" != "1" ]; then
+    LIVE=$(sc_run 'LLstat 2>/dev/null | grep -c "lik_train"' 2>/dev/null | tr -dc '0-9')
+    if [ -n "${LIVE:-}" ] && [ "${LIVE:-0}" -gt 0 ]; then
+        echo "REFUSING: $LIVE lik_train job(s) already RUNNING/PENDING." >&2
+        echo "Two jobs on one RUN_DIR race the checkpoints. LLkill the old one or wait." >&2
+        exit 3
+    fi
 fi
 
 ## The payload is exec'd by srun, so the exec bit is load-bearing (rsync -a
@@ -66,7 +72,7 @@ sc_run "mkdir -p $RUN_DIR_R && cat > $RUN_DIR_R/launch.sh && chmod +x $RUN_DIR_R
 #SBATCH --nodes=$NNODES
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=40
-#SBATCH --gres=gpu:volta:2
+#SBATCH --gres=gpu:volta:$GPUS_PER_NODE
 #SBATCH --partition=$PARTITION
 #SBATCH --exclusive
 #SBATCH --time=$WALL
