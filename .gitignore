@@ -11,3 +11,6 @@ ikflow_solver_log.txt
 
 # cluster audit log and job logs
 logs/
+
+# wandb CLI scratch (offline runs live under results/)
+wandb/
