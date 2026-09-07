@@ -1,5 +1,6 @@
 ipopt_output.txt
-models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl
+# iiwa14 IKFlow weights are large binaries obtained/trained separately, never tracked.
+models/iiwa14/*.pkl
 notebooks/artifacts
 results/
 
