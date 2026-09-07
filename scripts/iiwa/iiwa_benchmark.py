@@ -76,6 +76,10 @@ def parse_args():
                         "arm reached the target, not whose rounding is smaller. The raw "
                         "errors are stored per record, so any other gate can be "
                         "recomputed from the summary without re-running.")
+    p.add_argument("--checkpoint", default=None,
+                   help="path to an alternative iiwa14 IKFlow .pkl; default is the shipped "
+                        "lemon-haze-7 checkpoint. Recorded in the run metadata so runs "
+                        "against different networks cannot be paired by accident.")
     p.add_argument("--tag", default=None)
     p.add_argument("--cells", default=None, metavar="TI:GI[,TI:GI...]",
                    help="run only these (target, guess) cells of the seeded grid")
@@ -115,8 +119,13 @@ def main():
     if args.shard and args.cells:
         raise SystemExit("--shard and --cells are mutually exclusive")
     shard = bm.parse_shard(args.shard)
+    # A non-default checkpoint goes in the tag as well as the metadata: two runs of the
+    # same grid against DIFFERENT networks are not comparable, and without this they would
+    # resolve to the same summary.json and overwrite each other (the same trap --shard hit).
+    ckpt_tok = ([os.path.splitext(os.path.basename(args.checkpoint))[0]]
+                if args.checkpoint else [])
     tag = args.tag or "_".join(
-        ["iiwa", args.task, args.config, args.start]
+        ["iiwa", args.task, args.config, args.start] + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
         + (["compiled"] if args.compile else []))
     if shard is not None:
@@ -154,7 +163,7 @@ def main():
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
         sampler_cls = IiwaMugProgram if args.task == "mug" else Iiwa14IKProgram
-        sampler = sampler_cls(diagram, options=base_options)
+        sampler = sampler_cls(diagram, options=base_options, checkpoint=args.checkpoint)
         sampler.create_prog()
     ik_solver = sampler.ik_solver
     lower = sampler.plant.GetPositionLowerLimits()
@@ -289,7 +298,8 @@ def main():
                                         compile_seconds=compile_seconds,
                                         overrides=overrides, start=args.start,
                                         n_targets=args.targets, n_guesses=args.guesses,
-                                        shard=args.shard, **bm.provenance()))
+                                        shard=args.shard, checkpoint=args.checkpoint,
+                                        **bm.provenance()))
     bar.close()
     print()
     bm.print_table(bm.summarise(records, arms, args.targets, args.guesses),
