@@ -437,6 +437,35 @@ def stage_FIN(wall, targets, guesses, shards, corr_cost=CORR_COST):
     return items
 
 
+# The retrained iiwa14 chart, adopted from run iiwa14_ddp_r1 at step 620000 (2.540B
+# samples). Path is relative to the repo root on the cluster; models/ is staged.
+NEW_IIWA_CKPT = "models/iiwa14/iiwa14__ddp-r1__step620000.pkl"
+
+
+def stage_CKPT(wall, targets, guesses, shards, corr_cost=CORR_COST, seed=1):
+    """Adoption test for the retrained iiwa14 chart: ddp-r1 step 620000 against
+    lemon-haze-7, on IDENTICAL cells, both tasks, both protocols.
+
+    Both networks are re-measured in the same campaign rather than pairing the new one
+    against the archived lemon-haze columns: those predate several changes to this repo,
+    and a chart comparison is exactly the place where an unnoticed difference in the
+    program would be indistinguishable from the effect under test.
+
+    The claim to beat is the archived iiwa grasp deficit -- 229/480 native, 235/480
+    paired -- so `mug` is the row that matters; `pose` is carried to show the change does
+    not cost anything there. seed=1 and 60x8 match the headline grid.
+    """
+    items = []
+    for name, flags in (("new", ["--checkpoint", NEW_IIWA_CKPT]), ("old", [])):
+        for task in ("mug", "pose"):
+            for start in ("paired", "native"):
+                items += item("iiwa", f"sc_CKPT_{name}_{task}_{int(wall)}_{start}",
+                              ["--task", task, "--config", "latent", "--start", start,
+                               "--set", f"correction_cost_weight={corr_cost}"] + flags,
+                              targets, guesses, ALL_ARMS["iiwa"], wall, shards, seed=seed)
+    return items
+
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -534,7 +563,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["A", "B", "B2", "B3", "C", "D", "Dbase", "E",
+    p.add_argument("--stage", choices=["CKPT", "A", "B", "B2", "B3", "C", "D", "Dbase", "E",
                                    "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--wall-time", type=float, default=20.0,
                    help="the solver's per-cell cap, in seconds. Choose it from "
@@ -591,6 +620,9 @@ def main():
                                   args.shards, args.reg),
              "FIN": lambda: stage_FIN(args.wall_time, args.targets,
                                       args.guesses, args.shards),
+             ## CKPT: the retrained iiwa chart against lemon-haze-7 on identical cells.
+             "CKPT": lambda: stage_CKPT(args.wall_time, args.targets,
+                                        args.guesses, args.shards),
              }[args.stage]()
 
     if args.tag_prefix:
