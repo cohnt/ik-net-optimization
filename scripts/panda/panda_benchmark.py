@@ -86,6 +86,12 @@ def parse_args():
                         "redundancy parameter and branch drawn from theirs, the joint-space "
                         "arm from a random configuration. Sampled, never searched: no "
                         "candidate is scored against the problem in either mode.")
+    p.add_argument("--checkpoint", default=None,
+                   help="Path to a locally trained Panda .pkl chart. Default: the upstream "
+                        "pretrained panda__full__lp191_5.25m, downloaded by ikflow. The "
+                        "architecture is read from the checkpoint's .arch.json sidecar and "
+                        "cross-checked against the weights, so no architecture flags are "
+                        "needed. Recorded in the run metadata AND the tag.")
     p.add_argument("--arms", default="learned,numerical,analytic")
     p.add_argument("--config", default="baseline")
     p.add_argument("--seed", type=int, default=0)
@@ -162,8 +168,13 @@ def main():
     if args.shard and args.cells:
         raise SystemExit("--shard and --cells are mutually exclusive")
     shard = bm.parse_shard(args.shard)
+    # A non-default checkpoint goes in the tag as well as the metadata: two runs of the
+    # same grid against DIFFERENT networks are not comparable, and without this they would
+    # resolve to the same summary.json and overwrite each other (the same trap --shard hit).
+    ckpt_tok = ([os.path.splitext(os.path.basename(args.checkpoint))[0]]
+                if args.checkpoint else [])
     tag = args.tag or "_".join(
-        [args.task, args.config, args.solver, args.start]
+        [args.task, args.config, args.solver, args.start] + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
         + (["compiled"] if args.compile else []))
     # The suffix is what makes a shard shard-safe: without it every shard of a run
@@ -218,7 +229,7 @@ def main():
         # One program, used only to sample targets and to hold the loaded network so
         # every later program shares it (the flow is ~1.8 s to load).
         sampler_cls = PandaMugProgram if args.task == "mug" else PandaIKProgram
-        sampler = sampler_cls(diagram, options=base_options)
+        sampler = sampler_cls(diagram, options=base_options, checkpoint=args.checkpoint)
         sampler.create_prog()
     ik_solver = sampler.ik_solver
     lower = sampler.plant.GetPositionLowerLimits()
@@ -400,7 +411,8 @@ def main():
                       compiled=args.compile, compile_seconds=compile_seconds,
                       overrides=overrides, start=args.start, guess_filter=args.guess_filter,
                       n_targets=args.targets, n_guesses=args.guesses,
-                      shard=args.shard, **bm.provenance()))
+                      shard=args.shard, checkpoint=args.checkpoint,
+                      **bm.provenance()))
     bar.close()
 
     summary = bm.summarise(records, arms, args.targets, args.guesses)

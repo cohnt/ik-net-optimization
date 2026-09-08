@@ -18,12 +18,13 @@ from pydrake.all import (
     Quaternion_,
 )
 from src.panda_analytic_ik import Analytic_IK_Panda
+from src.flow_loading import LoadFlowSolver
 
 
 
 
 class PandaIKProgram(IKFlowProgram):
-    def __init__(self, diagram, options = ProgramOptions(), model = None):
+    def __init__(self, diagram, options = ProgramOptions(), model = None, checkpoint = None):
         self.diagram = diagram
         self.plant = diagram.GetSubsystemByName("plant")
         self.autodiff_plant = self.plant.ToAutoDiffXd()
@@ -37,11 +38,19 @@ class PandaIKProgram(IKFlowProgram):
         self.num_pos = self.plant.num_positions()
         self.num_arm_dof = 7
 
-        if model is None:
+        if model is not None:
+            self.ik_solver = model
+        elif checkpoint is not None:
+            # A locally trained chart: its architecture comes from the `.arch.json` sidecar
+            # and is cross-checked against the weights. `nb_nodes` and `rnvp_clamp` change
+            # the forward pass without changing any parameter shape, so a mismatch would
+            # otherwise load silently.
+            self.ik_solver = LoadFlowSolver("panda", checkpoint)
+        else:
+            # The upstream pretrained chart, whose hyperparameters ikflow reads from its
+            # own model_descriptions.yaml.
             model_name = "panda__full__lp191_5.25m"
             self.ik_solver, _ = get_ik_solver(model_name)
-        else:
-            self.ik_solver = model
 
         self.options = options
         self.ConfigureNetworkDtype()
@@ -185,8 +194,8 @@ class PandaIKProgram(IKFlowProgram):
 
 class PandaMugProgram(PandaIKProgram):
     '''Program for grasping pose of a mug for Panda'''
-    def __init__(self, diagram, options = ProgramOptions(), model = None):
-        super().__init__(diagram, options, model)
+    def __init__(self, diagram, options = ProgramOptions(), model = None, checkpoint = None):
+        super().__init__(diagram, options, model, checkpoint)
         # The flow is conditioned on the pose of the frame it was trained against
         # (panda_hand); the grasp constraint acts on the point between the fingers.
         # Keep both so seeds can be drawn in the frame the network understands.

@@ -42,12 +42,16 @@ from pole_metric import load_solver  # noqa: E402
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--robot", default="iiwa14", choices=["iiwa14", "panda", "iiwa7"],
+                   help="Robot the checkpoint was trained for. The Panda ladder needs "
+                        "this; without --checkpoint it screens the upstream pretrained chart.")
     p.add_argument("--checkpoint", default=None,
                    help="iiwa14 .pkl; default is whatever src/iiwa_program.py loads")
-    p.add_argument("--nb_nodes", type=int, default=12,
+    p.add_argument("--nb_nodes", type=int, default=None,
                    help="coupling blocks in the checkpoint. A wrong value changes the "
                         "forward pass without changing any parameter shape.")
-    p.add_argument("--dim_latent_space", type=int, default=8)
+    p.add_argument("--dim_latent_space", type=int, default=None,
+                   help="Fallback only; see --nb_nodes.")
     p.add_argument("--n", type=int, default=20000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--z", choices=["prior", "ball"], default="ball",
@@ -59,10 +63,12 @@ def main():
     p.add_argument("--json_out", default=None)
     args = p.parse_args()
 
-    default_ckpt = os.path.join(
-        REPO_ROOT, "models/iiwa14/iiwa14__ddp-r1__step620000.pkl")
+    # The Panda's default chart is the one ikflow downloads, so it has no local path;
+    # load_solver takes checkpoint=None to mean exactly that.
+    default_ckpt = (os.path.join(REPO_ROOT, "models/iiwa14/iiwa14__ddp-r1__step620000.pkl")
+                    if args.robot == "iiwa14" else None)
     ckpt = args.checkpoint or default_ckpt
-    solver, width, ndof = load_solver("iiwa14", ckpt, args.nb_nodes, args.dim_latent_space)
+    solver, width, ndof = load_solver(args.robot, ckpt, args.nb_nodes, args.dim_latent_space)
     robot = solver.robot
 
     rng = np.random.default_rng(args.seed)
@@ -92,7 +98,12 @@ def main():
             chunks.append(out[:, :ndof].abs().amax(dim=1).cpu().numpy())
     qinf = np.concatenate(chunks)
 
-    res = {"checkpoint": os.path.basename(ckpt), "nb_nodes": args.nb_nodes,
+    res = {"checkpoint": os.path.basename(ckpt) if ckpt else "downloaded",
+           "robot": args.robot,
+           "nb_nodes": solver.arch["nb_nodes"],
+           "coeff_fn_internal_size": solver.arch["coeff_fn_internal_size"],
+           "rnvp_clamp": solver.arch["rnvp_clamp"],
+           "dim_latent_space": solver.arch["dim_latent_space"],
            "n": args.n, "seed": args.seed, "z": args.z, "domain": "task_poses",
            "pole/frac_gt_1000": float((qinf > 1000).mean()),
            "pole/count_gt_1000": int((qinf > 1000).sum()),

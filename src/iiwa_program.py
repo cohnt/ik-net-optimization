@@ -5,6 +5,7 @@ from ikflow.config import DEVICE
 import torch
 import numpy as np
 from src.utils import Mug, RepoDir
+from src.flow_loading import LEGACY_IIWA_ARCH, LoadFlowSolver
 from src.generic_program import *
 import numpy as np
 from pydrake.all import (
@@ -49,22 +50,19 @@ class Iiwa14IKProgram(IKFlowProgram):
         self.num_task_vars = 6
 
         if model is None:
-            hparams = {'nb_nodes': nb_nodes,
-            'dim_latent_space': 8,
-            'coeff_fn_config': 3,
-            'coeff_fn_internal_size': 1024,
-            'rnvp_clamp': 2.5,
-            'robot_name': 'iiwa14'}
-
-            robot = get_robot(hparams['robot_name'])
-            hyper_parameters = IkflowModelParameters()
-            hyper_parameters.__dict__.update(hparams)
-            self.ik_solver = IKFlowSolver(hyper_parameters, robot, compile_model=None)
             # The retrained chart (run iiwa14_ddp_r1, step 620000, 2.540B samples).
             # Adopted 2026-09-07: +41/+59 grasp cells and +24 pose cells over
             # lemon-haze-7 on 480 paired cells, with median max violation 2600x lower.
             default_ckpt = os.path.join(RepoDir(), "models/iiwa14/iiwa14__ddp-r1__step620000.pkl")
-            self.ik_solver.load_state_dict(checkpoint if checkpoint is not None else default_ckpt)
+            # The architecture comes from the checkpoint's own `.arch.json` sidecar and is
+            # cross-checked against the weights, because `nb_nodes` and `rnvp_clamp` change
+            # the forward pass without changing any parameter shape -- a mismatch would
+            # load silently. `nb_nodes` survives only as the fallback for a sidecar-less
+            # checkpoint; where a sidecar exists it wins.
+            fallback = dict(LEGACY_IIWA_ARCH, nb_nodes=nb_nodes)
+            self.ik_solver = LoadFlowSolver(
+                "iiwa14", checkpoint if checkpoint is not None else default_ckpt,
+                fallback_arch=fallback)
         else:
             self.ik_solver = model
 
@@ -100,7 +98,7 @@ class Iiwa14IKProgram(IKFlowProgram):
 
 
         self.prog.SetInitialGuess(self.c, self.initial_guess)
-        self.prog.SetInitialGuess(self.z, np.zeros(8))
+        self.prog.SetInitialGuess(self.z, np.zeros(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
 
         # One reverse pass yields both dq/dvars and q, from the shared factory: with
