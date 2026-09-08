@@ -30,16 +30,29 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath
 from src.flow_loading import ARCH_FIELDS, LoadFlowSolver, SidecarPath, WriteArch  # noqa: E402
 
 
-def _submodule_sha():
-    """The ikflow fork commit this checkpoint's trainer came from, for provenance."""
+def _provenance_commit():
+    """Which code produced this checkpoint.
+
+    Prefers the ikflow fork's own commit, but the cluster copy is an rsync of the working
+    tree with .git excluded, so `git rev-parse` finds nothing there. cluster/stage_code.sh
+    writes the staged learned-ik commit to `.staged-commit` for exactly this reason, so
+    fall back to it rather than recording null -- a checkpoint whose provenance is "null"
+    is the case the sidecar exists to prevent.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
     try:
-        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
         out = subprocess.run(["git", "-C", os.path.join(root, "third_party/ikflow"),
                               "rev-parse", "HEAD"],
                              capture_output=True, text=True, timeout=10)
-        return out.stdout.strip() or None
+        if out.stdout.strip():
+            return {"ikflow_commit": out.stdout.strip()}
     except Exception:
-        return None
+        pass
+    try:
+        with open(os.path.join(root, ".staged-commit")) as f:
+            return {"staged_learned_ik_commit": f.read().strip()}
+    except Exception:
+        return {"commit": None}
 
 
 def export(ckpt_path: str, out_path: str, robot_name: str = None) -> dict:
@@ -70,7 +83,7 @@ def export(ckpt_path: str, out_path: str, robot_name: str = None) -> dict:
     sidecar = WriteArch(out_path, arch, provenance={
         "source_checkpoint": os.path.abspath(ckpt_path),
         "global_step": int(ckpt.get("global_step", -1)),
-        "ikflow_commit": _submodule_sha(),
+        **_provenance_commit(),
     })
     print(f"wrote {sidecar}  (nb_nodes={arch['nb_nodes']}, "
           f"coeff_fn_internal_size={arch['coeff_fn_internal_size']}, "
