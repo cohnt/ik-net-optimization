@@ -1,0 +1,40 @@
+# The reduced-capacity chart ladder. One line per training run, in submission order.
+# Fields: <robot> <run_name> <architecture args...>
+#
+# Read this next to the hypothesis it tests. FrEIA's GLOW blocks soft-clamp the log-scale
+# to clamp*0.636*atan(s/clamp), so the flow's worst-case output gain over nb_nodes blocks
+# is about exp(2.4975 * nb_nodes) at rnvp_clamp=2.5:
+#
+#     nb_nodes    12        8        6        4
+#     ceiling     1.0e13    4.8e08   3.2e06   2.2e04
+#
+# and the runaway configurations that cost the learned arm its cells sit at 1e7-1e16 rad.
+# So DEPTH lowers the ceiling. WIDTH (coeff_fn_internal_size) lowers accuracy while leaving
+# the ceiling untouched -- which is why the w256 arms are here: they are the control that
+# separates "less accurate" from "less headroom". Without them a win could not be attributed.
+#
+# Held fixed across the whole ladder, deliberately:
+#   * dim_latent_space at each robot's own baseline (iiwa14: 8, panda: 7). The latent width
+#     IS the program's decision-variable count, so varying it would change the optimization
+#     problem rather than the chart. Verified: 21 vars for iiwa, 20 for panda, at every rung.
+#   * rnvp_clamp = 2.5, confirmed optimal for these weights by the sweep in CLAUDE.md.
+#   * 620k steps, batch 512/rank, lr 1.5e-4, step_lr_every 2441 -- ddp_r1's actual values,
+#     so architecture is the only variable.
+#
+# Order: iiwa first (it has the live deficit), n6 first within it (elated-firefly-11 is a
+# 6-block chart, so the Phase 0 pilot gives that rung a sanity reference), then n4 for the
+# lowest ceiling, then the rest. panda_n12 leads the Panda block because it is the
+# self-trained control every other Panda rung is compared against -- without it, a reduced
+# Panda chart is confounded with "our recipe vs the upstream pretrained one".
+#
+# iiwa14's 12x1024 rung is NOT here: it already exists as iiwa14_ddp_r1.
+
+iiwa14  iiwa14_n6        --nb_nodes=6
+iiwa14  iiwa14_n4        --nb_nodes=4
+iiwa14  iiwa14_n8        --nb_nodes=8
+iiwa14  iiwa14_n12_w256  --nb_nodes=12 --coeff_fn_internal_size=256
+panda   panda_n12        --nb_nodes=12 --dim_latent_space=7
+panda   panda_n6         --nb_nodes=6  --dim_latent_space=7
+panda   panda_n4         --nb_nodes=4  --dim_latent_space=7
+panda   panda_n8         --nb_nodes=8  --dim_latent_space=7
+panda   panda_n12_w256   --nb_nodes=12 --dim_latent_space=7 --coeff_fn_internal_size=256
