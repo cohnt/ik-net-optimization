@@ -76,6 +76,10 @@ def parse_args():
                         "arm reached the target, not whose rounding is smaller. The raw "
                         "errors are stored per record, so any other gate can be "
                         "recomputed from the summary without re-running.")
+    p.add_argument("--nb-nodes", dest="nb_nodes", type=int, default=12,
+                   help="coupling blocks in the checkpoint being loaded. Must match the "
+                        "file: a wrong value changes the forward pass without changing any "
+                        "parameter shape, so it would load silently.")
     p.add_argument("--checkpoint", default=None,
                    help="path to an alternative iiwa14 IKFlow .pkl; default is the shipped "
                         "lemon-haze-7 checkpoint. Recorded in the run metadata so runs "
@@ -163,7 +167,8 @@ def main():
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
         sampler_cls = IiwaMugProgram if args.task == "mug" else Iiwa14IKProgram
-        sampler = sampler_cls(diagram, options=base_options, checkpoint=args.checkpoint)
+        sampler = sampler_cls(diagram, options=base_options, checkpoint=args.checkpoint,
+                              nb_nodes=args.nb_nodes)
         sampler.create_prog()
     ik_solver = sampler.ik_solver
     lower = sampler.plant.GetPositionLowerLimits()
@@ -299,6 +304,7 @@ def main():
                                         overrides=overrides, start=args.start,
                                         n_targets=args.targets, n_guesses=args.guesses,
                                         shard=args.shard, checkpoint=args.checkpoint,
+                                        nb_nodes=args.nb_nodes,
                                         **bm.provenance()))
     bar.close()
     print()
