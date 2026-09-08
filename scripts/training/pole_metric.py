@@ -32,35 +32,39 @@ sys.path.append(REPO_ROOT)
 
 from ikflow.training.pole_callback import pole_metrics, sample_conditioning_and_latents  # noqa: E402
 
-DEFAULT_IIWA_CKPT = os.path.join(REPO_ROOT, "models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl")
+# The adopted chart, matching the defaults in chart_accuracy.py and pole_at_task_poses.py.
+# (This used to point at lemon-haze-7 while its two siblings pointed here, so the three
+# scripts silently measured different networks when run without --checkpoint.)
+DEFAULT_IIWA_CKPT = os.path.join(REPO_ROOT, "models/iiwa14/iiwa14__ddp-r1__step620000.pkl")
 
 
-def load_solver(robot: str, checkpoint: str, nb_nodes: int, dim_latent_space: int):
-    from ikflow.model import IkflowModelParameters
-    from ikflow.ikflow_solver import IKFlowSolver
-    from jrl.robots import get_robot
+def load_solver(robot: str, checkpoint: str, nb_nodes: int = None, dim_latent_space: int = None):
+    """Build a solver for `checkpoint`, taking its architecture from the `.arch.json`
+    sidecar and cross-checking it against the weights (src/flow_loading.py).
 
-    if robot == "panda":
-        # The Panda checkpoint downloads itself; its architecture comes from
-        # model_descriptions.yaml (dim_latent_space=7).
+    `nb_nodes` / `dim_latent_space` remain only as the fallback for a checkpoint with no
+    sidecar; where a sidecar exists it wins. Passing `checkpoint=None` for the Panda uses
+    ikflow's downloaded pretrained chart, whose architecture comes from
+    model_descriptions.yaml.
+    """
+    from src.flow_loading import LEGACY_ARCH_BY_ROBOT, LEGACY_IIWA_ARCH, LoadFlowSolver
+
+    if robot == "panda" and checkpoint is None:
         from ikflow.model_loading import get_ik_solver
 
         solver, _ = get_ik_solver("panda__full__lp191_5.25m")
-        return solver, 7, 7
+        solver.arch = dict(LEGACY_ARCH_BY_ROBOT["panda"], robot_name="panda")
+        solver.arch_source = "ikflow model_descriptions.yaml"
+        return solver, solver.network_width, solver.robot.ndof
 
-    hparams = {
-        "nb_nodes": nb_nodes,
-        "dim_latent_space": dim_latent_space,
-        "coeff_fn_config": 3,
-        "coeff_fn_internal_size": 1024,
-        "rnvp_clamp": 2.5,
-        "robot_name": robot,
-    }
-    hyper = IkflowModelParameters()
-    hyper.__dict__.update(hparams)
-    solver = IKFlowSolver(hyper, get_robot(robot), compile_model=None)
-    solver.load_state_dict(checkpoint)
-    return solver, dim_latent_space, solver.robot.ndof
+    fallback = dict(LEGACY_ARCH_BY_ROBOT.get(robot, LEGACY_IIWA_ARCH))
+    if nb_nodes is not None:
+        fallback["nb_nodes"] = nb_nodes
+    if dim_latent_space is not None:
+        fallback["dim_latent_space"] = dim_latent_space
+
+    solver = LoadFlowSolver(robot, checkpoint, fallback_arch=fallback)
+    return solver, solver.network_width, solver.robot.ndof
 
 
 def crosscheck(nn_model, width: int, ndof: int, n: int = 100, seed: int = 0) -> float:

@@ -19,9 +19,11 @@ Three things are protected, each of which failed silently at least once in desig
    pinned here by value.
 
 3. The .ckpt -> .pkl export must produce exactly what IKFlowSolver.load_state_dict
-   expects, and must refuse checkpoints whose hyperparameters differ from what
-   src/iiwa_program.py hardcodes (the loader keeps upstream defaults for any field
-   not in its dict, so a mismatched checkpoint loads cleanly and is silently wrong).
+   expects, must record the architecture in a `.arch.json` sidecar, and the loader must
+   REFUSE a sidecar that contradicts the weights. nb_nodes and rnvp_clamp change the
+   forward pass without changing any parameter shape, so a mismatch otherwise loads
+   cleanly and is silently a different chart. A reduced-capacity chart (the depth/width
+   ladder) must round-trip with a bit-identical forward pass.
 """
 
 import os
@@ -72,61 +74,130 @@ def test_sampler_stream_frozen():
     print("PASS sampler stream frozen (seed 0 first draws match pinned values)")
 
 
-def test_export_roundtrip_and_hparam_guard():
-    sys.path.append(os.path.join(REPO, "scripts", "training"))
-    from export_ckpt_to_pkl import export, LOADER_ASSUMPTIONS
-
+def _fake_ckpt(tmp, arch, name="fake.ckpt"):
+    """A Lightning-shaped checkpoint around a randomly initialised model at `arch`."""
     from ikflow.model import IkflowModelParameters
     from ikflow.ikflow_solver import IKFlowSolver
     from jrl.robots import get_robot
 
     hyper = IkflowModelParameters()
-    hyper.__dict__.update(
-        {"nb_nodes": 12, "dim_latent_space": 8, "coeff_fn_config": 3,
-         "coeff_fn_internal_size": 1024, "rnvp_clamp": 2.5, "robot_name": "iiwa14",
-         # train_ddp.py sets this explicitly (the class default is 0.01, the training
-         # default 0.001 -- the export guard rightly rejects the class default).
-         "softflow_noise_scale": 0.001}
-    )
-    robot = get_robot("iiwa14")
-    solver = IKFlowSolver(hyper, robot, compile_model=None)
+    hyper.__dict__.update(arch)
+    solver = IKFlowSolver(hyper, get_robot(arch["robot_name"]), compile_model=None)
+    state = {"nn_model." + k: v for k, v in solver.nn_model.state_dict().items()}
+    path = os.path.join(tmp, name)
+    torch.save({"state_dict": state, "global_step": 123,
+                "hyper_parameters": {"base_hparams": hyper, "robot_name": arch["robot_name"]}},
+               path)
+    return path, solver
+
+
+BASE_ARCH = {"nb_nodes": 12, "dim_latent_space": 8, "coeff_fn_config": 3,
+             "coeff_fn_internal_size": 1024, "rnvp_clamp": 2.5, "robot_name": "iiwa14",
+             # train_ddp.py sets this explicitly; the class default is 0.01.
+             "softflow_noise_scale": 0.001}
+
+# The reduced-capacity ladder's shape: fewer coupling blocks and a narrower subnet, which
+# is exactly what the old equality-against-one-architecture guard made impossible.
+SMALL_ARCH = dict(BASE_ARCH, nb_nodes=4, coeff_fn_internal_size=256)
+
+
+def test_export_roundtrip_and_sidecar():
+    sys.path.append(os.path.join(REPO, "scripts", "training"))
+    from export_ckpt_to_pkl import export
+
+    from src.flow_loading import LoadFlowSolver, ReadArch, SidecarPath
 
     with tempfile.TemporaryDirectory() as tmp:
-        # Fake a Lightning checkpoint from the randomly initialized model.
-        ckpt_path = os.path.join(tmp, "fake.ckpt")
-        state = {"nn_model." + k: v for k, v in solver.nn_model.state_dict().items()}
-        torch.save(
-            {"state_dict": state, "global_step": 123, "hyper_parameters": {"base_hparams": hyper}},
-            ckpt_path,
-        )
+        ckpt_path, solver = _fake_ckpt(tmp, BASE_ARCH)
         pkl_path = os.path.join(tmp, "out.pkl")
         export(ckpt_path, pkl_path)
 
-        # Round trip through the loader's own path.
-        solver2 = IKFlowSolver(hyper, robot, compile_model=None)
-        solver2.load_state_dict(pkl_path)
         with open(pkl_path, "rb") as f:
             sd = pickle.load(f)
         assert all(not k.startswith("nn_model.") for k in sd), "prefix not stripped"
-        ref = {k: v for k, v in solver.nn_model.state_dict().items()}
+        ref = solver.nn_model.state_dict()
         assert all(torch.equal(sd[k], ref[k].cpu()) for k in ref), "tensors changed in export"
 
-        # The guard must fire on a mismatched hyperparameter.
-        bad = IkflowModelParameters()
-        bad.__dict__.update(hyper.__dict__)
-        bad.nb_nodes = 6
-        bad_ckpt = os.path.join(tmp, "bad.ckpt")
-        torch.save(
-            {"state_dict": state, "global_step": 1, "hyper_parameters": {"base_hparams": bad}}, bad_ckpt
-        )
+        assert os.path.exists(SidecarPath(pkl_path)), "export wrote no architecture sidecar"
+        arch, source = ReadArch(pkl_path)
+        assert source is not None, "sidecar not picked up -- fell back to defaults"
+        for key in ("nb_nodes", "dim_latent_space", "coeff_fn_internal_size", "rnvp_clamp"):
+            assert arch[key] == BASE_ARCH[key], f"sidecar lost {key}"
+
+        # The shared loader must reproduce the model bit-for-bit.
+        reloaded = LoadFlowSolver("iiwa14", pkl_path)
+        got = reloaded.nn_model.state_dict()
+        assert all(torch.equal(got[k].cpu(), ref[k].cpu()) for k in ref), "reload differs"
+    print("PASS export roundtrip + sidecar")
+
+
+def test_non_default_architecture_roundtrip():
+    """The campaign's whole point: a chart that is NOT 12x1024 must survive export/reload
+    and evaluate identically. This is what the old LOADER_ASSUMPTIONS table forbade."""
+    sys.path.append(os.path.join(REPO, "scripts", "training"))
+    from export_ckpt_to_pkl import export
+
+    from src.flow_loading import LoadFlowSolver
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt_path, solver = _fake_ckpt(tmp, SMALL_ARCH, name="small.ckpt")
+        pkl_path = os.path.join(tmp, "small.pkl")
+        export(ckpt_path, pkl_path)
+
+        reloaded = LoadFlowSolver("iiwa14", pkl_path)
+        assert reloaded.arch["nb_nodes"] == 4, reloaded.arch
+        assert reloaded.arch["coeff_fn_internal_size"] == 256, reloaded.arch
+        assert reloaded.network_width == SMALL_ARCH["dim_latent_space"]
+
+        # Identical forward pass, not merely identical weights.
+        a = solver.nn_model.double().eval()
+        b = reloaded.nn_model.double().eval()
+        dev = next(b.parameters()).device
+        z = torch.zeros((3, reloaded.network_width), dtype=torch.float64, device=dev)
+        c = torch.zeros((3, 8), dtype=torch.float64, device=dev)
+        c[:, 0], c[:, 3] = 0.4, 1.0
+        with torch.no_grad():
+            qa, _ = a(z, c=c, rev=True)
+            qb, _ = b(z, c=c, rev=True)
+        assert torch.equal(qa.cpu(), qb.cpu()), "reduced-architecture forward pass differs"
+    print("PASS non-default architecture roundtrip")
+
+
+def test_sidecar_weight_mismatch_raises():
+    """A sidecar disagreeing with the weights must RAISE, not load. This is the failure
+    mode the campaign cannot survive: nb_nodes and rnvp_clamp change the forward pass
+    without changing any parameter shape, so a wrong value otherwise loads silently."""
+    import json
+
+    from src.flow_loading import ArchFromStateDict, LoadFlowSolver, SidecarPath
+
+    sys.path.append(os.path.join(REPO, "scripts", "training"))
+    from export_ckpt_to_pkl import export
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt_path, _ = _fake_ckpt(tmp, SMALL_ARCH, name="small.ckpt")
+        pkl_path = os.path.join(tmp, "small.pkl")
+        export(ckpt_path, pkl_path)
+
+        # Corrupt the sidecar the way a hand-edited or mis-copied one would be.
+        sidecar = SidecarPath(pkl_path)
+        with open(sidecar) as f:
+            arch = json.load(f)
+        arch["nb_nodes"] = 12
+        with open(sidecar, "w") as f:
+            json.dump(arch, f)
+
         try:
-            export(bad_ckpt, os.path.join(tmp, "bad.pkl"))
-        except AssertionError as e:
-            assert "nb_nodes" in str(e)
+            LoadFlowSolver("iiwa14", pkl_path)
+        except ValueError as e:
+            assert "nb_nodes" in str(e), str(e)
         else:
-            raise AssertionError("hparam guard did not fire on nb_nodes=6")
-    assert set(LOADER_ASSUMPTIONS) >= {"nb_nodes", "dim_latent_space", "rnvp_clamp", "softflow_enabled"}
-    print("PASS export roundtrip + hparam guard")
+            raise AssertionError("loader accepted a sidecar contradicting the weights")
+
+        # And the shape reader itself must report the truth.
+        with open(pkl_path, "rb") as f:
+            assert ArchFromStateDict(pickle.load(f))["nb_nodes"] == 4
+    print("PASS sidecar/weight mismatch raises")
 
 
 def test_pole_metrics_shape():
@@ -149,6 +220,8 @@ def test_pole_metrics_shape():
 if __name__ == "__main__":
     test_rpy_to_wxyz_matches_pydrake_exactly()
     test_sampler_stream_frozen()
-    test_export_roundtrip_and_hparam_guard()
+    test_export_roundtrip_and_sidecar()
+    test_non_default_architecture_roundtrip()
+    test_sidecar_weight_mismatch_raises()
     test_pole_metrics_shape()
     print("ALL PASS")

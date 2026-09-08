@@ -1,0 +1,21 @@
+{
+  "coeff_fn_config": 3,
+  "coeff_fn_internal_size": 1024,
+  "coupling_layer": "glow",
+  "dim_latent_space": 8,
+  "nb_nodes": 12,
+  "permute_random_enabled": true,
+  "provenance": {
+    "architecture_source": "legacy defaults + weight shapes; original training run not available",
+    "unverifiable_fields": [
+      "rnvp_clamp",
+      "softflow_noise_scale",
+      "init_scale"
+    ]
+  },
+  "rnvp_clamp": 2.5,
+  "robot_name": "iiwa14",
+  "sigmoid_on_output": false,
+  "softflow_enabled": true,
+  "softflow_noise_scale": 0.001
+}

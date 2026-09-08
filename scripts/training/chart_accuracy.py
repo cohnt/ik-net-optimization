@@ -42,19 +42,27 @@ RUNAWAY_RAD = 10.0
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--robot", default="iiwa14", choices=["iiwa14", "panda", "iiwa7"],
+                   help="Robot the checkpoint was trained for. The Panda ladder needs "
+                        "this; without --checkpoint it screens the upstream pretrained chart.")
     p.add_argument("--checkpoint", default=None)
-    p.add_argument("--nb_nodes", type=int, default=12)
-    p.add_argument("--dim_latent_space", type=int, default=8)
+    p.add_argument("--nb_nodes", type=int, default=None,
+                   help="Fallback only, for a checkpoint with no .arch.json sidecar. "
+                        "Where a sidecar exists it wins and this is ignored.")
+    p.add_argument("--dim_latent_space", type=int, default=None,
+                   help="Fallback only; see --nb_nodes.")
     p.add_argument("--n", type=int, default=5000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--chunk", type=int, default=1000)
     p.add_argument("--json_out", default=None)
     args = p.parse_args()
 
-    default_ckpt = os.path.join(
-        REPO_ROOT, "models/iiwa14/iiwa14__ddp-r1__step620000.pkl")
+    # The Panda's default chart is the one ikflow downloads, so it has no local path;
+    # load_solver takes checkpoint=None to mean exactly that.
+    default_ckpt = (os.path.join(REPO_ROOT, "models/iiwa14/iiwa14__ddp-r1__step620000.pkl")
+                    if args.robot == "iiwa14" else None)
     ckpt = args.checkpoint or default_ckpt
-    solver, width, ndof = load_solver("iiwa14", ckpt, args.nb_nodes, args.dim_latent_space)
+    solver, width, ndof = load_solver(args.robot, ckpt, args.nb_nodes, args.dim_latent_space)
     robot = solver.robot
 
     rng = np.random.default_rng(args.seed)
@@ -81,7 +89,12 @@ def main():
     fk = fk.detach().cpu().numpy() if hasattr(fk, "detach") else np.asarray(fk)
     err_mm = np.linalg.norm(fk[:, :3] - pose[usable][:, :3], axis=1) * 1000.0
 
-    res = {"checkpoint": os.path.basename(ckpt), "nb_nodes": args.nb_nodes,
+    res = {"checkpoint": os.path.basename(ckpt) if ckpt else "downloaded",
+           "robot": args.robot,
+           "nb_nodes": solver.arch["nb_nodes"],
+           "coeff_fn_internal_size": solver.arch["coeff_fn_internal_size"],
+           "rnvp_clamp": solver.arch["rnvp_clamp"],
+           "dim_latent_space": solver.arch["dim_latent_space"],
            "n": args.n, "seed": args.seed,
            "usable_fraction": float(usable.mean()), "n_usable": int(usable.sum()),
            "pos_err_mm/median": float(np.median(err_mm)),

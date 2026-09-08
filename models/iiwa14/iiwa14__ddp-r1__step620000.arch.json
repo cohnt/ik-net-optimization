@@ -1,0 +1,23 @@
+{
+  "coeff_fn_config": 3,
+  "coeff_fn_internal_size": 1024,
+  "coupling_layer": "glow",
+  "dim_latent_space": 8,
+  "init_scale": 0.04473500291638653,
+  "lambd_predict": 1.0,
+  "nb_nodes": 12,
+  "permute_random_enabled": true,
+  "provenance": {
+    "architecture_source": "exact: hyper_parameters.base_hparams",
+    "global_step": 620000,
+    "source_checkpoint": "/home/tommy/Documents/programming/work/rlg/analytic-and-optimization-ik/learned-ik/results/train/iiwa14_ddp_r1/keep/ikflow-checkpoint-step=620000.ckpt"
+  },
+  "rnvp_clamp": 2.5,
+  "robot_name": "iiwa14",
+  "run_description": null,
+  "sigmoid_on_output": false,
+  "softflow_enabled": true,
+  "softflow_noise_scale": 0.001,
+  "y_noise_scale": 1e-07,
+  "zeros_noise_scale": 0.001
+}
