@@ -1,6 +1,12 @@
 #!/bin/bash
-# The LLsub payload for iiwa14 IKFlow retraining: one shell per node, torchrun
-# forks one rank per GPU, all nodes rendezvous inside ONE Slurm job.
+# The LLsub payload for IKFlow training: one shell per node, torchrun forks one rank
+# per GPU, all nodes rendezvous inside ONE Slurm job.
+#
+# ROBOT selects the arm (iiwa14 / panda) and therefore the dataset; the ARCHITECTURE is
+# passed through TRAIN_EXTRA_ARGS (--nb_nodes, --coeff_fn_internal_size, ...), so the
+# reduced-capacity ladder needs no change here. Whatever architecture is trained is
+# recorded in the checkpoint's own hyper_parameters and lands in the `.arch.json` sidecar
+# at export time -- nothing downstream has to be told separately what was trained.
 #
 # ============================ STANDING REMINDER ============================
 # If even REMOTELY unsure about a SuperCloud action, STOP and ask Thomas.
@@ -27,11 +33,12 @@ set -uo pipefail
 
 ## First line of output BEFORE anything that can fail: the triple-mode postmortem
 ## showed launcher plumbing can lose last-second stderr entirely.
-echo "train_iiwa: alive on $(hostname) date=$(date -Is) nodeid=${SLURM_NODEID:-?} job=${SLURM_JOB_ID:-?}"
+echo "train_flow: alive on $(hostname) date=$(date -Is) nodeid=${SLURM_NODEID:-?} job=${SLURM_JOB_ID:-?}"
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
-RUN_NAME="${RUN_NAME:?set RUN_NAME, e.g. iiwa14_ddp_r1}"
+RUN_NAME="${RUN_NAME:?set RUN_NAME, e.g. iiwa14_n6}"
+ROBOT="${ROBOT:?set ROBOT, e.g. iiwa14 or panda}"
 RUN_DIR="$ROOT/results/train/$RUN_NAME"
 NNODES="${NNODES:-1}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-2}"
@@ -63,13 +70,13 @@ NODE_RANK="${SLURM_NODEID:-0}"   # srun sets it per task; 1 task per node => nod
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -1)
 mkdir -p "$RUN_DIR/checkpoints"
 
-DATASET_DIR="$ROOT/home/.cache/ikflow/datasets/iiwa14"
+DATASET_DIR="$ROOT/home/.cache/ikflow/datasets/$ROBOT"
 if [ ! -d "$DATASET_DIR" ]; then
-    echo "FATAL: no dataset at $DATASET_DIR -- run cluster/build_dataset job first" >&2
+    echo "FATAL: no dataset at $DATASET_DIR -- run cluster/build_dataset_job.sh with DATASET_ROBOT=$ROBOT first" >&2
     exit 4
 fi
 
-echo "train_iiwa: node_rank=$NODE_RANK/$NNODES master=$MASTER_ADDR run=$RUN_NAME batch=$BATCH gpus=$GPUS_PER_NODE"
+echo "train_flow: node_rank=$NODE_RANK/$NNODES master=$MASTER_ADDR run=$RUN_NAME robot=$ROBOT batch=$BATCH gpus=$GPUS_PER_NODE"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 nvidia-smi -L || true
 
@@ -77,9 +84,9 @@ nvidia-smi -L || true
     --nnodes="$NNODES" --nproc_per_node="$GPUS_PER_NODE" --node_rank="$NODE_RANK" \
     --rdzv_backend=c10d --rdzv_endpoint="$MASTER_ADDR:29500" --rdzv_id="${SLURM_JOB_ID:-local}" \
     "$REPO/third_party/ikflow/scripts/train_ddp.py" \
-    --robot_name=iiwa14 --run_dir="$RUN_DIR" --ckpt_path=auto \
+    --robot_name="$ROBOT" --run_dir="$RUN_DIR" --ckpt_path=auto \
     --num_nodes="$NNODES" --gpus_per_node="$GPUS_PER_NODE" --batch_size="$BATCH" \
     ${TRAIN_EXTRA_ARGS:-}
 RC=$?
-echo "train_iiwa node $NODE_RANK rc=$RC $(date -Is)" > "$RUN_DIR/node${NODE_RANK}.SENTINEL"
+echo "train_flow node $NODE_RANK rc=$RC $(date -Is)" > "$RUN_DIR/node${NODE_RANK}.SENTINEL"
 exit $RC
