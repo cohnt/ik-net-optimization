@@ -52,6 +52,32 @@ Constraints are **not** added to Drake one at a time. Each `Create*Constraint` m
 
 Each robot implements `__init__` (frames, plant sizes, model loading), `create_prog` (declares decision variables, sets initial guesses, builds `self.jacobian_gen`, calls `add_constraints` / `add_costs`), `ik_inference`, and `VarsToQ`. The `...MugProgram` subclasses additionally swap `self.frame` from the end-effector (the frame the flow was *trained* on) to `between_fingers` (the frame the grasp constraint acts on), keeping `X_grasp_ee` so seeds can still be expressed in the network's frame. A mug grasp constrains only the gripper's position in the mug frame (`x = y = 0` exactly — an equality, because that is what the task is; `z` within `mug_height`), leaving orientation free — hence the overridden `CreateIKConstraint` and `SeedCandidates`.
 
+### Checkpoints carry their architecture (`src/flow_loading.py`)
+
+A `.pkl` is a bare `nn_model` state dict — `IKFlowSolver.load_state_dict` is a plain
+`pickle.load` — so **weights travel without their architecture**. It used to be hardcoded at
+four call sites, all asserting `nb_nodes = 12`, `coeff_fn_internal_size = 1024`,
+`rnvp_clamp = 2.5`. `nb_nodes` and `rnvp_clamp` change the forward pass **without changing
+any parameter shape**, so a mismatch loads cleanly and is silently a different chart.
+
+Each checkpoint now has a sidecar, `<name>.arch.json`, written by
+`scripts/training/export_ckpt_to_pkl.py` from the training checkpoint's own
+`hyper_parameters.base_hparams`. `LoadFlowSolver(robot, checkpoint)` reads it, builds the
+solver, and cross-checks it against the weights: `nb_nodes` (module-list length / 2),
+`coeff_fn_config`, `coeff_fn_internal_size` and the network width are all recoverable from
+state-dict shapes and are verified; a sidecar contradicting them **raises**. **`rnvp_clamp`
+is the one field no check can catch** — a scalar used in the forward pass and stored nowhere
+— which is why the sidecar is mandatory for new checkpoints rather than merely convenient.
+The resolved architecture is attached as `solver.arch` so runs record what they loaded
+rather than what they asked for. A checkpoint with no sidecar falls back to the legacy
+architecture with a `RuntimeWarning`; sidecars are backfilled for all three checkpoints on
+disk (`scripts/training/backfill_arch_sidecars.py`), so nothing depends on that path.
+
+**Hold `dim_latent_space` at each robot's baseline** — iiwa14 8, Panda 7. The latent width
+*is* the program's decision-variable count (21 for the iiwa, 20 for the Panda), so varying it
+changes the optimization problem rather than the chart; holding it also means a checkpoint
+loaded against the wrong robot fails the shape check instead of loading silently.
+
 ### Gradients through the flow
 
 `VarsToQ` is dual-path: under `float` it returns a plain forward pass; under `AutoDiffXd` it calls `self.jacobian_gen` (one reverse pass yields both `dq/dvars` and `q`) and chain-rules `jacobian @ vars_gradients` into fresh `AutoDiffXd` objects. Both paths go through `MakeFlowInference(nn_model, ...)`, a free function of the lumped variables that closes over the network and nothing else — which is what lets `FlowJacobianGen` memoise `torch.compile(jacrev(...))` per process instead of per program (`ProgramOptions.compile_flow_jacobian`). Analytic formulations instead evaluate `pydrake.math` trig on templated types (`RigidTransform_[T]`, `RollPitchYaw_[T]`) so Drake's own autodiff propagates.
@@ -999,14 +1025,29 @@ machine load — worth remembering before reading a one-cell difference anywhere
 then performance tuning and formulation tweaks for getting the best results with the learned
 formulation."*
 
-1. **Retrain the iiwa chart.** Build the training infrastructure, then launch the multi-day run.
-   This is the project's one open scientific question and a *training* task — new territory for a
-   repo that has only ever run benchmarks. The diagnosis it answers is above: `lemon-haze-7` puts
-   3.34% of the conditioning domain into the flow's worst-case-gain regime against the Panda's
-   0.065%, and that factor of fifty-one is the whole of the iiwa grasp deficit. Every
-   optimization-side remedy has been measured and refuted. Establish the checkpoint's provenance
-   with Julia first, and **plan the run around SuperCloud's monthly maintenance** — second Tuesday,
-   compute down Monday evening to Wednesday morning, nothing survives it.
+1. **Retrain the iiwa chart. DONE for round one, and continuing as the reduced-chart ladder.**
+   `iiwa14_ddp_r1` (620k steps, 2.54B samples, 4 nodes x 2 V100) was adopted at `9b887c0`: it cut
+   `frac_gt_1000` from 3.34% to 0.0125% and bought +41 grasp-native / +59 grasp-paired / +24
+   pose-native cells of 480. But its `pole/max` is still 7.8e9 and iiwa grasp is 270/480 against
+   joint space's 462 — **the headroom is still there; that run only moved less of the domain into
+   it.** So the follow-on, in progress, trains deliberately *simpler, less accurate* charts:
+   `nb_nodes` 12/8/6/4 lowers the architectural gain ceiling `exp(2.4975·nb_nodes)` from 1e13 to
+   2e4, and a width-only rung (12 blocks, `coeff_fn_internal_size` 256) is the control that
+   separates "less accurate" from "less headroom". Both robots, nine runs, sequential at full
+   4-node parallelism, 620k steps each at `ddp_r1`'s optimiser settings, every checkpoint kept.
+   `cluster/ladder_runs.txt` is the spec, `cluster/submit_ladder.sh` drives it,
+   `cluster/export_and_screen_job.sh` exports and screens each rung, and `--stage LADDERTRI` /
+   `--stage LADDER` measure it on stage CKPT's grid.
+
+   **The prior is good.** `elated-firefly-11`, a 6-block iiwa chart of unknown provenance already
+   on disk, has **zero** pole mass on both domains (`pole/max` = 181 against ddp-r1's 7.8e9) — at
+   a cost in chart accuracy of 29.6 mm median against 10.1 mm. Whether that trade is worth cells
+   is the question. Note the upstream Panda chart is *worse* than either on the task-pose domain
+   (`frac_gt_1000` = 0.835%, `pole/max` = 1.7e17), which is itself worth knowing.
+
+   **Plan around SuperCloud's monthly maintenance** — second Tuesday, compute down Monday evening
+   to Wednesday morning, nothing survives it. The window closed 2026-09-08; the next is
+   2026-10-12 to 10-14.
 
 2. **SNOPT and NLOPT.** All ~395 archived runs are IPOPT; both scripts already accept `--solver`
    and Drake supplies all three on both machines. The point is to *report* every solver, not to
