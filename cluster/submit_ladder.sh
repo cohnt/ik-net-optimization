@@ -85,12 +85,17 @@ cmd_next() {
 
 cmd_smoke() {
     local robot="${1:?usage: --smoke <robot>}"
-    echo "200-step smoke for $robot at nb_nodes=4 on debug-gpu (2 nodes, 20 min cap)."
+    echo "200-step smoke for $robot at nb_nodes=4 on debug-gpu (ONE node, 20 min cap)."
+    # ONE node, because debug-gpu's GrpTRES cap is node=1 -- a 2-node request there does
+    # not fail, it PENDS forever against AssocGrpNodeLimit. Multi-node c10d rendezvous is
+    # already proven by iiwa14_ddp_r1 at 4 nodes; what is unproven here is the architecture
+    # flags and the panda robot, and one node with two GPUs exercises both.
+    #
     # Deliberately the SMALLEST architecture in the ladder: it is the one whose tensor
     # shapes differ most from everything already proven on this cluster, so it is the one
     # most likely to expose a plumbing error, and it is the cheapest to run.
     PARTITION=debug-gpu ROBOT="$robot" BATCH=64 \
-        bash "$(dirname "$0")/submit_train.sh" "smoke_${robot}_n4" 2 00:20:00 -- \
+        bash "$(dirname "$0")/submit_train.sh" "smoke_${robot}_n4" 1 00:20:00 -- \
         --max_steps=200 --nb_nodes=4 --eval_every=100 --val_set_size=20 \
         --checkpoint_every=100 --pole_eval_n=500 --disable_wandb \
         $( [ "$robot" = panda ] && echo --dim_latent_space=7 )
