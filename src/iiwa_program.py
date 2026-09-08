@@ -26,7 +26,7 @@ from src.iiwa_analytic_ik import iiwa_limits_lower, iiwa_limits_upper
 
 
 class Iiwa14IKProgram(IKFlowProgram):
-    def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None, checkpoint = None):
+    def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None, checkpoint = None, nb_nodes = 12):
         self.diagram = diagram
         self.plant = diagram.GetSubsystemByName("plant")
         self.autodiff_plant = self.plant.ToAutoDiffXd()
@@ -49,7 +49,7 @@ class Iiwa14IKProgram(IKFlowProgram):
         self.num_task_vars = 6
 
         if model is None:
-            hparams = {'nb_nodes': 12,
+            hparams = {'nb_nodes': nb_nodes,
             'dim_latent_space': 8,
             'coeff_fn_config': 3,
             'coeff_fn_internal_size': 1024,
@@ -60,7 +60,10 @@ class Iiwa14IKProgram(IKFlowProgram):
             hyper_parameters = IkflowModelParameters()
             hyper_parameters.__dict__.update(hparams)
             self.ik_solver = IKFlowSolver(hyper_parameters, robot, compile_model=None)
-            default_ckpt = os.path.join(RepoDir(), "models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl")
+            # The retrained chart (run iiwa14_ddp_r1, step 620000, 2.540B samples).
+            # Adopted 2026-09-07: +41/+59 grasp cells and +24 pose cells over
+            # lemon-haze-7 on 480 paired cells, with median max violation 2600x lower.
+            default_ckpt = os.path.join(RepoDir(), "models/iiwa14/iiwa14__ddp-r1__step620000.pkl")
             self.ik_solver.load_state_dict(checkpoint if checkpoint is not None else default_ckpt)
         else:
             self.ik_solver = model
@@ -199,8 +202,8 @@ class Iiwa14IKProgram(IKFlowProgram):
 
 
 class IiwaMugProgram(Iiwa14IKProgram):
-    def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None, checkpoint = None):
-        super().__init__(diagram, options, model_instance, model, checkpoint)
+    def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None, checkpoint = None, nb_nodes = 12):
+        super().__init__(diagram, options, model_instance, model, checkpoint, nb_nodes)
         # The flow conditions on iiwa_link_7; the grasp constraint acts between the fingers.
         self.ee_frame = self.frame
         self.frame = self.plant.GetFrameByName("between_fingers")
