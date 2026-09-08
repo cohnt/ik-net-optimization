@@ -55,6 +55,12 @@ shift $(( $# > 3 ? 3 : $# ))
 [ "${1:-}" = "--" ] && shift
 EXTRA_ARGS="$*"
 
+## NOTE for anyone extending these greps: LLstat TRUNCATES the NAME column to 15
+## characters, so job name `lik_train_iiwa14_n6` displays as `lik_train_iiwa1` and an
+## exact-name match silently never fires. The patterns below match a PREFIX for that
+## reason. To test one specific job, use `sacct -j <jobid> -X --format=State`, which is
+## not truncated.
+##
 ## ALLOW_CONCURRENT=1 skips the one-at-a-time guard. Calibration-only: distinct
 ## RUN_NAMEs cannot race each other's checkpoints, and the volta GrpTRES cap
 ## meters however many jobs are queued. NEVER set it when resubmitting a run

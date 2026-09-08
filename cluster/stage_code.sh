@@ -34,7 +34,9 @@ fi
 ## and it is invisible afterwards. Calibration and smoke jobs are exempt: they
 ## produce no campaign records.
 ## Match on the payload script name, which LLstat shows when a job is submitted
-## without -J, AND on the lik_<stage>_n<i> convention used when it is. Calibration
+## without -J, AND on the lik_<stage>_n<i> convention used when it is. These are
+## PREFIXES on purpose: LLstat truncates NAME to 15 characters, so a full job name
+## like `lik_train_iiwa14_n6` shows as `lik_train_iiwa1` and would never match. Calibration
 ## and smoke are named lik_cal_* / smoke.sh and deliberately do not match.
 RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|train_flow\|lik_train\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
 if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
