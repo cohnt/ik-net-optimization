@@ -466,6 +466,67 @@ def stage_CKPT(wall, targets, guesses, shards, corr_cost=CORR_COST, seed=1):
     return items
 
 
+# ---------------------------------------------------------------------------------
+# The reduced-capacity chart ladder (cluster/ladder_runs.txt).
+#
+# Each rung is one trained chart; the benchmark question is whether a chart with less
+# architectural headroom -- and so a lower worst-case gain -- wins more cells than the
+# accuracy it gives up. Rung -> exported checkpoint path, relative to the repo root on
+# the cluster (models/ is staged; a checkpoint's `.arch.json` sidecar travels with it and
+# is what tells the program how many coupling blocks to build).
+#
+# `None` means "that robot's existing control": the iiwa's adopted ddp-r1 chart, and the
+# Panda's upstream pretrained lp191_5.25m, which the benchmark loads when no --checkpoint
+# is given. The Panda ALSO gets a self-trained 12x1024 rung (panda_n12), because without
+# one every reduced Panda chart would be confounded with "our training recipe against
+# Jeremy's".
+LADDER_RUNGS = [
+    ("iiwa", "ddpr1",    "models/iiwa14/iiwa14__ddp-r1__step620000.pkl"),   # control, 12x1024
+    ("iiwa", "n8",       "models/iiwa14/iiwa14__n8__step620000.pkl"),
+    ("iiwa", "n6",       "models/iiwa14/iiwa14__n6__step620000.pkl"),
+    ("iiwa", "n4",       "models/iiwa14/iiwa14__n4__step620000.pkl"),
+    ("iiwa", "n12w256",  "models/iiwa14/iiwa14__n12_w256__step620000.pkl"),
+    ("panda", "upstream", None),                                            # control, downloaded
+    ("panda", "n12",     "models/panda/panda__n12__step620000.pkl"),        # self-trained control
+    ("panda", "n8",      "models/panda/panda__n8__step620000.pkl"),
+    ("panda", "n6",      "models/panda/panda__n6__step620000.pkl"),
+    ("panda", "n4",      "models/panda/panda__n4__step620000.pkl"),
+    ("panda", "n12w256", "models/panda/panda__n12_w256__step620000.pkl"),
+]
+
+# learned + numerical only. The analytic arms never touch the flow, so a chart comparison
+# cannot move them -- running them would burn compute to reproduce a constant. The
+# numerical arm IS kept, on every rung, precisely because it must not move: if it does,
+# the grid or the harness drifted rather than the chart.
+LADDER_ARMS = "learned,numerical"
+
+
+def stage_LADDER(wall, targets, guesses, shards, only=None, tag="LADDER", seed=1):
+    """The depth/width ladder against its controls, on IDENTICAL cells.
+
+    `only` is a comma-separated list of rung labels, so the stage can be generated for
+    whichever rungs have finished training -- training is sequential and takes days, and
+    waiting for all nine before measuring any would waste the cluster.
+
+    Grid and seed match stage CKPT deliberately, so every rung is cell-comparable with
+    BOTH the adopted ddp-r1 chart and the archived lemon-haze-7 column, and
+    `scripts/collate.py --pair learned` can run exact McNemar across them.
+    """
+    wanted = set(only.split(",")) if only else None
+    items = []
+    for robot, label, ckpt in LADDER_RUNGS:
+        if wanted is not None and label not in wanted:
+            continue
+        flags = ["--checkpoint", ckpt] if ckpt else []
+        for task in ("mug", "pose"):
+            for start in ("paired", "native"):
+                items += item(robot, f"sc_{tag}_{robot}_{label}_{task}_{int(wall)}_{start}",
+                              ["--task", task, "--config", "latent", "--start", start,
+                               "--set", f"correction_cost_weight={CORR_COST}"] + flags,
+                              targets, guesses, LADDER_ARMS, wall, shards, seed=seed)
+    return items
+
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -524,6 +585,10 @@ def selftest():
                          ("G", stage_G(45, 15, 4, 4)),
                          ("H", stage_H(45, 15, 4, 4, "jtik10")),
                          ("FIN", stage_FIN(45, 15, 4, 4)),
+                         ("CKPT", stage_CKPT(45, 60, 8, 8)),
+                         ("LADDER", stage_LADDER(45, 60, 8, 8)),
+                         ("LADDERTRI", stage_LADDER(20, 15, 4, 2, only="ddpr1,n6",
+                                                    tag="LADDERTRI")),
                          ("FIN-retagged", retag(stage_FIN(45, 15, 4, 4), "EQ"))):
         ids = [i["id"] for i in items]
         if len(ids) != len(set(ids)):
@@ -563,8 +628,13 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["CKPT", "A", "B", "B2", "B3", "C", "D", "Dbase", "E",
-                                   "F", "F2", "F3", "G", "H", "FIN"])
+    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "A", "B", "B2", "B3",
+                                   "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
+    p.add_argument("--rungs", default=None,
+                   help="LADDER/LADDERTRI only: comma-separated rung labels to generate "
+                        "(e.g. 'ddpr1,n6'). Default: every rung in LADDER_RUNGS. Training "
+                        "is sequential, so a stage is normally generated for the rungs "
+                        "that have finished.")
     p.add_argument("--wall-time", type=float, default=20.0,
                    help="the solver's per-cell cap, in seconds. Choose it from "
                         "cluster/calibrate.sh on THIS hardware -- the laptop's 20/45 s "
@@ -623,6 +693,12 @@ def main():
              ## CKPT: the retrained iiwa chart against lemon-haze-7 on identical cells.
              "CKPT": lambda: stage_CKPT(args.wall_time, args.targets,
                                         args.guesses, args.shards),
+             ## LADDERTRI: the 60-cell triage pass that decides which rungs earn 480
+             ## cells. LADDER: the full grid. Same generator, different --targets.
+             "LADDERTRI": lambda: stage_LADDER(args.wall_time, args.targets, args.guesses,
+                                               args.shards, only=args.rungs, tag="LADDERTRI"),
+             "LADDER": lambda: stage_LADDER(args.wall_time, args.targets, args.guesses,
+                                            args.shards, only=args.rungs),
              }[args.stage]()
 
     if args.tag_prefix:
