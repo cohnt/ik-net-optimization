@@ -70,9 +70,16 @@ NODE_RANK="${SLURM_NODEID:-0}"   # srun sets it per task; 1 task per node => nod
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -1)
 mkdir -p "$RUN_DIR/checkpoints"
 
+## Check the .DONE sentinel, NOT just the directory. build_dataset_job.sh writes .DONE
+## only on success, so a build that was killed part way through (walltime, a moved job,
+## a node event) leaves a directory full of half-written tensors that a -d test happily
+## accepts -- and training would then run to completion on a truncated dataset with
+## nothing anywhere saying so.
 DATASET_DIR="$ROOT/home/.cache/ikflow/datasets/$ROBOT"
-if [ ! -d "$DATASET_DIR" ]; then
-    echo "FATAL: no dataset at $DATASET_DIR -- run cluster/build_dataset_job.sh with DATASET_ROBOT=$ROBOT first" >&2
+if [ ! -f "$DATASET_DIR/.DONE" ]; then
+    echo "FATAL: no COMPLETE dataset at $DATASET_DIR (no .DONE sentinel)." >&2
+    echo "Run cluster/build_dataset_job.sh with DATASET_ROBOT=$ROBOT; if a partial build" >&2
+    echo "is present, delete the directory first -- a partial one is worse than none." >&2
     exit 4
 fi
 

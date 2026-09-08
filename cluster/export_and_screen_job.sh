@@ -6,13 +6,18 @@
 # If even REMOTELY unsure about a SuperCloud action, STOP and ask Thomas.
 # ===========================================================================
 #
-# Submit (from ~/learned-ik/repo on the login node), CPU partition, one node:
+# Submit (from ~/learned-ik/repo on the login node), one node:
 #   RUN_NAME=iiwa14_n6 ROBOT=iiwa14 LLsub ./cluster/export_and_screen_job.sh \
 #       -s 48 -q xeon-p8 -T 02:00:00 -J lik_export
 #
-# CPU rather than GPU on purpose: this is minutes of work, and the whole
-# xeon-g6-volta group cap (4 nodes) is held by the training job at the time -- a GPU
-# request here would simply queue behind the very run it is meant to follow.
+# The payload is CPU-only (CUDA_VISIBLE_DEVICES=""), so the partition is purely a
+# scheduling choice made at submit time, and it is worth making deliberately:
+#   * xeon-p8 keeps the volta cap free for training -- the default preference;
+#   * but xeon-p8 is a GrpTRES group cap SHARED WITH THOMAS'S OTHER PROJECTS, and when
+#     another one is using it a job here does not fail, it sits PENDING on
+#     AssocGrpNodeLimit indefinitely. Check LLstat before assuming xeon-p8 is available.
+# When xeon-p8 is contended, submit with -q xeon-g6-volta instead and run it BETWEEN
+# training rungs, not alongside one -- the training job holds all 4 volta nodes.
 #
 # EVERY kept checkpoint is screened, not only the last one. That is the point of
 # save_top_k=-1: ddp_r1 developed pole mass somewhere near step 360000, and knowing WHEN
