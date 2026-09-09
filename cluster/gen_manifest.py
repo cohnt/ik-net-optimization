@@ -572,6 +572,40 @@ def summarise(items, procs, nodes):
           f"surplus jobs queue rather than being rejected.")
 
 
+def _ladder_paths_match_export():
+    """LADDER_RUNGS paths must equal what cluster/export_and_screen_job.sh actually writes.
+
+    Export names a checkpoint `<robot>__<label>__step<N>.pkl`, where label is RUN_NAME with the
+    `<robot>_` prefix stripped. If that drifts from the paths in LADDER_RUNGS, the benchmark
+    stage points at files that do not exist and every learned cell fails instantly -- the
+    whole-column-of-zeros failure mode this repo has already paid for twice. Also catches the
+    reverse: a rung that trains but that nothing benchmarks.
+    """
+    manifest = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ladder_runs.txt")
+    trained = {}
+    with open(manifest) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            robot, run_name = line.split()[:2]
+            label = run_name[len(robot) + 1:] if run_name.startswith(robot + "_") else run_name
+            trained[f"models/{robot}/{robot}__{label}__step620000.pkl"] = run_name
+
+    # Checkpoints the ladder does NOT train because they already exist: the iiwa's adopted
+    # control. (The Panda's control is the downloaded chart, which is `None` in LADDER_RUNGS
+    # and already skipped.) Listed explicitly so a genuinely missing rung still fails.
+    PRE_EXISTING = {"models/iiwa14/iiwa14__ddp-r1__step620000.pkl"}
+
+    benchmarked = {c for _, _, c in LADDER_RUNGS if c} - PRE_EXISTING
+    fails = []
+    for ckpt in sorted(benchmarked - set(trained)):
+        fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt row would export it")
+    for ckpt in sorted(set(trained) - benchmarked):
+        fails.append(f"rung '{trained[ckpt]}' trains but nothing in LADDER_RUNGS benchmarks it")
+    return fails
+
+
 def selftest():
     fails = 0
     for stage, items in (("A", stage_A(20, 15, 4, 2)), ("B", stage_B(20, 15, 4, 1)),
@@ -617,6 +651,12 @@ def selftest():
                 print(f"FAIL stage {stage}: {base} shards {sorted(ks)} not a partition")
                 fails += 1
         print(f"ok   stage {stage}: {len(items)} items, ids unique, lines well formed")
+    ladder_fails = _ladder_paths_match_export()
+    for msg in ladder_fails:
+        print(f"FAIL ladder paths: {msg}")
+    fails += len(ladder_fails)
+    if not ladder_fails:
+        print("ok   ladder checkpoint paths match what export_and_screen_job.sh writes")
     print("gen_manifest selftest OK" if not fails else f"gen_manifest selftest FAILED ({fails})")
     return 1 if fails else 0
 
