@@ -1045,6 +1045,52 @@ formulation."*
    is the question. Note the upstream Panda chart is *worse* than either on the task-pose domain
    (`frac_gt_1000` = 0.835%, `pole/max` = 1.7e17), which is itself worth knowing.
 
+   **RUNG 1 IS IN, AND IT DOES NOT SUPPORT THE DEPTH HYPOTHESIS.** `iiwa14_n6` (6 blocks,
+   620k steps, 12.8 steps/s) screens far cleaner than `ddp_r1` — random-domain `frac_gt_1000`
+   **0.0** and `pole/max` 179; task-pose `pole/max` **1.3e5 against ddp_r1's 7.8e9**, four to
+   five orders down — at a chart-accuracy cost of only 12.1 mm median against 10.1 mm (where
+   `elated-firefly-11` paid 29.6 mm for its zero). All of which bought **nothing where it was
+   supposed to**. 60 cells, 45 s, exact McNemar against `ddp_r1` on the same cells:
+
+   | experiment | `n6` | `ddp_r1` | joint space | better / worse | p |
+   | --- | --- | --- | --- | --- | --- |
+   | grasp native | 39/60 | 37/60 | 60/60 | 6 / 4 | 0.75 (tie) |
+   | grasp paired | 39/60 | 42/60 | 60/60 | 6 / 9 | 0.61 (tie) |
+   | pose native | **58/60** | 53/60 | 42/60 | 5 / 0 | 0.063 |
+   | pose paired | 28/60 | **40/60** | 42/60 | 8 / 20 | **0.036 against** |
+
+   The joint-space arm is identical across all eight runs (60/60 grasp, 42/60 pose), so the
+   differences are the chart's. **Both grasp rows are ties** — the grasp deficit is exactly what
+   the ladder exists to close, and lowering the gain ceiling by six orders did not touch it.
+
+   **The runaway did not vanish, it concentrated.** `n6` pose paired has `median_max_violation`
+   **2.92e+03** against `ddp_r1`'s 1.27e-07 on the same cells: more than half those solves return
+   runaway configurations. So *pole exposure measured by sampling the domain does not predict how
+   often the solver lands in a pole* — the same lesson `chart_error_scale` taught from the other
+   side, now with the sign reversed. A chart can be cleaner everywhere the sampler looks and worse
+   everywhere the Newton step goes.
+
+   **What did improve is cost per step.** On pose native (the one row where timeouts do not
+   corrupt the medians) `n6` takes 49 iterations at **59.5 ms/it** against `ddp_r1`'s 62 at
+   130.5 — the ~2.2x the block count predicts. Median cost 6.64 against 6.04 (pose native),
+   5.31 against 7.18 (grasp native). On rows where most cells time out, the collated `ms/it`
+   divides a median-over-all wall clock by a median-over-successes iteration count and must not
+   be read.
+
+   Caveats before this is treated as settled: 60 cells is ±1 cell reproducible at the cap, and
+   this is one rung. `n4` (ceiling 2.2e4), `n8`, and the width-only control `n12_w256` are the
+   rest of the dose curve — and the width rung is what says whether any of this is about accuracy
+   rather than headroom.
+
+   **A path bug cost this rung its first measurement (2026-09-09, fixed in `6fbff55`).**
+   `train_flow.sh` reassigns `HOME="$ROOT/home"` so ikflow resolves `DATASET_DIR` at import;
+   `export_and_screen_job.sh` derives its own `ROOT` from `$HOME`, so the inline export resolved
+   every path one level deep and died with `no checkpoints under .../learned-ik/home/learned-ik/...`.
+   The rung trained all 620k steps and exported nothing, and the four interleaved benchmark jobs
+   fired at a checkpoint that did not exist — **failing per cell rather than fast**, so they burned
+   16 minutes each before anyone noticed. `submit_bench.sh` now refuses when a manifest names a
+   checkpoint absent from the cluster (`dd24cc3`), which is the guard that would have caught it.
+
    **Plan around SuperCloud's monthly maintenance** — second Tuesday, compute down Monday evening
    to Wednesday morning, nothing survives it. The window closed 2026-09-08; the next is
    2026-10-12 to 10-14.
