@@ -40,6 +40,8 @@ MAX_STEPS="${MAX_STEPS:-620000}"
 NNODES="${NNODES:-4}"
 WALL="${WALL:-96:00:00}"
 BATCH="${BATCH:-512}"
+## Known-bad nodes, passed through to every rung in the chain. See submit_train.sh.
+EXCLUDE_NODES="${EXCLUDE_NODES:-}"
 COMMON_ARGS="--max_steps=$MAX_STEPS --learning_rate=1.5e-4 --step_lr_every=2441"
 
 for name in "$@"; do
@@ -50,6 +52,7 @@ for name in "$@"; do
 
     echo "=== chaining $name (robot=$robot, arch: $args) after job $PREV"
     out=$(ALLOW_CONCURRENT=1 DEPENDENCY="afterany:$PREV" ROBOT="$robot" BATCH="$BATCH" \
+            EXCLUDE_NODES="${EXCLUDE_NODES:-}" \
             bash cluster/submit_train.sh "$name" "$NNODES" "$WALL" -- $COMMON_ARGS $args 2>&1)
     echo "$out" | tail -3
     jobid=$(grep -oE 'Submitted batch job [0-9]+' <<<"$out" | grep -oE '[0-9]+$')
