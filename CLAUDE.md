@@ -895,7 +895,46 @@ runaway cells 31 → 11. Note `tikhonov=10` cuts the runaway hardest there, 31 �
 exactly 19/19 on success — **suppressing the runaway does not buy success**, the same conclusion
 lifting `q` reached.)
 
-**So a better iiwa chart is the preferred remedy and now the only untried one.**
+**Step ACCEPTANCE is a different lever from step damping, and the first one that has worked.**
+Everything refuted above altered the *derivatives* the solver was handed, breaking the
+correspondence between the values IPOPT evaluates and the gradients it uses. Filter tuning leaves
+the program exactly as written and changes only which trial points are accepted. The mechanism it
+attacks: IPOPT holds **variable bounds** at every iterate but general constraints only at
+convergence, and in the learned formulation `q` is not a decision variable, so the joint-limit
+rows are general constraints and an iterate may sit at `|q| = 1e8`. That is why `lift_q` gave zero
+runaways — at the cost of seven equality rows. `ipopt_theta_max_fact` attacks it without touching
+the formulation: IPOPT rejects any trial point whose constraint violation exceeds
+`theta_max_fact * max(1, theta(x_0))`.
+
+The trajectories say why this should work. Recording every iterate through `VarsToQ` on five
+runaway cells (iiwa pose paired, ddp-r1, 20 s), **the solve is well behaved for 22 to 110
+iterations and then jumps in a single step** — on three of the five, `|q|_inf` goes from ~2.5 to
+past 1e3 in one iterate. The runaway is not a slow drift the solver could be nursed through; it is
+one accepted catastrophic step, which is exactly what a filter ceiling can refuse.
+
+**Local probe only, 16 cells, one seed, one chart, laptop GPU — a lead, not a measurement:**
+
+| variant | solved | runaway | median iters | median cost |
+| --- | --- | --- | --- | --- |
+| default | 11/16 | 5 | 139 | 7.61 |
+| `ipopt_theta_max_fact=1` | **14/16** | **2** | 131 | **6.75** |
+| `ipopt_theta_max_fact=10` | 11/16 | 5 | 138 | 7.61 (bit-identical to default) |
+| `ipopt_watchdog_trigger=0` | 11/16 | 5 | — | — |
+| `ipopt_max_soc=8` | 11/16 | 5 | — | — |
+
+Three cells gained, **none lost**, cost *improved*, effect sharply thresholded between 1 and 10.
+This is the first intervention that both suppresses the runaway **and** converts it into success —
+`tikhonov=10` cut runaways 31 → 7 for exactly 19/19, and `lift_q` reached zero runaways while
+losing 78 cells net. `ipopt_theta_max_fact`, `ipopt_watchdog_trigger` and `ipopt_max_soc` are
+plumbed and default to None (IPOPT's own defaults). **Not measured**: needs the grasp task, the
+Panda, both start protocols and 480 cells, which waits for the ladder to finish.
+
+SNOPT has the closer analogue of a trust region — `Major step limit` (default 2.0) bounds
+`||dx|| <= limit*(1+||x||)` per major iteration, and `Violation limit` is its theta ceiling.
+Neither is plumbed, and **`parse_log` must learn SNOPT's log format first** (iterations, eval
+counts and exit all return None under SNOPT), since iterations is the hardware-independent number.
+
+**So a better iiwa chart is the preferred remedy, and filter step-rejection is now a live second one.**
 
 ## Running on MIT SuperCloud (`cluster/`)
 
