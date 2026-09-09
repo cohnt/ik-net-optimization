@@ -1062,6 +1062,15 @@ formulation."*
 
 ### Smaller open items
 
+- **Fold a small optimization smoke run into checkpoint validation.** Thomas's idea,
+  2026-09-08, explicitly deferred (*"Obviously, not worth it right now, but a cool idea for
+  the future"*). `cluster/export_and_screen_job.sh` currently screens a checkpoint on
+  intrinsic metrics only — pole exposure on both domains, chart accuracy — but what actually
+  matters is whether the chart makes the *optimization* work, and those are not the same
+  thing (the `chart_error_scale` experiment showed accuracy barely predicts cells). A handful
+  of cells through `src/benchmark.py` at export time would catch a chart that screens clean
+  and solves badly, without waiting for a full grid. Cheap: the export job already loads the
+  solver.
 - **More guesses per target** in the paired grid — same guesses for every arm — reported as
   "solved within k restarts". The only honest form of multi-start, and the harness already does
   it.
