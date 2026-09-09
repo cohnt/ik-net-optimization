@@ -512,10 +512,15 @@ def stage_LADDER(wall, targets, guesses, shards, only=None, tag="LADDER", seed=1
     BOTH the adopted ddp-r1 chart and the archived lemon-haze-7 column, and
     `scripts/collate.py --pair learned` can run exact McNemar across them.
     """
+    ## Labels are NOT unique across robots -- both robots have n4/n6/n8/n12w256 rungs -- so a
+    ## bare label selects the rung on EVERY robot. That silently pulled panda_n6 into an
+    ## iiwa-only triage whose checkpoint would not exist for days, and those items would have
+    ## failed against a missing file. Accept "robot:label" to disambiguate, and keep bare
+    ## labels working for the (rare) case where selecting both robots is intended.
     wanted = set(only.split(",")) if only else None
     items = []
     for robot, label, ckpt in LADDER_RUNGS:
-        if wanted is not None and label not in wanted:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
             continue
         flags = ["--checkpoint", ckpt] if ckpt else []
         for task in ("mug", "pose"):
