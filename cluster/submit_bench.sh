@@ -50,6 +50,21 @@ sc_run "test -f ~/$SC_ROOT/repo/cluster/$MANIFEST" || {
     exit 2
 }
 
+## Refuse rather than measure a checkpoint that does not exist. A benchmark against a
+## missing --checkpoint does not fail fast: the workers start, construct a program, and
+## die per cell, so four jobs burned 16 minutes each before anyone noticed. This happened
+## for real on 2026-09-09, when a path bug in the in-job export left iiwa14_n6 trained but
+## unexported and the interleaved benchmark fired anyway.
+CKPTS=$(grep -o -- '--checkpoint[= ][^ ]*' "$LOCAL" | sed 's/^--checkpoint[= ]//' | sort -u)
+for c in $CKPTS; do
+    sc_run "test -f ~/$SC_ROOT/repo/$c" || {
+        echo "REFUSING: $MANIFEST references a checkpoint that is not on the cluster:" >&2
+        echo "  $c" >&2
+        echo "Export the run first (cluster/submit_export.sh), then resubmit." >&2
+        exit 3
+    }
+done
+
 LAUNCH_R="\$HOME/$SC_ROOT/results/_bench_launch_${MANIFEST%.txt}.sh"
 echo "Submitting $NJOBS job(s): PROCS=$PROCS PARTITION=$PARTITION DEP='${DEPENDENCY:-none}'"
 

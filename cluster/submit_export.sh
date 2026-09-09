@@ -29,7 +29,13 @@ ROBOT="${2:?usage: submit_export.sh <run_name> <robot> [final_step]}"
 FINAL_STEP="${3:-620000}"
 PARTITION="${PARTITION:-xeon-p8}"
 WALL="${WALL:-02:00:00}"
-CPUS="${CPUS:-48}"
+## Core count is PER PARTITION: xeon-p8 nodes have 48, xeon-g6-volta 40. Asking for 48 on
+## volta is not a queue wait, it is an immediate "Requested node configuration is not
+## available" from sbatch.
+case "$PARTITION" in
+    xeon-g6-volta) CPUS="${CPUS:-40}" ;;
+    *)             CPUS="${CPUS:-48}" ;;
+esac
 SCREEN_N="${SCREEN_N:-20000}"
 DEPENDENCY="${DEPENDENCY:-}"
 DEP_DIRECTIVE="${DEPENDENCY:+1}"
