@@ -105,7 +105,10 @@ sc_run "mkdir -p $RUN_DIR_R && cat > $RUN_DIR_R/launch.sh && chmod +x $RUN_DIR_R
 srun --ntasks-per-node=1 --kill-on-bad-exit=1 "\$HOME/$SC_ROOT/repo/cluster/train_flow.sh"
 LAUNCH
 
+## RUN_EXPORT reaches train_flow.sh's inline export step; validation runs set it to 0
+## because a 200-step checkpoint is not worth exporting or screening.
 sc_run "cd ~/$SC_ROOT/repo && \
   RUN_NAME='$RUN_NAME' ROBOT='$ROBOT' NNODES=$NNODES GPUS_PER_NODE=$GPUS_PER_NODE BATCH=$BATCH \
+  RUN_EXPORT='${RUN_EXPORT:-1}' \
   TRAIN_EXTRA_ARGS='$EXTRA_ARGS' \
   LLsub $RUN_DIR_R/launch.sh"
