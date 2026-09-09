@@ -106,7 +106,14 @@ RC=$?
 ## RUN_EXPORT=0 disables it (the smoke jobs, which have no meaningful checkpoints).
 if [ "$RC" -eq 0 ] && [ "$NODE_RANK" -eq 0 ] && [ "${RUN_EXPORT:-1}" = "1" ]; then
     echo "train_flow: training ok, exporting and screening $RUN_NAME $(date -Is)"
-    RUN_NAME="$RUN_NAME" ROBOT="$ROBOT" FINAL_STEP="${FINAL_STEP:-620000}" \
+    ## LEARNED_IK_ROOT must be passed EXPLICITLY. export_and_screen_job.sh derives its
+    ## own ROOT from $HOME, and $HOME was reassigned to "$ROOT/home" above so ikflow can
+    ## find DATASET_DIR -- so without this the export resolves every path one level deep
+    ## ("learned-ik/home/learned-ik/results/...") and dies with "no checkpoints under".
+    ## That cost iiwa14_n6 its export and sent four benchmark jobs at a checkpoint that
+    ## did not exist (2026-09-09).
+    LEARNED_IK_ROOT="$ROOT" \
+        RUN_NAME="$RUN_NAME" ROBOT="$ROBOT" FINAL_STEP="${FINAL_STEP:-620000}" \
         bash "$REPO/cluster/export_and_screen_job.sh"
     echo "train_flow: export rc=$? $(date -Is)"
 fi
