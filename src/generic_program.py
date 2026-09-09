@@ -120,6 +120,23 @@ class ProgramOptions:
     ## scaled as though it were ordinary. These two make that reachable from `--set`.
     ipopt_nlp_scaling_method: str = field(default=None, metadata={"help": "IPOPT 'nlp_scaling_method': 'gradient-based' (default), 'none', 'equilibration-based'"})
     ipopt_nlp_scaling_max_gradient: float = field(default=None, metadata={"help": "IPOPT 'nlp_scaling_max_gradient' (default 100)"})
+    ## STEP ACCEPTANCE, which is a different lever from everything already refuted. The
+    ## damping strategies (`jacobian_max_norm` and friends) altered the DERIVATIVES the
+    ## solver was handed, breaking the correspondence between the constraint values IPOPT
+    ## evaluates and the gradients it uses -- which is why the most aggressive settings
+    ## failed hardest. These three leave the program exactly as written and change only
+    ## which trial points the filter will accept.
+    ##
+    ## Why the runaway is reachable at all: IPOPT holds VARIABLE BOUNDS at every iterate but
+    ## general constraints only at convergence, and in the learned formulation `q` is not a
+    ## decision variable, so the joint-limit rows are general constraints and an iterate may
+    ## sit at |q| = 1e8. That is exactly why `lift_q` (q as a bounded variable) produced zero
+    ## runaway cells -- at the cost of seven equality rows. `theta_max_fact` attacks the same
+    ## mechanism without touching the formulation: IPOPT rejects any trial point whose
+    ## constraint violation exceeds theta_max_fact * max(1, theta(x_0)).
+    ipopt_theta_max_fact: float = field(default=None, metadata={"help": "IPOPT 'theta_max_fact' (default 1e4): trial points above theta_max_fact*max(1,theta(x0)) constraint violation are rejected outright"})
+    ipopt_watchdog_trigger: int = field(default=None, metadata={"help": "IPOPT 'watchdog_shortened_iter_trigger' (default 10); 0 disables the watchdog, which otherwise RELAXES filter acceptance for a few iterations"})
+    ipopt_max_soc: int = field(default=None, metadata={"help": "IPOPT 'max_soc' (default 4): second-order corrections, which exist to rescue steps the filter rejected for constraint violation"})
     max_iter: int = field(default=None, metadata={"help": "Iteration cap (IPOPT max_iter / SNOPT Major iterations limit)"})
 
     ## Starting point ##
@@ -1066,6 +1083,14 @@ class IKFlowProgram:
             if self.options.ipopt_nlp_scaling_max_gradient is not None:
                 solver_options.SetOption(IpoptSolver().solver_id(), "nlp_scaling_max_gradient",
                                          float(self.options.ipopt_nlp_scaling_max_gradient))
+            if self.options.ipopt_theta_max_fact is not None:
+                solver_options.SetOption(IpoptSolver().solver_id(), "theta_max_fact",
+                                         float(self.options.ipopt_theta_max_fact))
+            if self.options.ipopt_watchdog_trigger is not None:
+                solver_options.SetOption(IpoptSolver().solver_id(), "watchdog_shortened_iter_trigger",
+                                         int(self.options.ipopt_watchdog_trigger))
+            if self.options.ipopt_max_soc is not None:
+                solver_options.SetOption(IpoptSolver().solver_id(), "max_soc", int(self.options.ipopt_max_soc))
             if self.options.max_iter is not None:
                 solver_options.SetOption(IpoptSolver().solver_id(), "max_iter", int(self.options.max_iter))
             
