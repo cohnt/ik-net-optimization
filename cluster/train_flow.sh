@@ -95,5 +95,21 @@ nvidia-smi -L || true
     --num_nodes="$NNODES" --gpus_per_node="$GPUS_PER_NODE" --batch_size="$BATCH" \
     ${TRAIN_EXTRA_ARGS:-}
 RC=$?
+
+## Export + screen INSIDE the training job, on node 0 only, and only if training
+## succeeded. This is what lets the ladder be chained with Slurm dependencies and run
+## unattended: a separate export job would be a second dependency link per rung, and every
+## link is something that can break while nobody is watching. It costs a few minutes of the
+## 4-node allocation, which is cheap against a rung that would otherwise sit un-exported
+## until a human noticed.
+##
+## RUN_EXPORT=0 disables it (the smoke jobs, which have no meaningful checkpoints).
+if [ "$RC" -eq 0 ] && [ "$NODE_RANK" -eq 0 ] && [ "${RUN_EXPORT:-1}" = "1" ]; then
+    echo "train_flow: training ok, exporting and screening $RUN_NAME $(date -Is)"
+    RUN_NAME="$RUN_NAME" ROBOT="$ROBOT" FINAL_STEP="${FINAL_STEP:-620000}" \
+        bash "$REPO/cluster/export_and_screen_job.sh"
+    echo "train_flow: export rc=$? $(date -Is)"
+fi
+
 echo "train_flow node $NODE_RANK rc=$RC $(date -Is)" > "$RUN_DIR/node${NODE_RANK}.SENTINEL"
 exit $RC
