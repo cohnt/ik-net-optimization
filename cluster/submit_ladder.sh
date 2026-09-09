@@ -9,7 +9,7 @@
 # Usage:
 #   bash cluster/submit_ladder.sh --status        # one batched query: where every rung is
 #   bash cluster/submit_ladder.sh --next          # submit the first incomplete rung
-#   bash cluster/submit_ladder.sh --smoke iiwa14  # 200-step debug-gpu smoke at nb_nodes=4
+#   bash cluster/submit_ladder.sh --smoke iiwa14  # 200-step validation run, nb_nodes=4
 #
 # WHY SEQUENTIAL. Thomas's instruction is one chart at a time at full parallelism: each run
 # takes all 4 nodes of the account's xeon-g6-volta GrpTRES cap. submit_train.sh's
@@ -85,16 +85,19 @@ cmd_next() {
 
 cmd_smoke() {
     local robot="${1:?usage: --smoke <robot>}"
-    echo "200-step smoke for $robot at nb_nodes=4 on debug-gpu (ONE node, 20 min cap)."
-    # ONE node, because debug-gpu's GrpTRES cap is node=1 -- a 2-node request there does
-    # not fail, it PENDS forever against AssocGrpNodeLimit. Multi-node c10d rendezvous is
-    # already proven by iiwa14_ddp_r1 at 4 nodes; what is unproven here is the architecture
-    # flags and the panda robot, and one node with two GPUs exercises both.
-    #
-    # Deliberately the SMALLEST architecture in the ladder: it is the one whose tensor
-    # shapes differ most from everything already proven on this cluster, so it is the one
-    # most likely to expose a plumbing error, and it is the cheapest to run.
-    PARTITION=debug-gpu ROBOT="$robot" BATCH=64 \
+    echo "200-step validation run for $robot at nb_nodes=4 on ${PARTITION:-xeon-g6-volta} (ONE node)."
+    ## A REAL PARTITION, not debug-gpu. This trains -- 200 optimizer steps of multi-node DDP
+    ## on 2 GPUs -- and anything that trains, sweeps or solves a grid is a job, whatever its
+    ## step count. Naming it "smoke" does not make it one. Thomas, 2026-09-08, after this
+    ## exact mistake: "don't run big tests on debug-gpu ... No big jobs on debug nodes."
+    ## debug-gpu is a small shared pool and is NOT ExclusiveUser, so a job there takes
+    ## capacity from other people's genuine quick checks.
+    ##
+    ## Fifteen minutes of volta costs nothing against the multi-day ladder it protects.
+    ## Deliberately the SMALLEST architecture in the ladder: its tensor shapes differ most
+    ## from anything already proven here, so it is the likeliest to expose a plumbing error.
+    ## RUN_EXPORT=0: 200-step checkpoints are not worth exporting or screening.
+    PARTITION="${PARTITION:-xeon-g6-volta}" ROBOT="$robot" BATCH=64 RUN_EXPORT=0 \
         bash "$(dirname "$0")/submit_train.sh" "smoke_${robot}_n4" 1 00:20:00 -- \
         --max_steps=200 --nb_nodes=4 --eval_every=100 --val_set_size=20 \
         --checkpoint_every=100 --pole_eval_n=500 --disable_wandb \
