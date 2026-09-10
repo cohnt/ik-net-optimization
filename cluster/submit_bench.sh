@@ -21,8 +21,8 @@
 # which would both contend for the cap and corrupt the wall-clock-capped measurement.
 #
 # PROCS comes from the calibration, not a guess: the benchmark is wall-clock capped, so
-# concurrent workers that contend for CPU change WHAT IS MEASURED (40 workers/node cost
-# 44% of the per-cell iteration count; 8 cost 8%). Every arm in one manifest sees the same
+# concurrent workers that contend for CPU change WHAT IS MEASURED (20 workers/node cost
+# 44% of the per-cell iteration count and 40 cost 65%; 8 cost 8%). Every arm in one manifest sees the same
 # contention, so a within-run comparison stays sound -- but do not compare across runs that
 # used different PROCS.
 set -uo pipefail
