@@ -48,7 +48,15 @@ fi
 
 sc_run "mkdir -p ~/$SC_ROOT/repo ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/home/.cache"
 
+## PROTECT filters, not excludes: cluster-side exported checkpoints must survive
+## --delete, but locally-held ones (lemon-haze-7, ddp-r1) must still be PUSHED.
+## An --exclude would do both; rsync's "P" filter only suppresses deletion.
+## This bit on 2026-09-10: iiwa14_n4's step-620000 export lived only on the cluster,
+## a routine stage_code run deleted it, and the queued benchmark would have hit a
+## missing checkpoint. models/ is NOT excluded (see the header), so it needs this.
 sc_rsync -az --delete \
+    --filter='P models/*/*__step*.pkl' --filter='P models/*/*__step*.arch.json' \
+    --filter='P models/*/*__global_step*.pkl' --filter='P models/*/*__global_step*.arch.json' \
     --exclude='.git/' --exclude='.git' --exclude='.claude/' --exclude='.venv/' \
     --exclude='results/' --exclude='logs/' --exclude='notebooks/artifacts/' \
     --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' \
