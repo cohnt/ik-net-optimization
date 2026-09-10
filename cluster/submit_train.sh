@@ -48,7 +48,12 @@ RUN_NAME="${1:?usage: ROBOT=<robot> submit_train.sh <run_name> [nnodes] [walltim
 ROBOT="${ROBOT:?set ROBOT, e.g. ROBOT=iiwa14 or ROBOT=panda}"
 NNODES="${2:-4}"
 WALL="${3:-96:00:00}"
-PARTITION="${PARTITION:-xeon-g6-volta}"   # PARTITION=debug-gpu for smoke-sized runs ONLY
+## A REAL partition, always. Even a 200-step validation run trains, and anything that
+## trains is a job for a real partition however short it is -- debug-gpu is a small
+## non-ExclusiveUser pool shared with other people's quick checks (Thomas, 2026-09-08:
+## "No big jobs on debug nodes"). submit_ladder.sh --smoke sizes that check instead:
+## one node, 20 min, on this default.
+PARTITION="${PARTITION:-xeon-g6-volta}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-2}"
 BATCH="${BATCH:-256}"
 ## DEPENDENCY (e.g. "afterany:12345") chains rungs so the ladder advances with no session
