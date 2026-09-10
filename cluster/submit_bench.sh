@@ -61,7 +61,12 @@ sc_run "test -f ~/$SC_ROOT/repo/cluster/$MANIFEST" || {
 ## into the launcher (below), where it runs at JOB START and still fails in seconds rather
 ## than per cell. Unchained submissions keep the submit-time check, which is strictly
 ## better feedback when it can be given.
-CKPTS=$(grep -o -- '--checkpoint[= ][^ ]*' "$LOCAL" | sed 's/^--checkpoint[= ]//' | sort -u)
+## tr to spaces, NOT a bare newline-separated list: this string is interpolated into the
+## generated launcher's `for c in $CKPTS; do` on ONE line, and an embedded newline turns
+## that into a shell syntax error at job start.  It bit on 2026-09-10 -- the four benchA
+## jobs (two distinct checkpoints, hence one newline) died in under a second, and the next
+## training rung took the nodes.  A one-checkpoint manifest has no newline and hid it.
+CKPTS=$(grep -o -- '--checkpoint[= ][^ ]*' "$LOCAL" | sed 's/^--checkpoint[= ]//' | sort -u | tr '\n' ' ')
 if [ -z "$DEPENDENCY" ]; then
     for c in $CKPTS; do
         sc_run "test -f ~/$SC_ROOT/repo/$c" || {
