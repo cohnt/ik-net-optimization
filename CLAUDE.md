@@ -1084,42 +1084,72 @@ formulation."*
    is the question. Note the upstream Panda chart is *worse* than either on the task-pose domain
    (`frac_gt_1000` = 0.835%, `pole/max` = 1.7e17), which is itself worth knowing.
 
-   **RUNG 1 IS IN, AND IT DOES NOT SUPPORT THE DEPTH HYPOTHESIS.** `iiwa14_n6` (6 blocks,
-   620k steps, 12.8 steps/s) screens far cleaner than `ddp_r1` — random-domain `frac_gt_1000`
-   **0.0** and `pole/max` 179; task-pose `pole/max` **1.3e5 against ddp_r1's 7.8e9**, four to
-   five orders down — at a chart-accuracy cost of only 12.1 mm median against 10.1 mm (where
-   `elated-firefly-11` paid 29.6 mm for its zero). All of which bought **nothing where it was
-   supposed to**. 60 cells, 45 s, exact McNemar against `ddp_r1` on the same cells:
+   **THE IIWA LADDER IS IN, AND `n4` CLOSES THE GRASP DEFICIT (2026-09-12).** All four rungs
+   trained 620k steps and were measured on one grid — 60 cells, 45 s, both tasks, both start
+   protocols, `--compile`, joint space in every run as the comparison target. The headline is
+   that **the smallest chart wins everything**, and that nothing about the ladder is monotone.
 
-   | experiment | `n6` | `ddp_r1` | joint space | better / worse | p |
-   | --- | --- | --- | --- | --- | --- |
-   | grasp native | 39/60 | 37/60 | 60/60 | 6 / 4 | 0.75 (tie) |
-   | grasp paired | 39/60 | 42/60 | 60/60 | 6 / 9 | 0.61 (tie) |
-   | pose native | **58/60** | 53/60 | 42/60 | 5 / 0 | 0.063 |
-   | pose paired | 28/60 | **40/60** | 42/60 | 8 / 20 | **0.036 against** |
+   | experiment | `ddp_r1` (n12) | `n6` | `n8` | `n12_w256` | **`n4`** | joint space |
+   | --- | --- | --- | --- | --- | --- | --- |
+   | grasp native | 37/60 | 39/60 | 43/60 | 51/60 | **57/60** | 60/60 |
+   | grasp paired | 42/60 | 39/60 | 45/60 | 41/60 | **59/60** | 60/60 |
+   | pose native | 53/60 | 58/60 | 54/60 | 56/60 | **59/60** | 42/60 |
+   | pose paired | 40/60 | 28/60 | 23/60 | 40/60 | **56/60** | 42/60 |
 
-   The joint-space arm is identical across all eight runs (60/60 grasp, 42/60 pose), so the
-   differences are the chart's. **Both grasp rows are ties** — the grasp deficit is exactly what
-   the ladder exists to close, and lowering the gain ceiling by six orders did not touch it.
+   **Against joint space — the comparison that matters — `n4` converts every losing row into a
+   tie and every tie into a win.** Exact McNemar, learned vs numerical, within each run:
 
-   **The runaway did not vanish, it concentrated.** `n6` pose paired has `median_max_violation`
-   **2.92e+03** against `ddp_r1`'s 1.27e-07 on the same cells: more than half those solves return
-   runaway configurations. So *pole exposure measured by sampling the domain does not predict how
-   often the solver lands in a pole* — the same lesson `chart_error_scale` taught from the other
-   side, now with the sign reversed. A chart can be cleaner everywhere the sampler looks and worse
-   everywhere the Newton step goes.
+   | experiment | `ddp_r1` (better/worse, p) | `n4` (better/worse, p) |
+   | --- | --- | --- |
+   | grasp native | 0 / 23, **2.4e-07 against** | 0 / 3, 0.25 (tie) |
+   | grasp paired | 0 / 18, **7.6e-06 against** | 0 / 1, **1.0 (exact parity)** |
+   | pose native | 16 / 5, 0.027 for | 18 / 1, **7.6e-05 for** |
+   | pose paired | 12 / 14, 0.85 (tie) | 15 / 1, **5.2e-04 for** |
 
-   **What did improve is cost per step.** On pose native (the one row where timeouts do not
-   corrupt the medians) `n6` takes 49 iterations at **59.5 ms/it** against `ddp_r1`'s 62 at
-   130.5 — the ~2.2x the block count predicts. Median cost 6.64 against 6.04 (pose native),
-   5.31 against 7.18 (grasp native). On rows where most cells time out, the collated `ms/it`
-   divides a median-over-all wall clock by a median-over-successes iteration count and must not
-   be read.
+   And against `ddp_r1` on the same cells: grasp native 20/0 (**p = 1.9e-06**), grasp paired 18/1
+   (**p = 7.6e-05**), pose paired 18/2 (**p = 4.0e-04**), pose native 7/1 (p = 0.070). The iiwa
+   grasp deficit — 270/480 against 462 when the ladder was planned, the project's one large open
+   failure — is **gone at 60 cells**.
+
+   **`n4` also stops the runaway outright.** `median_max_violation` is 1.1e-08 to 1.6e-08 in all
+   four rows, against `ddp_r1`'s 1.3e-07 and, far worse, `n6` pose paired at **2.92e+03** and `n8`
+   pose paired at **4.50e+03** — more than half of *those* solves return runaway configurations.
+   Timeouts collapse with it: 4 / 2 / 0 / 1 cells for `n4` against 22 / 18 / 6 / 19 for `ddp_r1`.
+
+   **And it is four times cheaper per iteration.** On pose native — the one row where timeouts do
+   not corrupt the medians — `n4` takes 67 iterations at **32.0 ms/it** against `ddp_r1`'s 62 at
+   130.5, `n6`'s 49 at 59.5, and `n12_w256`'s 96 at 84.3. The learned arm's standing 25-30x
+   per-iteration penalty against joint space's ~3 ms is now about **10x**. On rows where most cells
+   time out the collated `ms/it` divides a median-over-all wall clock by a median-over-successes
+   iteration count and must not be read.
+
+   **Three things this ladder refutes, all of them ours:**
+
+   - **The gain ceiling does not order the outcome.** `n8` (ceiling 4.8e8) is *worse* than
+     `ddp_r1` (1.0e13) on pose paired, 23 against 40; `n6` (3.2e6) is worse still at 28. Only
+     `n4` (2.2e4) is better. Depth is not a dose curve — there is a cliff somewhere between 6 and
+     4 blocks, and above it fewer blocks make things worse.
+   - **Pole exposure measured by sampling does not predict cells, in either direction.** `n8`
+     screens cleanest of all four (task-pose `frac_gt_1000` **0.0**, `pole/max` 202) and solves
+     worst; `n4` screens dirtier (0.0003, 2.5e3) and solves best. A chart can be clean everywhere
+     the sampler looks and catastrophic everywhere the Newton step goes. The screen is a cheap
+     smoke test, not a selection criterion — which is the argument for folding a few optimization
+     cells into checkpoint validation (see "Smaller open items").
+   - **Width is not free, and the accuracy-only control is not inert.** `n12_w256` holds the full
+     1e13 ceiling and still gains 14 grasp-native cells over `ddp_r1` (51 against 37,
+     **p = 0.0094**), at 75.1 mm chart error against 10.1. It also runs at 84.3 ms/it, a 1.5x
+     saving where a purely dispatch-bound argument predicts none — op count scales with `nb_nodes`,
+     but the per-op cost evidently does not vanish. So reduced *capacity* moves cells through some
+     channel that is neither headroom nor accuracy, and we do not know what it is.
+
+   The harness checks itself and passes: the joint-space arm is bit-identical across all twenty
+   runs (60/60 grasp, 42/60 pose), so every difference is the chart's, and
+   `median_start_q_error` is 0.0000 exactly under `paired` at every rung.
 
    Caveats before this is treated as settled: 60 cells is ±1 cell reproducible at the cap, and
-   this is one rung. `n4` (ceiling 2.2e4), `n8`, and the width-only control `n12_w256` are the
-   rest of the dose curve — and the width rung is what says whether any of this is about accuracy
-   rather than headroom.
+   `n4` is a single checkpoint from a single seed — a 480-cell replication is what would carry it
+   into a table. The Panda ladder is the independent test of whether "smallest wins" is a property
+   of charts or of this one.
 
    **A path bug cost this rung its first measurement (2026-09-09, fixed in `6fbff55`).**
    `train_flow.sh` reassigns `HOME="$ROOT/home"` so ikflow resolves `DATASET_DIR` at import;
