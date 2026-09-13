@@ -109,15 +109,32 @@ fi
 
 # No gzip: the payload is JSON summaries plus already-compressed logs, and the
 # login node should not spend CPU on a transfer that is I/O bound anyway.
-sc_run "cd ~/$SC_ROOT && tar cf 'collect_$STAMP.tar' $NEWER results calib 2>/dev/null; ls -lh 'collect_$STAMP.tar'"
+# Training checkpoints are NOT collected.  `results/` held nothing but benchmark output
+# when this script was written; the chart ladder added results/train/<run>/{checkpoints,pkl},
+# which is 81 GB of .ckpt plus exported .pkl and grows with every rung.  A routine
+# incremental collection on 2026-09-12 therefore built a 57 GB archive and timed out twice
+# before it transferred anything.  Everything worth having from a training run is small --
+# status.json, metrics/, the launch log that carries the screening output, wandb/ -- the
+# weights are regenerable on the cluster from the .ckpt, and the one exported .pkl a
+# benchmark actually loads travels in repo/models/.  Excluded outright rather than gated
+# behind --full: there is no reason to want 81 GB of checkpoints on a laptop.
+#
+# The patterns are single-quoted so the REMOTE shell hands them to tar verbatim.  Unquoted
+# they glob against the directory we just cd'd into, expand to the real subdirectory list,
+# and the --exclude silently covers only the first of them.
+TRAIN_EXCLUDES="--exclude='results/train/*/checkpoints' --exclude='results/train/*/pkl'"
+sc_run "cd ~/$SC_ROOT && tar cf 'collect_$STAMP.tar' $TRAIN_EXCLUDES $NEWER results calib 2>/dev/null; ls -lh 'collect_$STAMP.tar'"
 sc_rsync -a --info=progress2 "$SC_DEST:$ARCHIVE" "$STAGING/"
 tar xf "$STAGING/collect_$STAMP.tar" -C "$STAGING"
 echo "extracted to $STAGING"
 
-# The remote archive is deliberately left in place; nothing here deletes cluster
-# data. Merge shards in the staging tree, then review before promoting anything
-# into results/ proper -- staging does not match collate.py's glob, so a
-# half-collected campaign cannot silently enter a table.
+# The archive this run just built is removed once it has been safely extracted locally --
+# it is this script's own scratch file rather than cluster data, and leaving every one of
+# them behind had accumulated 177 GB of superseded tars by 2026-09-12.  Nothing else here
+# deletes anything on the cluster.  Merge shards in the staging tree, then review before
+# promoting anything into results/ proper -- staging does not match collate.py's glob, so
+# a half-collected campaign cannot silently enter a table.
+sc_run "rm -f ~/$ARCHIVE"
 "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/cluster/merge_shard_summaries.py" "$STAGING"
 
 # Only now is it safe to advance the incremental watermark: everything above has to
