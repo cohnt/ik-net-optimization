@@ -125,8 +125,22 @@ fi
 TRAIN_EXCLUDES="--exclude='results/train/*/checkpoints' --exclude='results/train/*/pkl'"
 sc_run "cd ~/$SC_ROOT && tar cf 'collect_$STAMP.tar' $TRAIN_EXCLUDES $NEWER results calib 2>/dev/null; ls -lh 'collect_$STAMP.tar'"
 sc_rsync -a --info=progress2 "$SC_DEST:$ARCHIVE" "$STAGING/"
-tar xf "$STAGING/collect_$STAMP.tar" -C "$STAGING"
-echo "extracted to $STAGING"
+# The local archive is redundant the moment it is extracted: `tar xf` unpacks it directly
+# beside itself, so keeping it stores every collection's payload twice. That went unnoticed
+# until 2026-09-13, when `results/_cluster_staging` had reached 48 GB on the laptop -- a
+# 24 GB archive from the 09-09 collection sitting next to its own 24 GB extraction, both of
+# them almost entirely the training checkpoints the exclusion above now keeps out anyway.
+#
+# Guarded on the extract rather than run unconditionally: this script sets `-uo pipefail`
+# but NOT `-e`, so a failed `tar xf` otherwise falls straight through and deletes the only
+# copy of an archive that would have to be re-transferred to diagnose.
+if tar xf "$STAGING/collect_$STAMP.tar" -C "$STAGING"; then
+    rm -f "$STAGING/collect_$STAMP.tar"
+    echo "extracted to $STAGING"
+else
+    echo "extract FAILED -- keeping $STAGING/collect_$STAMP.tar for diagnosis" >&2
+    exit 4
+fi
 
 # The archive this run just built is removed once it has been safely extracted locally --
 # it is this script's own scratch file rather than cluster data, and leaving every one of
