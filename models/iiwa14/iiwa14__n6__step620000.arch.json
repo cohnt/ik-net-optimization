@@ -1,0 +1,23 @@
+{
+  "coeff_fn_config": 3,
+  "coeff_fn_internal_size": 1024,
+  "coupling_layer": "glow",
+  "dim_latent_space": 8,
+  "init_scale": 0.04473500291638653,
+  "lambd_predict": 1.0,
+  "nb_nodes": 6,
+  "permute_random_enabled": true,
+  "provenance": {
+    "global_step": 620000,
+    "source_checkpoint": "/home/gridsan/tcohn/learned-ik/results/train/iiwa14_n6/checkpoints/ikflow-checkpoint-step=620000.ckpt",
+    "staged_learned_ik_commit": "6fbff5562ed76aaa72ae1a0dc9867dc5bc302850"
+  },
+  "rnvp_clamp": 2.5,
+  "robot_name": "iiwa14",
+  "run_description": null,
+  "sigmoid_on_output": false,
+  "softflow_enabled": true,
+  "softflow_noise_scale": 0.001,
+  "y_noise_scale": 1e-07,
+  "zeros_noise_scale": 0.001
+}
