@@ -58,6 +58,15 @@ stage that has not finished simply has no merged summary yet.
 - **An arm failing identically in ~10 ms a cell is not solving at all.** `_abort_on_dead_arm`
   should catch it, but check `fail_reason` is a named gate rather than `"error"`.
 
+## Do not prune the training tree until stage 3 is done
+
+The cluster tree is **186 G**, most of it `~/learned-ik/results/train/` (310 `.ckpt`, plus
+30 `.pkl` + sidecar per rung) and ~64 G of pre-fix `collect_*.tar` in `~/learned-ik/`.
+The tars are disposable and are Thomas's call. **The `pkl/` directories are not** — stage 3
+benchmarks `../results/train/iiwa14_n{4,6}/pkl/*.pkl` directly, so deleting them mid-chain
+silently kills 384 items. Clear the tars if space is needed; leave `results/train/*/pkl/`
+alone until stage 3 has been collected.
+
 ## If a stage died
 
 `collect_results.sh --reclaim <manifest>` clears claims with no done marker, then
