@@ -1151,6 +1151,60 @@ formulation."*
    into a table. The Panda ladder is the independent test of whether "smallest wins" is a property
    of charts or of this one.
 
+   **THE PANDA LADDER IS IN, AND IT REFUTES "SMALLEST WINS" AS A CHART PROPERTY (2026-09-14).**
+   All six rungs — `upstream` (the downloaded lp191_5.25m), `n12` (our self-trained
+   full-capacity control), `n8`, `n6`, `n4`, `n12_w256` — on one grid, 60 cells, 45 s, both
+   tasks, both start protocols, `--compile`, joint space in every run.
+
+   | experiment | upstream | `n12` | `n8` | `n6` | `n4` | `n12_w256` | joint space |
+   | --- | --- | --- | --- | --- | --- | --- | --- |
+   | grasp native | 59/60 | 58/60 | **60/60** | 59/60 | 59/60 | 59/60 | 54/60 |
+   | grasp paired | 51/60 | 54/60 | 59/60 | **60/60** | **60/60** | 51/60 | 54/60 |
+   | pose native | **60/60** | 58/60 | 56/60 | 58/60 | **60/60** | 55/60 | 26/60 |
+   | pose paired | 45/60 | 44/60 | **54/60** | **54/60** | 49/60 | 48/60 | 26/60 |
+
+   **The Panda's optimum is `n6`–`n8`, not `n4`.** Exact McNemar against the `n12` control,
+   only 4 of 20 comparisons significant and all on the `paired` rows: grasp paired `n4` 6/0 and
+   `n6` 6/0 (**p = 0.031** each), pose paired `n6` 14/4 (**p = 0.031**) and `n8` 13/3
+   (**p = 0.021**). On pose paired `n4` scores 49 against `n6`/`n8`'s 54 — **the smallest chart
+   is beaten by the middle rungs on the robot where the iiwa's ordering predicted it should
+   win.** Both `native` rows saturate at 55–60/60 and discriminate nothing.
+
+   **And the mechanism is different, which is the finding.** The Panda has *no runaway to fix*:
+   `median_max_violation` is 4.1e-09 to 7.7e-08 on every rung, against the iiwa's `n6`/`n8` pose
+   paired at 2.9e+03 and 4.5e+03. What moves instead is the **wall-clock cap**, and it tracks
+   per-iteration cost exactly:
+
+   | | upstream / `n12` / `n12_w256` | `n8` / `n6` / `n4` |
+   | --- | --- | --- |
+   | ms per iteration | 83–181 | 34–62 |
+   | timeouts (of 60) | 7–14 on the `paired` rows | 0–3 |
+
+   So on the iiwa a smaller chart bought cells by **eliminating runaway configurations**; on the
+   Panda it buys them by **fitting more iterations inside a fixed cap**. The second is a real
+   deployment benefit — the learned arm's per-iteration penalty against joint space falls from
+   ~30x to ~12x — but it is an implementation-and-hardware property, not a better-shaped chart,
+   and it is exactly the confound the ladder's plan flagged in advance. Reporting ms/it beside
+   success is what separates them, and is why the standing rule requires it.
+
+   **Two controls land as intended.** `upstream` and `n12` agree within noise on all four rows
+   (51/54, 58/58, 60/58, 45/44), so our training recipe reproduces Jeremy's and no reduced-Panda
+   result is confounded with "our recipe vs. his" — which is the whole reason `n12` was trained.
+   And `n12_w256`, the accuracy-only control, never beats `n12` significantly on any row
+   (p = 0.38 to 1.0) while *keeping* the slow iteration (136–114 ms/it against `n6`'s 43): width
+   costs accuracy without buying either headroom or speed. Depth buys the speed.
+
+   Screening at step 620000, task-pose domain: `n8` `frac_gt_1000` 0.00205, `pole/max` 6.2e6,
+   accuracy 7.2 / 44.6 mm; `n12_w256` 0.001, 1.4e8, 22.9 / 96.5 mm. As on the iiwa, **the screen
+   does not order the outcome** — `n8` screens dirtier than `n12_w256` on `frac_gt_1000` and
+   solves better on three rows of four.
+
+   **What this means for the ladder's claim.** "The smallest chart wins" was an iiwa result and
+   does not generalise: across the two robots the reliable statement is only that **reducing
+   depth from 12 helps, by whichever mechanism that robot's chart was losing to**, with the
+   optimum rung differing by robot (4 on the iiwa, 6–8 on the Panda). A 480-cell replication is
+   still what would carry either into a table.
+
    **A path bug cost this rung its first measurement (2026-09-09, fixed in `6fbff55`).**
    `train_flow.sh` reassigns `HOME="$ROOT/home"` so ikflow resolves `DATASET_DIR` at import;
    `export_and_screen_job.sh` derives its own `ROOT` from `$HOME`, so the inline export resolved
