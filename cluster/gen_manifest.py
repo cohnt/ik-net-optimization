@@ -532,6 +532,73 @@ def stage_LADDER(wall, targets, guesses, shards, only=None, tag="LADDER", seed=1
     return items
 
 
+# ---------------------------------------------------------------------------------
+# The training-trajectory probe.
+#
+# Screening every kept checkpoint of the ladder showed that pole mass is CREATED BY
+# TRAINING, monotonically, on every rung: iiwa n4's `pole/max` on the task-pose domain
+# runs 27 -> 2.5e3 over 20k..620k steps, iiwa n6's 409 -> 1.3e5, panda n12's 50 -> 3.5e11.
+# The architectural headroom is present at initialisation and barely used; SGD walks the
+# network into it while buying accuracy.  So headroom is what makes the runaway possible
+# and training is what fills it -- which the ladder, comparing only step-620000 charts,
+# could not see.
+#
+# This stage holds the ARCHITECTURE fixed and sweeps the training step, which is the only
+# way to separate the two.  iiwa only: that is the robot with the deficit, and the Panda
+# has no runaway to trade against.
+#
+# The sharp prediction is n6 at 240k -- `pole/max` 1.6e3 against step 620000's 1.3e5, an
+# 80x cleaner chart for 27% worse accuracy (15.4 mm against 12.1).  n6 at 620000 scored
+# 39/39/58/28 in triage with `median_max_violation` 2.9e+03 on pose paired, so if pole
+# mass acquired late in training is what breaks that rung, 240k should solve markedly
+# better.  n6 at 120k is the counterweight: `pole/max` 7.1e6, WORSE than 620000's, at
+# mid-range accuracy.  n4 is the control -- its pole trajectory is smooth and its ceiling
+# is 2.2e4, so its curve should be dominated by accuracy alone.
+#
+# Note this stage selects checkpoints on an intrinsic screen, which the ladder refuted as
+# a PREDICTOR of cells.  That is deliberate and is not the same move: the screen is being
+# used to pick points that span the pole axis, and the benchmark is what decides whether
+# the axis matters.  Nothing here may be promoted by its screen alone.
+#
+# Paths point OUTSIDE the repo, at the training tree (`~/learned-ik/results/train/...`),
+# where the per-step exports and their `.arch.json` sidecars already live -- 30 of each
+# per rung.  Items run with the repo as cwd, and submit_bench.sh's guard resolves
+# `~/$SC_ROOT/repo/<path>`, so the `../` prefix is correct for both.
+TRAJ_STEPS = {
+    ("iiwa", "iiwa14", "n6"): [40000, 120000, 240000, 400000],
+    ("iiwa", "iiwa14", "n4"): [20000, 100000, 200000, 400000],
+}
+
+
+def traj_ckpt(run_robot, label, step):
+    return (f"../results/train/{run_robot}_{label}/pkl/"
+            f"{run_robot}__{label}__step{step}.pkl")
+
+
+def stage_TRAJ(wall, targets, guesses, shards, only=None, tag="TRAJ", seed=1):
+    """One architecture, several training steps, on stage CKPT's grid and seed.
+
+    `only` accepts "robot:label" or a bare label, as stage_LADDER does.  Step 620000 is
+    deliberately absent: it is already measured, under sc_LADDER, on these same cells.
+    """
+    wanted = set(only.split(",")) if only else None
+    items = []
+    for (robot, run_robot, label), steps in TRAJ_STEPS.items():
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        for step in steps:
+            ckpt = traj_ckpt(run_robot, label, step)
+            for task in ("mug", "pose"):
+                for start in ("paired", "native"):
+                    items += item(robot,
+                                  f"sc_{tag}_{robot}_{label}s{step // 1000}k_{task}_{int(wall)}_{start}",
+                                  ["--task", task, "--config", "latent", "--start", start,
+                                   "--set", f"correction_cost_weight={CORR_COST}",
+                                   "--checkpoint", ckpt],
+                                  targets, guesses, LADDER_ARMS, wall, shards, seed=seed)
+    return items
+
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -628,6 +695,7 @@ def selftest():
                          ("LADDER", stage_LADDER(45, 60, 8, 8)),
                          ("LADDERTRI", stage_LADDER(20, 15, 4, 2, only="ddpr1,n6",
                                                     tag="LADDERTRI")),
+                         ("TRAJ", stage_TRAJ(45, 60, 8, 8)),
                          ("FIN-retagged", retag(stage_FIN(45, 15, 4, 4), "EQ"))):
         ids = [i["id"] for i in items]
         if len(ids) != len(set(ids)):
@@ -656,6 +724,22 @@ def selftest():
                 print(f"FAIL stage {stage}: {base} shards {sorted(ks)} not a partition")
                 fails += 1
         print(f"ok   stage {stage}: {len(items)} items, ids unique, lines well formed")
+    ## Every trajectory checkpoint must name a rung the ladder actually trained, and must
+    ## reach outside the repo -- these live in the training tree, not under models/.
+    traj_fails = 0
+    for (robot, run_robot, label), steps in TRAJ_STEPS.items():
+        if not any(r == robot and l == label for r, l, _ in LADDER_RUNGS):
+            print(f"FAIL TRAJ: {robot}:{label} is not a trained ladder rung"); traj_fails += 1
+        for step in steps:
+            c = traj_ckpt(run_robot, label, step)
+            if not c.startswith("../results/train/") or not c.endswith(".pkl"):
+                print(f"FAIL TRAJ: implausible checkpoint path {c}"); traj_fails += 1
+            if step == 620000:
+                print(f"FAIL TRAJ: step 620000 is already measured under sc_LADDER ({label})")
+                traj_fails += 1
+    if not traj_fails:
+        print("ok   trajectory checkpoint paths well formed and rungs known")
+    fails += traj_fails
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -673,7 +757,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "A", "B", "B2", "B3",
+    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--rungs", default=None,
                    help="LADDER/LADDERTRI only: comma-separated rung labels to generate "
@@ -744,6 +828,10 @@ def main():
                                                args.shards, only=args.rungs, tag="LADDERTRI"),
              "LADDER": lambda: stage_LADDER(args.wall_time, args.targets, args.guesses,
                                             args.shards, only=args.rungs),
+             ## TRAJ: one architecture, several training steps -- separates pole mass
+             ## acquired during training from the architectural ceiling.
+             "TRAJ": lambda: stage_TRAJ(args.wall_time, args.targets, args.guesses,
+                                        args.shards, only=args.rungs),
              }[args.stage]()
 
     if args.tag_prefix:
