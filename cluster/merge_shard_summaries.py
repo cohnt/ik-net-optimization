@@ -191,9 +191,20 @@ def main():
         ## One bad group must not stop the rest: a single incomplete tag left over from a
         ## killed stage used to abort the whole walk, so every alphabetically-later run
         ## silently went unmerged. Report it and carry on; the exit code still flags it.
+        ##
+        ## SystemExit is listed EXPLICITLY because it derives from BaseException, not
+        ## Exception, so `except Exception` did not catch it and this guard was inert --
+        ## which is exactly the failure it was written to prevent.  Found on 2026-09-14
+        ## collecting a chained campaign: stage 1 had finished and all twelve shards of
+        ## every run were on disk, but stage 2 was still running, and its first alphabetical
+        ## tag (iiwa_n12w256) raised `INCOMPLETE -- missing shards` out of validate() and
+        ## killed the process.  Only the four tags sorting before it got merged; the eight
+        ## completed stage-1 runs looked, from the output, as though they had not arrived.
+        ## Collecting mid-campaign is the NORMAL case for a dependency chain, so an
+        ## in-flight run must be an ordinary skip rather than a fatal error.
         try:
             records, meta, arm_names, n_targets, n_guesses = validate(base, group)
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             print(f"{base}: SKIPPED -- {exc}")
             failures.append(base)
             continue
