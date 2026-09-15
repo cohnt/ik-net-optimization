@@ -107,6 +107,18 @@ else
     echo "--full: collecting the entire results tree"
 fi
 
+## The watermark for the NEXT run is taken NOW, before tar reads anything -- not at the
+## end of this one. Stamping it at the end opens a window: tar snapshots the tree, the
+## transfer and merge take minutes, and anything a worker writes in the meantime is both
+## too late for this archive and older than the watermark, so no later run ever fetches it.
+## It bit on 2026-09-14: two shards of stage 2 were written at 20:54:30 while the 20:54
+## collection was in flight, and the next collection reported their runs INCOMPLETE with
+## the files sitting on the cluster the whole time.
+## Taking it from the CLUSTER's clock, because the mtimes tar compares it against are the
+## cluster's. Erring early only re-ships a few files that were already collected, which
+## costs a little bandwidth and is idempotent; erring late loses them silently.
+COLLECT_WATERMARK="$(sc_run "date +%s")"
+
 # No gzip: the payload is JSON summaries plus already-compressed logs, and the
 # login node should not spend CPU on a transfer that is I/O bound anyway.
 # Training checkpoints are NOT collected.  `results/` held nothing but benchmark output
@@ -153,6 +165,6 @@ sc_run "rm -f ~/$ARCHIVE"
 
 # Only now is it safe to advance the incremental watermark: everything above has to
 # have succeeded, or the next run must re-fetch what this one failed to bring back.
-sc_run "date +%s > ~/$SC_ROOT/.last_collect"
+sc_run "echo $COLLECT_WATERMARK > ~/$SC_ROOT/.last_collect"
 echo
 echo "review, then promote with:  cp -r $STAGING/results/<robot>/benchmark/<tag> results/<robot>/benchmark/"
