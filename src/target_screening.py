@@ -57,6 +57,11 @@ class SceneSpec:
     key: str
     hardened: str
     legacy: str
+    ## Bin removed, clutter kept -- the scene that separates "targets must be in a shelf"
+    ## from "the scene lost obstacles".  Only the iiwa needs one: the Panda GRASP scene had
+    ## no decorative mugs to begin with, so its hardened scene already IS its nobin scene.
+    ## None where the distinction does not exist.
+    nobin: str
     ## EXACT model-instance names, not prefixes.  `../codebase` filters with str.startswith,
     ## which would also swallow a future `panda_table`; an exact set is testable, and
     ## tests/test_shelf_placement_screens.py asserts both that every name here exists and
@@ -75,29 +80,45 @@ SCENES = {
         "panda_mug",
         "models/panda/panda_finray_collision_hardened.yaml",
         "models/panda/panda_finray_collision.yaml",
+        "models/panda/panda_finray_collision_hardened.yaml",
         ("panda", "finray"), "between_fingers"),
     ("panda", "pose"): SceneSpec(
         "panda_pose",
         "models/panda/panda_collision_hardened.yaml",
         "models/panda/panda_collision.yaml",
+        None,
         ("panda",), "panda_hand"),
     ("iiwa", "mug"): SceneSpec(
         "iiwa_mug",
         "models/iiwa14/iiwa14_collision_hardened.yaml",
         "models/iiwa14/iiwa14_collision.yaml",
+        "models/iiwa14/iiwa14_collision_nobin.yaml",
         ("iiwa", "finray"), "between_fingers"),
     ("iiwa", "pose"): SceneSpec(
         "iiwa_pose",
         "models/iiwa14/iiwa14_collision_hardened.yaml",
         "models/iiwa14/iiwa14_collision.yaml",
+        "models/iiwa14/iiwa14_collision_nobin.yaml",
         ("iiwa", "finray"), "iiwa_link_7"),
 }
 
 
-def SceneFile(robot, task, hardened=True):
-    """Absolute path to the scene YAML for this (robot, task) and scene mode."""
+def SceneFile(robot, task, scene="hardened"):
+    """Absolute path to the scene YAML for this (robot, task) and scene mode.
+
+    `hardened` drops the bin and the decorative mugs; `nobin` drops only the bin, keeping
+    the clutter; `legacy` is the pre-2026-09-15 scene.  `nobin` raises where the robot has
+    no such variant, rather than silently falling back to `hardened` -- a run labelled
+    `nobin` that quietly measured `hardened` would be worse than no run at all.
+    """
     spec = SCENES[(robot, task)]
-    return os.path.join(RepoDir(), spec.hardened if hardened else spec.legacy)
+    path = {"hardened": spec.hardened, "legacy": spec.legacy, "nobin": spec.nobin}[scene]
+    if path is None:
+        raise SystemExit(
+            "--scene nobin: %s/%s has no bin-free-with-clutter variant. The Panda grasp "
+            "scene never had decorative mugs, so its hardened scene already is its nobin "
+            "scene; the Panda pose scene has no variant built." % (robot, task))
+    return os.path.join(RepoDir(), path)
 
 
 class FloatingMugScreen:

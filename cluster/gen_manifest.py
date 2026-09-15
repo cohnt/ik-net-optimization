@@ -556,6 +556,50 @@ HARD_POSE_PLACEMENTS = (("posein", "shelf"), ("posefree", "free"))
 HARD_SHELF_INSET = 0.10
 
 
+def stage_HARDMUG(wall, targets, guesses, shards, only=None, tag="HARDMUG", seed=1):
+    """stage HARD again on the iiwa, with the decorative mugs KEPT.
+
+    Disambiguates the 2026-09-15 result, where the two robots moved opposite ways on the
+    grasp task: Panda joint space fell 457 -> 323 and the learned arm took the row, while
+    iiwa joint space barely moved (462 -> 442) and the learned arm lost it.
+
+    The reason to suspect the experiment rather than the robots is that they did not receive
+    the same intervention. The Panda GRASP scene never had decorative mugs, so hardening it
+    is near-pure target containment -- its bin sits at [0.75, 0, 0], nowhere near the
+    shelves. The iiwa scene lost the bin AND seven welded mugs, four of them inside shelf
+    compartments, so its grasp task gained a containment requirement while LOSING obstacles.
+    `--scene nobin` removes only the bin, which is the iiwa's match for what the Panda got.
+
+    iiwa only: `--scene nobin` raises for panda/pose (no such scene built) and resolves to
+    the hardened scene for panda/mug, which already has no decorative mugs.
+
+    Not cell-comparable with stage HARD -- the clutter changes which uniform draws survive,
+    so the grid differs. It is a difficulty comparison, like posein against posefree.
+    """
+    wanted = set(only.split(",")) if only else None
+    items = []
+    for robot, label, ckpt in LADDER_RUNGS:
+        if robot != "iiwa":
+            continue
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        common = (["--config", "latent",
+                   "--set", f"correction_cost_weight={CORR_COST}",
+                   "--scene", "nobin",
+                   "--shelf-inset", str(HARD_SHELF_INSET)]
+                  + (["--checkpoint", ckpt] if ckpt else []))
+        rows = [("mug", "mug", "shelf")] + [("pose", token, mode)
+                                            for token, mode in HARD_POSE_PLACEMENTS]
+        for task, token, placement in rows:
+            for start in ("paired", "native"):
+                items += item(robot,
+                              f"sc_{tag}_{robot}_{label}_{token}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start,
+                               "--target-placement", placement] + common,
+                              targets, guesses, LADDER_ARMS, wall, shards, seed=seed)
+    return items
+
+
 def stage_HARD(wall, targets, guesses, shards, only=None, tag="HARD", seed=1):
     """The ladder's eleven rungs again, on the hardened problem.
 
@@ -754,6 +798,7 @@ def selftest():
                                                     tag="LADDERTRI")),
                          ("TRAJ", stage_TRAJ(45, 60, 8, 8)),
                          ("HARD", stage_HARD(45, 60, 8, 8)),
+                         ("HARDMUG", stage_HARDMUG(45, 60, 8, 8)),
                          ("HARDTRI", stage_HARD(20, 15, 4, 2, only="ddpr1,upstream",
                                                 tag="HARDTRI")),
                          ("FIN-retagged", retag(stage_FIN(45, 15, 4, 4), "EQ"))):
@@ -833,6 +878,25 @@ def selftest():
               "both pose placements per rung")
     fails += len(hard_fails)
 
+    ## stage_HARDMUG: iiwa only, and every item must actually be on the nobin scene --
+    ## a HARDMUG run that silently measured the hardened scene would disambiguate nothing
+    ## while looking like it had.
+    hm = stage_HARDMUG(45, 60, 8, 1)
+    hm_fails = []
+    if len(hm) != 30:
+        hm_fails.append("should be 30 logical runs (5 iiwa rungs x 6), got %d" % len(hm))
+    for it in hm:
+        a = it["args"]
+        if it["robot"] != "iiwa":
+            hm_fails.append("%s is not an iiwa run" % it["id"])
+        if "--scene" not in a or a[a.index("--scene") + 1] != "nobin":
+            hm_fails.append("%s is not on the nobin scene" % it["id"])
+    for msg in hm_fails:
+        print(f"FAIL stage HARDMUG: {msg}")
+    if not hm_fails:
+        print("ok   stage HARDMUG: 30 iiwa runs, every item on the nobin scene")
+    fails += len(hm_fails)
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -850,7 +914,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI",
+    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--rungs", default=None,
@@ -892,6 +956,8 @@ def main():
                                         args.guesses, args.shards, only=args.rungs),
              "HARDTRI": lambda: stage_HARD(args.wall_time, args.targets, args.guesses,
                                            args.shards, only=args.rungs, tag="HARDTRI"),
+             "HARDMUG": lambda: stage_HARDMUG(args.wall_time, args.targets, args.guesses,
+                                              args.shards, only=args.rungs),
              "A": lambda: stage_A(args.wall_time, args.targets, args.guesses, args.shards),
              "B2": lambda: stage_B2(args.wall_time, args.targets, args.guesses, args.shards),
              "B3": lambda: stage_B3(args.wall_time, args.targets, args.guesses, args.shards),
