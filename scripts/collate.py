@@ -50,6 +50,15 @@ def pair(arm, paths):
             note = "no grid_hash -- provenance unknown, not evidence of a shared grid"
         elif mine != theirs:
             note = "DIFFERENT GRID -- not comparable"
+        else:
+            # A matching grid_hash is necessary but not sufficient. The hardened-scene axis
+            # changes which targets were admissible and which obstacles exist, and two runs
+            # differing only there would otherwise print a clean McNemar row.
+            differs = [k for k in ("scene", "target_placement", "shelf_inset")
+                       if data["metadata"].get(k) != ref["metadata"].get(k)]
+            if differs:
+                note = ("DIFFERENT SCENE/PLACEMENT (%s) -- not comparable"
+                        % ", ".join(differs))
         shared = sorted(set(cells) & set(ref_cells))
         m = mcnemar_exact([cells[c] for c in shared], [ref_cells[c] for c in shared])
         print(f"{name:<28} {sum(cells.values()):>4}/{len(cells):<4} {m['a_only']:>7} "

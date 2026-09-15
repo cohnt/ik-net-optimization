@@ -41,7 +41,16 @@ SHARD_RE = re.compile(r"_shard(\d+)of(\d+)$")
 # one run and merging them would fabricate a table that was never measured.
 MUST_MATCH = ("robot", "task", "solver", "config", "wall_time", "seed", "grid_hash",
               "compiled", "overrides", "start", "guess_filter", "n_targets", "n_guesses",
-              "device", "torch_version")
+              "device", "torch_version",
+              # The hardened-scene axis. `scene`/`scene_mode` fix the obstacle set and
+              # `target_placement`/`shelf_inset`/`target_screen`/`placement_point` fix which
+              # targets were admissible, so shards of two different experiments can never be
+              # pooled into one summary. `target_candidates_drawn`/`target_accept_rate` are
+              # deliberately NOT here: they are derived diagnostics already implied by
+              # `grid_hash`, and a change to the sampling instrumentation must not be able to
+              # block a merge.
+              "scene", "scene_mode", "target_placement", "shelf_inset", "target_screen",
+              "placement_point")
 
 # `host` is deliberately NOT in MUST_MATCH. Shards of one run are distributed across
 # nodes -- that is the entire point of sharding -- so their hostnames can never agree,

@@ -27,6 +27,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from src.utils import (RepoDir, BuildEnv, GenerateDiagramWithMug, HiddenPrints,
                        CalculateError)
 from src import benchmark as bm
+from src.shelf_regions import DEFAULT_SHELF_DEPTH_INSET, ShelfCompartmentRegions
+from src.target_screening import (MAX_CONSECUTIVE_REJECTIONS, SCENES,
+                                  FloatingMugScreen, FormatTargetStats,
+                                  SampleShelfTargets, SceneFile)
 from src.generic_program import ProgramOptions, orientation_error_rpy
 from src.panda_program import (PandaIKProgram, PandaIKProgramNumerical,
                                PandaIKProgramAnalytic, PandaMugProgram,
@@ -143,6 +147,26 @@ def parse_args():
     p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
                    help="override any ProgramOptions field, e.g. --set correction_bound=0.4. "
                         "Applied after --config, recorded in the metadata and the tag.")
+    p.add_argument("--scene", choices=("hardened", "legacy"), default="hardened",
+                   help="`hardened` is the campaign scene: four shelves, two tables, no bin "
+                        "and no decorative mugs. `legacy` is the pre-2026-09-15 scene, kept "
+                        "so archived runs reproduce. The obstacle set changes which uniform "
+                        "draws survive, so the two produce different grids by construction.")
+    p.add_argument("--target-placement", choices=("shelf", "free"), default="shelf",
+                   help="`shelf` accepts a sampled target only if its point lands inside a "
+                        "shelf compartment (and, on the grasp task, only if the mug placed "
+                        "there does not penetrate the scene). `free` is the old sampler, "
+                        "which accepted any collision-free draw. This is what makes the "
+                        "obstacles part of the problem rather than scenery.")
+    p.add_argument("--shelf-inset", type=float, default=DEFAULT_SHELF_DEPTH_INSET,
+                   help="metres each shelf compartment is inset along its depth axis. "
+                        "Symmetric, because shelves.sdf has no back wall. Deeper is harder "
+                        "AND rarer -- see scripts/probe_shelf_acceptance.py before moving it; "
+                        "0.125 is not fielded.")
+    p.add_argument("--max-target-rejections", type=int, default=MAX_CONSECUTIVE_REJECTIONS,
+                   help="consecutive rejected candidates before target sampling gives up. "
+                        "A tail bound, not a budget; the default is sized from the measured "
+                        "acceptance rates.")
     return p.parse_args()
 
 
@@ -221,8 +245,10 @@ def main():
     # No visualization means no Meshcat server. This process used to stand up two of them
     # unconditionally, so forty ranks on a cluster node meant eighty websocket servers.
     meshcat = Meshcat() if base_options.visualize else None
-    scene = "panda_finray_collision.yaml" if args.task == "mug" else "panda_collision.yaml"
-    yaml_file = os.path.join(RepoDir(), "models/panda", scene)
+    # The hardened scene drops the bin and (on the pose scene) the seven decorative mugs;
+    # `--scene legacy` restores the pre-2026-09-15 obstacle set. See src/target_screening.py.
+    spec = SCENES[("panda", args.task)]
+    yaml_file = SceneFile("panda", args.task, hardened=(args.scene == "hardened"))
 
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
@@ -244,8 +270,36 @@ def main():
 
     ## ------------------------------- targets ------------------------------- ##
     # Sampling a configuration and taking its gripper pose guarantees every target is
-    # reachable and, for the mug, that at least one valid grasp exists.
-    target_qs = [sample_collision_free() for _ in tqdm(range(args.targets), desc="targets")]
+    # reachable and, for the mug, that at least one valid grasp exists. Under
+    # `--target-placement shelf` the draw is additionally rejected unless the target lands
+    # inside a shelf compartment -- which is what makes the scene's obstacles part of the
+    # problem instead of scenery. Acceptance is ~0.2-0.7% of collision-free draws, so this
+    # costs ~12 s per grid; see scripts/probe_shelf_acceptance.py.
+    regions = (ShelfCompartmentRegions(args.shelf_inset)
+               if args.target_placement == "shelf" else None)
+    # The mug is welded at the target point, so a target inside a compartment can still put
+    # the mug through a shelf board. Drake never generates collision candidates between two
+    # ANCHORED geometries, so that overlap is invisible on the solve scene and needs its own
+    # diagram with the mug unwelded. The pose task places no object and needs no screen.
+    mug_screen = None
+    if regions is not None and args.task == "mug":
+        with HiddenPrints():
+            mug_screen = FloatingMugScreen(yaml_file, spec.robot_instances)
+
+    def target_pose_of(q):
+        sampler.plant.SetPositions(sampler.plant_context, q)
+        return sampler.frame.CalcPoseInWorld(sampler.plant_context)
+
+    target_qs, target_stats = SampleShelfTargets(
+        args.targets,
+        draw=lambda: rng.uniform(lower, upper),
+        collision_free=lambda q: sampler.collision_free_constraint_eval.Eval(q) < 1,
+        target_pose=target_pose_of, regions=regions,
+        screen=(lambda X: mug_screen.Penetrates([X])) if mug_screen else None,
+        max_consecutive_rejections=args.max_target_rejections,
+        label=f"panda/{args.task}/{args.target_placement}",
+        progress=tqdm(total=args.targets, desc="targets"))
+    print(FormatTargetStats(f"panda/{args.task}", target_stats))
 
     def sample_guess():
         # A property of the *grid*, identical for every arm: with --guess-filter charted,
@@ -408,6 +462,15 @@ def main():
         progress=lambda *a: bar.update(1),
         metadata=dict(task=args.task, solver=args.solver, config=args.config,
                       wall_time=args.wall_time, seed=args.seed, grid_hash=grid_hash,
+                      robot="panda",
+                      scene=os.path.basename(yaml_file), scene_mode=args.scene,
+                      target_placement=args.target_placement,
+                      shelf_inset=(args.shelf_inset
+                                   if args.target_placement == "shelf" else None),
+                      target_screen=(mug_screen is not None),
+                      placement_point=spec.target_frame,
+                      target_candidates_drawn=target_stats["drawn"],
+                      target_accept_rate=target_stats["accept_rate"],
                       compiled=args.compile, compile_seconds=compile_seconds,
                       overrides=overrides, start=args.start, guess_filter=args.guess_filter,
                       n_targets=args.targets, n_guesses=args.guesses,
