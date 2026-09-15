@@ -58,6 +58,25 @@ stage that has not finished simply has no merged summary yet.
 - **An arm failing identically in ~10 ms a cell is not solving at all.** `_abort_on_dead_arm`
   should catch it, but check `fail_reason` is a named gate rather than `"error"`.
 
+## Results so far (stage 1 collected 2026-09-14, promoted into `results/`, which is gitignored)
+
+480 cells. Joint space is identical across every rung AND identical to the archived 480-cell
+columns (iiwa 462 grasp / 325 pose, Panda 457 / 228), grid hashes match, and
+`median_start_q_error` is 0.0 exactly under `paired` -- the harness checks out.
+
+| experiment | iiwa `ddpr1` | iiwa `n6` | iiwa `n4` | iiwa js | Panda `n6` | Panda `n4` | Panda js |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp native | 267 | 288 | 448 | **462** | 471 | **476** | 457 |
+| grasp paired | 301 | 302 | 449 | **462** | 471 | **474** | 457 |
+| pose native | 432 | 441 | **463** | 325 | **462** | 459 | 228 |
+| pose paired | 307 | 232 | **448** | 325 | **435** | 407 | 228 |
+
+**The 60-cell triage overstated `n4`.** Against joint space on iiwa grasp it is 15/29
+(p = 0.05) native and 15/28 (p = 0.07) paired -- a small residual deficit, not the exact
+parity 60 cells showed. Everything else replicates: `n4` wins both iiwa pose rows
+(147/9 and 143/20), and on the Panda both `n6` and `n4` beat joint space on all four rows,
+with `n6` ahead of `n4` on pose paired (435 vs 407) as the triage found.
+
 ## Do not prune the training tree until stage 3 is done
 
 The cluster tree is **186 G**, most of it `~/learned-ik/results/train/` (310 `.ckpt`, plus
