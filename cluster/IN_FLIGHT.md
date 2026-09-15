@@ -58,24 +58,49 @@ stage that has not finished simply has no merged summary yet.
 - **An arm failing identically in ~10 ms a cell is not solving at all.** `_abort_on_dead_arm`
   should catch it, but check `fail_reason` is a named gate rather than `"error"`.
 
-## Results so far (stage 1 collected 2026-09-14, promoted into `results/`, which is gitignored)
+## Results so far — the complete 480-cell ladder (stages 1+2, collected 2026-09-14)
 
-480 cells. Joint space is identical across every rung AND identical to the archived 480-cell
-columns (iiwa 462 grasp / 325 pose, Panda 457 / 228), grid hashes match, and
-`median_start_q_error` is 0.0 exactly under `paired` -- the harness checks out.
+Promoted into `results/`, which is gitignored, so these numbers live only here until the
+campaign ends and CLAUDE.md gets its table. **Stage 3 (`sc_TRAJ`) is still running.**
 
-| experiment | iiwa `ddpr1` | iiwa `n6` | iiwa `n4` | iiwa js | Panda `n6` | Panda `n4` | Panda js |
+Harness checks pass: joint space identical across every rung of a robot AND identical to
+the archived 480-cell columns (iiwa 462 grasp / 325 pose, Panda 457 / 228); grid hashes
+match; `median_start_q_error` 0.0 exactly under `paired`.
+
+| experiment | `ddpr1` | `n8` | `n6` | `n4` | `n12w256` | **iiwa js** |
+| --- | --- | --- | --- | --- | --- | --- |
+| grasp native | 267 | 309 | 288 | **448** | 349 | 462 |
+| grasp paired | 301 | 327 | 302 | **449** | 344 | 462 |
+| pose native | 432 | 426 | 441 | **463** | 422 | 325 |
+| pose paired | 307 | 221 | 232 | **448** | 337 | 325 |
+
+| experiment | `upstream` | `n12` | `n8` | `n6` | `n4` | `n12w256` | **Panda js** |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| grasp native | 267 | 288 | 448 | **462** | 471 | **476** | 457 |
-| grasp paired | 301 | 302 | 449 | **462** | 471 | **474** | 457 |
-| pose native | 432 | 441 | **463** | 325 | **462** | 459 | 228 |
-| pose paired | 307 | 232 | **448** | 325 | **435** | 407 | 228 |
+| grasp native | 443 | 430 | 465 | 471 | **476** | 459 | 457 |
+| grasp paired | 418 | 416 | 467 | 471 | **474** | 447 | 457 |
+| pose native | **474** | 463 | 461 | 462 | 459 | 451 | 228 |
+| pose paired | 340 | 339 | 419 | **435** | 407 | 332 | 228 |
 
-**The 60-cell triage overstated `n4`.** Against joint space on iiwa grasp it is 15/29
-(p = 0.05) native and 15/28 (p = 0.07) paired -- a small residual deficit, not the exact
-parity 60 cells showed. Everything else replicates: `n4` wins both iiwa pose rows
-(147/9 and 143/20), and on the Panda both `n6` and `n4` beat joint space on all four rows,
-with `n6` ahead of `n4` on pose paired (435 vs 407) as the triage found.
+Three things 480 cells show that 60 did not:
+
+1. **iiwa `n4` does not reach parity on grasp.** JS 15/29 (p = 0.05) native and 15/28
+   (p = 0.07) paired — close, and a transformation of `ddp_r1`'s 9/204, but the exact
+   parity at 60 cells was the small grid saturating joint space at 60/60.
+2. **The Panda's full-depth charts significantly LOSE the grasp task**, `upstream`
+   JS 21/35 (p = 0.08) and `n12` JS 20/47 (**p = 0.001**) native, JS 18/57 and 22/63
+   (p = 7e-06, 1e-05) paired — while every reduced-depth rung wins it. At 60 cells these
+   rows were 59/60 vs 54/60 and not significant.
+3. **The iiwa runaway on `n8`/`n6` pose paired replicates at scale**: `median_max_violation`
+   2e+03 and 1e+03, scoring 221 and 232, *below* `ddp_r1`'s 307. Only `n4` (1e-08) and
+   `n12w256` (2e-08) are clean.
+
+Per-iteration cost falls monotonically with depth on both robots (iiwa grasp native
+80 / 55 / 42 / 33 ms for n12 / n8 / n6 / n4; `n12w256` 72, holding depth), and timeouts
+collapse with it (iiwa `n4` 33/31/6/10 against `ddp_r1`'s 212/194/42/170). `n4`'s
+per-iteration penalty against joint space is now ~13x, from ~30x.
+
+The optimum rung differs by robot — `n4` on the iiwa, `n6` on the Panda (435 vs `n4`'s 407
+on pose paired) — reproducing the triage ordering at 8x the cells.
 
 ## Do not prune the training tree until stage 3 is done
 
