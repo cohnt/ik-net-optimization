@@ -147,11 +147,15 @@ def parse_args():
     p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
                    help="override any ProgramOptions field, e.g. --set correction_bound=0.4. "
                         "Applied after --config, recorded in the metadata and the tag.")
-    p.add_argument("--scene", choices=("hardened", "legacy"), default="hardened",
+    p.add_argument("--scene", choices=("hardened", "nobin", "legacy"), default="hardened",
                    help="`hardened` is the campaign scene: four shelves, two tables, no bin "
-                        "and no decorative mugs. `legacy` is the pre-2026-09-15 scene, kept "
-                        "so archived runs reproduce. The obstacle set changes which uniform "
-                        "draws survive, so the two produce different grids by construction.")
+                        "and no decorative mugs. `nobin` drops ONLY the bin, keeping the "
+                        "clutter -- it exists to separate 'targets must be in a shelf' from "
+                        "'the scene lost obstacles', which the 2026-09-15 campaign confounded "
+                        "on the iiwa (iiwa only; the Panda grasp scene never had decorative "
+                        "mugs). `legacy` is the pre-2026-09-15 scene, kept so archived runs "
+                        "reproduce. The obstacle set changes which uniform draws survive, so "
+                        "these produce different grids by construction.")
     p.add_argument("--target-placement", choices=("shelf", "free"), default="shelf",
                    help="`shelf` accepts a sampled target only if its point lands inside a "
                         "shelf compartment (and, on the grasp task, only if the mug placed "
@@ -248,7 +252,7 @@ def main():
     # The hardened scene drops the bin and (on the pose scene) the seven decorative mugs;
     # `--scene legacy` restores the pre-2026-09-15 obstacle set. See src/target_screening.py.
     spec = SCENES[("panda", args.task)]
-    yaml_file = SceneFile("panda", args.task, hardened=(args.scene == "hardened"))
+    yaml_file = SceneFile("panda", args.task, args.scene)
 
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)

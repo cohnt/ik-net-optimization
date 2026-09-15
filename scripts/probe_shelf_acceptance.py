@@ -58,14 +58,19 @@ def parse_args():
                    help="rejection guards to report the trip probability at")
     p.add_argument("--targets", type=int, default=60,
                    help="targets per grid, for the P(trip) column")
+    p.add_argument("--scene", default="hardened",
+                   choices=("hardened", "nobin", "legacy"),
+                   help="which obstacle set to probe. `nobin` keeps the decorative mugs, "
+                        "four of which sit inside shelf compartments, so its acceptance is "
+                        "strictly lower than `hardened`'s -- check it before fielding it.")
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args()
 
 
-def probe_scene(robot, task, draws, seed):
+def probe_scene(robot, task, draws, seed, scene="hardened"):
     """Returns (target points of the collision-free draws, n_drawn, seconds, screen)."""
     spec = SCENES[(robot, task)]
-    yaml_file = SceneFile(robot, task, hardened=True)
+    yaml_file = SceneFile(robot, task, scene)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=yaml_file)
     plant = diagram.GetSubsystemByName("plant")
@@ -111,10 +116,10 @@ def main():
     failures = []
     for robot in args.robots.split(","):
         for task in args.tasks.split(","):
-            points, seconds, screen, spec = probe_scene(robot, task, args.draws, args.seed)
+            points, seconds, screen, spec = probe_scene(robot, task, args.draws, args.seed, args.scene)
             n_free = len(points)
             print("\n%s / %s   point = %s   scene = %s"
-                  % (robot, task, spec.target_frame, os.path.basename(SceneFile(robot, task))))
+                  % (robot, task, spec.target_frame, os.path.basename(SceneFile(robot, task, args.scene))))
             print("  collision-free %d/%d (%.1f%%), %.3f ms per draw"
                   % (n_free, args.draws, 100.0 * n_free / args.draws,
                      1000.0 * seconds / args.draws))

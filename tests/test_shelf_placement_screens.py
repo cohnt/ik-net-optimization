@@ -46,11 +46,11 @@ REMOVED = {
 _CACHE = {}
 
 
-def _scene(robot, task, hardened=True):
+def _scene(robot, task, scene="hardened"):
     """Built diagram + plant + context, memoised (building a scene is seconds, not ms)."""
-    key = (robot, task, hardened)
+    key = (robot, task, scene)
     if key not in _CACHE:
-        diagram = BuildEnv(meshcat=None, directives_file=SceneFile(robot, task, hardened))
+        diagram = BuildEnv(meshcat=None, directives_file=SceneFile(robot, task, scene))
         plant = diagram.GetSubsystemByName("plant")
         context = plant.GetMyContextFromRoot(diagram.CreateDefaultContext())
         _CACHE[key] = (diagram, plant, context)
@@ -102,8 +102,8 @@ def test_region_table_matches_scene_welds():
 
 def test_hardened_scenes_have_no_bin_or_decorative_mugs():
     for (robot, task), removed in REMOVED.items():
-        _, hard_plant, _ = _scene(robot, task, hardened=True)
-        _, legacy_plant, _ = _scene(robot, task, hardened=False)
+        _, hard_plant, _ = _scene(robot, task, "hardened")
+        _, legacy_plant, _ = _scene(robot, task, "legacy")
         hard, legacy = _instance_names(hard_plant), _instance_names(legacy_plant)
         for name in removed:
             assert not hard_plant.HasModelInstanceNamed(name), (robot, task, name)
@@ -114,11 +114,45 @@ def test_hardened_scenes_have_no_bin_or_decorative_mugs():
     print("PASS hardened scenes drop exactly the bin and the decorative mugs")
 
 
+def test_nobin_scene_drops_only_the_bin():
+    """`nobin` is the scene that separates containment from clutter -- it must keep both."""
+    for robot, task in (("iiwa", "mug"), ("iiwa", "pose")):
+        _, plant, context = _scene(robot, task, "nobin")
+        present = _instance_names(plant)
+        assert not plant.HasModelInstanceNamed("binF"), (robot, task)
+        ## The whole point: the decorative mugs STAY. Without this the scene is just the
+        ## hardened one under a different name and the disambiguation measures nothing.
+        for name in DECORATIVE_MUGS:
+            assert plant.HasModelInstanceNamed(name), (robot, task, name)
+        assert STATIC_FURNITURE <= present, (robot, task)
+        ## And it must still be a legal containment scene: same four shelves, same poses.
+        for name, tx, ty, tz, yaw_deg in SHELF_WELDS:
+            X = plant.GetFrameByName(
+                "shelves_body", plant.GetModelInstanceByName(name)).CalcPoseInWorld(context)
+            assert np.allclose(X.translation(), [tx, ty, tz], atol=1e-12), (robot, name)
+            assert X.rotation().IsNearlyEqualTo(
+                RotationMatrix.MakeZRotation(np.deg2rad(yaw_deg)), 1e-12), (robot, name)
+        ## Exactly the bin separates it from legacy.
+        _, legacy_plant, _ = _scene(robot, task, "legacy")
+        assert _instance_names(legacy_plant) - present == {"binF"}, (robot, task)
+    ## The Panda has no such variant and must say so rather than silently serving another.
+    for robot, task in (("panda", "pose"),):
+        try:
+            SceneFile(robot, task, "nobin")
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("panda/pose should have no nobin scene")
+    ## The Panda GRASP scene never had decorative mugs, so hardened IS its nobin scene.
+    assert SceneFile("panda", "mug", "nobin") == SceneFile("panda", "mug", "hardened")
+    print("PASS nobin scene drops the bin and keeps the clutter")
+
+
 def test_hardened_matches_legacy_minus_removals():
     """Semantic comparison of the directives Drake actually sees, in both directions."""
     for (robot, task), removed in REMOVED.items():
-        hard = LoadModelDirectives(SceneFile(robot, task, True)).directives
-        legacy = LoadModelDirectives(SceneFile(robot, task, False)).directives
+        hard = LoadModelDirectives(SceneFile(robot, task, "hardened")).directives
+        legacy = LoadModelDirectives(SceneFile(robot, task, "legacy")).directives
 
         def names(d):
             out = []
@@ -263,6 +297,7 @@ def test_rejection_guard_trips_with_a_useful_message():
 if __name__ == "__main__":
     test_region_table_matches_scene_welds()
     test_hardened_scenes_have_no_bin_or_decorative_mugs()
+    test_nobin_scene_drops_only_the_bin()
     test_hardened_matches_legacy_minus_removals()
     test_scene_registry_matches_plants()
     test_exact_containment_vs_world_aabb()
