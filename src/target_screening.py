@@ -31,12 +31,24 @@ from src.utils import BuildEnv, RepoDir
 MUG_URDF = "package://combining_kinematics/models/mug/mug_simple_red.urdf"
 
 ## Past this many candidates rejected BACK TO BACK the sampler gives up rather than spinning
-## for ever.  Matches `../codebase`.  It is a tail bound, not a budget: acceptance restarts at
-## each accepted target, so P(trip) = (1 - p)^N per target.  At the measured acceptance rates
-## 5000 is ample for the grasp task and NOT ample for the pose task -- see
-## `scripts/probe_shelf_acceptance.py`, which prints the trip probability, and note that
-## `cluster/gen_manifest.py`'s stage_HARD passes a raised guard on every pose item.
-MAX_CONSECUTIVE_REJECTIONS = 5000
+## for ever.  It is a TAIL BOUND, not a budget: acceptance restarts at each accepted target,
+## so P(trip on one target) = (1 - p)^guard and a 60-target grid gets 60 chances to trip.
+##
+## `../codebase` uses 5000.  We deliberately do not: acceptance here is about an order of
+## magnitude lower than it measured (0.23% of raw draws on iiwa pose at inset 0.10, against
+## its 4.6% in-region), and at 5000 that row trips somewhere in a 60-target grid **41% of the
+## time** -- and a trip raises partway through a queued run and kills every shard of it.
+## Measured by scripts/probe_shelf_acceptance.py, 20000 draws per scene, P(trip over 60
+## targets) at inset 0.10:
+##
+##     guard   panda/mug  panda/pose  iiwa/mug  iiwa/pose
+##      5000     6.3e-05     1.2e-02   6.0e-04    4.1e-01
+##     50000     0           0         0          0
+##
+## 50000 costs nothing -- it bounds only the tail, and the expected draw count per target is
+## unchanged at ~400-1100 (~12 s of sampling per grid) -- so it is the default, and no
+## manifest has to remember to raise it.
+MAX_CONSECUTIVE_REJECTIONS = 50000
 
 
 @dataclass(frozen=True)
