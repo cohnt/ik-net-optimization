@@ -1156,7 +1156,48 @@ formulation."*
    erratic `n6` rows above. **Accuracy itself is converged by ~480k** — the last eight checkpoints
    of every rung are within 3%, and 620000 is best or within 2% of best on all nine — so there is
    no better checkpoint to hunt, and selecting one per rung would confound architecture with
-   selection. `--stage TRAJ` measures the training-step axis directly.
+   selection. `--stage TRAJ` measured the training-step axis directly, and its answer is below.
+
+   **THE TRAINING-STEP SWEEP (2026-09-15): training makes the iiwa `n6` chart WORSE, and does
+   nothing at all for `n4`.** Same 480-cell grid, seed 1, 45 s, `--compile`, both tasks, both
+   protocols, learned arm against joint space in every run; the 620k column is the ladder's own.
+
+   | iiwa `n4` | 20k | 100k | 200k | 400k | 620k | js |
+   | --- | --- | --- | --- | --- | --- | --- |
+   | grasp native | 459 | 449 | 447 | 456 | 448 | 462 |
+   | grasp paired | 461 | 456 | 453 | 452 | 449 | 462 |
+   | pose native | 460 | 463 | 464 | 467 | 463 | 325 |
+   | pose paired | 448 | 455 | 447 | 451 | 448 | 325 |
+
+   | iiwa `n6` | 40k | 120k | 240k | 400k | 620k | js |
+   | --- | --- | --- | --- | --- | --- | --- |
+   | grasp native | **425** | 317 | 299 | 298 | 288 | 462 |
+   | grasp paired | **429** | 325 | 318 | 305 | 302 | 462 |
+   | pose native | 446 | 440 | 450 | 443 | 441 | 325 |
+   | pose paired | **331** | 268 | 247 | 228 | 232 | 325 |
+   | `median_max_violation`, pose paired | 3.8e-08 | 4.1e-07 | 4.0e-06 | **5.1e+03** | 1e+03 | |
+
+   Exact McNemar, earliest checkpoint against 620k: **`n6` loses three of four rows to its own
+   first checkpoint** — grasp native 22/159 (**p = 8.3e-27**), grasp paired 15/142
+   (**p = 4.1e-27**), pose paired 63/162 (**p = 3.1e-11**), pose native 28/33 (p = 0.61). **`n4`
+   moves on none of the four** — 17/28 (p = 0.14), 15/27 (p = 0.088), 16/13 (p = 0.71), 27/27
+   (p = 1.0).
+
+   **This is the pole-mass screen's prediction confirmed downstream, and it is the sharpest
+   statement the campaign has that accuracy is not the quantity that matters.** `n4` at 20k
+   steps has ~78 mm median FK error against 620k's 20 mm — a 4x accuracy gain over 600k steps
+   of training, worth **zero cells** in all four experiments. Meanwhile `n6` buys the same kind
+   of accuracy and *pays* 137 grasp cells for it, because its `pole/max` climbs 409 -> 1.3e5 over
+   the same interval and the violation column shows the runaway arriving: `median_max_violation`
+   on pose paired crosses from 1e-08 to **1e+03** between 240k and 400k. Training is what walks
+   a chart into its architectural headroom; `n4`'s ceiling of 2.2e4 is below the runaway band, so
+   there is nothing for training to walk it into and its curve is flat.
+
+   **This is not a licence to pick early checkpoints.** Selecting a checkpoint on this grid is
+   selecting on the test set, and it would confound architecture with selection — which is why
+   every ladder rung is reported at 620k. What the sweep licenses is the opposite conclusion:
+   **the rung to pick is the one whose ceiling makes the choice moot**, and on the iiwa that is
+   `n4`.
 
    The harness checks itself and passes: joint space is identical across every rung of a robot
    AND identical to the archived 480-cell columns (462 / 325 / 457 / 228), grid hashes match, and
