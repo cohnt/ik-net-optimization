@@ -1196,8 +1196,32 @@ formulation."*
    **This is not a licence to pick early checkpoints.** Selecting a checkpoint on this grid is
    selecting on the test set, and it would confound architecture with selection — which is why
    every ladder rung is reported at 620k. What the sweep licenses is the opposite conclusion:
-   **the rung to pick is the one whose ceiling makes the choice moot**, and on the iiwa that is
-   `n4`.
+   **the rung to pick is the one whose ceiling makes the choice moot.**
+
+   #### THE CHART-SELECTION RULE
+
+   **Choose an architecture whose gain ceiling `exp(2.4976 · nb_nodes)` sits below the ~1e7
+   runaway band — on the iiwa that is `nb_nodes = 4` — then take the final checkpoint, because
+   below the ceiling the training-step axis is flat and above it later checkpoints are strictly
+   worse.**
+
+   The ceiling is `atan` and the block count, nothing else: FrEIA's coupling block is
+   `y = exp(s)·x + t` with `s = clamp · 0.636 · atan(s_raw)`, so `|s| < clamp·0.636·π/2 = 2.4976`
+   at `rnvp_clamp = 2.5` and one block amplifies by at most 12.15x. Over `nb_nodes`: 2.2e4 / 3.2e6
+   / 4.8e8 / 1.0e13 at n4 / n6 / n8 / n12. It bounds the weights, so no amount of training escapes
+   it — and **training reliably walks 78-89% of the way up whatever log-ceiling it is given**
+   (observed `pole/max` at 620k: `n4` 2.5e3, `n6` 1.3e5, Panda `n12` 3.5e11), so the ceiling
+   predicts where a trained chart lands rather than merely bounding it.
+
+   Note the band: the configurations that actually kill solves are **1e7 to 1e16 rad**.
+   `frac_gt_1000`'s threshold of 1000 is a bimodality separator (ordinary configurations sit at
+   ~2.5 rad), *not* the level at which a solve dies — `n4`'s ceiling is above 1000 and is fine.
+   Every competing criterion is disqualified by measurement: accuracy (converged by 480k, and
+   backwards across rungs), intrinsic pole screening (`n8` screens cleanest and solves worst),
+   "take the last checkpoint" (true only below the ceiling), and "take whichever benchmarks best"
+   (selection on the reporting grid). If a chart above its ceiling ever *must* be selected among,
+   the only sound version is a held-out optimization grid — which is the deferred export-time
+   smoke-cells item, now with a design.
 
    The harness checks itself and passes: joint space is identical across every rung of a robot
    AND identical to the archived 480-cell columns (462 / 325 / 457 / 228), grid hashes match, and
