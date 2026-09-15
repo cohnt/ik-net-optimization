@@ -161,7 +161,17 @@ fi
 # promoting anything into results/ proper -- staging does not match collate.py's glob, so
 # a half-collected campaign cannot silently enter a table.
 sc_run "rm -f ~/$ARCHIVE"
-"$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/cluster/merge_shard_summaries.py" "$STAGING"
+## Search the PREVIOUS staging directory too. Collection is incremental, so a collection
+## that runs while a stage is still in flight splits that stage in two, and any run whose
+## shards straddle the split is unmergeable from either directory alone -- it looks exactly
+## like data loss while the shards sit on disk. `--also` adds it to the SEARCH; the merged
+## run is written beside the shard that anchors it, so read the merger's own path when
+## promoting rather than assuming this collection's staging directory.
+PREV_STAGING="$(ls -1d "$REPO_ROOT"/results/_cluster_staging/*/ 2>/dev/null \
+                | grep -v "^$STAGING/\?$" | tail -1)"
+ALSO=()
+[ -n "${PREV_STAGING:-}" ] && ALSO=(--also "$PREV_STAGING")
+"$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/cluster/merge_shard_summaries.py" "$STAGING" "${ALSO[@]}"
 
 # Only now is it safe to advance the incremental watermark: everything above has to
 # have succeeded, or the next run must re-fetch what this one failed to bring back.
