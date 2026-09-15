@@ -66,29 +66,42 @@ MUST_MATCH = ("robot", "task", "solver", "config", "wall_time", "seed", "grid_ha
 HOSTS_KEY = "host"
 
 
-def find_shard_groups(root):
-    """{base_tag: {shard_index: (path, payload)}} over every summary.json under `root`."""
+def find_shard_groups(root, extra_roots=()):
+    """{base_tag: {shard_index: (path, payload)}} over every summary.json under `root`.
+
+    `extra_roots` are searched for shards too, but never written to.  They exist because
+    collection is INCREMENTAL: a collection that runs while a stage is still in flight
+    splits that stage across two staging directories, and any run whose shards straddle
+    the split is unmergeable from either directory alone.  The merger refuses such a group
+    (correctly -- it is genuinely incomplete where it is looking), and the operator sees
+    what looks exactly like data loss, with the shards sitting on disk the whole time.
+    Observed 2026-09-15: four of eight shards of one HARD run landed in the previous
+    staging directory.  Shards found in an extra root count toward completeness; the
+    merged run is written beside the shard that anchors it, so it may land under an extra
+    root -- promote from wherever the merge reports writing it.
+    """
     groups, unsharded = {}, []
-    for dirpath, _, filenames in os.walk(root):
-        if "summary.json" not in filenames:
-            continue
-        path = os.path.join(dirpath, "summary.json")
-        tag = os.path.basename(dirpath)
-        m = SHARD_RE.search(tag)
-        with open(path) as f:
-            payload = json.load(f)
-        if not m:
-            unsharded.append((tag, path, payload))
-            continue
-        index, count = int(m.group(1)), int(m.group(2))
-        base = tag[: m.start()]
-        groups.setdefault(base, {"count": count, "shards": {}})
-        if groups[base]["count"] != count:
-            raise SystemExit(f"{base}: shards disagree on N "
-                             f"({groups[base]['count']} vs {count})")
-        if index in groups[base]["shards"]:
-            raise SystemExit(f"{base}: duplicate shard {index}")
-        groups[base]["shards"][index] = (path, payload)
+    for search_root in (root,) + tuple(extra_roots):
+      for dirpath, _, filenames in os.walk(search_root):
+          if "summary.json" not in filenames:
+              continue
+          path = os.path.join(dirpath, "summary.json")
+          tag = os.path.basename(dirpath)
+          m = SHARD_RE.search(tag)
+          with open(path) as f:
+              payload = json.load(f)
+          if not m:
+              unsharded.append((tag, path, payload))
+              continue
+          index, count = int(m.group(1)), int(m.group(2))
+          base = tag[: m.start()]
+          groups.setdefault(base, {"count": count, "shards": {}})
+          if groups[base]["count"] != count:
+              raise SystemExit(f"{base}: shards disagree on N "
+                               f"({groups[base]['count']} vs {count})")
+          if index in groups[base]["shards"]:
+              raise SystemExit(f"{base}: duplicate shard {index}")
+          groups[base]["shards"][index] = (path, payload)
     return groups, unsharded
 
 
@@ -181,6 +194,10 @@ def validate(base, group):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("root", help="directory to walk for shard summary.json files")
+    p.add_argument("--also", action="append", default=[], metavar="DIR",
+                   help="additional directory to SEARCH for shards (never written to). "
+                        "Use it when an incremental collection split one run's shards "
+                        "across two staging directories -- see find_shard_groups.")
     p.add_argument("--out", default=None,
                    help="where merged runs are written (default: alongside the shards, "
                         "in a sibling directory named for the base tag)")
@@ -190,7 +207,7 @@ def main():
                                               "(default: everything -- opt in, never out)")
     args = p.parse_args()
 
-    groups, unsharded = find_shard_groups(args.root)
+    groups, unsharded = find_shard_groups(args.root, tuple(args.also))
     failures = []
     if not groups:
         print(f"no sharded runs under {args.root}")
