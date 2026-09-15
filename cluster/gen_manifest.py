@@ -533,6 +533,63 @@ def stage_LADDER(wall, targets, guesses, shards, only=None, tag="LADDER", seed=1
 
 
 # ---------------------------------------------------------------------------------
+# The hardened grasp/pose problem.
+#
+# The grasp benchmark used to accept a target wherever a collision-free draw put the gripper,
+# so targets sat in free air far more often than in clutter and the collision-avoidance half
+# of the problem barely bound. `../codebase` hit the same weakness and hardened its Grasp
+# Selection experiment on 2026-09-15; this is the same treatment, on the same shelves, at the
+# same 0.10 m depth inset: no bin, no decorative mugs, and a target accepted only if it lands
+# inside a shelf compartment (grasp targets additionally screened for the mug penetrating the
+# scene).
+#
+# The grasp task is always shelf-contained -- a grasp target that is not in clutter is not a
+# grasp-selection problem. The POSE task is fielded BOTH ways, because "does containment
+# matter there?" is the open question: de-cluttering the scene without constraining targets
+# makes pose strictly easier, and constraining them makes it harder, so both are measured and
+# the verdict is read off the numbers rather than assumed.
+#
+# Nothing passes --max-target-rejections: the guard's default is already sized from the
+# measured acceptance rates (scripts/probe_shelf_acceptance.py). At ../codebase's 5000 the
+# iiwa pose row would trip somewhere in a 60-target grid 41% of the time.
+HARD_POSE_PLACEMENTS = (("posein", "shelf"), ("posefree", "free"))
+HARD_SHELF_INSET = 0.10
+
+
+def stage_HARD(wall, targets, guesses, shards, only=None, tag="HARD", seed=1):
+    """The ladder's eleven rungs again, on the hardened problem.
+
+    Same rungs, arms, seed and grid shape as stage_LADDER, so the two tables are read side
+    by side -- but NOT cell-comparable with it, and deliberately so: the hardened scene
+    admits a different set of targets, `grid_hash` differs, and collate.py refuses the
+    pairing. The comparison this stage supports is between its own columns.
+
+    Six logical runs per rung (grasp x 2 starts, pose x 2 placements x 2 starts), 66 over
+    all eleven rungs.
+    """
+    wanted = set(only.split(",")) if only else None
+    items = []
+    for robot, label, ckpt in LADDER_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        common = (["--config", "latent",
+                   "--set", f"correction_cost_weight={CORR_COST}",
+                   "--scene", "hardened",
+                   "--shelf-inset", str(HARD_SHELF_INSET)]
+                  + (["--checkpoint", ckpt] if ckpt else []))
+        rows = [("mug", "mug", "shelf")] + [("pose", token, mode)
+                                            for token, mode in HARD_POSE_PLACEMENTS]
+        for task, token, placement in rows:
+            for start in ("paired", "native"):
+                items += item(robot,
+                              f"sc_{tag}_{robot}_{label}_{token}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start,
+                               "--target-placement", placement] + common,
+                              targets, guesses, LADDER_ARMS, wall, shards, seed=seed)
+    return items
+
+
+# ---------------------------------------------------------------------------------
 # The training-trajectory probe.
 #
 # Screening every kept checkpoint of the ladder showed that pole mass is CREATED BY
@@ -696,6 +753,9 @@ def selftest():
                          ("LADDERTRI", stage_LADDER(20, 15, 4, 2, only="ddpr1,n6",
                                                     tag="LADDERTRI")),
                          ("TRAJ", stage_TRAJ(45, 60, 8, 8)),
+                         ("HARD", stage_HARD(45, 60, 8, 8)),
+                         ("HARDTRI", stage_HARD(20, 15, 4, 2, only="ddpr1,upstream",
+                                                tag="HARDTRI")),
                          ("FIN-retagged", retag(stage_FIN(45, 15, 4, 4), "EQ"))):
         ids = [i["id"] for i in items]
         if len(ids) != len(set(ids)):
@@ -740,6 +800,39 @@ def selftest():
     if not traj_fails:
         print("ok   trajectory checkpoint paths well formed and rungs known")
     fails += traj_fails
+    ## stage_HARD's own invariants. The counts are literal because an accidental extra loop
+    ## level is otherwise invisible -- the manifest just gets bigger and every line is valid.
+    hard_fails = []
+    if len(stage_HARD(45, 60, 8, 1)) != 66:
+        hard_fails.append("should be 66 logical runs, got %d" % len(stage_HARD(45, 60, 8, 1)))
+    if len(stage_HARD(45, 60, 8, 8)) != 528:
+        hard_fails.append("at 8 shards should be 528 items, got %d"
+                          % len(stage_HARD(45, 60, 8, 8)))
+    per_rung = {}
+    for it in stage_HARD(45, 60, 8, 1):
+        a = it["args"]
+        if "--scene" not in a or a[a.index("--scene") + 1] != "hardened":
+            hard_fails.append("%s is not on the hardened scene" % it["id"])
+        task = a[a.index("--task") + 1]
+        placement = a[a.index("--target-placement") + 1]
+        ## The one that matters: a grasp target in free air is not a grasp-selection
+        ## problem, so a "free" grasp item must never reach a manifest.
+        if task == "mug" and placement != "shelf":
+            hard_fails.append("grasp item %s is not shelf-contained" % it["id"])
+        if task == "pose":
+            per_rung.setdefault((it["robot"], a[a.index("--checkpoint") + 1]
+                                 if "--checkpoint" in a else "default"),
+                                set()).add(placement)
+    for key, modes in per_rung.items():
+        if modes != {"shelf", "free"}:
+            hard_fails.append("rung %r fields pose placements %r, not both" % (key, modes))
+    for msg in hard_fails:
+        print(f"FAIL stage HARD: {msg}")
+    if not hard_fails:
+        print("ok   stage HARD: 66 runs, all hardened, grasp always shelf-contained, "
+              "both pose placements per rung")
+    fails += len(hard_fails)
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -757,7 +850,8 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "A", "B", "B2", "B3",
+    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI",
+                                 "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--rungs", default=None,
                    help="LADDER/LADDERTRI only: comma-separated rung labels to generate "
@@ -794,7 +888,11 @@ def main():
         raise SystemExit("--stage is required (or --selftest)")
 
     caps = [float(c) for c in args.caps.split(",")]
-    items = {"A": lambda: stage_A(args.wall_time, args.targets, args.guesses, args.shards),
+    items = {"HARD": lambda: stage_HARD(args.wall_time, args.targets,
+                                        args.guesses, args.shards, only=args.rungs),
+             "HARDTRI": lambda: stage_HARD(args.wall_time, args.targets, args.guesses,
+                                           args.shards, only=args.rungs, tag="HARDTRI"),
+             "A": lambda: stage_A(args.wall_time, args.targets, args.guesses, args.shards),
              "B2": lambda: stage_B2(args.wall_time, args.targets, args.guesses, args.shards),
              "B3": lambda: stage_B3(args.wall_time, args.targets, args.guesses, args.shards),
              "B": lambda: stage_B(args.wall_time, args.targets, args.guesses, args.shards),

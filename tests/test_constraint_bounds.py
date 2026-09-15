@@ -80,7 +80,7 @@ def main():
     print("\n--- pose task: the six IK rows ---")
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None,
-                           directives_file=os.path.join(REPO, "models/panda/panda_collision.yaml"))
+                           directives_file=os.path.join(REPO, "models/panda/panda_collision_hardened.yaml"))
         sampler = PandaIKProgram(diagram, options=opts)
         sampler.create_prog()
     # A reachable target, the way the benchmark makes them: the gripper pose of a real
@@ -165,13 +165,13 @@ def main():
     with HiddenPrints():
         mug_diagram = BuildEnv(
             meshcat=None,
-            directives_file=os.path.join(REPO, "models/panda/panda_finray_collision.yaml"))
+            directives_file=os.path.join(REPO, "models/panda/panda_finray_collision_hardened.yaml"))
         mug_sampler = PandaMugProgram(mug_diagram, options=opts, model=ik_solver)
         mug_sampler.create_prog()
         q_m = rng.uniform(mug_sampler.plant.GetPositionLowerLimits(),
                           mug_sampler.plant.GetPositionUpperLimits())
         diagram_with_mug, mug = GenerateDiagramWithMug(
-            q_m, mug_sampler, os.path.join(REPO, "models/panda/panda_finray_collision.yaml"),
+            q_m, mug_sampler, os.path.join(REPO, "models/panda/panda_finray_collision_hardened.yaml"),
             None)
 
     for cls, label in ((PandaMugProgram, "learned"), (PandaMugProgramNumerical, "numerical")):
@@ -215,7 +215,7 @@ def main():
         with HiddenPrints():
             idiagram = BuildEnv(
                 meshcat=None,
-                directives_file=os.path.join(REPO, "models/iiwa14/iiwa14_collision.yaml"))
+                directives_file=os.path.join(REPO, "models/iiwa14/iiwa14_collision_hardened.yaml"))
             isampler = Iiwa14IKProgram(idiagram, options=opts)
             isampler.create_prog()
             q_i = rng.uniform(isampler.plant.GetPositionLowerLimits(),
