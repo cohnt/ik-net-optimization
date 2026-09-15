@@ -1124,6 +1124,115 @@ scored 34/60 and 35/60; the single differing cell hit the wall clock in both, re
 iterations in one and 286 in the other. Cells that exit at the cap are reproducible only up to
 machine load — worth remembering before reading a one-cell difference anywhere as a real effect.
 
+## THE HARDENED PROBLEM AT 480 CELLS (2026-09-15)
+
+All eleven rungs on the hardened scene, one grid per experiment, 60 targets x 8 guesses,
+seed 1, 45 s, `--compile`, `learned,numerical`. Grasp targets always shelf-contained; the
+pose task fielded **both** ways, because whether containment belongs there was the open
+question. 66 runs, 528 items, ~5 h on four nodes.
+
+**Not cell-comparable with `sc_LADDER_*`, by construction** — the hardened scene admits a
+different target set, `grid_hash` differs, and `collate.py` refuses the pairing. Compare
+HARD columns with each other; the archived columns are quoted below only as "what the same
+arm scored on the soft problem", never as a paired test.
+
+| panda | upstream | n12 | n8 | **n6** | n4 | n12w256 | **js** |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp native | 432 | 407 | 455 | **462** | 468 | 437 | 323 |
+| grasp paired | 347 | 347 | 429 | **444** | 450 | 380 | 323 |
+| pose contained, native | 436 | 434 | 439 | **429** | 437 | 417 | 167 |
+| pose contained, paired | 271 | 275 | 387 | **392** | 352 | 272 | 167 |
+| pose free, native | 466 | 460 | 460 | **460** | 461 | 449 | 220 |
+| pose free, paired | 341 | 330 | 422 | **438** | 400 | 347 | 220 |
+
+| iiwa | ddpr1 | n8 | n6 | **n4** | n12w256 | **js** |
+| --- | --- | --- | --- | --- | --- | --- |
+| grasp native | 266 | 316 | 300 | **391** | 297 | 442 |
+| grasp paired | 320 | 338 | 368 | **407** | 334 | 442 |
+| pose contained, native | 432 | 441 | 436 | **438** | 417 | 268 |
+| pose contained, paired | 287 | 214 | 206 | **411** | 338 | 268 |
+| pose free, native | 426 | 428 | 439 | **468** | 425 | 332 |
+| pose free, paired | 306 | 208 | 211 | **452** | 332 | 332 |
+
+The harness checks itself and passes: joint space is identical across every rung of a robot
+within each experiment (323 / 167 / 220 panda, 442 / 268 / 332 iiwa), and
+`median_start_q_error` is 0.0 exactly under `paired`.
+
+### THE HEADLINE: hardening flipped the Panda grasp task, and only the Panda's
+
+Exact McNemar against joint space on the shared 480 cells:
+
+| experiment | learned | js | p | on the SOFT problem |
+| --- | --- | --- | --- | --- |
+| panda grasp native (`n6`) | **462** | 323 | **1.5e-33** | 471 vs 457, p = 0.02 |
+| panda grasp paired (`n6`) | **444** | 323 | **2.9e-23** | 471 vs 457, p = 0.02 |
+| panda pose paired (`n6`, contained) | **392** | 167 | **6.2e-47** | 435 vs 228 |
+| iiwa grasp native (`n4`) | 391 | **442** | **1.4e-06** | 448 vs 462, p = 0.05 |
+| iiwa grasp paired (`n4`) | 407 | **442** | **0.00042** | 449 vs 462, p = 0.07 |
+| iiwa pose paired (`n4`, contained) | **411** | 268 | **9.4e-24** | 448 vs 325 |
+
+**On the Panda the learned formulation now wins all six experiments** at p <= 2.9e-23 —
+including the grasp task, which the full-depth charts *lost significantly* on the soft
+problem. The mechanism is entirely on the baseline's side: joint space fell **457 -> 323**
+on Panda grasp while `n6` fell 471 -> 462. Its iteration count tells the same story — 970
+median iterations against its archived 48, and 4.26 s against 0.14 s. The hardened grasp
+task is a genuinely hard problem for a joint-space formulation, and that is exactly the
+saturation the change was meant to remove.
+
+**On the iiwa it went the other way**: joint space barely moved (462 -> 442) while `n4` fell
+449 -> 407, taking a row that was at near-parity (p = 0.07) to a clear loss (p = 0.0004).
+
+**The two robots are not measuring the same intervention, and this is the confound to
+state.** The Panda *grasp* scene never had decorative mugs, so hardening it is essentially
+pure containment (the bin sits at `[0.75, 0, 0]`, nowhere near the shelves). The iiwa scene
+lost the bin **and seven welded mugs**, four of them inside shelf compartments — so its
+grasp task gained a containment requirement while *losing* obstacles. Any claim of the form
+"hardening helps/hurts the learned arm" has to carry that caveat until the iiwa is re-run
+with its decorative mugs kept.
+
+### The pose-placement verdict: containment costs the baseline roughly twice what it costs the learned arm
+
+| | js free | js contained | learned free | learned contained |
+| --- | --- | --- | --- | --- |
+| panda (`n6` paired) | 220 | **167** (-53) | 438 | **392** (-46) |
+| iiwa (`n4` paired) | 332 | **268** (-64) | 452 | **411** (-41) |
+| iiwa (`n4` native) | 332 | **268** (-64) | 468 | **438** (-30) |
+
+Containment is a real difficulty increase for both arms, and it is **not** symmetric: it
+costs joint space 53-64 cells against the learned arm's 30-46. So it hardens the pose task
+without narrowing the claim — the learned margin widens. **Recommend adopting `posein` as
+the pose default**, with `posefree` retained as the ablation that shows what containment
+did. Note the caveat recorded above: the pose containment point is the frame the target
+*is* — `iiwa_link_7` / `panda_hand`, the **wrist, not the fingertips** — so it is a
+different and differently-hard condition on each robot.
+
+### Iterations, cost and wall clock
+
+Medians over succeeded cells; cost on the cells **both** arms solved, learned-only
+regularizers excluded.
+
+| experiment | L iters | L s | ms/it | JS iters | JS s | n both | L cost | JS cost |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| panda `n6` grasp native | 200 | 8.77 | 44 | 970 | 4.26 | 314 | 7.510 | **5.305** |
+| panda `n6` grasp paired | 301 | 13.39 | 44 | 970 | 4.24 | 302 | 6.846 | **5.164** |
+| panda `n6` pose contained paired | 142 | 5.56 | 39 | 44 | 0.14 | 140 | **9.226** | 9.901 |
+| iiwa `n4` grasp native | 434 | 14.65 | 34 | 448 | 1.63 | 361 | 4.930 | **2.827** |
+| iiwa `n4` pose contained paired | 179 | 4.86 | 27 | 231 | 0.10 | 231 | **5.743** | 6.065 |
+
+Two things the success columns hide. **The hardened grasp task costs the joint-space arm its
+cheapness**: 970 and 448 median iterations against its archived 48 and 66, so its per-cell
+wall clock rose 30x on the Panda. The learned arm's per-iteration penalty is accordingly
+much smaller here — 44 ms against 4.4 ms on the Panda grasp row, ~10x rather than the ~13-30x
+of the soft problem. And **the cost split by task survives hardening**: the learned arm wins
+on cost on the pose task on both robots and loses by ~1.4-1.7x on the grasp task.
+
+### The rungs still behave as the ladder said
+
+`n4` is the iiwa's best rung on every row; on the Panda `n6`/`n4` lead and the full-depth
+`upstream`/`n12` trail by 40-100 cells on the grasp task. The `n8`/`n6` pose-paired runaway
+replicates on the iiwa (206-214 against `n4`'s 411), so the gain-ceiling selection rule is
+unaffected by the scene change.
+
 ## Next steps
 
 **Thomas's roadmap, in priority order (2026-09-04)**, given once the corrected campaign finished:
@@ -1325,11 +1434,24 @@ ideas for things that might help (using a harder problem formulation, trying som
 rejection tricks), but first, let's get these results in to see where we're at."* So the two
 live items, after the results are in:
 
-- **A harder problem formulation.** His idea, and it answers a real measurement problem rather
-  than being a difficulty knob: joint space solves 462/480 iiwa grasp cells, so the baseline is
-  nearly saturated and there is almost no room left to win cells — a ceiling that hid the whole
-  `n4` grasp comparison at 60 cells. **This changes what is compared, so it is his to specify**;
-  the no-invented-formulations rule applies in full.
+- **A harder problem formulation. DONE — measured at 480 cells, see "THE HARDENED PROBLEM"
+  above.** The scene keeps its four shelves but loses the bin and the decorative mugs, and a
+  target is accepted only if it lands inside a shelf compartment (0.10 m depth inset), mirroring
+  `../codebase`'s hardened Grasp Selection. It did what it was for **on the Panda**: joint space
+  fell 457 → 323 on the grasp task and the learned arm went from losing that row to winning it
+  at p = 1.5e-33. **On the iiwa it did not** — joint space barely moved (462 → 442) while `n4`
+  fell to 407, so that row got worse, not better.
+
+  Three things left open, and the first is a defect in the experiment rather than a finding:
+  **the two robots did not receive the same intervention.** The Panda grasp scene never had
+  decorative mugs, so hardening it is near-pure containment; the iiwa scene lost seven of them,
+  four sitting inside shelf compartments. Re-running the iiwa grasp task with its decorative
+  mugs kept would separate "containment" from "less clutter" and is the obvious next
+  measurement. Second, **adopt `posein` as the pose default** — containment costs joint space
+  53-64 cells against the learned arm's 30-46, so it hardens the task without narrowing the
+  claim. Third, the pose containment point is the **wrist** (`iiwa_link_7` / `panda_hand`), not
+  the fingertips; if that should be defined differently it must change before the numbers are
+  written up.
 - **Step rejection (IPOPT filter tuning).** Already plumbed and carrying the best lead in the
   repo — see "Step ACCEPTANCE is a different lever" above. `ipopt_theta_max_fact=1` gained three
   cells and lost none on a 16-cell probe, cut runaways 5 → 2, and improved cost, with `=10`
