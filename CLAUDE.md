@@ -556,6 +556,51 @@ because SNOPT only checks at major-iteration boundaries and one of the learned a
 expensive. Worth remembering when reading wall-clock columns across solvers -- they are not
 capped equally.
 
+### STAGE SOLVER: the first measurement, IPOPT against SNOPT (2026-09-16)
+
+60 cells (15 targets x 4 guesses), 45 s, seed 1, `--compile`, adopted rungs and adopted
+placements, both protocols, `learned,numerical`. 64 items on 2 volta nodes, 18 minutes.
+**Triage scale: not cell-comparable with the 480-cell tables**, and a one- or two-cell
+difference here is noise. The IPOPT column is measured on this same grid and this same code,
+not quoted from an archive. **NLopt is built and locally verified but was not fielded here** --
+this run was SNOPT-only by decision.
+
+| robot | task | start | arm | IPOPT | SNOPT | McNemar (SNOPT better/worse) | p |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| iiwa | grasp | native | learned | **58/60** | 44/60 | 1 / 15 | **0.00052** |
+| iiwa | grasp | paired | learned | **59/60** | 40/60 | 1 / 20 | **2.1e-05** |
+| iiwa | pose | native | learned | **60/60** | 57/60 | 0 / 3 | 0.25 |
+| iiwa | pose | paired | learned | **48/60** | 25/60 | 5 / 28 | **6.6e-05** |
+| panda | grasp | native | learned | **60/60** | 56/60 | 0 / 4 | 0.125 |
+| panda | grasp | paired | learned | **59/60** | 51/60 | 1 / 9 | **0.022** |
+| panda | pose | native | learned | **58/60** | 56/60 | 1 / 3 | 0.625 |
+| panda | pose | paired | learned | **46/60** | 25/60 | 4 / 25 | **0.00010** |
+
+**IPOPT wins every row, on both arms.** Five of eight learned rows are significant and none
+goes the other way; the joint-space arm tells the same story (iiwa pose 44 vs 32, p = 0.012;
+Panda pose 29 vs 20, p = 0.049; Panda grasp 53 vs 45, p = 0.057). **So this is a property of
+the problem, not of the learned formulation** -- an interior-point method suits it and SQP
+does not, on both arms and both robots.
+
+**The deficit is concentrated under `paired`.** Under `native` SNOPT is within a few cells
+everywhere (0.125 to 0.625 on three of four rows); under `paired` it loses decisively on every
+row. The paired protocol starts every arm at a shared random configuration, which is
+infeasible by policy -- so what this says is that **SNOPT copes far worse with an infeasible
+start on this problem**, which is exactly the case the benchmark is built around.
+
+**And it is not a budget artefact.** SNOPT takes **2-4x the iterations** for the cells it does
+solve (iiwa grasp paired 717 against 277; iiwa pose paired 524 against 156) and the caps are
+essentially not binding -- 0-6 `iteration_capped` and 0-4 `timed_out` per 60-cell run against
+the equalised 3000-major budget. It is converging slowly, not being cut off. Cost is a wash
+(within a few percent on most rows), so the difference is in whether it converges, not in what
+it converges to.
+
+**What this does NOT license.** One 60-cell grid at one cap, with SNOPT at its own untuned
+defaults. `snopt_major_step_limit` and `snopt_violation_limit` -- the analogues of the repo's
+best open IPOPT lead -- are plumbed and were **not** set here, and they attack precisely the
+failure this row shows. Read this as "IPOPT is the right default and SNOPT is not a free win",
+not as "SQP cannot do this".
+
 ### Future work on this axis
 
 - **NLopt settings are unswept**, by decision (Thomas, 2026-09-16: *"Store testing NLOPT
