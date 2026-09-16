@@ -1241,6 +1241,57 @@ Panda moved: reaching into a compartment takes its joint-space arm **970 median 
 against its archived 48**, where the iiwa's takes 448. The hardened grasp task is near the
 edge of what a joint-space formulation does cheaply on the Panda and is not on the iiwa.
 
+### POSE RE-MEASURED ON THE CORRECTED PROGRAM (stage POSE2, 2026-09-16)
+
+480 cells, 45 s, all eleven rungs, both placements, both protocols, on the corrected scene
+(one finray gripper for both robots, both tasks), with the conditioning frame calibrated and
+`c` seeded in the flow's frame, and containment keyed on the gripper base -- the same point
+on the hand for both robots. **This supersedes every earlier pose table in this file.**
+
+| panda | upstream | n12 | n8 | **n6** | n4 | n12w256 | **js** |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| pose contained, native | 435 | 434 | 444 | **428** | 432 | 394 | 185 |
+| pose contained, paired | 242 | 242 | 369 | **382** | 347 | 250 | 185 |
+| pose free, native | 466 | 471 | 455 | **458** | 453 | 447 | 201 |
+| pose free, paired | 294 | 293 | 418 | **438** | 390 | 303 | 201 |
+
+| iiwa | ddpr1 | n8 | n6 | **n4** | n12w256 | **js** |
+| --- | --- | --- | --- | --- | --- | --- |
+| pose contained, native | 434 | 430 | 433 | **433** | 420 | 268 |
+| pose contained, paired | 285 | 234 | 232 | **384** | 331 | 268 |
+| pose free, native | 442 | 443 | 452 | **470** | 431 | 332 |
+| pose free, paired | 284 | 267 | 269 | **447** | 354 | 332 |
+
+Joint space is identical across every rung of a robot within each experiment (185 / 201
+Panda, 268 / 332 iiwa), and the learned arm wins every one of the eight rows decisively --
+Panda `n6` contained paired 382 against 185 at **p = 2e-42**, iiwa `n4` 384 against 268 at
+**p = 5e-16**.
+
+#### The containment verdict REVERSES on the corrected program
+
+The earlier table had containment costing joint space 53-64 cells against the learned arm's
+30-46, which read as "containment hardens the task without narrowing the claim". That was
+measured on a program whose pose path never calibrated its conditioning frame. Corrected:
+
+| | learned | joint space | effect on the learned margin |
+| --- | --- | --- | --- |
+| panda `n6` native | -30 | -16 | **-14** |
+| panda `n6` paired | -56 | -16 | **-40** |
+| iiwa `n4` native | -37 | -64 | +27 |
+| iiwa `n4` paired | -63 | -64 | +1 |
+
+**On the Panda containment now costs the learned arm 2-3.5x what it costs joint space, and
+shrinks the margin by 14-40 cells; on the iiwa it is a wash.** So pose containment does not
+strengthen the comparison -- it makes the problem harder and, on one robot, harder for the
+arm under test specifically. It remains a legitimate harder problem; it is simply not the
+free win the pre-fix table suggested. **Whether to keep it is Thomas's call**, and the
+fingertip variant (stage FINGER) is the other half of the evidence.
+
+The rungs behave as the ladder predicts throughout: `n4` leads the iiwa on every row, and on
+the `paired` protocol the full-depth charts collapse on both robots (Panda `upstream`/`n12`
+242-294 against `n6`'s 382-438; iiwa `n8`/`n6` 232-269 against `n4`'s 384-447), which is the
+gain-ceiling runaway and not a containment effect -- it is present in the free columns too.
+
 ### THE SHELF-DEPTH INSET DOES NOT CHANGE THE STORY (stage INSET, 2026-09-16)
 
 0.10 m was adopted from `../codebase` and this repo had never swept it. 60 cells, 45 s, one
