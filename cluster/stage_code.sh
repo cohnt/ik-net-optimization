@@ -46,6 +46,36 @@ if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" !
     exit 3
 fi
 
+## An INCOMPLETE local tree is worse than a stale one, because the rsync below runs with
+## --delete: anything missing here is deleted THERE. Two ways to arrive with one, both hit
+## on 2026-09-16 while staging from a git worktree:
+##
+##   - a worktree does not check out submodules, so third_party/ikflow was empty locally and
+##     rsync deleted the cluster's vendored fork down to 18 files;
+##   - the gitignored checkpoints had been symlinked into the worktree, and rsync copies a
+##     symlink AS a symlink, so three cluster-side .pkl files were replaced by links into a
+##     path that does not exist there. The --filter=P rules protect them from deletion, not
+##     from being overwritten with a link.
+##
+## Both are cheap to check and expensive to undo, so check.
+if [ -f "$REPO_ROOT/.gitmodules" ]; then
+    UNINIT=$(git -C "$REPO_ROOT" submodule status --recursive 2>/dev/null | grep -c "^-" || true)
+    if [ "${UNINIT:-0}" -gt 0 ]; then
+        echo "REFUSING: $UNINIT uninitialised submodule path(s) locally." >&2
+        echo "rsync runs with --delete, so staging now would DELETE them on the cluster." >&2
+        echo "Fix: git -C $REPO_ROOT submodule update --init --recursive" >&2
+        exit 4
+    fi
+fi
+LINKS=$(find "$REPO_ROOT/models" -type l 2>/dev/null | wc -l | tr -d " ")
+if [ "${LINKS:-0}" -gt 0 ]; then
+    echo "REFUSING: $LINKS symlink(s) under models/." >&2
+    echo "rsync copies a symlink as a symlink, so the cluster would get links into a path" >&2
+    echo "that does not exist there, replacing real checkpoints. Use hardlinks instead." >&2
+    find "$REPO_ROOT/models" -type l >&2
+    exit 5
+fi
+
 sc_run "mkdir -p ~/$SC_ROOT/repo ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/home/.cache"
 
 ## PROTECT filters, not excludes: cluster-side exported checkpoints must survive
