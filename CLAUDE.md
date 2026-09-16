@@ -1292,6 +1292,43 @@ the `paired` protocol the full-depth charts collapse on both robots (Panda `upst
 242-294 against `n6`'s 382-438; iiwa `n8`/`n6` 232-269 against `n4`'s 384-447), which is the
 gain-ceiling runaway and not a containment effect -- it is present in the free columns too.
 
+### THE ADOPTED GRASP DEFAULT: HARDENED SCENE, FREE TARGETS (stage GRASPFREE, 2026-09-16)
+
+Grasp containment defaults **off** (Thomas, 2026-09-15: its sign is opposite on the two robots
+and too many other knobs are in flight). That configuration -- hardened scene, free grasp
+targets -- had never been measured: the archived columns are the legacy scene and stage HARD
+is the contained one. 480 cells, all eleven rungs, both protocols.
+
+| panda | upstream | n12 | n8 | **n6** | n4 | n12w256 | **js** |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp native | 432 | 437 | 465 | **474** | 479 | 456 | 453 |
+| grasp paired | 417 | 409 | 463 | **475** | 474 | 443 | 453 |
+
+| iiwa | ddpr1 | n8 | n6 | **n4** | n12w256 | **js** |
+| --- | --- | --- | --- | --- | --- | --- |
+| grasp native | 282 | 318 | 294 | **446** | 311 | 457 |
+| grasp paired | 286 | 336 | 297 | **457** | 336 | 457 |
+
+| best rung | contained (stage HARD) | free (adopted) | p, free |
+| --- | --- | --- | --- |
+| panda `n6` native | 462 v 323 | **474 v 453** | 0.00032 |
+| panda `n6` paired | 444 v 323 | **475 v 453** | 0.00011 |
+| iiwa `n4` native | 391 v 442 | 446 v 457 | 0.14 (tie) |
+| iiwa `n4` paired | 407 v 442 | **457 v 457** | 1.0 (exact parity) |
+
+**On the adopted default the learned arm wins the Panda grasp task and ties the iiwa's.**
+That is a better position than either the soft legacy problem (where the Panda's full-depth
+charts lost) or the contained one (where the iiwa lost at p = 0.0004). The iiwa reaches
+**exact parity at 457/457** under `paired`, which is the first time that row has not been a
+deficit.
+
+Note the baseline is back near saturation on this configuration (453 / 457), which is the
+ceiling the hardening was meant to remove -- so **grasp containment remains the lever to
+revisit**, and it is kept available behind `--target-placement shelf`. It should be re-tried
+whenever another knob moves the picture, a solver change most of all: on the contained task
+joint space needs 970 median iterations against its 48 here, so a solver that changes how the
+baseline copes with a hard active set could change that verdict.
+
 ### FINGERTIP CONTAINMENT BEATS WRIST CONTAINMENT (stage FINGER, 2026-09-16)
 
 The pose task's containment point is a choice, and the two candidates are one 0.100 m step
