@@ -100,7 +100,16 @@ def find_shard_groups(root, extra_roots=()):
               raise SystemExit(f"{base}: shards disagree on N "
                                f"({groups[base]['count']} vs {count})")
           if index in groups[base]["shards"]:
-              raise SystemExit(f"{base}: duplicate shard {index}")
+              ## Within ONE root a duplicate is a real fault -- two directories claiming
+              ## the same shard of the same run -- and must still abort. Across roots it
+              ## is expected: `--also` searches an older staging directory that may hold a
+              ## shard of a run that was later re-run, and the newest collection is the
+              ## truth. Extra roots FILL GAPS, they never compete; anything else would
+              ## silently merge shards from two different versions of the code, which
+              ## MUST_MATCH cannot catch because their metadata is identical.
+              if search_root is root:
+                  raise SystemExit(f"{base}: duplicate shard {index}")
+              continue
           groups[base]["shards"][index] = (path, payload)
     return groups, unsharded
 
