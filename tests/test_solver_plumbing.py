@@ -221,6 +221,13 @@ IPOPT_ECHO_KNOBS = {
     "ipopt_alpha_for_y": ("bound-mult", "alpha_for_y"),
     "ipopt_recalc_y": ("yes", "recalc_y"),
     "ipopt_bound_relax_factor": (0.0, "bound_relax_factor"),
+    ## IPOPT's REAL convergence test, as opposed to the `acceptable_*` early stop. Never
+    ## set before, so IPOPT converged at 1e-4 constraint violation while the SQP column it
+    ## is compared against was held to 1e-6.
+    "ipopt_tol": (1e-6, "tol"),
+    "ipopt_constr_viol_tol": (1e-6, "constr_viol_tol"),
+    "ipopt_dual_inf_tol": (1e-6, "dual_inf_tol"),
+    "ipopt_compl_inf_tol": (1e-6, "compl_inf_tol"),
     ## Read only under mu_strategy=monotone, so the sweep entry has to pass both. Set alone
     ## it is echoed `used = no`, which is exactly the silent-no-op this test exists to catch.
     "ipopt_mu_init": (1.0, "mu_init"),

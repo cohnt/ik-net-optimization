@@ -893,11 +893,27 @@ IPOPT_ACCEPTABLE_DEFAULTS = ["acceptable_tol=1e-6", "acceptable_constr_viol_tol=
 IPOPT_ACCEPTABLE_OFF = ["acceptable_tol=1e-12", "acceptable_constr_viol_tol=1e-12",
                         "acceptable_dual_inf_tol=1e-12", "acceptable_compl_inf_tol=1e-12",
                         "acceptable_iter=100000"]
+## And the OTHER half of the same fairness question, which is the larger half. The
+## `acceptable_*` family above is IPOPT's relaxed EARLY STOP; `tol`/`constr_viol_tol`/
+## `dual_inf_tol`/`compl_inf_tol` are what it actually converges to, and this repo has
+## never set them -- so IPOPT has been allowed 1e-4 constraint violation against SNOPT's
+## 1e-6, and dual infeasibility 1 against SNOPT's 2e-6. `convsnopt` holds IPOPT to SNOPT's
+## own numbers; `fair` does that AND disables the early stop, i.e. the most symmetric
+## comparison the two solvers admit.
+IPOPT_CONVERGENCE_AS_SNOPT = ["ipopt_tol=1e-6", "ipopt_constr_viol_tol=1e-6",
+                              "ipopt_dual_inf_tol=1e-6", "ipopt_compl_inf_tol=1e-6"]
 SWEEP_IPOPT = [
     ("default", []),
     ("accdefault", IPOPT_ACCEPTABLE_DEFAULTS),
     ("accoff", IPOPT_ACCEPTABLE_OFF),
     ("acciter15", ["acceptable_iter=15"]),
+    ("convsnopt", IPOPT_CONVERGENCE_AS_SNOPT),
+    ("fair", IPOPT_ACCEPTABLE_OFF + IPOPT_CONVERGENCE_AS_SNOPT),
+    ("cvt1em06", ["ipopt_constr_viol_tol=1e-6"]),
+    ("cvt1em08", ["ipopt_constr_viol_tol=1e-8"]),
+    ("dualinf1em06", ["ipopt_dual_inf_tol=1e-6"]),
+    ("tol1em06", ["ipopt_tol=1e-6"]),
+    ("tol1em10", ["ipopt_tol=1e-10"]),
     ## Drake gives IPOPT no second derivatives, so the L-BFGS history IS the Hessian here.
     ("lmhist3", ["ipopt_limited_memory_max_history=3"]),
     ("lmhist12", ["ipopt_limited_memory_max_history=12"]),
