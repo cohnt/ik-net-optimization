@@ -453,6 +453,26 @@ another.** Unset `snopt_*`/`nlopt_*` fields are simply not passed, so each solve
 own defaults and the shared, deliberately looser task gate decides success. No archived SNOPT
 run existed, so nothing was invalidated.
 
+**But "each at its own defaults" is a CHOICE, and it is not a symmetric one.** Checking what
+the settings sweep actually covered turned up a second asymmetry, larger than the first and in
+the opposite direction. `acceptable_*` is IPOPT's early stop; `tol`, `constr_viol_tol`,
+`dual_inf_tol` and `compl_inf_tol` are what it actually converges to -- and those were never
+`ProgramOptions` fields at all, so every archived run took IPOPT's own defaults:
+
+| | IPOPT (never set) | SNOPT (default) |
+| --- | --- | --- |
+| constraint violation at convergence | `constr_viol_tol` **1e-4** | Major feasibility **1e-6** |
+| dual infeasibility | `dual_inf_tol` **1** | Major optimality **2e-6** |
+
+So the interior-point column has been allowed 100x the constraint violation and six orders
+more dual infeasibility than the SQP column it is compared against, on top of an early stop
+(`acceptable_tol=1e-3`, `acceptable_iter=1`) that SNOPT has no counterpart for. That is a
+property of the HARNESS, not of interior-point methods. The four fields are now plumbed and
+stage SWEEP measures what the choice is worth: `convsnopt` holds IPOPT to SNOPT's convergence
+numbers, `fair` does that and disables the early stop as well. **The task gate is untouched by
+any of it** -- success is verified from the returned point at `task_tol = 1e-3`, two orders
+above every tolerance involved, so none of this can manufacture a success.
+
 ### What each solver will and will not tell you
 
 **No solver reports an iteration count through Drake.** `SnoptSolverDetails` carries `info`,
@@ -532,74 +552,103 @@ boundaries**, so a cell overshoots the cap by one major iteration: measured 24-2
 (`5*wall + 300`) and the 4 h `ITEM_TIMEOUT`, but it means SNOPT wall-clock is not capped as
 tightly as IPOPT's.
 
-### The local smoke runs, and the one early signal in them
+### THE SOLVER AXIS AT 480 CELLS (stage SOLVER2, 2026-09-16)
 
-Panda pose, 4 cells, 20 s cap, learned + joint space. **Far too small to rank anything** --
-this is plumbing verification, and the ranking question is what stage SOLVER is for. But two
-things in it are worth knowing before reading that stage.
+60 targets x 8 guesses, 45 s, seed 1, `--compile`, adopted rungs (Panda `n6`, iiwa `n4`),
+`learned,numerical`, both protocols, and **three placements** -- the adopted grasp default
+(free), the contained grasp task, and fingertip pose containment. 216 items on 4 volta nodes,
+`PROCS=8`, about two and a half hours. The IPOPT column is measured on this grid and this
+code, not quoted from an archive. NLopt runs at the 60-cell triage grid instead (below).
 
-| solver | cells solved | wall clock per cell | what bound |
-| --- | --- | --- | --- |
-| IPOPT | converged, 24-89 majors | 6-8 s | nothing |
-| SNOPT | 1/4 | 20-28 s | `Time limit`, all four cells |
-| NLopt (`LD_AUGLAG`) | 0/4 | 20.0-20.1 s exactly | `max_time`, all four cells |
+Learned arm, successes of 480:
 
-**NLopt did not fail to run -- it failed to converge in 20 s, which is a different thing.**
-It did 212-237 map evaluations on the learned arm and 2848-5053 on the joint-space arm, and
-came out at `max_violation` 0.16-2.41, i.e. making real but incomplete progress. That is the
-expected shape for an augmented Lagrangian against tight equality rows, and it is the reason
-the axis is worth measuring rather than assumed. Note the joint-space arm, which IPOPT solves
-in a fraction of a second, also timed out under NLopt at 20 s.
+| | native IPOPT | native SNOPT | paired IPOPT | paired SNOPT |
+| --- | --- | --- | --- | --- |
+| iiwa grasp free | **444** | 348 | **456** | 333 |
+| iiwa grasp contained | **392** | 175 | **406** | 212 |
+| iiwa pose fingertip | **470** | 442 | **422** | 210 |
+| Panda grasp free | **474** | 450 | **474** | 397 |
+| Panda grasp contained | **461** | 438 | **437** | 280 |
+| Panda pose fingertip | **461** | 438 | **405** | 251 |
 
-**`max_time` binds far more tightly than SNOPT's `Time limit`**: 20.0-20.1 s against 24-28 s,
-because SNOPT only checks at major-iteration boundaries and one of the learned arm's majors is
-expensive. Worth remembering when reading wall-clock columns across solvers -- they are not
-capped equally.
+**IPOPT wins all 24 rows** (12 learned + 12 joint space), 23 of them significant, p from
+3.6e-08 to 4.8e-44. The single exception is Panda contained-grasp joint space, p = 0.09.
 
-### STAGE SOLVER: the first measurement, IPOPT against SNOPT (2026-09-16)
+**This is a CONFIRMATION, not a finding.** Thomas, 2026-09-16: *"SNOPT performing worse than
+IPOPT is not surprising. In my experience, IPOPT is more robust to ill-posed problems, and our
+neural network gradients are definitely ill-posed. I expect to see IPOPT > SNOPT >>> NLOPT."*
+Write it up as the size and mechanism of a predicted gap, never as a discovery.
 
-60 cells (15 targets x 4 guesses), 45 s, seed 1, `--compile`, adopted rungs and adopted
-placements, both protocols, `learned,numerical`. 64 items on 2 volta nodes, 18 minutes.
-**Triage scale: not cell-comparable with the 480-cell tables**, and a one- or two-cell
-difference here is noise. The IPOPT column is measured on this same grid and this same code,
-not quoted from an archive. **NLopt is built and locally verified but was not fielded here** --
-this run was SNOPT-only by decision.
+**It is a property of the PROBLEM, not of the learned formulation.** The joint-space arm
+degrades too, on every row and by comparable margins -- 457 to 398, 442 to 292, 453 to 404,
+323 to 298, 299 to 236, 217 to 169. That arm never evaluates the network.
 
-| robot | task | start | arm | IPOPT | SNOPT | McNemar (SNOPT better/worse) | p |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| iiwa | grasp | native | learned | **58/60** | 44/60 | 1 / 15 | **0.00052** |
-| iiwa | grasp | paired | learned | **59/60** | 40/60 | 1 / 20 | **2.1e-05** |
-| iiwa | pose | native | learned | **60/60** | 57/60 | 0 / 3 | 0.25 |
-| iiwa | pose | paired | learned | **48/60** | 25/60 | 5 / 28 | **6.6e-05** |
-| panda | grasp | native | learned | **60/60** | 56/60 | 0 / 4 | 0.125 |
-| panda | grasp | paired | learned | **59/60** | 51/60 | 1 / 9 | **0.022** |
-| panda | pose | native | learned | **58/60** | 56/60 | 1 / 3 | 0.625 |
-| panda | pose | paired | learned | **46/60** | 25/60 | 4 / 25 | **0.00010** |
+**The gap is much larger under `paired`.** On four of the six learned row-pairs the `native`
+gap is 23-28 cells and the `paired` gap is 77-212. The paired protocol hands every arm the
+same random configuration, infeasible by policy, so **SNOPT copes far worse with an infeasible
+start.** (The iiwa grasp rows are the exception only because SNOPT is bad there under both.)
+A 60-cell triage read this backwards in both directions before 480 cells settled it -- first
+appearing to confine the effect to `paired`, then appearing to abolish it. Neither reading
+survived. **Do not draw a protocol conclusion from 60 cells.**
 
-**IPOPT wins every row, on both arms.** Five of eight learned rows are significant and none
-goes the other way; the joint-space arm tells the same story (iiwa pose 44 vs 32, p = 0.012;
-Panda pose 29 vs 20, p = 0.049; Panda grasp 53 vs 45, p = 0.057). **So this is a property of
-the problem, not of the learned formulation** -- an interior-point method suits it and SQP
-does not, on both arms and both robots.
+**And it is NOT a budget artefact**, which the exit codes settle. Pooled over all 3,952 SNOPT
+failures in the stage:
 
-**The deficit is concentrated under `paired`.** Under `native` SNOPT is within a few cells
-everywhere (0.125 to 0.625 on three of four rows); under `paired` it loses decisively on every
-row. The paired protocol starts every arm at a shared random configuration, which is
-infeasible by policy -- so what this says is that **SNOPT copes far worse with an infeasible
-start on this problem**, which is exactly the case the benchmark is built around.
+| exit | share | what it means |
+| --- | --- | --- |
+| `nonlinear infeasibilities minimized` (INFO 13) | **50.7%** | SNOPT concluded the problem is locally infeasible |
+| `current point cannot be improved` (INFO 41) | **36.2%** | the line search could not find an improving step |
+| major/minor iteration limit | 9.5% | budget |
+| time limit reached | **3.6%** | budget |
 
-**And it is not a budget artefact.** SNOPT takes **2-4x the iterations** for the cells it does
-solve (iiwa grasp paired 717 against 277; iiwa pose paired 524 against 156) and the caps are
-essentially not binding -- 0-6 `iteration_capped` and 0-4 `timed_out` per 60-cell run against
-the equalised 3000-major budget. It is converging slowly, not being cut off. Cost is a wash
-(within a few percent on most rows), so the difference is in whether it converges, not in what
-it converges to.
+**About 87% are convergence failures and 11% are budget**, and SNOPT actually times out *less*
+often than IPOPT does (22 against 38, 40 against 88 on the iiwa grasp rows). The two solvers
+fail in opposite ways: IPOPT's learned-arm failures are mostly `Maximum wallclock time
+exceeded` -- still descending when the clock runs out -- where SNOPT's are INFO 41, giving up
+at a feasible-but-wrong point. **INFO 41 is the documented signature of inaccurate or badly
+scaled derivatives**, which is Thomas's ill-posedness explanation with a mechanism attached.
+Note this is distinct from the gain-ceiling runaway, which is absent here: `n4`'s solved cells
+return violations ~1e-08, so what SNOPT struggles with is ordinary ill-conditioning of an
+exact network Jacobian.
 
-**What this does NOT license.** One 60-cell grid at one cap, with SNOPT at its own untuned
-defaults. `snopt_major_step_limit` and `snopt_violation_limit` -- the analogues of the repo's
-best open IPOPT lead -- are plumbed and were **not** set here, and they attack precisely the
-failure this row shows. Read this as "IPOPT is the right default and SNOPT is not a free win",
-not as "SQP cannot do this".
+**Iterations and cost.** SNOPT takes 2-4x the iterations on the cells it does solve (591
+against 205, 703 against 349, 369 against 102) and its solutions are worse on the joint-space
+arm by a wide margin -- median cost 3.627 against 1.828 on iiwa grasp free, 4.522 against
+2.394 on the Panda, 5.521 against 2.864 contained, all on cells both solved. On the learned
+arm cost is closer and occasionally favours SNOPT (Panda grasp free native 4.644 against
+5.246), i.e. where it converges it sometimes finds a better optimum; it just converges far
+less often.
+
+**Harness self-check passes.** The joint-space arm is bit-identical between the two protocols
+in all six row-pairs, as it must be, since its native start *is* a random configuration. And
+the IPOPT column reproduces the archive: `sc_SOLVER2_iiwa_n4_ipopt_mugfree_480_45_paired`
+scores 456/480 learned and 457/480 joint space against the archived `sc_GRASPFREE` column's
+457 and 457, on the same `grid_hash`, with joint space exact and learned inside the +/-1 cell
+that cap-bound cells are reproducible to. **So the eleven new option fields and the rewritten
+three-way dispatch left the IPOPT path where it was.**
+
+### NLopt: the augmented Lagrangian is not competitive on this problem
+
+Fielded at 60 cells (stage SOLVER's grid, so it pairs against the IPOPT and SNOPT triage
+columns cell for cell) rather than 480, because a column that may be empty does not need
+campaign scale to be honest. It was the right call.
+
+| row | IPOPT | SNOPT | NLopt | NLopt timeouts | flow Jacobians/cell | median violation |
+| --- | --- | --- | --- | --- | --- | --- |
+| iiwa grasp free, paired | 59/60 | 40/60 | **1/60** | 60 | 5836 | 8.1e-02 |
+| iiwa grasp contained, paired | -- | -- | **0/60** | 60 | 6100 | 9.7e-02 |
+| Panda grasp free, paired | 59/60 | 51/60 | **1/60** | 60 | 4888 | 4.5e-02 |
+| Panda pose fingertip, native | 58/60 | 56/60 | 38/60 | 23 | 1921 | 9.4e-07 |
+| iiwa pose fingertip, native | 60/60 | 57/60 | 39/60 | 30 | 3612 | 2.0e-06 |
+
+It solves essentially nothing outside the easiest row, burns **1,900-8,400 network Jacobians
+per cell** against IPOPT's 40-200 iterations, and still lands 1e-2 to 4e-1 from feasible. The
+one place it works is the pose task under `native`, where it reaches 1e-06 -- so it is not
+broken, it is simply far too slow to satisfy tight equality rows through an ill-conditioned
+chart inside any budget this campaign uses. **`max_time` also binds much more tightly than
+SNOPT's `Time limit`** (20.0-20.1 s against 24-28 s in a local probe), because SNOPT only
+checks at major-iteration boundaries; wall-clock columns are not capped equally across
+solvers.
 
 ### Future work on this axis
 
@@ -1336,27 +1385,24 @@ different target set, `grid_hash` differs, and `collate.py` refuses the pairing.
 HARD columns with each other; the archived columns are quoted below only as "what the same
 arm scored on the soft problem", never as a paired test.
 
+**Only the GRASP rows are kept here. This stage's pose columns are superseded** by stage
+POSE2, which re-measured them on the corrected program after the conditioning-frame bug --
+see that section; the originals are in the git history, and the iiwa `posefree` pair is
+quoted inline under "WHAT THE CALIBRATION FIX WAS WORTH" below.
+
 | panda | upstream | n12 | n8 | **n6** | n4 | n12w256 | **js** |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | grasp native | 432 | 407 | 455 | **462** | 468 | 437 | 323 |
 | grasp paired | 347 | 347 | 429 | **444** | 450 | 380 | 323 |
-| pose contained, native | 436 | 434 | 439 | **429** | 437 | 417 | 167 |
-| pose contained, paired | 271 | 275 | 387 | **392** | 352 | 272 | 167 |
-| pose free, native | 466 | 460 | 460 | **460** | 461 | 449 | 220 |
-| pose free, paired | 341 | 330 | 422 | **438** | 400 | 347 | 220 |
 
 | iiwa | ddpr1 | n8 | n6 | **n4** | n12w256 | **js** |
 | --- | --- | --- | --- | --- | --- | --- |
 | grasp native | 266 | 316 | 300 | **391** | 297 | 442 |
 | grasp paired | 320 | 338 | 368 | **407** | 334 | 442 |
-| pose contained, native | 432 | 441 | 436 | **438** | 417 | 268 |
-| pose contained, paired | 287 | 214 | 206 | **411** | 338 | 268 |
-| pose free, native | 426 | 428 | 439 | **468** | 425 | 332 |
-| pose free, paired | 306 | 208 | 211 | **452** | 332 | 332 |
 
 The harness checks itself and passes: joint space is identical across every rung of a robot
-within each experiment (323 / 167 / 220 panda, 442 / 268 / 332 iiwa), and
-`median_start_q_error` is 0.0 exactly under `paired`.
+within each experiment (323 panda, 442 iiwa), and `median_start_q_error` is 0.0 exactly
+under `paired`.
 
 ### THE HEADLINE: hardening flipped the Panda grasp task, and only the Panda's
 
@@ -1730,21 +1776,14 @@ The lesson generalises past this bug: **a calibration that is skipped is indisti
 from a calibration that is correct, until the geometry it was silently relying on changes.**
 The pose path had no test asserting `X_ee_flow` was ever measured.
 
-### The pose-placement verdict: containment costs the baseline roughly twice what it costs the learned arm
+### The pose-placement verdict was measured pre-calibration and is SUPERSEDED
 
-| | js free | js contained | learned free | learned contained |
-| --- | --- | --- | --- | --- |
-| panda (`n6` paired) | 220 | **167** (-53) | 438 | **392** (-46) |
-| iiwa (`n4` paired) | 332 | **268** (-64) | 452 | **411** (-41) |
-| iiwa (`n4` native) | 332 | **268** (-64) | 468 | **438** (-30) |
-
-Containment is a real difficulty increase for both arms, and it is **not** symmetric: it
-costs joint space 53-64 cells against the learned arm's 30-46. So it hardens the pose task
-without narrowing the claim — the learned margin widens. **Recommend adopting `posein` as
-the pose default**, with `posefree` retained as the ablation that shows what containment
-did. Note the caveat recorded above: the pose containment point is the frame the target
-*is* — `iiwa_link_7` / `panda_hand`, the **wrist, not the fingertips** — so it is a
-different and differently-hard condition on each robot.
+The table that stood here had containment costing joint space 53-64 cells against the learned
+arm's 30-46, and recommended adopting `posein` on that basis. It was measured on a program
+whose pose path never calibrated its conditioning frame, and **stage POSE2 reverses it** -- on
+the corrected program containment costs the learned arm 2-3.5x what it costs joint space on
+the Panda and is a wash on the iiwa. See "THE CONTAINMENT VERDICT REVERSES" above; the
+original numbers are in the git history.
 
 ### Iterations, cost and wall clock
 
