@@ -1329,6 +1329,52 @@ whenever another knob moves the picture, a solver change most of all: on the con
 joint space needs 970 median iterations against its 48 here, so a solver that changes how the
 baseline copes with a hard active set could change that verdict.
 
+### WHY THE GRASP TASK LOOKS LIKE "ONLY A TIE", AND WHAT IS ACTUALLY THERE
+
+Success counts on the adopted grasp default read as a narrow Panda win and an iiwa tie. That
+reading is an artefact of **headroom**: joint space is at 94-95% there, so only 23-27 cells
+of 480 are available to win at all. Decomposed:
+
+| config | L | JS | L only | JS only | both | neither | of JS's failures, rescued |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| panda native, free | 474 | 453 | 27 | 6 | 447 | 0 | **27/27 = 100%** |
+| panda paired, free | 475 | 453 | 27 | 5 | 448 | 0 | **27/27 = 100%** |
+| iiwa native, free | 446 | 457 | 17 | 28 | 429 | 6 | 17/23 = 74% |
+| iiwa paired, free | 457 | 457 | 17 | 17 | 440 | 6 | 17/23 = 74% |
+
+**On the Panda the learned arm solves every single cell joint space cannot** -- 27 of 27,
+under both protocols, with `neither` = 0. It is not marginally better; the task has nothing
+left to give. And the iiwa's 457-vs-457 is not the same 457 cells: 17 each way, so the arms
+are genuinely complementary even where the totals agree.
+
+**Containment is what creates headroom, which is the argument for revisiting it:**
+
+| config | L | JS | JS fails | rescued | p |
+| --- | --- | --- | --- | --- | --- |
+| panda native, contained | 462 | 323 | 157 | **148 (94%)** | 1.5e-33 |
+| panda paired, contained | 444 | 323 | 157 | **142 (90%)** | 2.9e-23 |
+| iiwa native, contained | 391 | 442 | 38 | 30 (79%) | 1.4e-06 |
+| iiwa paired, contained | 407 | 442 | 38 | 30 (79%) | 0.00042 |
+
+Containment takes the Panda's headroom from 27 cells to 157 and the learned arm takes 90-94%
+of it. **The learned arm's rescue rate is high and stable everywhere -- 74-100% -- on both
+robots and both configurations.** That is the quantity the success counts obscure.
+
+#### The iiwa grasp deficit is a convergence problem, not a runaway
+
+So the iiwa deficit is not a failure to rescue; it is that the iiwa learned arm carries **its
+own failure set** that joint space does not share (28 and 17 cells free, 81 and 65
+contained). Every one of those is `fail_reason = "constraint"` with median `max_violation`
+0.009-0.037 -- **centimetres off, not astronomical** -- against timeout counts that track the
+lost counts closely (38/27 free, 88/75 contained) at 286-434 median iterations and 34-36
+ms/it.
+
+**These are cap-bound near-misses, not divergence.** The runaway signature is
+`max_violation` >= 1e+03; this is 1e-02. So the remaining iiwa grasp deficit is the learned
+arm converging too slowly on a subset of cells, which is a different problem from the
+gain-ceiling runaway and is plausibly reachable by the deferred solver work -- step
+rejection, or SNOPT/NLOPT -- rather than by another chart.
+
 ### WHAT THE CALIBRATION FIX WAS WORTH ON THE IIWA, ISOLATED
 
 The iiwa's `posefree` columns isolate the fix exactly: its scene never changed, and with no
