@@ -1,6 +1,12 @@
 ipopt_output.txt
-# iiwa14 IKFlow weights are large binaries obtained/trained separately, never tracked.
+# IKFlow weights are large binaries obtained/trained separately, never tracked. The
+# trained Panda charts (n4/n6/n8/n12/n12_w256) normally live only on the cluster, so
+# nothing covered them until one was pulled down to reproduce a bug locally -- at
+# which point a `git add -A` would have committed 97 MB. The .arch.json sidecars ARE
+# tracked: they are ~700 bytes and a checkpoint without its sidecar loads silently
+# against the wrong architecture.
 models/iiwa14/*.pkl
+models/panda/panda__*.pkl
 notebooks/artifacts
 results/
 
