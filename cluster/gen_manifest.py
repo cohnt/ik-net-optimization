@@ -689,6 +689,82 @@ def stage_GRASPFREE(wall, targets, guesses, shards, only=None, tag="GRASPFREE", 
     return items
 
 
+## The adopted rungs: the chart each robot's ladder settled on. `n4` on the iiwa (its gain
+## ceiling of 2.2e4 sits below the runaway band), `n6` on the Panda. Anything measuring a
+## change OTHER than the chart should use these and only these.
+ADOPTED_RUNGS = (("panda", "n6", "models/panda/panda__n6__step620000.pkl"),
+                 ("iiwa", "n4", "models/iiwa14/iiwa14__n4__step620000.pkl"))
+
+## The solver axis: three METHOD CLASSES, not three vendors. ipopt is interior point, snopt
+## is SQP, nlopt is an augmented Lagrangian (LD_AUGLAG -- LD_SLSQP would be a second SQP
+## column and no AL column). `ipopt` is included so the run carries its own baseline on its
+## own grid rather than being pointed at an archived column measured on different code.
+SOLVER_CLASSES = {"ipopt": "interior point", "snopt": "SQP", "nlopt": "augmented Lagrangian"}
+
+
+def stage_SOLVER(wall, targets, guesses, shards, only=None, tag="SOLVER", seed=1,
+                 solvers="snopt"):
+    """The solver axis, on the adopted rungs and the adopted defaults.
+
+    Every one of the ~395 archived runs is IPOPT, because `parse_log` matched only IPOPT's
+    log format and a SNOPT run reported None for iterations, the evaluation counts and the
+    exit -- so the axis existed as a flag and produced nothing readable. That is fixed; this
+    is its first measurement.
+
+    **Triage scale by decision (Thomas, 2026-09-16), shortest-first.** 15 targets x 4
+    guesses is 60 cells, deliberately NOT the 480-cell grid the adopted columns are measured
+    on: the question here is whether a solver reads sensibly on this problem at all, not
+    where it ranks. Read a one- or two-cell difference as noise -- reproducibility at the cap
+    is +/-1 cell.
+
+    **Not cell-comparable with the archived IPOPT tables**, which are 480 cells at seed 1.
+    The comparison this stage supports is between its own columns, which is why `ipopt` is
+    generated alongside whatever else is asked for: the baseline has to come from the same
+    grid and the same code.
+
+    Adopted defaults throughout, so the solver is the only thing moving: hardened scene,
+    grasp targets FREE and pose targets shelf-contained at the fingertips, both start
+    protocols, learned against joint space, correction penalty 10, compiled flow Jacobian.
+
+    Four logical runs per robot per solver (grasp x 2 starts, pose x 2 starts).
+    """
+    wanted = set(only.split(",")) if only else None
+    chosen = [x.strip() for x in solvers.split(",") if x.strip()]
+    ## `ipopt` always rides along: without a baseline on this grid there is nothing to read
+    ## the new solvers against, and pointing at an archived column would silently compare
+    ## across grids and across code versions.
+    if "ipopt" not in chosen:
+        chosen = ["ipopt"] + chosen
+    for name in chosen:
+        if name not in SOLVER_CLASSES:
+            raise SystemExit(f"--solvers: unknown solver {name!r}; "
+                             f"expected from {sorted(SOLVER_CLASSES)}")
+    items = []
+    for robot, label, ckpt in ADOPTED_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                 "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET)]
+                + (["--checkpoint", ckpt] if ckpt else []))
+        ## (task, tag token, placement flags) -- the adopted default for each task.
+        rows = (("mug", "mugfree", ["--target-placement", "free"]),
+                ("pose", "posetip", ["--target-placement", "shelf",
+                                     "--placement-point", "fingertips"]))
+        for solver in chosen:
+            for task, token, placement in rows:
+                for start in ("paired", "native"):
+                    ## The solver goes in the tag, not only the metadata. Two runs of one
+                    ## grid under different solvers are different measurements, and without
+                    ## it they resolve to the same summary.json and overwrite each other --
+                    ## the trap --shard and --checkpoint were each fixed for.
+                    items += item(robot,
+                                  f"sc_{tag}_{robot}_{label}_{solver}_{token}_{int(wall)}_{start}",
+                                  ["--task", task, "--start", start,
+                                   "--solver", solver] + placement + base,
+                                  targets, guesses, LADDER_ARMS, wall, shards, seed=seed)
+    return items
+
+
 def stage_INSET(wall, targets, guesses, shards, only=None, tag="INSET", seed=1):
     """Sweep the compartment depth inset, on both tasks, at reduced scale.
 
@@ -964,6 +1040,8 @@ def selftest():
                          ("HARDMUG", stage_HARDMUG(45, 60, 8, 8)),
                          ("POSE2", stage_POSE2(45, 60, 8, 8)),
                          ("CAP", stage_CAP(45, 60, 8, 16)),
+                         ("SOLVER", stage_SOLVER(45, 15, 4, 4)),
+                         ("SOLVER-all", stage_SOLVER(45, 15, 4, 4, solvers="snopt,nlopt")),
                          ("FINGER", stage_FINGER(45, 60, 8, 8)),
                          ("GRASPFREE", stage_GRASPFREE(45, 60, 8, 8)),
                          ("INSET", stage_INSET(45, 15, 4, 1)),
@@ -1039,6 +1117,53 @@ def selftest():
     for key, modes in per_rung.items():
         if modes != {"shelf", "free"}:
             hard_fails.append("rung %r fields pose placements %r, not both" % (key, modes))
+    ## Stage SOLVER's own invariants. The tag one is the important one: the solver must
+    ## appear in every tag, because two runs of one grid under different solvers are
+    ## different measurements and would otherwise resolve to the same summary.json and
+    ## overwrite each other. The iiwa script had exactly that bug for the solver field.
+    solver_fails = []
+    runs = stage_SOLVER(45, 15, 4, 1, solvers="snopt,nlopt")
+    if len(runs) != 24:
+        solver_fails.append("should be 24 logical runs (2 robots x 3 solvers x 2 tasks "
+                            "x 2 starts), got %d" % len(runs))
+    seen_solvers, seen_rungs = set(), set()
+    for it in runs:
+        a = it["args"]
+        solver = a[a.index("--solver") + 1]
+        seen_solvers.add(solver)
+        seen_rungs.add((it["robot"], a[a.index("--checkpoint") + 1]
+                        if "--checkpoint" in a else "default"))
+        if solver not in it["id"]:
+            solver_fails.append("%s does not carry its solver in the tag" % it["id"])
+        if "--scene" not in a or a[a.index("--scene") + 1] != "hardened":
+            solver_fails.append("%s is not on the hardened scene" % it["id"])
+        ## The adopted default for each task, so the solver is the only thing moving.
+        task = a[a.index("--task") + 1]
+        placement = a[a.index("--target-placement") + 1]
+        if task == "mug" and placement != "free":
+            solver_fails.append("%s: grasp should use the adopted FREE placement" % it["id"])
+        if task == "pose" and placement != "shelf":
+            solver_fails.append("%s: pose should use the adopted contained placement" % it["id"])
+    if "ipopt" not in seen_solvers:
+        solver_fails.append("no ipopt baseline generated -- the new solvers would have "
+                            "nothing on this grid to be read against")
+    if seen_solvers != {"ipopt", "snopt", "nlopt"}:
+        solver_fails.append("fielded solvers %r, expected all three method classes"
+                            % sorted(seen_solvers))
+    if len(seen_rungs) != 2:
+        solver_fails.append("should field exactly the two adopted rungs, got %r" % seen_rungs)
+    try:
+        stage_SOLVER(45, 15, 4, 1, solvers="gurobi")
+        solver_fails.append("an unknown --solvers value was accepted")
+    except SystemExit:
+        pass
+    for msg in solver_fails:
+        print(f"FAIL stage SOLVER: {msg}")
+    if not solver_fails:
+        print("ok   stage SOLVER: 24 runs, all three method classes, solver in every tag, "
+              "adopted rungs and adopted placements")
+    fails += len(solver_fails)
+
     for msg in hard_fails:
         print(f"FAIL stage HARD: {msg}")
     if not hard_fails:
@@ -1082,9 +1207,15 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
+    p.add_argument("--stage", choices=["SOLVER", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
+    p.add_argument("--solvers", default="snopt",
+                   help="SOLVER stage only: comma-separated solvers to field alongside the "
+                        "ipopt baseline, which is always generated. The axis is three METHOD "
+                        "CLASSES -- ipopt interior point, snopt SQP, nlopt augmented "
+                        "Lagrangian -- so adding one should be justified by the class it "
+                        "contributes.")
     p.add_argument("--rungs", default=None,
                    help="LADDER/LADDERTRI only: comma-separated rung labels to generate "
                         "(e.g. 'ddpr1,n6'). Default: every rung in LADDER_RUNGS. Training "
@@ -1120,7 +1251,10 @@ def main():
         raise SystemExit("--stage is required (or --selftest)")
 
     caps = [float(c) for c in args.caps.split(",")]
-    items = {"HARD": lambda: stage_HARD(args.wall_time, args.targets,
+    items = {"SOLVER": lambda: stage_SOLVER(args.wall_time, args.targets, args.guesses,
+                                           args.shards, only=args.rungs,
+                                           solvers=args.solvers),
+             "HARD": lambda: stage_HARD(args.wall_time, args.targets,
                                         args.guesses, args.shards, only=args.rungs),
              "HARDTRI": lambda: stage_HARD(args.wall_time, args.targets, args.guesses,
                                            args.shards, only=args.rungs, tag="HARDTRI"),
