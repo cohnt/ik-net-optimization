@@ -1292,6 +1292,37 @@ the `paired` protocol the full-depth charts collapse on both robots (Panda `upst
 242-294 against `n6`'s 382-438; iiwa `n8`/`n6` 232-269 against `n4`'s 384-447), which is the
 gain-ceiling runaway and not a containment effect -- it is present in the free columns too.
 
+### FINGERTIP CONTAINMENT BEATS WRIST CONTAINMENT (stage FINGER, 2026-09-16)
+
+The pose task's containment point is a choice, and the two candidates are one 0.100 m step
+apart along the gripper -- the same step on both robots, which is the whole reason containment
+is keyed on the gripper rather than on each task's own target frame. 480 cells, all eleven
+rungs, both protocols; the wrist arm is stage POSE2's `posein` columns on the same grid.
+
+| best rung | free | wrist | **fingertip** |
+| --- | --- | --- | --- |
+| panda `n6` native | 458 v 201 (+257) | 428 v 185 (+243) | **461 v 217** (+244) |
+| panda `n6` paired | 438 v 201 (+237) | 382 v 185 (+197) | **405 v 217** (+188) |
+| iiwa `n4` native | 470 v 332 (+138) | 433 v 268 (+165) | **470 v 299** (+171) |
+| iiwa `n4` paired | 447 v 332 (+115) | 384 v 268 (+116) | **422 v 299** (+123) |
+
+**Both arms score higher at the fingertips than at the wrist, on every row** -- learned
+405-470 against 382-433, joint space 217/299 against 185/268. That is what the geometry
+predicts: putting the *hand* in a compartment is a shallower reach than driving the *wrist*
+in behind it, so the wrist definition silently demands 0.1 m more penetration into a 0.10 m
+deep compartment.
+
+The learned arm wins decisively under all three definitions -- under fingertip containment,
+p = 4.6e-68 / 9.0e-37 (Panda native/paired) and 1.1e-46 / 7.3e-20 (iiwa).
+
+**Fingertip is the better containment point on both counts.** It is the more faithful
+statement of the task -- "the gripper reaches into the shelf", not "the wrist does" -- and it
+preserves the learned margin at least as well as the wrist on three rows of four (iiwa +171
+against +165 and +123 against +116; Panda native +244 against +243), the exception being
+Panda paired (+188 against +197). Against no containment at all it still costs margin on the
+Panda (+188 against free's +237) and gains it on the iiwa (+123 against +115), so containment
+remains a genuine difficulty increase rather than a free win -- see the POSE2 section.
+
 ### THE SHELF-DEPTH INSET DOES NOT CHANGE THE STORY (stage INSET, 2026-09-16)
 
 0.10 m was adopted from `../codebase` and this repo had never swept it. 60 cells, 45 s, one
