@@ -68,9 +68,10 @@ class PandaIKProgram(IKFlowProgram):
         # an uncalibrated pose program conditions the network on a frame it never saw.
         # Measured cost before this line existed: Panda pose collapsed to 10/60 with
         # median max_violation 0.4, against 58/60 and 1.8e-08 on the grasp task in the same
-        # scene. A no-op (identity) wherever the frames already agree, which is why the
-        # iiwa is unaffected, and it draws from its own fixed-seed generator so it cannot
-        # shift the benchmark grid.
+        # scene. It is a no-op wherever the frames already agree, and draws from its own
+        # fixed-seed generator so it cannot shift the benchmark grid. The iiwa is NOT
+        # exempt: its `iiwa_link_7` sits 45 mm from the flow's frame, a pure translation
+        # mild enough to have gone unnoticed, so its pose columns move under this too.
         self.CalibrateFlowFrame()
 
 
@@ -99,8 +100,20 @@ class PandaIKProgram(IKFlowProgram):
             self.q_nominal = q_nominal
 
         self.initial_guess = np.zeros(6)
-        self.initial_guess[:3] = self.target_pose[:3]
-        self.initial_guess[3:] = RotationMatrix(Quaternion(self.target_pose[3:])).ToRollPitchYaw().vector()
+        # `c` is the NETWORK's conditioning input, so it lives in the frame the flow was
+        # trained on -- not in whatever frame the scene calls the end effector. Those are
+        # the same frame only by luck, and this line used to assume it. It held while the
+        # pose scene was `panda_jrl.urdf`, whose `panda_hand` IS the flow's frame; the
+        # finray's `panda_hand` is 27 mm and 120 degrees away, and seeding `c` at the
+        # scene-frame target put it 120 degrees from where the network expects. Worse, the
+        # same vector centres `c`'s +/-1 rad box, so `SetStartFromQ`'s correct flow-frame
+        # pose then sat OUTSIDE the box and IPOPT projected it back (measured
+        # `clip_distance` 1.93), handing the solver a start whose latent and conditioning
+        # pose disagreed. Panda pose scored 0/12 with `max_violation` 1.7e+05.
+        X_W_target = RigidTransform(Quaternion(self.target_pose[3:]), self.target_pose[:3])
+        X_W_flow = X_W_target @ self.X_ee_flow
+        self.initial_guess[:3] = X_W_flow.translation()
+        self.initial_guess[3:] = RollPitchYaw(X_W_flow.rotation()).vector()
 
 
         self.prog.SetInitialGuess(self.c, self.initial_guess)
