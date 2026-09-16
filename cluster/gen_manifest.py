@@ -562,6 +562,42 @@ INSET_SWEEP = (0.0, 0.05, 0.10, 0.125)
 INSET_RUNGS = {"iiwa": "n4", "panda": "n6"}
 
 
+def stage_POSE2(wall, targets, guesses, shards, only=None, tag="POSE2", seed=1):
+    """The pose task re-measured after the gripper and containment-point fixes.
+
+    Both of stage HARD's pose halves are void:
+
+    * the PANDA pose scene changed outright -- it was `panda_jrl.urdf` with the stock Franka
+      hand and is now the same `panda_no_hand` + finray the grasp task uses, so its collision
+      geometry, its position count (9 -> 7) and its target frame all moved;
+    * the CONTAINMENT POINT changed on both robots. `posein` keyed on each task's own target
+      frame, which is the arm FLANGE on the iiwa (0.184 m behind the fingers) and the GRIPPER
+      MOUNT on the Panda (0.100 m) -- 84 mm apart, so the two robots were not screened on the
+      same point on the hand. Both now key on the gripper base, exactly 0.100 m behind
+      `between_fingers` on each.
+
+    Both placements, so the contained-vs-free verdict is re-established on the corrected
+    scene rather than carried over from a table that no longer describes this program.
+    """
+    wanted = set(only.split(",")) if only else None
+    items = []
+    for robot, label, ckpt in LADDER_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        common = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                   "--scene", "hardened", "--placement-point", "wrist"]
+                  + (["--checkpoint", ckpt] if ckpt else []))
+        for token, placement, extra in (("posein", "shelf",
+                                         ["--shelf-inset", str(HARD_SHELF_INSET)]),
+                                        ("posefree", "free", [])):
+            for start in ("paired", "native"):
+                items += item(robot, f"sc_{tag}_{robot}_{label}_{token}_{int(wall)}_{start}",
+                              ["--task", "pose", "--start", start,
+                               "--target-placement", placement] + common + extra,
+                              targets, guesses, LADDER_ARMS, wall, shards, seed=seed)
+    return items
+
+
 def stage_FINGER(wall, targets, guesses, shards, only=None, tag="FINGER", seed=1):
     """Pose containment measured at the FINGERTIPS instead of at the target frame.
 
@@ -890,6 +926,7 @@ def selftest():
                          ("TRAJ", stage_TRAJ(45, 60, 8, 8)),
                          ("HARD", stage_HARD(45, 60, 8, 8)),
                          ("HARDMUG", stage_HARDMUG(45, 60, 8, 8)),
+                         ("POSE2", stage_POSE2(45, 60, 8, 8)),
                          ("FINGER", stage_FINGER(45, 60, 8, 8)),
                          ("GRASPFREE", stage_GRASPFREE(45, 60, 8, 8)),
                          ("INSET", stage_INSET(45, 15, 4, 1)),
@@ -1008,7 +1045,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "FINGER", "GRASPFREE", "INSET",
+    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--rungs", default=None,
@@ -1052,6 +1089,8 @@ def main():
                                            args.shards, only=args.rungs, tag="HARDTRI"),
              "HARDMUG": lambda: stage_HARDMUG(args.wall_time, args.targets, args.guesses,
                                               args.shards, only=args.rungs),
+             "POSE2": lambda: stage_POSE2(args.wall_time, args.targets, args.guesses,
+                                          args.shards, only=args.rungs),
              "FINGER": lambda: stage_FINGER(args.wall_time, args.targets, args.guesses,
                                             args.shards, only=args.rungs),
              "GRASPFREE": lambda: stage_GRASPFREE(args.wall_time, args.targets, args.guesses,
