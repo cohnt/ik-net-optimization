@@ -52,7 +52,14 @@ def parse_args():
     p.add_argument("--targets", type=int, default=15)
     p.add_argument("--guesses", type=int, default=2)
     p.add_argument("--wall-time", type=float, default=20.0)
-    p.add_argument("--solver", choices=["ipopt", "snopt"], default="ipopt")
+    p.add_argument("--solver", choices=["ipopt", "snopt", "nlopt"], default="ipopt",
+                   help="the solver axis is three METHOD CLASSES, not three vendors: "
+                        "ipopt is interior point, snopt is SQP, nlopt is an augmented "
+                        "Lagrangian (LD_AUGLAG). Each converges at its own defaults -- "
+                        "transplanting one solver's tolerances onto another makes the "
+                        "axis a handicap rather than a comparison. Note nlopt reports no "
+                        "iteration count at all, so its runs are read by the map-evaluation "
+                        "counters instead; see src/generic_program.py ResetEvalCounts.")
     p.add_argument("--start", choices=["paired", "native"], default="paired",
                    help="paired: every arm starts at the same q_init, in its own variables "
                         "(SetStartFromQ). native: every arm uses its own initialisation -- "
@@ -177,8 +184,12 @@ def main():
     # resolve to the same summary.json and overwrite each other (the same trap --shard hit).
     ckpt_tok = ([os.path.splitext(os.path.basename(args.checkpoint))[0]]
                 if args.checkpoint else [])
+    ## The solver belongs in the tag for exactly the reason the checkpoint does: two runs
+    ## of the same grid under DIFFERENT solvers are not the same measurement, and without
+    ## this they resolve to the same log_dir and the same summary.json and silently
+    ## overwrite each other. The panda script has always included it; this one did not.
     tag = args.tag or "_".join(
-        ["iiwa", args.task, args.config, args.start] + ckpt_tok
+        ["iiwa", args.task, args.config, args.solver, args.start] + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
         + (["compiled"] if args.compile else []))
     if shard is not None:
