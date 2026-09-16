@@ -509,48 +509,43 @@ at all. Matching exit strings alone would report `timeouts: 0` for a capped run 
 the same trap `is_iteration_cap` was written for. NLopt status 5 is `MAXEVAL_REACHED`, an
 *evaluation* cap recorded as `hit_eval_cap`, since NLopt has no notion of an iteration to cap.
 
-### Four traps, all found by probing rather than by reading
+### Traps, all found by probing rather than by reading
 
-- **The laptop's Drake is not the cluster's.** The cluster runs the official **1.56.0**
-  tarball, whose `NloptSolver` exposes exactly six options: `algorithm`, `constraint_tol`,
-  `xtol_rel`, `xtol_abs`, `max_eval`, `max_time`. A workstation source build additionally
-  offers five `local_optimizer_*` options for choosing the AL's inner solver. **Drake
-  validates NLopt option names strictly and raises on one it does not know**, so code written
-  against the local API passes locally and fails on *every cell* of a cluster run.
-  `tests/test_solver_plumbing.py` pins the emitted keys to 1.56.0's six. **A Drake feature
-  must be checked against the cluster's version before code depends on it.**
-- **`"Timing Level"` is accepted by Drake and silently INERT.** SNOPT's parser is case
-  sensitive on the second word; only `"Timing level"` writes the timing block. That option had
-  been dead in this repo. Drake raises only on a keyword SNOPT's table does not know at all,
-  so **a SNOPT option can be accepted and do nothing** -- confirm anything set here in the
-  print file.
-- **Drake defaults NLopt's `max_eval` to 1000.** That is a cap, not "unset", and it binds
-  here. Left alone the NLopt column would silently measure a 1000-evaluation budget instead of
-  the wall-clock cap every other column is measured under. `max_time` carries the cap and
-  `max_eval` is set explicitly.
-- **SNOPT's print file opens with `SNMEMA EXIT 100 -- finished successfully`** from the
-  memory-estimation pass. A bare `EXIT` regex reports that instead of the solve's and calls a
-  failed solve a success; the parse anchors on `SNOPTA` and takes the last match.
+**A solver option can be ACCEPTED and do nothing**, and only the solver's own parameter echo
+tells the two apart. `"Timing Level"` was set for the life of this repo and silently wrote no
+timing block, because SNOPT's parser is case-sensitive on the second word while Drake raises
+only on keywords SNOPT does not know at all. Every option this branch exposes was verified
+reaching the solver -- for IPOPT by requiring `used = yes` in the user-options block that
+`print_user_options` emits, for SNOPT by requiring the value in the parameter echo -- and that
+check earned its place three times over:
 
-**The BUDGET is equalised; only the tolerances are left to each solver.** These are
-different things. The controlled variable of this comparison is the wall clock, so a solver
-quietly stopping at its own *iteration* default is being given a different budget rather than
-converging at its own tolerance -- the same class of unfairness as handing it another
-solver's tolerances. SNOPT's default `Major iterations limit` is **1000** against IPOPT's
-`max_iter` default of **3000**, and this binds in practice: an iiwa joint-space cell stopped
-at exactly 1000 majors inside a 20 s cap. SNOPT is therefore set to 3000 when `max_iter` is
-unset -- equalised at IPOPT's number rather than raised out of the way, so IPOPT's path stays
-byte-identical to every archived run and either solver capping is visible and equal through
-`hit_iteration_cap`. NLopt has no notion of an iteration, so its nearest analogue `max_eval`
-is disabled and the wall clock is the whole of its budget.
+- **`Hessian updates` is inert** at these problem sizes: SNOPT picks full-memory mode below 75
+  variables and the programs have 20-21, so the echo keeps reporting 99999999 however it is
+  set. `Hessian frequency` is the one that bites.
+- **`Nonderivative linesearch` is a VALUELESS keyword** -- passing 0 turns it ON exactly as 1
+  does, so it is a bool emitted only when True. It appears in the echo abbreviated as
+  `Nonderiv.  linesearch`, which is why a first probe grepping its full name wrongly called it
+  inert.
+- **`linear_solver=mumps` does not exist.** Drake's IPOPT is built against SPRAL and offers
+  only `spral` and `custom`, so there is no linear-solver axis on this problem.
 
-Two smaller notes. `Solution No` drops the end-of-file row/column dump, a fifth of the print
-file that nothing parses -- one log per cell over 480 cells is the many-small-files pattern
-this project already had to fix once. And **SNOPT's `Time limit` is checked at major-iteration
-boundaries**, so a cell overshoots the cap by one major iteration: measured 24-28 s against a
-20 s cap on the learned arm, whose iteration is expensive. That is inside `cell_timeout`
-(`5*wall + 300`) and the 4 h `ITEM_TIMEOUT`, but it means SNOPT wall-clock is not capped as
-tightly as IPOPT's.
+**Read a solver's defaults out of the solver, not out of memory.** IPOPT's
+`print_options_documentation` dump contradicted the obvious assumption: `acceptable_dual_inf_tol`
+defaults to **1e+10** and the two acceptable infeasibility tolerances to **1e-2**, so this
+repo's fielded values are looser on two of the family and *tighter* on three. A sweep arm
+labelled "IPOPT's defaults" that was not cost a resubmission to correct.
+
+**The Drake on the laptop is not the Drake on the cluster.** The workstation is a source build;
+the cluster runs the official 1.56.0 tarball, whose `NloptSolver` exposes exactly six options
+(`algorithm`, `constraint_tol`, `xtol_rel`, `xtol_abs`, `max_eval`, `max_time`) against the
+source build's eleven. Drake validates NLopt names strictly and **raises** on an unknown one,
+so code written against the newer API passes locally and fails on every cell of a cluster run.
+`tests/test_solver_plumbing.py` pins the emitted keys to 1.56.0's six; do not relax it to
+whatever the local build offers.
+
+**`max_eval` is not "unset" by default** -- Drake defaults it to 1000, a cap that binds here,
+so it must be set deliberately or the NLopt column silently measures an evaluation budget
+rather than the wall clock.
 
 ### THE SOLVER AXIS AT 480 CELLS (stage SOLVER2, 2026-09-16)
 
@@ -650,21 +645,85 @@ SNOPT's `Time limit`** (20.0-20.1 s against 24-28 s in a local probe), because S
 checks at major-iteration boundaries; wall-clock columns are not capped equally across
 solvers.
 
+### STAGE SWEEP: solver settings, and what IPOPT's early stop is actually worth (2026-09-16)
+
+43 settings (20 SNOPT, 23 IPOPT), one factor at a time against each solver's own default, on
+stage SOLVER's 60-cell grid, `paired` only, pooled over four rows (2 robots x the two adopted
+tasks) = **240 cells**. Directional by design, as `stage_INSET` argued; 184 items.
+**Step rejection is deliberately absent** -- `ipopt_theta_max_fact`, `ipopt_watchdog_trigger`,
+`ipopt_max_soc`, `snopt_violation_limit`, `snopt_major_step_limit` are a separate question
+(Thomas, 2026-09-16), and `stage_SWEEP` **raises** if an entry names one.
+
+**SNOPT: no setting rescues it, and its defaults are already about right.** Against its own
+141/240: the best are the gradient-free line search at 153 (+12, p = 0.20), then `lstol0p99`,
+`majopt1em08` and `hessfreq20` at 152 (p = 0.16-0.20). **Not one of the twenty reaches
+significance**, and the extremes hurt (`scale2` 125, `elastic1e7` 130). That is consistent with
+the failure modes -- a solver losing on INFO 13/41 is not losing for want of tuning.
+
+**IPOPT: the tolerances I plumbed for this are INERT, and the acceptable-point machinery is
+everything.** `convsnopt` (IPOPT held to SNOPT's convergence numbers) scores 212 against the
+fielded 211, and every single-factor convergence row is within noise -- because IPOPT already
+converges far tighter than either default, so the 1e-4-against-1e-6 asymmetry recorded above
+was real on paper and worth **zero cells**. The `acceptable_*` family is a different story:
+
+| IPOPT arm | solved/240 | vs SNOPT (b/w) | p | med violation | med iters | timeouts |
+| --- | --- | --- | --- | --- | --- | --- |
+| `accviolloose` (IPOPT's loose infeasibility triple) | **213** | 81/9 | 1.3e-15 | 1.26e-06 | **66** | **0** |
+| `convsnopt` | 212 | 82/11 | 1.4e-14 | 1.33e-08 | 147 | 3 |
+| **as fielded** | 211 | 82/12 | 5.6e-14 | 1.29e-08 | 147 | 3 |
+| `acciter5` | 202 | 81/20 | 6.9e-10 | 3.85e-09 | 430 | 39 |
+| **`ipoptdefault`** (IPOPT's true defaults) | **200** | 81/22 | **4.1e-09** | 1.09e-07 | 840 | 157 |
+| `acciter15` | 178 | 75/38 | 6.4e-04 | 8.73e-09 | 607 | 121 |
+| `acctight` (whole family at 1e-6) | 121 | 58/78 | 0.10 | 6.21e-12 | 587 | 156 |
+| `accoff` | 62 | 34/113 | 4.2e-11 (SNOPT) | 2.22e-15 | 319 | 158 |
+| `fair` (off + conv=SNOPT's) | 34 | 22/129 | 1.3e-19 (SNOPT) | 1.45e-13 | 232 | 111 |
+| *SNOPT at its own defaults* | *141* | -- | -- | *2.03e-08* | *410* | *16* |
+
+**THE ANSWER TO THE FAIRNESS QUESTION: the ordering survives it.** At each solver's own
+defaults -- which is what rung 2 of the tolerance ladder asks for -- **IPOPT 200, SNOPT 141,
+p = 4.1e-09**, and on the 119 cells both solve IPOPT's solutions also cost *less* (5.574
+against 6.841). So IPOPT's advantage is not an artefact of the early stop it was handed.
+
+**But the early stop is worth 39 cells and a 9x speedup, and that has to be stated.** Fielded,
+IPOPT solves 211 at 147 median iterations and 5.2 s; at its own defaults it solves 200 at
+**840** median iterations and **45.0 s** -- the entire cap -- with timeouts going 3 -> 157.
+
+**And it is NOT returning sloppy points**, which was the worry. Fielded-arm successes sit at
+`max_violation` 1.29e-08, five orders inside the 1e-3 gate and the same quality as SNOPT's
+2.03e-08. Turning the early stop off drives the violation to 2.22e-15 and the success count to
+**62**: IPOPT without it keeps polishing a solution it already has until the clock kills it.
+So `acceptable_iter = 1` does not let IPOPT scrape past the gate -- it lets IPOPT **recognise
+it is already done and stop**, which under a wall-clock cap is a real capability. SNOPT has no
+counterpart and would not benefit from one anyway: only 3.6% of its failures are time limits.
+
+**The trade is quality against throughput, and `accviolloose` is the extreme.** It is the best
+arm on success (213), the fastest by far (66 iterations, 1.9 s, zero timeouts), and the
+**worst on cost** of the live arms (7.468 against the fielded 6.540 on cells both solve), at a
+violation of 1.26e-06 -- still three orders inside the gate. Stopping earlier buys cells and
+costs optimality. **Nothing here is adopted**: the fielded configuration sits at a reasonable
+point on that curve, the alternatives move success by at most +2 cells of 240, and changing it
+would break comparability with every archived run for no measured gain.
+
+**Read the `med cost` column of the first table with care** -- it is a median over each arm's
+own successes, and with success counts from 34 to 213 those are different cell sets. The
+cells-both-solved numbers quoted above are the honest form, and they are what the campaign's
+cost rule requires.
+
 ### Future work on this axis
 
 - **NLopt settings are unswept**, by decision (Thomas, 2026-09-16: *"Store testing NLOPT
-  settings as future work"*). `LD_AUGLAG` vs `LD_AUGLAG_EQ`, `constraint_tol`, `xtol_rel`,
-  `xtol_abs`, `max_eval` -- all at Drake's defaults, none measured.
-- **The AL's inner local optimizer is not selectable** on the cluster's Drake. Leaving it
-  unset is a supported state: Drake does not call `set_local_optimizer`, so NLopt supplies its
-  own (LD_LBFGS for the gradient-based AUGLAG families), which is the right shape because an
-  AL's inner problem is bound-constrained only. **TODO** when the cluster's Drake carries the
-  local-optimizer PRs: expose `local_optimizer_algorithm` and sweep it.
-- **`snopt_major_step_limit` and `snopt_violation_limit` are plumbed and unset.** These are
-  SNOPT's analogues of the repo's best open IPOPT lead -- `Major step limit` bounds
-  `||dx|| <= limit*(1+||x||)` per major iteration (the trust region the runaway wants, since
-  it is *one accepted catastrophic step* out of a well-behaved trajectory), and
-  `Violation limit` is the counterpart of `ipopt_theta_max_fact`.
+  settings as future work"*) -- `LD_AUGLAG` vs `LD_AUGLAG_EQ`, `constraint_tol`, `xtol_*`,
+  `max_eval`. Stage SOLVER2 says the column is not competitive at Drake's defaults by a very
+  wide margin, so a sweep is unlikely to change the ordering; it would only say *why*. The
+  AL's inner local optimizer is not selectable on the cluster's Drake at all -- leaving it
+  unset is a supported state (NLopt then supplies LD_LBFGS, the right shape for a
+  bound-constrained inner problem) -- **TODO** when that Drake carries the local-optimizer PRs.
+- **The step-rejection family is untouched and is the next question.**
+  `snopt_major_step_limit` and `snopt_violation_limit` are plumbed and unset, as are IPOPT's
+  three. `Major step limit` bounds `||dx|| <= limit*(1+||x||)` per major iteration -- the trust
+  region the runaway wants, since it is *one accepted catastrophic step* out of a well-behaved
+  trajectory -- and `Violation limit` is the counterpart of `ipopt_theta_max_fact`, which
+  gained 3 cells and lost none on a 16-cell probe.
 - **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the
   robust logging we need btw, work with what you have, don't write new logging stuff in Drake
   or anything."* Instrument on our side and report honestly what a solver does not expose.
