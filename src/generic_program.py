@@ -131,6 +131,25 @@ class ProgramOptions:
     ## Note what is NOT reachable: `linear_solver`. Drake's IPOPT is built against SPRAL
     ## and offers only `spral` and `custom` -- `mumps` raises at SetOption -- so there is
     ## no linear-solver axis on this problem.
+    ## IPOPT's REAL convergence test, as opposed to the `acceptable_*` family above --
+    ## which is its RELAXED EARLY STOP and a different thing entirely. Nothing in this repo
+    ## ever set these, so IPOPT has always converged at its own defaults, and two of them
+    ## are far looser than the SQP column is held to:
+    ##
+    ##     constr_viol_tol  1e-4   vs SNOPT's Major feasibility tolerance  1e-6
+    ##     dual_inf_tol     1      vs SNOPT's Major optimality tolerance   2e-6
+    ##     tol              1e-8
+    ##     compl_inf_tol    1e-4
+    ##
+    ## So a solver comparison that leaves these alone lets IPOPT stop at 100x the
+    ## constraint violation and six orders more dual infeasibility. That is a property of
+    ## the HARNESS, not of interior-point methods, and it has to be measured before the
+    ## solver table means anything. Rung 2 of the tolerance ladder says each solver gets
+    ## its own well-posed defaults -- but it does not say never check what that is worth.
+    ipopt_tol: float = field(default=None, metadata={"help": "IPOPT 'tol' (default 1e-8): the overall convergence tolerance"})
+    ipopt_constr_viol_tol: float = field(default=None, metadata={"help": "IPOPT 'constr_viol_tol' (default 1e-4): constraint violation at convergence. SNOPT's counterpart defaults to 1e-6"})
+    ipopt_dual_inf_tol: float = field(default=None, metadata={"help": "IPOPT 'dual_inf_tol' (default 1): dual infeasibility at convergence. SNOPT's counterpart defaults to 2e-6"})
+    ipopt_compl_inf_tol: float = field(default=None, metadata={"help": "IPOPT 'compl_inf_tol' (default 1e-4): complementarity at convergence"})
     ipopt_limited_memory_max_history: int = field(default=None, metadata={"help": "IPOPT 'limited_memory_max_history' (default 6): the L-BFGS history length, which is the whole Hessian approximation here"})
     ipopt_limited_memory_update_type: str = field(default=None, metadata={"help": "IPOPT 'limited_memory_update_type': 'bfgs' (default) or 'sr1'"})
     ipopt_mu_init: float = field(default=None, metadata={"help": "IPOPT 'mu_init' (default 0.1). Only read under mu_strategy=monotone -- pass ipopt_mu_strategy=monotone with it or it is silently unused"})
@@ -1244,6 +1263,10 @@ class IKFlowProgram:
         ## checkable, and it is why `linear_solver` is absent (Drake's IPOPT rejects
         ## anything but `spral`/`custom`) and why `mu_init` carries the warning it does.
         for name, value, cast in (
+                ("tol", self.options.ipopt_tol, float),
+                ("constr_viol_tol", self.options.ipopt_constr_viol_tol, float),
+                ("dual_inf_tol", self.options.ipopt_dual_inf_tol, float),
+                ("compl_inf_tol", self.options.ipopt_compl_inf_tol, float),
                 ("limited_memory_max_history", self.options.ipopt_limited_memory_max_history, int),
                 ("limited_memory_update_type", self.options.ipopt_limited_memory_update_type, str),
                 ("mu_init", self.options.ipopt_mu_init, float),
