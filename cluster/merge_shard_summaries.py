@@ -50,7 +50,7 @@ MUST_MATCH = ("robot", "task", "solver", "config", "wall_time", "seed", "grid_ha
               # `grid_hash`, and a change to the sampling instrumentation must not be able to
               # block a merge.
               "scene", "scene_mode", "target_placement", "shelf_inset", "target_screen",
-              "placement_point")
+              "placement_point", "placement_point_mode")
 
 # `host` is deliberately NOT in MUST_MATCH. Shards of one run are distributed across
 # nodes -- that is the entire point of sharding -- so their hostnames can never agree,
