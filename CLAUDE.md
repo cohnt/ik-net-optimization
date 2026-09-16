@@ -1241,6 +1241,50 @@ Panda moved: reaching into a compartment takes its joint-space arm **970 median 
 against its archived 48**, where the iiwa's takes 448. The hardened grasp task is near the
 edge of what a joint-space formulation does cheaply on the Panda and is not on the iiwa.
 
+### THE SHELF-DEPTH INSET DOES NOT CHANGE THE STORY (stage INSET, 2026-09-16)
+
+0.10 m was adopted from `../codebase` and this repo had never swept it. 60 cells, 45 s, one
+rung per robot (iiwa `n4`, Panda `n6`), both tasks contained, both protocols, insets
+0 / 0.05 / 0.10 / 0.125.
+
+**Success moves by 2-10 cells of 60 across the entire span, with no monotone trend and no
+ordering flip.** Every row's learned-vs-joint-space verdict is the same at every inset: the
+iiwa loses the grasp task and wins pose at all four, the Panda wins the grasp task at all
+four. At 60 cells, where reproducibility at the cap is +/-1 cell, a range of 9-10 is
+wobble rather than a dose curve.
+
+What the inset *does* move, steeply, is acceptance -- 0.60% -> 0.10% of raw draws on Panda
+grasp, 0.69% -> 0.06% on iiwa pose. So the inset buys sampling cost, not difficulty, and
+**0.10 m stands**: it is the sibling's value, it is comfortably samplable at the 50000 guard,
+and nothing downstream depends on it. Do not re-sweep it without a reason.
+
+### THE POSE TASK NEVER CALIBRATED THE CONDITIONING FRAME (found 2026-09-16)
+
+`CalibrateFlowFrame` was called only by the *grasp* subclasses. On the pose task it was
+skipped entirely, and that was invisible for two different reasons per robot:
+
+* the **Panda** pose scene was `panda_jrl.urdf`, whose `panda_hand` IS the Franka offset the
+  network was trained on, so the offset really was identity;
+* the **iiwa** pose scene's `iiwa_link_7` is 45 mm from the flow's frame -- a pure
+  translation, no rotation, mild enough to never announce itself.
+
+Removing the stock Panda hand destroyed the first coincidence. The pose scene now welds the
+finray, whose own `panda_hand` sits **27 mm and 120 degrees** away -- the exact trap
+`CalibrateFlowFrame`'s docstring was written about -- and the Panda pose task collapsed to
+**10/60 with median `max_violation` 0.4**, against 58/60 and 1.8e-08 for the grasp task in
+the *same scene* with the *same chart*. The grasp task was fine precisely because it was the
+only path that calibrated.
+
+Both base pose programs now calibrate. It is a no-op wherever the frames already agree, and
+it draws from its own fixed-seed generator so it cannot shift the grid. **Every archived
+pose column predates this**, including the iiwa's, which ran 45 mm off its trained frame
+throughout -- so the pose halves of the ladder, the training-step sweep and stage HARD are
+all superseded, not merely re-based.
+
+The lesson generalises past this bug: **a calibration that is skipped is indistinguishable
+from a calibration that is correct, until the geometry it was silently relying on changes.**
+The pose path had no test asserting `X_ee_flow` was ever measured.
+
 ### The pose-placement verdict: containment costs the baseline roughly twice what it costs the learned arm
 
 | | js free | js contained | learned free | learned contained |
