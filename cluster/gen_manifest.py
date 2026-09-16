@@ -887,7 +887,7 @@ SWEEP_SNOPT = [
 ## That asymmetry was inherited from the original setup and never chosen; it is a live
 ## candidate explanation for IPOPT's clean sweep of the triage, and it has to be measured
 ## before the solver table is written up.
-IPOPT_ACCEPTABLE_DEFAULTS = ["acceptable_tol=1e-6", "acceptable_constr_viol_tol=1e-6",
+IPOPT_ACCEPTABLE_TIGHT = ["acceptable_tol=1e-6", "acceptable_constr_viol_tol=1e-6",
                              "acceptable_dual_inf_tol=1e-6", "acceptable_compl_inf_tol=1e-6",
                              "acceptable_iter=15"]
 IPOPT_ACCEPTABLE_OFF = ["acceptable_tol=1e-12", "acceptable_constr_viol_tol=1e-12",
@@ -904,9 +904,23 @@ IPOPT_CONVERGENCE_AS_SNOPT = ["ipopt_tol=1e-6", "ipopt_constr_viol_tol=1e-6",
                               "ipopt_dual_inf_tol=1e-6", "ipopt_compl_inf_tol=1e-6"]
 SWEEP_IPOPT = [
     ("default", []),
-    ("accdefault", IPOPT_ACCEPTABLE_DEFAULTS),
+    ("acctight", IPOPT_ACCEPTABLE_TIGHT),
     ("accoff", IPOPT_ACCEPTABLE_OFF),
     ("acciter15", ["acceptable_iter=15"]),
+    ("acciter5", ["acceptable_iter=5"]),
+    ## IPOPT's TRUE defaults for the acceptable family, read out of its own
+    ## `print_options_documentation` dump rather than from memory -- which matters, because
+    ## they are not uniformly tighter or looser than what this repo fields. IPOPT defaults
+    ## to acceptable_tol 1e-6 and acceptable_iter 15 (both TIGHTER than the fielded 1e-3
+    ## and 1), but to acceptable_dual_inf_tol 1e10 and the two infeasibility tolerances
+    ## 1e-2 (all three far LOOSER than the fielded 1e-4). So "IPOPT at its own defaults" is
+    ## its own arm and cannot be inferred from the single-factor rows.
+    ("ipoptdefault", ["acceptable_tol=1e-6", "acceptable_constr_viol_tol=1e-2",
+                      "acceptable_dual_inf_tol=1e10", "acceptable_compl_inf_tol=1e-2",
+                      "acceptable_iter=15"]),
+    ## The loose infeasibility triple alone, holding acceptable_tol/iter as fielded.
+    ("accviolloose", ["acceptable_constr_viol_tol=1e-2", "acceptable_dual_inf_tol=1e10",
+                      "acceptable_compl_inf_tol=1e-2"]),
     ("convsnopt", IPOPT_CONVERGENCE_AS_SNOPT),
     ("fair", IPOPT_ACCEPTABLE_OFF + IPOPT_CONVERGENCE_AS_SNOPT),
     ("cvt1em06", ["ipopt_constr_viol_tol=1e-6"]),
