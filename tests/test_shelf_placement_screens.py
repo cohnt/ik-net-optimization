@@ -38,9 +38,12 @@ STATIC_FURNITURE = {"table", "table2", "shelves", "shelves2", "shelves3", "shelv
 ## (robot, task) -> the instances the legacy twin carries that the hardened one must not.
 ## The panda GRASP scene never had decorative mugs, so it loses only the bin: asserting the
 ## same removal list for all three would make the test pass for the wrong reason.
+## No ("panda", "pose") entry: the Panda pose scene IS the Panda grasp scene since the stock
+## hand was removed, so it would test the same file twice. Both robots now carry the same
+## finray on both tasks, which is what makes reaching into a shelf geometrically comparable
+## between them.
 REMOVED = {
     ("panda", "mug"): ("binF",),
-    ("panda", "pose"): ("binF",) + DECORATIVE_MUGS,
     ("iiwa", "mug"): ("binF",) + DECORATIVE_MUGS,
 }
 
@@ -136,16 +139,10 @@ def test_nobin_scene_drops_only_the_bin():
         ## Exactly the bin separates it from legacy.
         _, legacy_plant, _ = _scene(robot, task, "legacy")
         assert _instance_names(legacy_plant) - present == {"binF"}, (robot, task)
-    ## The Panda has no such variant and must say so rather than silently serving another.
-    for robot, task in (("panda", "pose"),):
-        try:
-            SceneFile(robot, task, "nobin")
-        except SystemExit:
-            pass
-        else:
-            raise AssertionError("panda/pose should have no nobin scene")
-    ## The Panda GRASP scene never had decorative mugs, so hardened IS its nobin scene.
-    assert SceneFile("panda", "mug", "nobin") == SceneFile("panda", "mug", "hardened")
+    ## The Panda never had decorative mugs on either task -- its pose scene IS its grasp
+    ## scene -- so hardened already IS its nobin scene, on both tasks.
+    for task in ("mug", "pose"):
+        assert SceneFile("panda", task, "nobin") == SceneFile("panda", task, "hardened")
     print("PASS nobin scene drops the bin and keeps the clutter")
 
 
@@ -259,35 +256,41 @@ def test_screen_ignores_robot_pairs():
     print("PASS the screen ignores mug-vs-robot contact")
 
 
-def test_every_scene_defines_exactly_one_fingertip_point():
+def test_containment_points_agree_across_robots():
     """`--placement-point fingertips` must resolve on every scene, and differ where it should.
 
-    Two arms but THREE grippers: the grasp scenes both carry the same finray design, while
-    the Panda POSE scene is `panda_jrl.urdf` with its own stock Franka hand and no finray at
-    all (the pose task must use jrl's Panda -- it is the model the flow was trained
-    against). So the pose task's wrist-to-fingertip distance is not the same on the two
-    robots, which is the asymmetry the fingertip variant exists to probe.
+    Both robots now carry the SAME finray gripper on BOTH tasks -- the Panda pose scene used
+    to be `panda_jrl.urdf` with its own stock Franka hand, which made the pose task's
+    collision geometry differ between robots for no reason. With that gone, every scene has
+    a real `between_fingers` frame and reaching into a shelf is geometrically comparable
+    across robots.
     """
+    seps = {}
     for (robot, task), spec in SCENES.items():
-        assert (spec.fingertip_frame is None) != (spec.fingertip_offset is None), (robot, task)
+        assert spec.wrist_frame and spec.fingertip_frame, (robot, task)
         _, plant, context = _scene(robot, task)
-        for mode in ("target", "fingertips"):
+        for mode in ("wrist", "fingertips"):
             pose_of, label = ContainmentPose(plant, context, spec, mode)
             q = np.zeros(plant.num_positions())
             X = pose_of(q)
             assert np.all(np.isfinite(X.translation())), (robot, task, mode)
             assert label
-        ## On the GRASP task the target already IS the grasp point, so the two coincide.
-        tgt, _ = ContainmentPose(plant, context, spec, "target")
+        ## The separation must be the SAME on both robots, or rejection sampling is keyed on
+        ## different points on the hand and the two are not comparable problems.
+        wrist, _ = ContainmentPose(plant, context, spec, "wrist")
         tip, _ = ContainmentPose(plant, context, spec, "fingertips")
         q = np.zeros(plant.num_positions())
-        d = float(np.linalg.norm(tgt(q).translation() - tip(q).translation()))
+        d = float(np.linalg.norm(wrist(q).translation() - tip(q).translation()))
+        seps.setdefault(task, set()).add(round(d, 9))
         if task == "mug":
+            ## the mug is welded at between_fingers, so the two must coincide there
             assert d < 1e-12, (robot, task, d)
         else:
-            ## and on the POSE task it must actually move, or the variant measures nothing
-            assert d > 0.05, (robot, task, d)
-    print("PASS every scene defines exactly one fingertip point")
+            assert abs(d - 0.100) < 1e-9, (robot, task, d)
+    ## The decisive assertion: one separation value per task, shared by both robots.
+    for task, values in seps.items():
+        assert len(values) == 1, (task, values)
+    print("PASS containment points are the same point on the hand for both robots")
 
 
 def test_free_placement_reproduces_the_legacy_stream():
@@ -336,7 +339,7 @@ if __name__ == "__main__":
     test_inset_shrinks_depth_only()
     test_penetration_screen_accepts_and_rejects()
     test_screen_ignores_robot_pairs()
-    test_every_scene_defines_exactly_one_fingertip_point()
+    test_containment_points_agree_across_robots()
     test_free_placement_reproduces_the_legacy_stream()
     test_rejection_guard_trips_with_a_useful_message()
     print("ALL PASS")

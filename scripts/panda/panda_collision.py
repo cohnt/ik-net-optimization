@@ -50,7 +50,7 @@ analytic_program_options = ProgramOptions(
 
 
 meshcat = StartMeshcat()
-diagram = BuildEnv(meshcat=meshcat, directives_file = os.path.join(RepoDir(), "models/panda/panda_collision.yaml"))
+diagram = BuildEnv(meshcat=meshcat, directives_file = os.path.join(RepoDir(), "models/panda/panda_finray_collision.yaml"))
 program = PandaIKProgram(diagram, options=program_options)
 program.create_prog()
 

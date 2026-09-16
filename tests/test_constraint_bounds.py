@@ -80,7 +80,7 @@ def main():
     print("\n--- pose task: the six IK rows ---")
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None,
-                           directives_file=os.path.join(REPO, "models/panda/panda_collision_hardened.yaml"))
+                           directives_file=os.path.join(REPO, "models/panda/panda_finray_collision_hardened.yaml"))
         sampler = PandaIKProgram(diagram, options=opts)
         sampler.create_prog()
     # A reachable target, the way the benchmark makes them: the gripper pose of a real

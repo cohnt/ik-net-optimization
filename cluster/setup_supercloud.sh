@@ -189,14 +189,13 @@ HOME="$ROOT/home" CUDA_VISIBLE_DEVICES="" LEARNED_IK_REPO="$ROOT/repo" \
 import os, sys
 sys.path.insert(0, os.environ["LEARNED_IK_REPO"])
 from src.utils import BuildEnv, RepoDir
-for scene in ("models/panda/panda_collision.yaml",
-              "models/panda/panda_finray_collision.yaml",
+for scene in ("models/panda/panda_finray_collision.yaml",
               "models/iiwa14/iiwa14_collision.yaml",
               # The hardened scenes the campaign actually runs. They pull no package the
               # legacy ones do not (dropping the bin only DROPS bin2.sdf), but a compute
               # node has no internet, so warm them rather than reason about it.
-              "models/panda/panda_collision_hardened.yaml",
               "models/panda/panda_finray_collision_hardened.yaml",
+              "models/iiwa14/iiwa14_collision_nobin.yaml",
               "models/iiwa14/iiwa14_collision_hardened.yaml"):
     BuildEnv(meshcat=None, directives_file=os.path.join(RepoDir(), scene))
     print("scene builds offline:", scene)
