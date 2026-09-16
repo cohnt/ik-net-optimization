@@ -765,6 +765,217 @@ def stage_SOLVER(wall, targets, guesses, shards, only=None, tag="SOLVER", seed=1
     return items
 
 
+## The three placements the parity suite fields. The first two are the ADOPTED defaults --
+## `--target-placement auto` resolves to `free` for the grasp task and `shelf` for pose --
+## and the third is the contained grasp task, which is not the default but which CLAUDE.md
+## names as "the lever to revisit whenever another knob moves the picture, a solver change
+## most of all": on the contained task joint space needs 970 median iterations against 48 on
+## the free one, so a solver that changes how the baseline copes with a hard active set is
+## exactly the thing that could move that verdict.
+##
+## `--placement-point` is deliberately absent from both grasp rows: the mug is welded at
+## `between_fingers`, so the wrist and fingertip frames coincide there and the flag is a
+## no-op. It is a 0.100 m step on the pose task only.
+SOLVER2_ROWS = (("mug", "mugfree", ["--target-placement", "free"]),
+                ("mug", "mugshelf", ["--target-placement", "shelf"]),
+                ("pose", "posetip", ["--target-placement", "shelf",
+                                     "--placement-point", "fingertips"]))
+
+
+def stage_SOLVER2(wall, targets, guesses, shards, only=None, tag="SOLVER2", seed=1,
+                  solvers="snopt", triage_solvers="nlopt",
+                  triage_targets=15, triage_guesses=4, triage_shards=2):
+    """The solver axis at campaign scale, on the adopted rungs and the adopted defaults.
+
+    Stage SOLVER measured this axis once, at 60 cells, and found IPOPT ahead on all eight
+    rows -- on BOTH arms, which is what says it is a property of the problem rather than of
+    the learned formulation. This is the same question at the campaign's own 480 cells, plus
+    the contained grasp rows that a solver change is the stated reason to re-try.
+
+    Two grid sizes, which is why the cell count is in the tag. `solvers` run at full scale;
+    `triage_solvers` run at 15 x 4 -- stage SOLVER's own grid, so those columns are
+    cell-comparable with the IPOPT and SNOPT triage columns already on disk. NLopt is there
+    because the axis stands for three METHOD CLASSES and the augmented Lagrangian has only
+    ever run in local smoke tests, where it solved nothing; a cheap honest column beats an
+    expensive one for a result that may well be empty.
+
+    `ipopt` always rides along at full scale rather than being read off the archived
+    sc_GRASPFREE / sc_FINGER columns. That costs half the compute and buys two things worth
+    more: the comparison sits inside one code version and one machine state, and reproducing
+    those archived columns is itself the check that this branch did not perturb IPOPT.
+    """
+    wanted = set(only.split(",")) if only else None
+    chosen = [x.strip() for x in solvers.split(",") if x.strip()]
+    if "ipopt" not in chosen:
+        chosen = ["ipopt"] + chosen
+    triage = [x.strip() for x in triage_solvers.split(",") if x.strip()] if triage_solvers else []
+    for name in chosen + triage:
+        if name not in SOLVER_CLASSES:
+            raise SystemExit(f"--solvers: unknown solver {name!r}; "
+                             f"expected from {sorted(SOLVER_CLASSES)}")
+    overlap = set(chosen) & set(triage)
+    if overlap:
+        ## Two grid sizes under one solver name would differ only by the cell token, which
+        ## is a comparison nobody asked for and an easy way to pair the wrong pair.
+        raise SystemExit(f"--solvers and --triage-solvers overlap on {sorted(overlap)}; "
+                         "a solver belongs to one scale or the other")
+    items = []
+    for robot, label, ckpt in ADOPTED_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                 "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET)]
+                + (["--checkpoint", ckpt] if ckpt else []))
+        for solver, t, g, sh in ([(x, targets, guesses, shards) for x in chosen]
+                                 + [(x, triage_targets, triage_guesses, triage_shards)
+                                    for x in triage]):
+            for task, token, placement in SOLVER2_ROWS:
+                for start in ("paired", "native"):
+                    items += item(robot,
+                                  f"sc_{tag}_{robot}_{label}_{solver}_{token}_{t * g}"
+                                  f"_{int(wall)}_{start}",
+                                  ["--task", task, "--start", start,
+                                   "--solver", solver] + placement + base,
+                                  t, g, LADDER_ARMS, wall, sh, seed=seed)
+    return items
+
+
+## The solver-settings sweep. ONE FACTOR AT A TIME against each solver's own defaults, so a
+## row reads as "what this knob is worth", not as a joint optimum found by search.
+##
+## STEP REJECTION IS DELIBERATELY ABSENT, both solvers: ipopt_theta_max_fact,
+## ipopt_watchdog_trigger, ipopt_max_soc, snopt_violation_limit and snopt_major_step_limit
+## are a separate question (Thomas, 2026-09-16) and the selftest asserts none of them
+## appears here. Do not add one to this table -- add it to that stage when it exists.
+SWEEP_SNOPT = [
+    ("default", []),
+    ## The flow Jacobian is ~84% of a solve, so evaluations per major IS the cost model.
+    ("lstol0p1", ["snopt_linesearch_tolerance=0.1"]),
+    ("lstol0p5", ["snopt_linesearch_tolerance=0.5"]),
+    ("lstol0p99", ["snopt_linesearch_tolerance=0.99"]),
+    ## ...and the largest available saving: a line search that never asks for a gradient.
+    ("nonderivls", ["snopt_nonderivative_linesearch=True"]),
+    ## The QP subproblem costs NO function evaluations, so more minors may be nearly free.
+    ("minor50", ["snopt_minor_iterations_limit=50"]),
+    ("minor2k", ["snopt_minor_iterations_limit=2000"]),
+    ## The counterpart of ipopt_nlp_scaling_method, which measured inert. n4's Jacobian
+    ## gain reaches ~2e4, so the problem is genuinely badly scaled.
+    ("scale1", ["snopt_scale_option=1"]),
+    ("scale2", ["snopt_scale_option=2"]),
+    ## Feasibility stays two orders under the 1e-3 task gate at its loosest: rung 3 of the
+    ## tolerance ladder says never let a gate sit at a bound the solver optimises against.
+    ("majfeas1em08", ["snopt_major_feasibility_tol=1e-8"]),
+    ("majfeas1em05", ["snopt_major_feasibility_tol=1e-5"]),
+    ("majopt1em08", ["snopt_major_optimality_tol=1e-8"]),
+    ("majopt1em04", ["snopt_major_optimality_tol=1e-4"]),
+    ## SNOPT never resets its quasi-Newton approximation by default (99999999). The chart's
+    ## gain varies by orders of magnitude across the domain, so a stale one is suspect.
+    ("hessfreq20", ["snopt_hessian_frequency=20"]),
+    ("hessfreq100", ["snopt_hessian_frequency=100"]),
+    ## The paired start is infeasible by policy, and elastic mode is how SNOPT copes.
+    ("elastic1e2", ["snopt_elastic_weight=100.0"]),
+    ("elastic1e7", ["snopt_elastic_weight=1e7"]),
+    ("crash0", ["snopt_crash_option=0"]),
+    ## How far the first major is allowed to move from the start we hand it.
+    ("prox0", ["snopt_proximal_point_method=0"]),
+    ("prox2", ["snopt_proximal_point_method=2"]),
+]
+
+## IPOPT's first three entries are not tuning, they are a FAIRNESS question. Every archived
+## run fields IPOPT with acceptable_tol=1e-3 and acceptable_iter=1, so it may stop after a
+## SINGLE iteration meeting a relaxed test, while SNOPT converges to its own 1e-6 majors.
+## That asymmetry was inherited from the original setup and never chosen; it is a live
+## candidate explanation for IPOPT's clean sweep of the triage, and it has to be measured
+## before the solver table is written up.
+IPOPT_ACCEPTABLE_DEFAULTS = ["acceptable_tol=1e-6", "acceptable_constr_viol_tol=1e-6",
+                             "acceptable_dual_inf_tol=1e-6", "acceptable_compl_inf_tol=1e-6",
+                             "acceptable_iter=15"]
+IPOPT_ACCEPTABLE_OFF = ["acceptable_tol=1e-12", "acceptable_constr_viol_tol=1e-12",
+                        "acceptable_dual_inf_tol=1e-12", "acceptable_compl_inf_tol=1e-12",
+                        "acceptable_iter=100000"]
+SWEEP_IPOPT = [
+    ("default", []),
+    ("accdefault", IPOPT_ACCEPTABLE_DEFAULTS),
+    ("accoff", IPOPT_ACCEPTABLE_OFF),
+    ("acciter15", ["acceptable_iter=15"]),
+    ## Drake gives IPOPT no second derivatives, so the L-BFGS history IS the Hessian here.
+    ("lmhist3", ["ipopt_limited_memory_max_history=3"]),
+    ("lmhist12", ["ipopt_limited_memory_max_history=12"]),
+    ("lmhist25", ["ipopt_limited_memory_max_history=25"]),
+    ("lmsr1", ["ipopt_limited_memory_update_type=sr1"]),
+    ## mu_init is read ONLY under mu_strategy=monotone -- alone it is echoed `used = no`.
+    ("muinit1em03", ["ipopt_mu_strategy=monotone", "ipopt_mu_init=1e-3"]),
+    ("muinit1", ["ipopt_mu_strategy=monotone", "ipopt_mu_init=1.0"]),
+    ("muadaptive", ["ipopt_mu_strategy=adaptive"]),
+    ("alphaybound", ["ipopt_alpha_for_y=bound-mult"]),
+    ("recalcy", ["ipopt_recalc_y=yes"]),
+    ("brf0", ["ipopt_bound_relax_factor=0.0"]),
+    ("scalenone", ["ipopt_nlp_scaling_method=none"]),
+    ("scalemax1e4", ["ipopt_nlp_scaling_max_gradient=1e4"]),
+]
+
+SWEEP_SETTINGS = {"snopt": SWEEP_SNOPT, "ipopt": SWEEP_IPOPT}
+
+## The rows the sweep runs on: both robots, both ADOPTED-default tasks, `paired` only. That
+## protocol is where the SNOPT deficit concentrated (15 / 20 / 9 / 25 cells of 60 lost) and
+## it is the diagnostic one, since it hands every arm the same infeasible start. Whatever
+## survives here gets confirmed on `native` and at 480 cells, which is a follow-up, not an
+## assumption -- say so when reporting, because a knob screened on one protocol is not a
+## knob measured on both.
+SWEEP_ROWS = (("mug", "mugfree", ["--target-placement", "free"]),
+              ("pose", "posetip", ["--target-placement", "shelf",
+                                   "--placement-point", "fingertips"]))
+## Everything the step-rejection question owns. The selftest refuses a sweep entry naming
+## any of these, so the two questions cannot silently merge.
+STEP_REJECTION_KNOBS = ("ipopt_theta_max_fact", "ipopt_watchdog_trigger", "ipopt_max_soc",
+                        "snopt_violation_limit", "snopt_major_step_limit")
+
+
+def stage_SWEEP(wall, targets, guesses, shards, only=None, tag="SWEEP", seed=1,
+                solvers="ipopt,snopt"):
+    """Solver settings, one factor at a time, on stage SOLVER's own 60-cell grid.
+
+    The grid is deliberately the triage one (15 x 4, seed 1) rather than the campaign's 480
+    cells: the question is directional, exactly as `stage_INSET` argued, and using the same
+    grid makes every sweep cell pair against the default columns already measured for both
+    solvers. Read a one-cell difference as noise -- reproducibility at the cap is +/-1 cell.
+
+    Each solver keeps its own defaults as its baseline. The two columns are NOT swept
+    against each other here; that is what stage SOLVER2 is for.
+    """
+    wanted = set(only.split(",")) if only else None
+    chosen = [x.strip() for x in solvers.split(",") if x.strip()]
+    for name in chosen:
+        if name not in SWEEP_SETTINGS:
+            raise SystemExit(f"--solvers: {name!r} has no settings table; "
+                             f"expected from {sorted(SWEEP_SETTINGS)}")
+    items = []
+    for robot, label, ckpt in ADOPTED_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                 "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET)]
+                + (["--checkpoint", ckpt] if ckpt else []))
+        for solver in chosen:
+            for name, sets in SWEEP_SETTINGS[solver]:
+                for knob in sets:
+                    if knob.split("=")[0] in STEP_REJECTION_KNOBS:
+                        raise SystemExit(
+                            f"stage_SWEEP entry {name!r} names {knob.split('=')[0]!r}, "
+                            "which belongs to the separate step-rejection question")
+                for task, token, placement in SWEEP_ROWS:
+                    args = (["--task", task, "--start", "paired", "--solver", solver]
+                            + placement + base)
+                    for knob in sets:
+                        args += ["--set", knob]
+                    items += item(robot,
+                                  f"sc_{tag}_{robot}_{label}_{solver}_{token}"
+                                  f"_{int(wall)}_paired_{name}",
+                                  args, targets, guesses, LADDER_ARMS, wall, shards,
+                                  seed=seed)
+    return items
+
+
 def stage_INSET(wall, targets, guesses, shards, only=None, tag="INSET", seed=1):
     """Sweep the compartment depth inset, on both tasks, at reduced scale.
 
@@ -1042,6 +1253,9 @@ def selftest():
                          ("CAP", stage_CAP(45, 60, 8, 16)),
                          ("SOLVER", stage_SOLVER(45, 15, 4, 4)),
                          ("SOLVER-all", stage_SOLVER(45, 15, 4, 4, solvers="snopt,nlopt")),
+                         ("SOLVER2", stage_SOLVER2(45, 60, 8, 8)),
+                         ("SWEEP", stage_SWEEP(45, 15, 4, 1,
+                                               solvers="ipopt,snopt")),
                          ("FINGER", stage_FINGER(45, 60, 8, 8)),
                          ("GRASPFREE", stage_GRASPFREE(45, 60, 8, 8)),
                          ("INSET", stage_INSET(45, 15, 4, 1)),
@@ -1164,6 +1378,101 @@ def selftest():
               "adopted rungs and adopted placements")
     fails += len(solver_fails)
 
+    ## Stage SOLVER2: the same invariants at campaign scale, plus the two that are new --
+    ## three placements per robot (the contained grasp rows are the addition), and the
+    ## triage solvers drawn on a DIFFERENT and correctly-labelled grid.
+    s2_fails = []
+    runs2 = stage_SOLVER2(45, 60, 8, 1, solvers="snopt", triage_solvers="nlopt",
+                          triage_targets=15, triage_guesses=4, triage_shards=1)
+    if len(runs2) != 36:
+        s2_fails.append("should be 36 logical runs (2 robots x 3 solvers x 3 placements "
+                        "x 2 starts), got %d" % len(runs2))
+    scales, placements = {}, set()
+    for it in runs2:
+        a = it["args"]
+        solver = a[a.index("--solver") + 1]
+        cells = int(a[a.index("--targets") + 1]) * int(a[a.index("--guesses") + 1])
+        scales.setdefault(solver, set()).add(cells)
+        task = a[a.index("--task") + 1]
+        placement = a[a.index("--target-placement") + 1]
+        placements.add((it["robot"], task, placement))
+        if solver not in it["id"]:
+            s2_fails.append("%s does not carry its solver in the tag" % it["id"])
+        ## Two grid sizes live in one stage, so the cell count has to be in the tag or the
+        ## 480-cell and 60-cell columns of one solver would collide on one summary.json.
+        if f"_{cells}_" not in it["id"]:
+            s2_fails.append("%s does not carry its cell count in the tag" % it["id"])
+        if "--scene" not in a or a[a.index("--scene") + 1] != "hardened":
+            s2_fails.append("%s is not on the hardened scene" % it["id"])
+        ## --placement-point is a no-op on the grasp task (the mug is welded at
+        ## between_fingers, so wrist and fingertip frames coincide); passing it there would
+        ## read as a choice that was never made.
+        if task == "mug" and "--placement-point" in a:
+            s2_fails.append("%s passes --placement-point on the grasp task, where it is "
+                            "a no-op" % it["id"])
+        if task == "pose" and a[a.index("--placement-point") + 1] != "fingertips":
+            s2_fails.append("%s: pose should use the adopted fingertip containment" % it["id"])
+    if scales.get("ipopt") != {480} or scales.get("snopt") != {480}:
+        s2_fails.append("full-scale solvers are not all at 480 cells: %r" % scales)
+    if scales.get("nlopt") != {60}:
+        s2_fails.append("the triage solver is not at the 60-cell grid: %r" % scales)
+    for robot in ("panda", "iiwa"):
+        want = {(robot, "mug", "free"), (robot, "mug", "shelf"), (robot, "pose", "shelf")}
+        if not want <= placements:
+            s2_fails.append("%s is missing placements %r" % (robot, sorted(want - placements)))
+    try:
+        stage_SOLVER2(45, 60, 8, 1, solvers="snopt", triage_solvers="snopt")
+        s2_fails.append("a solver was accepted at two scales at once")
+    except SystemExit:
+        pass
+    for msg in s2_fails:
+        print(f"FAIL stage SOLVER2: {msg}")
+    if not s2_fails:
+        print("ok   stage SOLVER2: 36 runs, 480 cells for ipopt/snopt and 60 for nlopt, "
+              "three placements per robot, cell count and solver in every tag")
+    fails += len(s2_fails)
+
+    ## Stage SWEEP. The load-bearing invariant is the LAST one: step rejection is a separate
+    ## question, and a knob from that family drifting into this table would silently merge
+    ## the two and make neither answerable.
+    sw_fails = []
+    runs3 = stage_SWEEP(45, 15, 4, 1, solvers="ipopt,snopt")
+    want_runs = 2 * 2 * (len(SWEEP_IPOPT) + len(SWEEP_SNOPT))
+    if len(runs3) != want_runs:
+        sw_fails.append("should be %d runs (2 robots x 2 tasks x %d settings), got %d"
+                        % (want_runs, len(SWEEP_IPOPT) + len(SWEEP_SNOPT), len(runs3)))
+    for table, solver in ((SWEEP_IPOPT, "ipopt"), (SWEEP_SNOPT, "snopt")):
+        names = [n for n, _ in table]
+        if len(names) != len(set(names)):
+            sw_fails.append("%s settings table has duplicate names" % solver)
+        if names[0] != "default" or table[0][1]:
+            sw_fails.append("%s's first entry must be the untouched default baseline, "
+                            "or there is nothing on this grid to read the sweep against"
+                            % solver)
+    for it in runs3:
+        a = it["args"]
+        if a[a.index("--start") + 1] != "paired":
+            sw_fails.append("%s is not on the paired protocol" % it["id"])
+        for i, tok in enumerate(a):
+            if tok == "--set" and a[i + 1].split("=")[0] in STEP_REJECTION_KNOBS:
+                sw_fails.append("%s sets %s, which the step-rejection question owns"
+                                % (it["id"], a[i + 1]))
+    ## And the guard itself must fire, not merely be present.
+    try:
+        saved = SWEEP_SNOPT.append(("smuggled", ["snopt_violation_limit=1.0"]))
+        stage_SWEEP(45, 15, 4, 1, solvers="snopt")
+        sw_fails.append("a step-rejection knob was accepted into the sweep")
+    except SystemExit:
+        pass
+    finally:
+        SWEEP_SNOPT[:] = [e for e in SWEEP_SNOPT if e[0] != "smuggled"]
+    for msg in sw_fails:
+        print(f"FAIL stage SWEEP: {msg}")
+    if not sw_fails:
+        print("ok   stage SWEEP: %d runs, paired only, a default baseline per solver, "
+              "no step-rejection knob" % want_runs)
+    fails += len(sw_fails)
+
     for msg in hard_fails:
         print(f"FAIL stage HARD: {msg}")
     if not hard_fails:
@@ -1207,9 +1516,13 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
+    p.add_argument("--triage-solvers", default="nlopt",
+                   help="SOLVER2 stage only: solvers fielded at the 60-cell triage grid "
+                        "instead of full scale, so a column that may be near-empty costs "
+                        "triage money. Must not overlap --solvers; '' fields none.")
     p.add_argument("--solvers", default="snopt",
                    help="SOLVER stage only: comma-separated solvers to field alongside the "
                         "ipopt baseline, which is always generated. The axis is three METHOD "
@@ -1254,6 +1567,13 @@ def main():
     items = {"SOLVER": lambda: stage_SOLVER(args.wall_time, args.targets, args.guesses,
                                            args.shards, only=args.rungs,
                                            solvers=args.solvers),
+             "SOLVER2": lambda: stage_SOLVER2(args.wall_time, args.targets, args.guesses,
+                                              args.shards, only=args.rungs,
+                                              solvers=args.solvers,
+                                              triage_solvers=args.triage_solvers),
+             "SWEEP": lambda: stage_SWEEP(args.wall_time, args.targets, args.guesses,
+                                          args.shards, only=args.rungs,
+                                          solvers=args.solvers),
              "HARD": lambda: stage_HARD(args.wall_time, args.targets,
                                         args.guesses, args.shards, only=args.rungs),
              "HARDTRI": lambda: stage_HARD(args.wall_time, args.targets, args.guesses,
