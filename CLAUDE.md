@@ -1560,6 +1560,48 @@ Containment takes the Panda's headroom from 27 cells to 157 and the learned arm 
 of it. **The learned arm's rescue rate is high and stable everywhere -- 74-100% -- on both
 robots and both configurations.** That is the quantity the success counts obscure.
 
+#### CONFIRMED: the iiwa contained-grasp deficit was budget, and it is now gone (stage CAP, 2026-09-16)
+
+The prediction was that the lost cells were cap-bound near-misses rather than divergence, so
+more clock should recover them. iiwa `n4`, contained grasp, 480 cells, caps 90/180/360 s
+against the existing 45 s column **on the same grid** -- the cap does not enter target
+sampling, so this pairs cell for cell.
+
+| start | cap | learned | js | timeouts | median iters | median `max_violation` | vs 45 s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| native | 45 | 391 | 442 | 88 | 434 | 3.0e-08 | -- |
+| native | 90 | 441 | 442 | 29 | 597 | 2.1e-08 | +51/-1, p = 2.4e-14 |
+| native | **180** | **447** | 442 | **0** | 629 | 2.0e-08 | +57/-1, p = 4.1e-16 |
+| native | 360 | 447 | 442 | 0 | 629 | 2.0e-08 | identical to 180 |
+| paired | 45 | 407 | 442 | 75 | 398 | 2.7e-08 | -- |
+| paired | 90 | 451 | 442 | 17 | 557 | 1.9e-08 | +44/-0, p = 1.1e-13 |
+| paired | **180** | **453** | 442 | **0** | 570 | 1.9e-08 | +46/-0, p = 2.8e-14 |
+| paired | 360 | 453 | 442 | 0 | 570 | 1.9e-08 | identical to 180 |
+
+**The deficit is entirely budget, and the arm saturates at 180 s.** Timeouts go 88 -> 29 -> 0,
+the 360 s column reproduces 180 s *exactly* -- same successes, same median iterations -- and
+the gain is almost purely one-directional (+57/-1, +46/-0), which is what recovering stalled
+cells looks like rather than resampling noise. The verdict against joint space moves from a
+loss to a tie:
+
+| | 45 s | 180 s |
+| --- | --- | --- |
+| native | 391 v 442, **p = 1.4e-06 (js)** | 447 v 442, p = 0.60 (tie) |
+| paired | 407 v 442, **p = 0.00042 (js)** | 453 v 442, p = 0.19 (tie) |
+
+**So the last deficit in the project is an implementation property, not a formulation or
+chart property.** It is not that the learned formulation cannot express these grasps; it is
+that one iteration costs 35 ms against joint space's 3.6 ms, and 45 s does not buy enough of
+them. Reported honestly, that parity costs **180 s against 1.6 s** -- the learned arm needs
+629 median iterations to joint space's 448, at ~10x the per-iteration price, so roughly a
+14x wall-clock premium for a tie.
+
+That is exactly the quantity the deferred solver work targets, and it now has a concrete
+bar: **anything that lifts the learned arm to ~450 cells inside 45 s closes this row.** Step
+rejection (`ipopt_theta_max_fact`) and the SNOPT/NLOPT comparison are the candidates; a
+better chart is not, because `n4`'s violations here are 2e-08 -- it is converging correctly,
+just slowly.
+
 #### The iiwa grasp deficit is a convergence problem, not a runaway
 
 So the iiwa deficit is not a failure to rescue; it is that the iiwa learned arm carries **its
