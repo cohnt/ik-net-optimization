@@ -70,6 +70,21 @@ class Iiwa14IKProgram(IKFlowProgram):
         self.ConfigureNetworkDtype()
         self.constraints = []
 
+        # Calibrate the conditioning frame HERE, not only in the grasp subclass. The flow
+        # is conditioned on the frame it was trained against; `self.frame` is whatever the
+        # scene calls the end effector, and the two are the same frame only by luck. They
+        # used to coincide on the pose task -- `panda_jrl.urdf`'s `panda_hand` IS the
+        # Franka offset the network means -- so the pose programs never calibrated and
+        # nothing noticed. Removing the stock hand broke that coincidence: the pose scene
+        # now welds the finray, whose own `panda_hand` sits 27 mm and 120 degrees away, and
+        # an uncalibrated pose program conditions the network on a frame it never saw.
+        # Measured cost before this line existed: Panda pose collapsed to 10/60 with
+        # median max_violation 0.4, against 58/60 and 1.8e-08 on the grasp task in the same
+        # scene. A no-op (identity) wherever the frames already agree, which is why the
+        # iiwa is unaffected, and it draws from its own fixed-seed generator so it cannot
+        # shift the benchmark grid.
+        self.CalibrateFlowFrame()
+
     def create_prog(self, target_pose = np.array([0., 0., 0., 1., 0., 0., 0.]), q_nominal = None):
         self.prog = MathematicalProgram()
         self.c = self.prog.NewContinuousVariables(6)
