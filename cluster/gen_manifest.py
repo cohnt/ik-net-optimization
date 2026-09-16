@@ -562,6 +562,42 @@ INSET_SWEEP = (0.0, 0.05, 0.10, 0.125)
 INSET_RUNGS = {"iiwa": "n4", "panda": "n6"}
 
 
+CAP_SWEEP = (90.0, 180.0, 360.0)
+
+
+def stage_CAP(wall, targets, guesses, shards, only=None, tag="CAP", seed=1):
+    """Is the iiwa's contained-grasp deficit a budget problem? Sweep the wall-clock cap.
+
+    The diagnosis says yes. Every cell the iiwa `n4` learned arm loses to joint space on the
+    contained grasp task is `fail_reason = "constraint"` with median `max_violation`
+    0.009-0.037 -- centimetres off, not the >= 1e+03 that marks a runaway -- and the timeout
+    counts track the lost counts closely (88 timeouts against 81 lost cells native, 75
+    against 65 paired) at 398-434 median iterations and 34 ms/it. That is a solver running
+    out of clock while still converging, and more clock is the direct test of it.
+
+    `wall` is ignored; the sweep supplies its own caps. The 45 s column already exists under
+    sc_HARD_iiwa_n4_mug_45_*, and **on the same grid**: the cap does not enter target
+    sampling, so these are paired against it cell for cell. (The grasp task's wrist and
+    fingertip containment points both resolve to `between_fingers`, so pinning fingertips as
+    the default did not move this grid either.)
+
+    Sharded 16-way rather than 8: at 360 s a shard of 60 cells that mostly times out would
+    need 6 h and run_items.sh kills an item at 4 h. 30 cells caps the worst case at 3 h.
+    """
+    items = []
+    for cap in CAP_SWEEP:
+        for start in ("paired", "native"):
+            items += item("iiwa",
+                          f"sc_{tag}_iiwa_n4_mug_{int(cap)}_{start}",
+                          ["--task", "mug", "--start", start, "--config", "latent",
+                           "--set", f"correction_cost_weight={CORR_COST}",
+                           "--scene", "hardened", "--target-placement", "shelf",
+                           "--shelf-inset", str(HARD_SHELF_INSET),
+                           "--checkpoint", "models/iiwa14/iiwa14__n4__step620000.pkl"],
+                          targets, guesses, LADDER_ARMS, cap, shards, seed=seed)
+    return items
+
+
 def stage_POSE2(wall, targets, guesses, shards, only=None, tag="POSE2", seed=1):
     """The pose task re-measured after the gripper and containment-point fixes.
 
@@ -927,6 +963,7 @@ def selftest():
                          ("HARD", stage_HARD(45, 60, 8, 8)),
                          ("HARDMUG", stage_HARDMUG(45, 60, 8, 8)),
                          ("POSE2", stage_POSE2(45, 60, 8, 8)),
+                         ("CAP", stage_CAP(45, 60, 8, 16)),
                          ("FINGER", stage_FINGER(45, 60, 8, 8)),
                          ("GRASPFREE", stage_GRASPFREE(45, 60, 8, 8)),
                          ("INSET", stage_INSET(45, 15, 4, 1)),
@@ -1045,7 +1082,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET",
+    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--rungs", default=None,
@@ -1089,6 +1126,8 @@ def main():
                                            args.shards, only=args.rungs, tag="HARDTRI"),
              "HARDMUG": lambda: stage_HARDMUG(args.wall_time, args.targets, args.guesses,
                                               args.shards, only=args.rungs),
+             "CAP": lambda: stage_CAP(args.wall_time, args.targets, args.guesses,
+                                      args.shards),
              "POSE2": lambda: stage_POSE2(args.wall_time, args.targets, args.guesses,
                                           args.shards, only=args.rungs),
              "FINGER": lambda: stage_FINGER(args.wall_time, args.targets, args.guesses,
