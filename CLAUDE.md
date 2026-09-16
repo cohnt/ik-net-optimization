@@ -512,6 +512,18 @@ the same trap `is_iteration_cap` was written for. NLopt status 5 is `MAXEVAL_REA
   memory-estimation pass. A bare `EXIT` regex reports that instead of the solve's and calls a
   failed solve a success; the parse anchors on `SNOPTA` and takes the last match.
 
+**The BUDGET is equalised; only the tolerances are left to each solver.** These are
+different things. The controlled variable of this comparison is the wall clock, so a solver
+quietly stopping at its own *iteration* default is being given a different budget rather than
+converging at its own tolerance -- the same class of unfairness as handing it another
+solver's tolerances. SNOPT's default `Major iterations limit` is **1000** against IPOPT's
+`max_iter` default of **3000**, and this binds in practice: an iiwa joint-space cell stopped
+at exactly 1000 majors inside a 20 s cap. SNOPT is therefore set to 3000 when `max_iter` is
+unset -- equalised at IPOPT's number rather than raised out of the way, so IPOPT's path stays
+byte-identical to every archived run and either solver capping is visible and equal through
+`hit_iteration_cap`. NLopt has no notion of an iteration, so its nearest analogue `max_eval`
+is disabled and the wall clock is the whole of its budget.
+
 Two smaller notes. `Solution No` drops the end-of-file row/column dump, a fifth of the print
 file that nothing parses -- one log per cell over 480 cells is the many-small-files pattern
 this project already had to fix once. And **SNOPT's `Time limit` is checked at major-iteration
