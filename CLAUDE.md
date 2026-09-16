@@ -1329,6 +1329,44 @@ whenever another knob moves the picture, a solver change most of all: on the con
 joint space needs 970 median iterations against its 48 here, so a solver that changes how the
 baseline copes with a hard active set could change that verdict.
 
+### WHAT THE CALIBRATION FIX WAS WORTH ON THE IIWA, ISOLATED
+
+The iiwa's `posefree` columns isolate the fix exactly: its scene never changed, and with no
+containment the containment-point change cannot reach the sampler, so **the pre-fix (stage
+HARD) and post-fix (stage POSE2) runs are on the same grid** -- `grid_hash` matches and the
+comparison is a paired McNemar over all 480 cells. Joint space is 332 -> 332 on every row, as
+it must be, since it never touches the flow.
+
+| rung | start | pre-fix | post-fix | better/worse | p | median `max_violation` |
+| --- | --- | --- | --- | --- | --- | --- |
+| ddpr1 | native | 426 | 442 | 34/18 | 0.036 | 1.2e-08 -> 1.3e-08 |
+| ddpr1 | paired | 306 | 284 | 82/104 | 0.12 | 8.4e-08 -> 9.6e-08 |
+| **n8** | **paired** | **208** | **267** | 138/79 | **7.5e-05** | **3.1e+03 -> 7.2e-07** |
+| **n6** | **paired** | **211** | **269** | 138/80 | **0.0001** | **9.6e+04 -> 2.3e-07** |
+| n8 | native | 428 | 443 | 31/16 | 0.04 | 1.4e-08 -> 1.3e-08 |
+| n6 | native | 439 | 452 | 28/15 | 0.066 | 1.3e-08 -> 1.2e-08 |
+| n4 | native | 468 | 470 | 8/6 | 0.79 | 5.6e-09 -> 5.9e-09 |
+| n4 | paired | 452 | 447 | 25/30 | 0.59 | 1.0e-08 -> 1.0e-08 |
+| n12w256 | paired | 332 | 354 | 94/72 | 0.10 | 1.9e-08 -> 1.7e-08 |
+
+**The gain is concentrated exactly where the chart had headroom to run away into.** On `n8`
+and `n6` under `paired` the fix is worth ~58 cells apiece and collapses the median violation
+by **ten orders of magnitude** -- 3.1e+03 and 9.6e+04 down to ~1e-07 -- i.e. it removes the
+runaway outright. On `n4`, whose gain ceiling (2.2e4) sits below the runaway band, it is worth
+nothing at all: 468 -> 470 and 452 -> 447, both well inside noise, with `max_violation`
+unchanged at ~1e-08 because there was never anything wrong to fix.
+
+**This revises, but does not overturn, the runaway story.** The "n8/n6 pose-paired runaway"
+recorded in the ladder was *partly* this bug: conditioning the network 45 mm off its trained
+frame was pushing those charts into headroom they have and `n4` does not. After the fix they
+sit at 267/269 -- still far below `n4`'s 447, so the gain ceiling remains the dominant effect
+and the chart-selection rule is unchanged. What changes is the size of the deficit
+attributable to architecture alone.
+
+The lesson for reading this file: **a miscalibration and an architectural weakness produce the
+same symptom, and the one masks the size of the other.** Every pre-fix pose number
+over-attributed to the ceiling whatever the 45 mm was contributing.
+
 ### FINGERTIP CONTAINMENT BEATS WRIST CONTAINMENT (stage FINGER, 2026-09-16)
 
 The pose task's containment point is a choice, and the two candidates are one 0.100 m step
