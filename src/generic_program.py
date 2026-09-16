@@ -173,6 +173,10 @@ class ProgramOptions:
     snopt_major_print_level: int = field(default=1, metadata={"help": "SNOPT 'Major print level'; >=1 is required for the summary block parse_log reads"})
     snopt_minor_print_level: int = field(default=0, metadata={"help": "SNOPT 'Minor print level'; 0 keeps the per-cell log small"})
     snopt_solution_print: bool = field(default=False, metadata={"help": "SNOPT 'Solution Yes': dump every row and column at the end. Off -- nothing parses it and it is a fifth of the file"})
+    ## Used only when `max_iter` is None. IPOPT's max_iter default is 3000 and SNOPT's Major
+    ## iterations limit default is 1000, so leaving both alone gives the two solvers
+    ## different budgets under a wall-clock-capped comparison. Measured binding.
+    snopt_major_iterations_default: int = field(default=3000, metadata={"help": "SNOPT 'Major iterations limit' when max_iter is unset; 3000 matches IPOPT's own default so the wall clock is what binds"})
 
     ## NLopt, the AUGMENTED LAGRANGIAN arm. `LD_SLSQP` would be the wrong default: it is an
     ## SQP method, so it would make this column a duplicate of SNOPT's rather than a third
@@ -1245,8 +1249,22 @@ class IKFlowProgram:
                 ("Function precision", self.options.snopt_function_precision, float)):
             if value is not None:
                 solver_options.SetOption(SnoptSolver.id(), name, cast(value))
-        if self.options.max_iter is not None:
-            solver_options.SetOption(SnoptSolver.id(), "Major iterations limit", int(self.options.max_iter))
+        ## The BUDGET, which is a different thing from the tolerances above and is NOT left
+        ## at each solver's own default. The controlled variable of this comparison is the
+        ## WALL CLOCK, so a solver quietly stopping at its own iteration default is being
+        ## given a different budget rather than converging at its own tolerance -- the same
+        ## class of unfairness as handing it someone else's tolerances.
+        ##
+        ## SNOPT's default Major iterations limit is 1000; IPOPT's max_iter default is 3000.
+        ## Measured: an iiwa joint-space cell stopped at exactly 1000 majors inside a 20 s
+        ## cap, so this binds in practice and is not hypothetical. Equalised at IPOPT's
+        ## 3000, rather than raised out of the way entirely, so that IPOPT's own path stays
+        ## byte-identical to every archived run and either solver capping is visible and
+        ## equal (`hit_iteration_cap`). NLopt has no notion of an iteration, so its nearest
+        ## analogue -- max_eval -- is disabled by default and the wall clock is all it has.
+        solver_options.SetOption(SnoptSolver.id(), "Major iterations limit",
+                                 int(self.options.max_iter) if self.options.max_iter is not None
+                                 else int(self.options.snopt_major_iterations_default))
         return solver, solver_options
 
     def _NloptOptions(self):
