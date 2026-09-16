@@ -1190,6 +1190,57 @@ grasp task gained a containment requirement while *losing* obstacles. Any claim 
 "hardening helps/hurts the learned arm" has to carry that caveat until the iiwa is re-run
 with its decorative mugs kept.
 
+### THE CLUTTER WAS NOT THE EXPLANATION (stage HARDMUG, 2026-09-15)
+
+The obvious suspicion about the table above was that the two robots did not receive the same
+intervention: the Panda GRASP scene never had decorative mugs, so hardening it is near-pure
+containment, while the iiwa scene lost seven of them, four inside shelf compartments. Stage
+HARDMUG re-ran all five iiwa rungs on `--scene nobin` — bin removed, **clutter kept**, which
+is the iiwa's match for what the Panda got. 30 runs, 240 items, same grid shape and seed.
+
+**It changes essentially nothing.** `n4`, against the hardened (clutter-free) columns:
+
+| experiment | learned nobin | learned hardened | Δ | js nobin | js hardened | Δ |
+| --- | --- | --- | --- | --- | --- | --- |
+| grasp native | 392 | 391 | **+1** | 428 | 442 | -14 |
+| grasp paired | 412 | 407 | **+5** | 428 | 442 | -14 |
+| pose contained, paired | 412 | 411 | **+1** | 280 | 268 | +12 |
+| pose free, paired | 449 | 452 | **-3** | 321 | 332 | -11 |
+
+Seven welded obstacles, four of them in the compartments targets are drawn from, are worth
+**-6 to +5 cells of 480 to the learned arm and -14 to +12 to joint space**. The one verdict
+that moves is iiwa grasp paired, from a joint-space win (p = 0.00042) to a tie (412 vs 428,
+p = 0.13); grasp native stays a loss (392 vs 428, p = 0.0012).
+
+**So the confound was real in principle and immaterial in practice, and the iiwa/Panda
+divergence is a property of the robots, not an artifact of the scene.** Recorded because the
+hypothesis was explicit and is now refuted — do not re-open it.
+
+### What each hardening step is actually worth
+
+With clutter measured at ~0, the three steps separate cleanly:
+
+| step | what it does | measured worth |
+| --- | --- | --- |
+| remove the bin | `binF` sits at `[0.75, 0, 0]`, nowhere near the shelves | nil by construction; `../codebase` measured it "statistically free" |
+| remove the decorative mugs | seven welded obstacles, four in compartments | **±14 cells of 480, both arms** (above) |
+| **contain the target in a shelf** | the target must be reachable *inside* a compartment | **everything** (below) |
+
+**Containment is the whole intervention, and its sign is opposite on the two robots:**
+
+| | Δ joint space | Δ learned |
+| --- | --- | --- |
+| **panda** grasp native (`n6`) | 457 -> 323, **-134** | 471 -> 462, **-9** |
+| **panda** grasp paired (`n6`) | 457 -> 323, **-134** | 471 -> 444, **-27** |
+| **iiwa** grasp native (`n4`) | 462 -> 442, **-20** | 448 -> 391, **-57** |
+| **iiwa** grasp paired (`n4`) | 462 -> 442, **-20** | 449 -> 407, **-42** |
+
+On the Panda containment costs joint space 5-15x what it costs the learned arm; on the iiwa
+it costs the learned arm 2-3x what it costs joint space. The iteration columns show why the
+Panda moved: reaching into a compartment takes its joint-space arm **970 median iterations
+against its archived 48**, where the iiwa's takes 448. The hardened grasp task is near the
+edge of what a joint-space formulation does cheaply on the Panda and is not on the iiwa.
+
 ### The pose-placement verdict: containment costs the baseline roughly twice what it costs the learned arm
 
 | | js free | js contained | learned free | learned contained |
@@ -1442,12 +1493,11 @@ live items, after the results are in:
   at p = 1.5e-33. **On the iiwa it did not** — joint space barely moved (462 → 442) while `n4`
   fell to 407, so that row got worse, not better.
 
-  Three things left open, and the first is a defect in the experiment rather than a finding:
-  **the two robots did not receive the same intervention.** The Panda grasp scene never had
-  decorative mugs, so hardening it is near-pure containment; the iiwa scene lost seven of them,
-  four sitting inside shelf compartments. Re-running the iiwa grasp task with its decorative
-  mugs kept would separate "containment" from "less clutter" and is the obvious next
-  measurement. Second, **adopt `posein` as the pose default** — containment costs joint space
+  The suspected confound — that the two robots did not receive the same intervention, the
+  Panda grasp scene never having had decorative mugs — was measured by stage HARDMUG and
+  **refuted**: keeping the iiwa's clutter moves either arm by at most 14 cells of 480. The
+  divergence is a property of the robots. What remains open: **adopt `posein` as the pose
+  default** — containment costs joint space
   53-64 cells against the learned arm's 30-46, so it hardens the task without narrowing the
   claim. Third, the pose containment point is the **wrist** (`iiwa_link_7` / `panda_hand`), not
   the fingertips; if that should be defined differently it must change before the numbers are
