@@ -426,6 +426,149 @@ read that instead; the raw value is kept only because archived records carry it.
 row's shape is three `ProgramOptions` fields (`collision_bound`, `collision_influence_offset`,
 `collision_row_scale`), defaulting to what was once hardcoded.
 
+## The solver axis: interior point, SQP, augmented Lagrangian (2026-09-16)
+
+**Three METHOD CLASSES, not three vendors.** Thomas: *"for NLOPT, we want to use it as an
+augmented lagrangian solver. This is important! We don't care about SLSQP, since SNOPT is
+already SQP. The point is that we test interior point, augmented lagrangian, and SQP."* So
+`--solver` is `ipopt` (interior point), `snopt` (SQP), `nlopt` (**`LD_AUGLAG`**). `LD_SLSQP`
+is the wrong NLopt default -- it is an SQP method and would leave the comparison with two SQP
+columns and no AL column. `LD_AUGLAG` rather than `LD_AUGLAG_EQ` because `_EQ` absorbs only
+*equality* constraints into the AL and leaves inequalities to the inner solver, and this
+program carries both. Any solver added later must be justified by the class it contributes.
+
+All three take `kGenericConstraint`/`kGenericCost`/`kCallback`, and all three call
+`EvalVisualizationCallbacks` **inside their objective evaluation** -- so `last_iterate`
+recovery, which every abnormal exit depends on, works unchanged under each. Nothing about the
+watchdog design needed revisiting.
+
+### Each solver converges at its own defaults
+
+The SNOPT branch used to read IPOPT's `acceptable_tol` and `acceptable_constr_viol_tol` as its
+`Major optimality`/`Major feasibility tolerance`. That is rung 2 of the tolerance ladder done
+wrong: IPOPT's `acceptable_*` family is its **relaxed early-stop** criterion, not what it
+converges to (its real `tol` is 1e-8), so SNOPT was being asked for 1e-3 while the solver it
+is compared against drove to 1e-8. **Do not transplant one solver's option values onto
+another.** Unset `snopt_*`/`nlopt_*` fields are simply not passed, so each solver sits at its
+own defaults and the shared, deliberately looser task gate decides success. No archived SNOPT
+run existed, so nothing was invalidated.
+
+### What each solver will and will not tell you
+
+**No solver reports an iteration count through Drake.** `SnoptSolverDetails` carries `info`,
+`solve_time` and the multipliers but no count; `NloptSolverDetails` carries a single `status`
+field. So iteration counts come from the print file, and NLopt has none at all.
+
+| | IPOPT | SNOPT | NLopt |
+| --- | --- | --- | --- |
+| print file | yes | yes | **none, and `kPrintFileName` is silently ignored** |
+| `iterations` | "Number of Iterations" | "No. of major iterations" | -- |
+| eval counts | 4 separate counts | one `User function calls (total)` | -- |
+| seconds | log | `details.solve_time` | -- |
+| status | -- | `details.info` | `details.status` |
+
+`iterations` means **majors** under both solvers that report it, because IPOPT's count is
+majors -- this column is only comparable if it means the same thing in both. SNOPT's minors
+are kept separately. snOptA has one user function, so there is no funobj/funcon split and
+IPOPT's four eval counts have no SNOPT counterpart; they stay `None` rather than being filled
+with a different quantity.
+
+**So the program counts map evaluations itself** (`IKFlowProgram.ResetEvalCounts`, counted in
+`QAndPose`, the one funnel every arm's solve passes through). `map_jacobian` is the
+AutoDiffXd count -- one `jacrev` through the network each for the learned arm. It is the only
+cost measure the NLopt column has, and it cross-validates: on the SNOPT smoke run
+`map_jacobian` equalled `User function calls (total)` **exactly** on every cell (377, 236,
+332, 272). It is *not* an iteration count -- a line search evaluates the map several times per
+accepted step -- so it measures work done, not steps taken. `collate.py` prints `--`, never
+`nan` or `0`, where a solver reports nothing: a `0` there would read as "converged instantly"
+rather than "does not tell us".
+
+**Status is decoded numerically, not from log text.** SNOPT INFO 34 is the time limit and
+Drake leaves it as a generic solver error with no distinctive exit string; NLopt has no text
+at all. Matching exit strings alone would report `timeouts: 0` for a capped run of either --
+the same trap `is_iteration_cap` was written for. NLopt status 5 is `MAXEVAL_REACHED`, an
+*evaluation* cap recorded as `hit_eval_cap`, since NLopt has no notion of an iteration to cap.
+
+### Four traps, all found by probing rather than by reading
+
+- **The laptop's Drake is not the cluster's.** The cluster runs the official **1.56.0**
+  tarball, whose `NloptSolver` exposes exactly six options: `algorithm`, `constraint_tol`,
+  `xtol_rel`, `xtol_abs`, `max_eval`, `max_time`. A workstation source build additionally
+  offers five `local_optimizer_*` options for choosing the AL's inner solver. **Drake
+  validates NLopt option names strictly and raises on one it does not know**, so code written
+  against the local API passes locally and fails on *every cell* of a cluster run.
+  `tests/test_solver_plumbing.py` pins the emitted keys to 1.56.0's six. **A Drake feature
+  must be checked against the cluster's version before code depends on it.**
+- **`"Timing Level"` is accepted by Drake and silently INERT.** SNOPT's parser is case
+  sensitive on the second word; only `"Timing level"` writes the timing block. That option had
+  been dead in this repo. Drake raises only on a keyword SNOPT's table does not know at all,
+  so **a SNOPT option can be accepted and do nothing** -- confirm anything set here in the
+  print file.
+- **Drake defaults NLopt's `max_eval` to 1000.** That is a cap, not "unset", and it binds
+  here. Left alone the NLopt column would silently measure a 1000-evaluation budget instead of
+  the wall-clock cap every other column is measured under. `max_time` carries the cap and
+  `max_eval` is set explicitly.
+- **SNOPT's print file opens with `SNMEMA EXIT 100 -- finished successfully`** from the
+  memory-estimation pass. A bare `EXIT` regex reports that instead of the solve's and calls a
+  failed solve a success; the parse anchors on `SNOPTA` and takes the last match.
+
+Two smaller notes. `Solution No` drops the end-of-file row/column dump, a fifth of the print
+file that nothing parses -- one log per cell over 480 cells is the many-small-files pattern
+this project already had to fix once. And **SNOPT's `Time limit` is checked at major-iteration
+boundaries**, so a cell overshoots the cap by one major iteration: measured 24-28 s against a
+20 s cap on the learned arm, whose iteration is expensive. That is inside `cell_timeout`
+(`5*wall + 300`) and the 4 h `ITEM_TIMEOUT`, but it means SNOPT wall-clock is not capped as
+tightly as IPOPT's.
+
+### The local smoke runs, and the one early signal in them
+
+Panda pose, 4 cells, 20 s cap, learned + joint space. **Far too small to rank anything** --
+this is plumbing verification, and the ranking question is what stage SOLVER is for. But two
+things in it are worth knowing before reading that stage.
+
+| solver | cells solved | wall clock per cell | what bound |
+| --- | --- | --- | --- |
+| IPOPT | converged, 24-89 majors | 6-8 s | nothing |
+| SNOPT | 1/4 | 20-28 s | `Time limit`, all four cells |
+| NLopt (`LD_AUGLAG`) | 0/4 | 20.0-20.1 s exactly | `max_time`, all four cells |
+
+**NLopt did not fail to run -- it failed to converge in 20 s, which is a different thing.**
+It did 212-237 map evaluations on the learned arm and 2848-5053 on the joint-space arm, and
+came out at `max_violation` 0.16-2.41, i.e. making real but incomplete progress. That is the
+expected shape for an augmented Lagrangian against tight equality rows, and it is the reason
+the axis is worth measuring rather than assumed. Note the joint-space arm, which IPOPT solves
+in a fraction of a second, also timed out under NLopt at 20 s.
+
+**`max_time` binds far more tightly than SNOPT's `Time limit`**: 20.0-20.1 s against 24-28 s,
+because SNOPT only checks at major-iteration boundaries and one of the learned arm's majors is
+expensive. Worth remembering when reading wall-clock columns across solvers -- they are not
+capped equally.
+
+### Future work on this axis
+
+- **NLopt settings are unswept**, by decision (Thomas, 2026-09-16: *"Store testing NLOPT
+  settings as future work"*). `LD_AUGLAG` vs `LD_AUGLAG_EQ`, `constraint_tol`, `xtol_rel`,
+  `xtol_abs`, `max_eval` -- all at Drake's defaults, none measured.
+- **The AL's inner local optimizer is not selectable** on the cluster's Drake. Leaving it
+  unset is a supported state: Drake does not call `set_local_optimizer`, so NLopt supplies its
+  own (LD_LBFGS for the gradient-based AUGLAG families), which is the right shape because an
+  AL's inner problem is bound-constrained only. **TODO** when the cluster's Drake carries the
+  local-optimizer PRs: expose `local_optimizer_algorithm` and sweep it.
+- **`snopt_major_step_limit` and `snopt_violation_limit` are plumbed and unset.** These are
+  SNOPT's analogues of the repo's best open IPOPT lead -- `Major step limit` bounds
+  `||dx|| <= limit*(1+||x||)` per major iteration (the trust region the runaway wants, since
+  it is *one accepted catastrophic step* out of a well-behaved trajectory), and
+  `Violation limit` is the counterpart of `ipopt_theta_max_fact`.
+- **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the
+  robust logging we need btw, work with what you have, don't write new logging stuff in Drake
+  or anything."* Instrument on our side and report honestly what a solver does not expose.
+
+**One latent bug this surfaced:** `scripts/iiwa/iiwa_benchmark.py`'s default tag omitted
+`args.solver` where the Panda's has always included it, so an iiwa SNOPT run and an iiwa IPOPT
+run with otherwise identical flags resolved to the same `summary.json` and overwrote each
+other -- the same trap `--shard` and `--checkpoint` were each fixed for. Fixed; archived iiwa
+runs were all tagged explicitly from manifests, so no archived path moved.
+
 ## Results: the corrected campaign
 
 Everything below was measured on a program whose pose rows are a true equality, with the
@@ -1715,12 +1858,9 @@ formulation."*
    to Wednesday morning, nothing survives it. The window closed 2026-09-08; the next is
    2026-10-12 to 10-14.
 
-2. **SNOPT and NLOPT.** All ~395 archived runs are IPOPT; both scripts already accept `--solver`
-   and Drake supplies all three on both machines. The point is to *report* every solver, not to
-   pick one. **Known blocker, found by a smoke test and not fixed:** SNOPT runs, but `parse_log`
-   matches only IPOPT's log format, so `iterations`, the evaluation counts, `solver_seconds` and
-   `exit` all come back `None`. Iterations is the hardware-independent number, so the parser needs
-   per-solver formats before a solver comparison means anything.
+2. **SNOPT and NLOPT. DONE as infrastructure** -- the blocker is fixed and all three solve the
+   real program. See "The solver axis" below. What remains is to *run* it: the first measurement
+   is stage SOLVER, a 60-cell triage on the adopted rungs.
 
 3. **Performance tuning and formulation tweaks.** Note this is Thomas naming formulation work as a
    work item, not a standing licence — what is compared remains his call, made explicitly in
