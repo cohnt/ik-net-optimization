@@ -26,7 +26,8 @@ from src.utils import (RepoDir, BuildEnv, GenerateDiagramWithMug, HiddenPrints,
 from src import benchmark as bm
 from src.shelf_regions import DEFAULT_SHELF_DEPTH_INSET, ShelfCompartmentRegions
 from src.target_screening import (MAX_CONSECUTIVE_REJECTIONS, SCENES,
-                                  FloatingMugScreen, FormatTargetStats,
+                                  ContainmentPose, FloatingMugScreen,
+                                  FormatTargetStats,
                                   SampleShelfTargets, SceneFile)
 from src.generic_program import ProgramOptions, orientation_error_rpy
 from src.iiwa_program import (Iiwa14IKProgram, Iiwa14IKProgramNumerical,
@@ -112,12 +113,25 @@ def parse_args():
                         "mugs). `legacy` is the pre-2026-09-15 scene, kept so archived runs "
                         "reproduce. The obstacle set changes which uniform draws survive, so "
                         "these produce different grids by construction.")
-    p.add_argument("--target-placement", choices=("shelf", "free"), default="shelf",
+    p.add_argument("--target-placement", choices=("shelf", "free", "auto"), default="auto",
                    help="`shelf` accepts a sampled target only if its point lands inside a "
                         "shelf compartment (and, on the grasp task, only if the mug placed "
                         "there does not penetrate the scene). `free` is the old sampler, "
                         "which accepted any collision-free draw. This is what makes the "
-                        "obstacles part of the problem rather than scenery.")
+                        "obstacles part of the problem rather than scenery. `auto` (the "
+                        "default) resolves to `shelf` for the pose task and `free` for the "
+                        "grasp task -- Thomas's 2026-09-15 call: pose containment is adopted "
+                        "(it costs the baseline 53-64 cells against the learned arm's 30-46 "
+                        "on both robots), grasp containment is deferred because its sign is "
+                        "opposite on the two robots and too many other knobs are in flight. "
+                        "Grasp containment stays available and is worth re-trying alongside "
+                        "other tuning, notably a solver change.")
+    p.add_argument("--placement-point", choices=("target", "fingertips"), default="target",
+                   help="which point must lie inside a compartment. `target` is the frame "
+                        "the task's target IS -- the grasp point for the grasp task, the "
+                        "WRIST for the pose task. `fingertips` moves it out to the gripper, "
+                        "so the hand is in the compartment rather than the wrist being driven "
+                        "in behind it. They coincide on the grasp task.")
     p.add_argument("--shelf-inset", type=float, default=DEFAULT_SHELF_DEPTH_INSET,
                    help="metres each shelf compartment is inset along its depth axis. "
                         "Symmetric, because shelves.sdf has no back wall. Deeper is harder "
@@ -219,16 +233,16 @@ def main():
     # geometries, so the welded target mug's overlap with a shelf board is invisible on the
     # solve scene and needs its own diagram. See scripts/probe_shelf_acceptance.py for the
     # acceptance rates this buys, and src/target_screening.py for the rest.
-    regions = (ShelfCompartmentRegions(args.shelf_inset)
-               if args.target_placement == "shelf" else None)
+    placement = args.target_placement
+    if placement == "auto":
+        placement = "shelf" if args.task == "pose" else "free"
+    regions = (ShelfCompartmentRegions(args.shelf_inset) if placement == "shelf" else None)
+    target_pose_of, placement_point = ContainmentPose(
+        sampler.plant, sampler.plant_context, spec, args.placement_point)
     mug_screen = None
     if regions is not None and args.task == "mug":
         with HiddenPrints():
             mug_screen = FloatingMugScreen(yaml_file, spec.robot_instances)
-
-    def target_pose_of(q):
-        sampler.plant.SetPositions(sampler.plant_context, q)
-        return sampler.frame.CalcPoseInWorld(sampler.plant_context)
 
     target_qs, target_stats = SampleShelfTargets(
         args.targets,
@@ -237,7 +251,7 @@ def main():
         target_pose=target_pose_of, regions=regions,
         screen=(lambda X: mug_screen.Penetrates([X])) if mug_screen else None,
         max_consecutive_rejections=args.max_target_rejections,
-        label=f"iiwa/{args.task}/{args.target_placement}",
+        label=f"iiwa/{args.task}/{placement}/{args.placement_point}",
         progress=tqdm(total=args.targets, desc="targets"))
     print(FormatTargetStats(f"iiwa/{args.task}", target_stats))
     # Per-target guesses; see the panda script for the rationale.
@@ -360,12 +374,13 @@ def main():
                                         grid_hash=grid_hash, compiled=args.compile,
                                         scene=os.path.basename(yaml_file),
                                         scene_mode=args.scene,
-                                        target_placement=args.target_placement,
+                                        target_placement=placement,
                                         shelf_inset=(args.shelf_inset
-                                                     if args.target_placement == "shelf"
+                                                     if placement == "shelf"
                                                      else None),
                                         target_screen=(mug_screen is not None),
-                                        placement_point=spec.target_frame,
+                                        placement_point=placement_point,
+                                        placement_point_mode=args.placement_point,
                                         target_candidates_drawn=target_stats["drawn"],
                                         target_accept_rate=target_stats["accept_rate"],
                                         compile_seconds=compile_seconds,

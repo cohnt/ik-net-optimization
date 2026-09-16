@@ -28,7 +28,8 @@ from pydrake.multibody.tree import ModelInstanceIndex
 from src.shelf_regions import (SHELF_HALF_EXTENTS, SHELF_WELDS, SHELF_Z_COMPARTMENTS,
                                PointInShelfCompartments, ShelfCompartmentRegions,
                                ShelfRegionsFromPlant)
-from src.target_screening import SCENES, FloatingMugScreen, SampleShelfTargets, SceneFile
+from src.target_screening import (SCENES, ContainmentPose, FloatingMugScreen,
+                                  SampleShelfTargets, SceneFile)
 from src.utils import BuildEnv, RepoDir
 
 DECORATIVE_MUGS = ("mug", "mug2", "mug3", "mug4", "rmug", "rmug2", "rmug3")
@@ -258,6 +259,37 @@ def test_screen_ignores_robot_pairs():
     print("PASS the screen ignores mug-vs-robot contact")
 
 
+def test_every_scene_defines_exactly_one_fingertip_point():
+    """`--placement-point fingertips` must resolve on every scene, and differ where it should.
+
+    Two arms but THREE grippers: the grasp scenes both carry the same finray design, while
+    the Panda POSE scene is `panda_jrl.urdf` with its own stock Franka hand and no finray at
+    all (the pose task must use jrl's Panda -- it is the model the flow was trained
+    against). So the pose task's wrist-to-fingertip distance is not the same on the two
+    robots, which is the asymmetry the fingertip variant exists to probe.
+    """
+    for (robot, task), spec in SCENES.items():
+        assert (spec.fingertip_frame is None) != (spec.fingertip_offset is None), (robot, task)
+        _, plant, context = _scene(robot, task)
+        for mode in ("target", "fingertips"):
+            pose_of, label = ContainmentPose(plant, context, spec, mode)
+            q = np.zeros(plant.num_positions())
+            X = pose_of(q)
+            assert np.all(np.isfinite(X.translation())), (robot, task, mode)
+            assert label
+        ## On the GRASP task the target already IS the grasp point, so the two coincide.
+        tgt, _ = ContainmentPose(plant, context, spec, "target")
+        tip, _ = ContainmentPose(plant, context, spec, "fingertips")
+        q = np.zeros(plant.num_positions())
+        d = float(np.linalg.norm(tgt(q).translation() - tip(q).translation()))
+        if task == "mug":
+            assert d < 1e-12, (robot, task, d)
+        else:
+            ## and on the POSE task it must actually move, or the variant measures nothing
+            assert d > 0.05, (robot, task, d)
+    print("PASS every scene defines exactly one fingertip point")
+
+
 def test_free_placement_reproduces_the_legacy_stream():
     """With no regions and no screen the sampler is the pre-hardening comprehension."""
     lower, upper = np.zeros(7), np.ones(7)
@@ -304,6 +336,7 @@ if __name__ == "__main__":
     test_inset_shrinks_depth_only()
     test_penetration_screen_accepts_and_rejects()
     test_screen_ignores_robot_pairs()
+    test_every_scene_defines_exactly_one_fingertip_point()
     test_free_placement_reproduces_the_legacy_stream()
     test_rejection_guard_trips_with_a_useful_message()
     print("ALL PASS")

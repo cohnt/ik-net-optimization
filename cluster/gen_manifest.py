@@ -556,6 +556,97 @@ HARD_POSE_PLACEMENTS = (("posein", "shelf"), ("posefree", "free"))
 HARD_SHELF_INSET = 0.10
 
 
+INSET_SWEEP = (0.0, 0.05, 0.10, 0.125)
+## One rung per robot, and it is the best one, because the sweep asks whether the inset
+## changes the STORY -- not which chart wins, which the ladder already answered.
+INSET_RUNGS = {"iiwa": "n4", "panda": "n6"}
+
+
+def stage_FINGER(wall, targets, guesses, shards, only=None, tag="FINGER", seed=1):
+    """Pose containment measured at the FINGERTIPS instead of at the target frame.
+
+    The pose task's target is the frame the arms are given -- `iiwa_link_7` or `panda_hand`
+    -- which is the WRIST. Requiring the wrist inside a compartment is a deeper and more
+    awkward reach than requiring the hand inside it, and the two robots do not even agree on
+    how much deeper: the iiwa's `between_fingers` is 0.184 m out from `iiwa_link_7` while the
+    Panda's TCP is 0.1034 m from `panda_hand`, which already sits past the flange. (Two arms,
+    three grippers: both GRASP scenes carry the same finray, but the Panda POSE scene is
+    jrl's Panda with its own stock hand, because that is the model the flow was trained on.)
+
+    Thomas, 2026-09-15: "Wrist containment > no pose containment, but tbd if fingertip
+    containment is better." The wrist arm is stage HARD's `posein` columns, on the same grid
+    shape and seed, so this stage is only the fingertip half.
+    """
+    wanted = set(only.split(",")) if only else None
+    items = []
+    for robot, label, ckpt in LADDER_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        common = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                   "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
+                   "--target-placement", "shelf", "--placement-point", "fingertips"]
+                  + (["--checkpoint", ckpt] if ckpt else []))
+        for start in ("paired", "native"):
+            items += item(robot, f"sc_{tag}_{robot}_{label}_posetip_{int(wall)}_{start}",
+                          ["--task", "pose", "--start", start] + common,
+                          targets, guesses, LADDER_ARMS, wall, shards, seed=seed)
+    return items
+
+
+def stage_GRASPFREE(wall, targets, guesses, shards, only=None, tag="GRASPFREE", seed=1):
+    """The grasp task WITHOUT containment, on the hardened scene -- the adopted default.
+
+    Grasp containment is deferred (Thomas, 2026-09-15: its sign is opposite on the two robots
+    and too many other knobs are in flight), so the default resolves to `free` for the grasp
+    task. That configuration -- hardened scene, free grasp targets -- has never been measured:
+    the archived columns are the LEGACY scene and stage HARD is the contained one. Without
+    this the adopted default has no table.
+    """
+    wanted = set(only.split(",")) if only else None
+    items = []
+    for robot, label, ckpt in LADDER_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        common = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                   "--scene", "hardened", "--target-placement", "free"]
+                  + (["--checkpoint", ckpt] if ckpt else []))
+        for start in ("paired", "native"):
+            items += item(robot, f"sc_{tag}_{robot}_{label}_mugfree_{int(wall)}_{start}",
+                          ["--task", "mug", "--start", start] + common,
+                          targets, guesses, LADDER_ARMS, wall, shards, seed=seed)
+    return items
+
+
+def stage_INSET(wall, targets, guesses, shards, only=None, tag="INSET", seed=1):
+    """Sweep the compartment depth inset, on both tasks, at reduced scale.
+
+    Thomas asked whether the inset changes the story; 0.10 was adopted from `../codebase`
+    without this repo ever sweeping it. Deliberately NOT full scale -- one rung per robot and
+    a 60-cell grid -- because the question is directional. Read a one-cell difference here as
+    noise: reproducibility at the cap is +/-1 cell.
+
+    Covers the grasp task too, even though grasp containment defaults off, because it is the
+    setting most likely to be revisited alongside other tuning.
+    """
+    items = []
+    for robot, rung in sorted(INSET_RUNGS.items()):
+        ckpt = dict((r, c) for r, l, c in LADDER_RUNGS if l == rung).get(robot)
+        common_ck = ["--checkpoint", ckpt] if ckpt else []
+        for inset in INSET_SWEEP:
+            for task, token in (("pose", "posein"), ("mug", "mug")):
+                for start in ("paired", "native"):
+                    items += item(
+                        robot,
+                        f"sc_{tag}_{robot}_{rung}_{token}i{int(round(inset*1000)):03d}"
+                        f"_{int(wall)}_{start}",
+                        ["--task", task, "--start", start, "--config", "latent",
+                         "--set", f"correction_cost_weight={CORR_COST}",
+                         "--scene", "hardened", "--target-placement", "shelf",
+                         "--shelf-inset", str(inset)] + common_ck,
+                        targets, guesses, LADDER_ARMS, wall, shards, seed=seed)
+    return items
+
+
 def stage_HARDMUG(wall, targets, guesses, shards, only=None, tag="HARDMUG", seed=1):
     """stage HARD again on the iiwa, with the decorative mugs KEPT.
 
@@ -799,6 +890,9 @@ def selftest():
                          ("TRAJ", stage_TRAJ(45, 60, 8, 8)),
                          ("HARD", stage_HARD(45, 60, 8, 8)),
                          ("HARDMUG", stage_HARDMUG(45, 60, 8, 8)),
+                         ("FINGER", stage_FINGER(45, 60, 8, 8)),
+                         ("GRASPFREE", stage_GRASPFREE(45, 60, 8, 8)),
+                         ("INSET", stage_INSET(45, 15, 4, 1)),
                          ("HARDTRI", stage_HARD(20, 15, 4, 2, only="ddpr1,upstream",
                                                 tag="HARDTRI")),
                          ("FIN-retagged", retag(stage_FIN(45, 15, 4, 4), "EQ"))):
@@ -914,7 +1008,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG",
+    p.add_argument("--stage", choices=["CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "FINGER", "GRASPFREE", "INSET",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--rungs", default=None,
@@ -958,6 +1052,12 @@ def main():
                                            args.shards, only=args.rungs, tag="HARDTRI"),
              "HARDMUG": lambda: stage_HARDMUG(args.wall_time, args.targets, args.guesses,
                                               args.shards, only=args.rungs),
+             "FINGER": lambda: stage_FINGER(args.wall_time, args.targets, args.guesses,
+                                            args.shards, only=args.rungs),
+             "GRASPFREE": lambda: stage_GRASPFREE(args.wall_time, args.targets, args.guesses,
+                                                  args.shards, only=args.rungs),
+             "INSET": lambda: stage_INSET(args.wall_time, args.targets, args.guesses,
+                                          args.shards),
              "A": lambda: stage_A(args.wall_time, args.targets, args.guesses, args.shards),
              "B2": lambda: stage_B2(args.wall_time, args.targets, args.guesses, args.shards),
              "B3": lambda: stage_B3(args.wall_time, args.targets, args.guesses, args.shards),
