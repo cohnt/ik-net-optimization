@@ -50,6 +50,47 @@ _IPOPT_PATTERNS = {
     "solver_seconds": r"Total seconds in IPOPT\s*=\s*([\d.]+)",
 }
 
+## SNOPT's end-of-run summary block, taken from an actual print file rather than from the
+## Fortran format strings -- they disagree, and the difference matters. snOptA (the
+## interface Drake uses) has ONE user function, so there are no `funobj`/`funcon` lines to
+## split objective from constraint evaluations; there is a single
+## `User function calls (total)`. Nothing here maps onto IPOPT's four separate counts, so
+## those stay None under SNOPT rather than being filled with a number that means something
+## else.
+##
+## `iterations` is deliberately `No. of major iterations`, NOT `No. of iterations` (which
+## is minors). IPOPT's "Number of Iterations" counts majors, and the whole point of this
+## column is that it is the one hardware-independent quantity comparable across solvers --
+## so it has to mean the same thing in both. Minors are kept separately.
+_SNOPT_PATTERNS = {
+    "iterations": r"No\. of major iterations\s+(\d+)",
+    "minor_iterations": r"No\. of iterations\s+(\d+)",
+    "user_function_calls": r"User function calls \(total\)\s+(\d+)",
+    "solver_seconds": r"Time for solving problem\s+([\d.]+)",
+}
+
+## NLopt writes no log of any kind. It has no print file, no console output, and ignores
+## CommonSolverOption.kPrintFileName silently. Its details struct is a single `status`
+## field -- no iteration count, no evaluation count, not even a solve time. That is not an
+## oversight to work around in Drake; it is the reason `IKFlowProgram.ResetEvalCounts`
+## exists, and the reason this column reports evaluation counts we took ourselves and an
+## honestly empty iteration column.
+_LOG_PATTERNS = {"ipopt": _IPOPT_PATTERNS, "snopt": _SNOPT_PATTERNS, "nlopt": {}}
+
+## Every record carries the same keys whatever solver produced it, so a summary can be read
+## without knowing which solver ran and a merge cannot trip over a missing field.
+_ALL_LOG_KEYS = sorted({k for pats in _LOG_PATTERNS.values() for k in pats})
+
+## The solve's own exit line. SNOPT needs the `SNOPTA` anchor and the LAST match: the print
+## file opens with `SNMEMA EXIT 100 -- finished successfully` from the memory-estimation
+## pass, so a bare `EXIT` regex reports that instead of the solve's, and reports success on
+## a solve that failed.
+_EXIT_PATTERNS = {
+    "ipopt": (r"EXIT: (.*)", False),
+    "snopt": (r"SNOPTA (?:EXIT|INFO)\s+\d+ -- (.*)", True),
+    "nlopt": (None, False),
+}
+
 
 ## Cost bindings that regularise the *learned* arm's own decision variables rather than
 ## expressing the task. They are part of the solve -- they change where the solver goes,
@@ -87,28 +128,95 @@ def reported_cost(program, result, weight):
         return float(result.get_optimal_cost()) / weight
 
 
-def parse_log(path):
+def parse_log(path, solver="ipopt"):
     """Iteration and evaluation counts from a solver log.
 
     These are the hardware-independent cost measure. For the learned formulation the
     constraint-Jacobian count is what the flow actually pays for -- one `jacrev` through
     the network each -- so it is the number to quote when comparing formulations rather
     than this laptop's GPU.
+
+    The returned dict has the same keys whatever `solver` produced the log, `None` where
+    that solver does not report a quantity. NLopt reports none of them and writes no log
+    at all, so its records carry `None` throughout and its per-cell cost is read from the
+    program's own evaluation counters instead -- see `IKFlowProgram.ResetEvalCounts`.
     """
-    out = {k: None for k in _IPOPT_PATTERNS}
+    out = {k: None for k in _ALL_LOG_KEYS}
     out["exit"] = None
+    patterns = _LOG_PATTERNS.get(solver, _IPOPT_PATTERNS)
+    exit_pattern, exit_last = _EXIT_PATTERNS.get(solver, _EXIT_PATTERNS["ipopt"])
     try:
         with open(path) as f:
             text = f.read()
     except OSError:
         return out
-    for key, pattern in _IPOPT_PATTERNS.items():
+    for key, pattern in patterns.items():
         m = re.search(pattern, text)
         if m:
             out[key] = float(m.group(1)) if key == "solver_seconds" else int(m.group(1))
-    m = re.search(r"EXIT: (.*)", text)
-    if m:
-        out["exit"] = m.group(1).strip()
+    if exit_pattern is not None:
+        matches = re.findall(exit_pattern, text)
+        if matches:
+            out["exit"] = matches[-1].strip() if exit_last else matches[0].strip()
+    return out
+
+
+## What each solver's numeric status means, decoded from the solver's own details object
+## rather than from the text of its log. Far more robust than matching exit strings, and
+## the only route at all for NLopt, which writes no log.
+##
+## SNOPT INFO: 31 iterations limit, 32 major iterations limit, 34 time limit. Drake maps
+## 30-32 to kIterationLimit (snopt_solver.cc) and leaves 34 as a solver-specific error, so
+## the time limit has to be read here or a capped SNOPT run reports no timeouts at all --
+## the same trap `is_iteration_cap` was written for on the IPOPT side.
+##
+## NLopt status: 5 is MAXEVAL_REACHED and 6 is MAXTIME_REACHED. 5 is an EVALUATION cap, not
+## an iteration cap, and is recorded under its own name -- NLopt has no notion of an
+## iteration to cap.
+_SNOPT_TIME_LIMIT = (34,)
+_SNOPT_ITERATION_LIMIT = (31, 32)
+_NLOPT_MAXTIME = 6
+_NLOPT_MAXEVAL = 5
+
+
+def solver_diagnostics(result, solver):
+    """Per-solver status, taken from Drake's details object.
+
+    Recorded alongside the parsed log because it is authoritative where the log is
+    ambiguous, available where the log is absent, and numeric rather than free text.
+    `solution_result` is Drake's own solver-neutral verdict and is recorded for every
+    solver so a record can be read without knowing which one ran.
+    """
+    out = {"solver": solver, "solution_result": None, "solver_status": None,
+           "solver_detail_seconds": None, "timed_out_status": None,
+           "hit_iteration_cap_status": None, "hit_eval_cap_status": None}
+    if result is None:
+        return out
+    try:
+        out["solution_result"] = str(result.get_solution_result())
+    except Exception:
+        pass
+    try:
+        details = result.get_solver_details()
+    except Exception:
+        return out
+    if solver == "snopt":
+        info = getattr(details, "info", None)
+        out["solver_status"] = int(info) if info is not None else None
+        ## SnoptSolverDetails carries solve_time but NOT an iteration count, which is why
+        ## the print file is still parsed for the iteration columns.
+        out["solver_detail_seconds"] = _finite(getattr(details, "solve_time", None))
+        if info is not None:
+            out["timed_out_status"] = int(info) in _SNOPT_TIME_LIMIT
+            out["hit_iteration_cap_status"] = int(info) in _SNOPT_ITERATION_LIMIT
+    elif solver == "nlopt":
+        status = getattr(details, "status", None)
+        out["solver_status"] = int(status) if status is not None else None
+        if status is not None:
+            out["timed_out_status"] = int(status) == _NLOPT_MAXTIME
+            out["hit_eval_cap_status"] = int(status) == _NLOPT_MAXEVAL
+    else:
+        out["solver_status"] = getattr(details, "status", None)
     return out
 
 
@@ -530,6 +638,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                         record["fail_reason"] = "unrepresentable_start"
                         record["solver_success"] = False
                         record["wall_time"] = 0.0
+                        record["solver"] = getattr(program.options, "which_solver", None)
                         records[arm.name].append(record)
                         if progress is not None:
                             progress(arm.name, ti, gi, record)
@@ -541,9 +650,27 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     result = program.Solve()
                     record["wall_time"] = time.time() - start
                     record["solver_success"] = bool(result.is_success())
-                    record.update(parse_log(log_path))
-                    record["timed_out"] = is_timeout(record.get("exit"))
-                    record["hit_iteration_cap"] = is_iteration_cap(record.get("exit"))
+                    which = getattr(program.options, "which_solver", "ipopt")
+                    record.update(parse_log(log_path, which))
+                    diag = solver_diagnostics(result, which)
+                    ## Where the solver reports a numeric status, believe it over the log
+                    ## text: SNOPT's time limit (INFO 34) has no distinctive exit string and
+                    ## NLopt has no log to match at all, so the text rules alone would report
+                    ## `timeouts: 0` for a capped run of either.
+                    record["timed_out"] = bool(diag["timed_out_status"]
+                                               if diag["timed_out_status"] is not None
+                                               else is_timeout(record.get("exit")))
+                    record["hit_iteration_cap"] = bool(
+                        diag["hit_iteration_cap_status"]
+                        if diag["hit_iteration_cap_status"] is not None
+                        else is_iteration_cap(record.get("exit")))
+                    record["hit_eval_cap"] = bool(diag["hit_eval_cap_status"])
+                    for key in ("solver", "solution_result", "solver_status",
+                                "solver_detail_seconds"):
+                        record[key] = diag[key]
+                    ## The cross-solver cost measure. No solver reports an iteration count
+                    ## through Drake, so this is the only quantity every column carries.
+                    record["eval_counts"] = dict(getattr(program, "eval_counts", {}) or {})
                     verdict = verify(program, result, task_gate, tol,
                                      relaxed_tol=relaxed_tol)
                     record["feasible"] = verdict.feasible
@@ -672,6 +799,14 @@ def summarise(records, arms, n_targets, n_guesses):
             mean_setup_time=_mean(recs, "setup_time", ok_only=False),
             mean_iterations=_mean(ok, "iterations", ok_only=False),
             mean_jacobian_evals=_mean(ok, "jacobian_evals", ok_only=False),
+            ## The cross-solver cost columns. `mean_iterations` is nan under NLopt, which
+            ## reports no iteration count at all -- these are what that column is read
+            ## against there, and they cross-validate it under IPOPT and SNOPT.
+            mean_map_jacobians=_mean([_flat_counts(r) for r in ok], "map_jacobian",
+                                     ok_only=False),
+            mean_map_forwards=_mean([_flat_counts(r) for r in ok], "map_forward",
+                                    ok_only=False),
+            eval_capped=sum(1 for r in recs if r.get("hit_eval_cap")),
             mean_cost=_mean(ok, "cost", ok_only=False),
             median_cost=_median(ok, "cost"),
             solved_within_k=solved_within_k(per_target),
@@ -726,6 +861,11 @@ def summarise(records, arms, n_targets, n_guesses):
             sb = [bool(r.get("feasible")) for r in records[b.name]]
             summary["_mcnemar"][f"{a.name} vs {b.name}"] = mcnemar_exact(sa, sb)
     return summary
+
+
+def _flat_counts(record):
+    """A record's `eval_counts` as a flat dict, so `_mean` can read it like any other key."""
+    return dict(record.get("eval_counts") or {})
 
 
 def _mean(recs, key, ok_only=True):
