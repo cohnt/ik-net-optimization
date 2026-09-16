@@ -32,6 +32,8 @@ What this file protects, each learned by the thing being possible:
 """
 import os
 import sys
+import tempfile
+from dataclasses import replace
 
 import numpy as np
 from pydrake.solvers import NloptSolver
@@ -207,11 +209,101 @@ def test_each_solver_solves_and_reports(solver):
           diag["solution_result"] is not None, str(diag))
 
 
+## Every knob the settings sweep moves, with the string the SOLVER ITSELF prints when the
+## value has landed. The `expect` column is not decoration: `Timing Level` was set for the
+## life of this repo and silently did nothing, and while adding these, `Hessian updates`
+## turned out to be inert in the full-memory mode this problem size selects and
+## `linear_solver=mumps` turned out not to exist in Drake's IPOPT at all. An option that
+## SetOption accepts is NOT an option that took effect, and only the echo tells them apart.
+IPOPT_ECHO_KNOBS = {
+    "ipopt_limited_memory_max_history": (25, "limited_memory_max_history"),
+    "ipopt_limited_memory_update_type": ("sr1", "limited_memory_update_type"),
+    "ipopt_alpha_for_y": ("bound-mult", "alpha_for_y"),
+    "ipopt_recalc_y": ("yes", "recalc_y"),
+    "ipopt_bound_relax_factor": (0.0, "bound_relax_factor"),
+    ## Read only under mu_strategy=monotone, so the sweep entry has to pass both. Set alone
+    ## it is echoed `used = no`, which is exactly the silent-no-op this test exists to catch.
+    "ipopt_mu_init": (1.0, "mu_init"),
+}
+SNOPT_ECHO_KNOBS = {
+    "snopt_hessian_frequency": (50, "Hessian frequency......        50"),
+    "snopt_elastic_weight": (100.0, "Elastic weight.........  1.00E+02"),
+    "snopt_crash_option": (0, "Crash option...........         0"),
+    ## SNOPT capitalises the second word here and nowhere else nearby.
+    "snopt_proximal_point_method": (2, "Proximal Point method..         2"),
+}
+
+
+def _solve_once_capturing_log(opts, target, path):
+    """One real solve, kept to a couple of iterations -- the echo is written at startup."""
+    if os.path.exists(path):
+        os.remove(path)
+    opts = replace(opts, file_print_name=path, max_iter=3, max_wall_time=20.0)
+    p = build(opts, target)
+    with HiddenPrints():
+        p.Solve()
+    return open(path).read() if os.path.exists(path) else ""
+
+
+def test_new_knobs_reach_the_solver():
+    """Assert from the solver's own parameter echo, never from SetOption not raising."""
+    print("\n--- every swept knob actually lands (read back from the solver's echo) ---")
+    target = a_reachable_target(ProgramOptions())
+    log_dir = tempfile.mkdtemp(prefix="solver_echo_")
+
+    ipopt_sets = {name: value for name, (value, _) in IPOPT_ECHO_KNOBS.items()}
+    ipopt_sets["ipopt_mu_strategy"] = "monotone"
+    text = _solve_once_capturing_log(
+        ProgramOptions(which_solver="ipopt", **ipopt_sets), target,
+        os.path.join(log_dir, "ipopt.txt"))
+    for field_name, (value, option) in IPOPT_ECHO_KNOBS.items():
+        ## IPOPT's user-options block has a `used` column, and `no` means it was accepted
+        ## and then ignored -- which is a failure for our purposes, not a pass.
+        line = next((ln.strip() for ln in text.splitlines()
+                     if ln.strip().startswith(option + " =")), None)
+        check(f"ipopt: {field_name} reaches the solver and is used",
+              line is not None and line.endswith("yes"),
+              f"echo line was {line!r}")
+
+    snopt_sets = {name: value for name, (value, _) in SNOPT_ECHO_KNOBS.items()}
+    text = _solve_once_capturing_log(
+        ProgramOptions(which_solver="snopt", **snopt_sets), target,
+        os.path.join(log_dir, "snopt.txt"))
+    for field_name, (value, expect) in SNOPT_ECHO_KNOBS.items():
+        check(f"snopt: {field_name} reaches the solver",
+              expect in text, f"expected {expect!r} in the parameter echo")
+
+    ## The valueless keyword gets its own solve, because its whole point is that it cannot
+    ## be turned off by passing a value -- so it must not ride along with the others.
+    off = _solve_once_capturing_log(ProgramOptions(which_solver="snopt"), target,
+                                    os.path.join(log_dir, "ls_off.txt"))
+    on = _solve_once_capturing_log(
+        ProgramOptions(which_solver="snopt", snopt_nonderivative_linesearch=True), target,
+        os.path.join(log_dir, "ls_on.txt"))
+    check("snopt: the line search is derivative-based by default",
+          "Derivative linesearch" in off, "default echo did not name the line search")
+    check("snopt: snopt_nonderivative_linesearch switches the line search",
+          "Nonderiv." in on and "Derivative linesearch" not in on,
+          "the echo still shows a derivative line search")
+
+
+def test_no_step_rejection_knob_is_set_by_default():
+    """The step-rejection family is a separate question and must stay at solver defaults."""
+    print("\n--- step rejection stays out of this branch ---")
+    opts = ProgramOptions()
+    for field_name in ("ipopt_theta_max_fact", "ipopt_watchdog_trigger", "ipopt_max_soc",
+                       "snopt_violation_limit", "snopt_major_step_limit"):
+        check(f"{field_name} is unset by default",
+              getattr(opts, field_name) is None, f"was {getattr(opts, field_name)!r}")
+
+
 def main():
     print("solver plumbing: three method classes -- interior point, SQP, augmented Lagrangian")
     test_option_surface_is_the_cluster_s()
     test_nlopt_is_an_augmented_lagrangian()
     test_unknown_solver_raises_clearly()
+    test_no_step_rejection_knob_is_set_by_default()
+    test_new_knobs_reach_the_solver()
     for solver in ("ipopt", "snopt", "nlopt"):
         test_each_solver_solves_and_reports(solver)
 
