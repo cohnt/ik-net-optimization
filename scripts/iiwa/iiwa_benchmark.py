@@ -126,7 +126,7 @@ def parse_args():
                         "opposite on the two robots and too many other knobs are in flight. "
                         "Grasp containment stays available and is worth re-trying alongside "
                         "other tuning, notably a solver change.")
-    p.add_argument("--placement-point", choices=("wrist", "fingertips"), default="wrist",
+    p.add_argument("--placement-point", choices=("wrist", "fingertips"), default="fingertips",
                    help="which point on the GRIPPER must lie inside a compartment. `wrist` "
                         "is the gripper base link, `fingertips` is between_fingers; they are "
                         "0.100 m apart on BOTH robots, which is the point -- rejection "
@@ -134,7 +134,11 @@ def parse_args():
                         "two robots are not solving comparable problems. (The task's own "
                         "target frame fails that: the iiwa's is the arm flange, the Panda's "
                         "the gripper mount, 84 mm apart.) They coincide on the grasp task, "
-                        "where the mug is welded at between_fingers.")
+                        "where the mug is welded at between_fingers. Default `fingertips`, "
+                        "adopted 2026-09-16: it is the faithful statement of the task -- the "
+                        "GRIPPER reaches into the shelf, not the wrist -- and it scores higher "
+                        "for both arms on every row, because requiring the wrist inside a "
+                        "0.10 m compartment silently demands 0.1 m more penetration.")
     p.add_argument("--shelf-inset", type=float, default=DEFAULT_SHELF_DEPTH_INSET,
                    help="metres each shelf compartment is inset along its depth axis. "
                         "Symmetric, because shelves.sdf has no back wall. Deeper is harder "
