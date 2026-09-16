@@ -172,6 +172,7 @@ class ProgramOptions:
     ## solve writes one log per cell and minor lines dominate the size.
     snopt_major_print_level: int = field(default=1, metadata={"help": "SNOPT 'Major print level'; >=1 is required for the summary block parse_log reads"})
     snopt_minor_print_level: int = field(default=0, metadata={"help": "SNOPT 'Minor print level'; 0 keeps the per-cell log small"})
+    snopt_solution_print: bool = field(default=False, metadata={"help": "SNOPT 'Solution Yes': dump every row and column at the end. Off -- nothing parses it and it is a fifth of the file"})
 
     ## NLopt, the AUGMENTED LAGRANGIAN arm. `LD_SLSQP` would be the wrong default: it is an
     ## SQP method, so it would make this column a duplicate of SNOPT's rather than a third
@@ -1216,7 +1217,17 @@ class IKFlowProgram:
                                  int(self.options.snopt_major_print_level))
         solver_options.SetOption(SnoptSolver.id(), "Minor print level",
                                  int(self.options.snopt_minor_print_level))
-        solver_options.SetOption(SnoptSolver.id(), "Timing Level", 3)
+        ## "Timing level", NOT "Timing Level". Drake accepts either -- it only raises on a
+        ## keyword SNOPT's table does not know at all -- but SNOPT's parser is case
+        ## sensitive on the second word, so the capitalised form is silently INERT and
+        ## writes no timing block. Measured both ways. A SNOPT option can be accepted and
+        ## do nothing, so anything set here has to be confirmed in the print file.
+        solver_options.SetOption(SnoptSolver.id(), "Timing level", 3)
+        ## The solution dump (Sections 1 and 2, every row and column) is a fifth of the
+        ## print file and nothing parses it. One log per cell over a 480-cell grid is
+        ## exactly the many-small-files pattern this project already had to fix once.
+        solver_options.SetOption(SnoptSolver.id(), "Solution",
+                                 "Yes" if self.options.snopt_solution_print else "No")
         ## SNOPT types its options: "Time limit" is a double and the iteration limits are
         ## ints. The wrong Python type reaches the wrong snSet* and raises.
         solver_options.SetOption(SnoptSolver.id(), "Time Limit", float(self.options.max_wall_time))
