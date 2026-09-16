@@ -45,7 +45,7 @@ os.makedirs(log_dir, exist_ok=True)
 
 np.random.seed(seed)
 meshcat = StartMeshcat()
-yaml_file = os.path.join(RepoDir(), "models/panda/panda_collision.yaml")
+yaml_file = os.path.join(RepoDir(), "models/panda/panda_finray_collision.yaml")
 with HiddenPrints():
     diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
     # Only used to sample targets and to share the loaded network.

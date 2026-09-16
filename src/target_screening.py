@@ -70,19 +70,28 @@ class SceneSpec:
     ## The frame whose world origin a containment test applies to.  For the grasp task this
     ## is the grasp point, which is also where the mug is welded, so "mug centre in a
     ## compartment" and "target point in a compartment" are the same test.  For the pose task
-    ## it is the frame the target pose IS -- so containment characterises the target the arms
-    ## are actually given.  Note that makes it the WRIST, not the fingertips, which is why
-    ## `--placement-point fingertips` exists: "the wrist is inside the shelf" is a deeper and
-    ## more awkward reach than "the gripper is inside the shelf", and which one better
-    ## expresses the task is a measurement, not a definition.
+    ## it is the frame the target pose IS.
     target_frame: str
-    ## Where the fingertips are, for `--placement-point fingertips`.  A frame name when the
-    ## scene has a real one; otherwise a translation in `target_frame`'s own coordinates,
-    ## because not every scene carries a gripper -- the Panda POSE scene is `panda_jrl.urdf`
-    ## alone, whose fingers mount at panda_hand + [0, 0, 0.0584] and whose standard Franka
-    ## TCP is 0.1034 m out along the same axis.  Exactly one of the two is set.
+    ## THE CONTAINMENT POINTS, and they are deliberately NOT `target_frame`.
+    ##
+    ## Rejection sampling must key on the same physical point on the hand for both robots or
+    ## the two are not solving comparable problems.  `target_frame` fails that: the iiwa
+    ## pose task targets `iiwa_link_7`, its arm FLANGE, 0.184 m behind `between_fingers`,
+    ## while the Panda targets `panda_hand`, the GRIPPER MOUNT, 0.100 m behind it -- 84 mm
+    ## apart, different points on the hand.  Both robots carry the same finray gripper, so
+    ## the gripper's own frames are the consistent choice and are exact:
+    ##
+    ##     wrist      = the gripper base link -- `hand` (iiwa) / `panda_hand` (Panda),
+    ##                  measured at exactly 0.100 m behind `between_fingers` on BOTH
+    ##     fingertips = `between_fingers` itself, identical on both
+    ##
+    ## So the wrist/fingertip choice is one 0.1 m step along the gripper, the same step on
+    ## each robot, and which of the two better expresses the task is a measurement.
+    ##
+    ## On the GRASP task both resolve to `between_fingers`: the mug is welded there, so the
+    ## mug centre IS the grasp point, and a point 0.1 m behind it is not the mug.
+    wrist_frame: str = None
     fingertip_frame: str = None
-    fingertip_offset: tuple = None
 
 
 SCENES = {
@@ -91,25 +100,41 @@ SCENES = {
         "models/panda/panda_finray_collision_hardened.yaml",
         "models/panda/panda_finray_collision.yaml",
         "models/panda/panda_finray_collision_hardened.yaml",
-        ("panda", "finray"), "between_fingers", fingertip_frame="between_fingers"),
+        ("panda", "finray"), "between_fingers",
+        wrist_frame="between_fingers", fingertip_frame="between_fingers"),
+    ## The Panda POSE scene is the Panda GRASP scene -- the same file, as the iiwa has always
+    ## done. It used to be `panda_jrl.urdf`, the arm with its own stock Franka hand, on the
+    ## reasoning that the flow was trained against jrl's Panda. That reasoning does not
+    ## survive inspection: arm joints 1-7 and their limits are byte-identical between
+    ## `panda_jrl.urdf` and `panda_no_hand.urdf`, the flow is conditioned on a frame welded
+    ## to link 7, and `CalibrateFlowFrame` measures whatever offset the gripper introduces
+    ## and checks it is constant. So the stock hand bought nothing and cost three things: a
+    ## second gripper on one robot (making the pose task's collision geometry differ between
+    ## robots for no reason), two prismatic finger joints that the sampler drew uniformly
+    ## while every solve pinned them to 0.04, and no `between_fingers` frame, which forced
+    ## the fingertip containment point to be a hardcoded TCP offset instead of a measured
+    ## frame. Removed 2026-09-15 along with the stock hand itself.
     ("panda", "pose"): SceneSpec(
         "panda_pose",
-        "models/panda/panda_collision_hardened.yaml",
-        "models/panda/panda_collision.yaml",
-        None,
-        ("panda",), "panda_hand", fingertip_offset=(0.0, 0.0, 0.1034)),
+        "models/panda/panda_finray_collision_hardened.yaml",
+        "models/panda/panda_finray_collision.yaml",
+        "models/panda/panda_finray_collision_hardened.yaml",
+        ("panda", "finray"), "panda_hand",
+        wrist_frame="panda_hand", fingertip_frame="between_fingers"),
     ("iiwa", "mug"): SceneSpec(
         "iiwa_mug",
         "models/iiwa14/iiwa14_collision_hardened.yaml",
         "models/iiwa14/iiwa14_collision.yaml",
         "models/iiwa14/iiwa14_collision_nobin.yaml",
-        ("iiwa", "finray"), "between_fingers", fingertip_frame="between_fingers"),
+        ("iiwa", "finray"), "between_fingers",
+        wrist_frame="between_fingers", fingertip_frame="between_fingers"),
     ("iiwa", "pose"): SceneSpec(
         "iiwa_pose",
         "models/iiwa14/iiwa14_collision_hardened.yaml",
         "models/iiwa14/iiwa14_collision.yaml",
         "models/iiwa14/iiwa14_collision_nobin.yaml",
-        ("iiwa", "finray"), "iiwa_link_7", fingertip_frame="between_fingers"),
+        ("iiwa", "finray"), "iiwa_link_7",
+        wrist_frame="hand", fingertip_frame="between_fingers"),
 }
 
 
@@ -262,46 +287,26 @@ def FormatTargetStats(label, stats):
                stats["containment_rejected"], stats["penetration_rejected"]))
 
 
-def ContainmentPose(plant, plant_context, spec, placement_point="target"):
-    """A callable q -> RigidTransform giving the pose whose ORIGIN containment tests.
+def ContainmentPose(plant, plant_context, spec, placement_point="wrist"):
+    """A callable q -> RigidTransform whose ORIGIN is what containment tests.
 
-    `target` uses the frame the task's target actually is -- for the grasp task that is the
-    grasp point (and the mug's own centre), for the pose task it is the wrist.  `fingertips`
-    moves the tested point out to the gripper, so "inside a shelf" means the hand is in the
-    compartment rather than the wrist being driven in behind it.  On the grasp task the two
-    coincide by construction, which is why only the pose task has a choice to make.
+    Keyed on the GRIPPER, not on the task's target frame, so the same physical point on the
+    hand is used for both robots -- see SceneSpec for why the target frame fails that.
+    `wrist` is the gripper base, 0.100 m behind the fingers on both robots; `fingertips` is
+    `between_fingers`.  On the grasp task the two coincide at the mug centre.
 
-    The caller still hands the FULL target pose to the penetration screen; only which point
-    must lie in a compartment changes.  The target the arms are given is untouched either
-    way -- this is a sampling filter, not a redefinition of the task.
+    The caller still hands the FULL target pose to the penetration screen, and the target the
+    arms are given is untouched either way: this is a sampling filter, not a redefinition of
+    the task.
     """
-    from pydrake.math import RigidTransform
-
-    frame = plant.GetFrameByName(spec.target_frame)
-    if placement_point == "target":
-        def pose_of(q):
-            plant.SetPositions(plant_context, q)
-            return frame.CalcPoseInWorld(plant_context)
-        return pose_of, spec.target_frame
-
-    if placement_point != "fingertips":
-        raise SystemExit("unknown placement point %r" % placement_point)
-
-    if spec.fingertip_frame is not None:
-        tip = plant.GetFrameByName(spec.fingertip_frame)
-
-        def pose_of(q):
-            plant.SetPositions(plant_context, q)
-            return tip.CalcPoseInWorld(plant_context)
-        return pose_of, spec.fingertip_frame
-
-    if spec.fingertip_offset is None:
-        raise SystemExit(
-            "--placement-point fingertips: %s has neither a fingertip frame nor an offset"
-            % spec.key)
-    offset = RigidTransform(np.asarray(spec.fingertip_offset, dtype=float))
+    frame_name = {"wrist": spec.wrist_frame,
+                  "fingertips": spec.fingertip_frame}.get(placement_point)
+    if frame_name is None:
+        raise SystemExit("unknown or unavailable placement point %r for %s"
+                         % (placement_point, spec.key))
+    frame = plant.GetFrameByName(frame_name)
 
     def pose_of(q):
         plant.SetPositions(plant_context, q)
-        return frame.CalcPoseInWorld(plant_context) @ offset
-    return pose_of, "%s+%s" % (spec.target_frame, spec.fingertip_offset)
+        return frame.CalcPoseInWorld(plant_context)
+    return pose_of, frame_name
