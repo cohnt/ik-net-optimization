@@ -121,6 +121,22 @@ class ProgramOptions:
     ## scaled as though it were ordinary. These two make that reachable from `--set`.
     ipopt_nlp_scaling_method: str = field(default=None, metadata={"help": "IPOPT 'nlp_scaling_method': 'gradient-based' (default), 'none', 'equilibration-based'"})
     ipopt_nlp_scaling_max_gradient: float = field(default=None, metadata={"help": "IPOPT 'nlp_scaling_max_gradient' (default 100)"})
+    ## Quasi-Newton and barrier knobs. Drake runs IPOPT with
+    ## `hessian_approximation = limited-memory` -- confirmed in the user-options echo of an
+    ## archived log -- because it supplies no second derivatives, so the L-BFGS history IS
+    ## the Hessian here and its length is a live knob. `mu_init` is read ONLY under
+    ## `mu_strategy = monotone`: set alone it is echoed `used = no`, and it becomes
+    ## `used = yes` only when the strategy is passed explicitly alongside it. Measured.
+    ##
+    ## Note what is NOT reachable: `linear_solver`. Drake's IPOPT is built against SPRAL
+    ## and offers only `spral` and `custom` -- `mumps` raises at SetOption -- so there is
+    ## no linear-solver axis on this problem.
+    ipopt_limited_memory_max_history: int = field(default=None, metadata={"help": "IPOPT 'limited_memory_max_history' (default 6): the L-BFGS history length, which is the whole Hessian approximation here"})
+    ipopt_limited_memory_update_type: str = field(default=None, metadata={"help": "IPOPT 'limited_memory_update_type': 'bfgs' (default) or 'sr1'"})
+    ipopt_mu_init: float = field(default=None, metadata={"help": "IPOPT 'mu_init' (default 0.1). Only read under mu_strategy=monotone -- pass ipopt_mu_strategy=monotone with it or it is silently unused"})
+    ipopt_alpha_for_y: str = field(default=None, metadata={"help": "IPOPT 'alpha_for_y' (default 'primal'): how the dual step size is chosen"})
+    ipopt_recalc_y: str = field(default=None, metadata={"help": "IPOPT 'recalc_y' (default 'no'): recompute the multipliers from a least-squares estimate"})
+    ipopt_bound_relax_factor: float = field(default=None, metadata={"help": "IPOPT 'bound_relax_factor' (default 1e-8): how far bounds are relaxed before the solve"})
     ## STEP ACCEPTANCE, which is a different lever from everything already refuted. The
     ## damping strategies (`jacobian_max_norm` and friends) altered the DERIVATIVES the
     ## solver was handed, breaking the correspondence between the constraint values IPOPT
@@ -159,6 +175,26 @@ class ProgramOptions:
     snopt_verify_level: int = field(default=None, metadata={"help": "SNOPT 'Verify level'; -1 disables the derivative check. Our gradients are analytic, so a check costs evaluations for nothing"})
     snopt_linesearch_tolerance: float = field(default=None, metadata={"help": "SNOPT 'Linesearch tolerance' (default 0.9); smaller means a more accurate line search"})
     snopt_superbasics_limit: int = field(default=None, metadata={"help": "SNOPT 'Superbasics limit'; INFO 33 means this was too small"})
+    ## Four more knobs, every default below read off SNOPT's OWN parameter echo rather
+    ## than from documentation -- the echo is the only thing that proves an option landed.
+    ## Two traps this turned up, both of the "accepted and inert" kind that `Timing Level`
+    ## already cost this repo once:
+    ##
+    ##  * `Hessian updates` (default 99999999) is ignored in FULL-memory mode, which is
+    ##    what SNOPT picks at these problem sizes (n = 20 or 21, well under its 75-variable
+    ##    threshold). Setting it changes nothing. `Hessian frequency` is the one that bites,
+    ##    and setting it moves BOTH numbers in the echo. So only the frequency is exposed.
+    ##  * `Nonderivative linesearch` is a VALUELESS keyword: SNOPT switches on the keyword
+    ##    appearing at all, so passing 0 turns it ON exactly as passing 1 does. It is
+    ##    therefore a bool here, emitted only when True. It matters because the flow
+    ##    Jacobian is ~84% of a solve, so a line search that needs only function values is
+    ##    the largest single saving available on this problem. In the echo it appears
+    ##    abbreviated as `Nonderiv.  linesearch`, not by its full name.
+    snopt_hessian_frequency: int = field(default=None, metadata={"help": "SNOPT 'Hessian frequency' (default 99999999, i.e. never reset). 'Hessian updates' is inert in the full-memory mode this problem size selects"})
+    snopt_elastic_weight: float = field(default=None, metadata={"help": "SNOPT 'Elastic weight' (default 1e5): the penalty on constraint violation in elastic mode, which is how SNOPT copes with an infeasible start"})
+    snopt_crash_option: int = field(default=None, metadata={"help": "SNOPT 'Crash option' (default 3): how the initial basis is chosen"})
+    snopt_proximal_point_method: int = field(default=None, metadata={"help": "SNOPT 'Proximal point method' (default 1): how far the first major moves from the given start"})
+    snopt_nonderivative_linesearch: bool = field(default=False, metadata={"help": "SNOPT 'Nonderivative linesearch'. Valueless keyword -- emitted only when True, and passing 0 would turn it ON, not off"})
     ## The two SNOPT knobs that are genuine analogues of the repo's best open IPOPT lead.
     ## `Major step limit` bounds ||dx|| <= limit*(1 + ||x||) per major iteration, which is
     ## the trust region the learned formulation wants -- the runaway is ONE accepted
@@ -1202,6 +1238,20 @@ class IKFlowProgram:
                                      int(self.options.ipopt_watchdog_trigger))
         if self.options.ipopt_max_soc is not None:
             solver_options.SetOption(IpoptSolver().solver_id(), "max_soc", int(self.options.ipopt_max_soc))
+        ## The quasi-Newton and barrier knobs, added for the solver-settings sweep. Every
+        ## one of these was confirmed to reach IPOPT with `used = yes` in the user-options
+        ## echo before being exposed -- `print_user_options` above is what makes that
+        ## checkable, and it is why `linear_solver` is absent (Drake's IPOPT rejects
+        ## anything but `spral`/`custom`) and why `mu_init` carries the warning it does.
+        for name, value, cast in (
+                ("limited_memory_max_history", self.options.ipopt_limited_memory_max_history, int),
+                ("limited_memory_update_type", self.options.ipopt_limited_memory_update_type, str),
+                ("mu_init", self.options.ipopt_mu_init, float),
+                ("alpha_for_y", self.options.ipopt_alpha_for_y, str),
+                ("recalc_y", self.options.ipopt_recalc_y, str),
+                ("bound_relax_factor", self.options.ipopt_bound_relax_factor, float)):
+            if value is not None:
+                solver_options.SetOption(IpoptSolver().solver_id(), name, cast(value))
         if self.options.max_iter is not None:
             solver_options.SetOption(IpoptSolver().solver_id(), "max_iter", int(self.options.max_iter))
         return solver, solver_options
@@ -1246,9 +1296,19 @@ class IKFlowProgram:
                 ("Superbasics limit", self.options.snopt_superbasics_limit, int),
                 ("Major step limit", self.options.snopt_major_step_limit, float),
                 ("Violation limit", self.options.snopt_violation_limit, float),
-                ("Function precision", self.options.snopt_function_precision, float)):
+                ("Function precision", self.options.snopt_function_precision, float),
+                ("Hessian frequency", self.options.snopt_hessian_frequency, int),
+                ("Elastic weight", self.options.snopt_elastic_weight, float),
+                ("Crash option", self.options.snopt_crash_option, int),
+                ("Proximal point method", self.options.snopt_proximal_point_method, int)):
             if value is not None:
                 solver_options.SetOption(SnoptSolver.id(), name, cast(value))
+        ## A VALUELESS keyword, so it cannot live in the table above: SNOPT switches to the
+        ## gradient-free line search on the keyword being present at all, and `= 0` turns it
+        ## ON exactly as `= 1` does. Emitting it only when True is the only way to express
+        ## "off". Verified in the parameter echo, where it reads `Nonderiv.  linesearch`.
+        if self.options.snopt_nonderivative_linesearch:
+            solver_options.SetOption(SnoptSolver.id(), "Nonderivative linesearch", 1)
         ## The BUDGET, which is a different thing from the tolerances above and is NOT left
         ## at each solver's own default. The controlled variable of this comparison is the
         ## WALL CLOCK, so a solver quietly stopping at its own iteration default is being
