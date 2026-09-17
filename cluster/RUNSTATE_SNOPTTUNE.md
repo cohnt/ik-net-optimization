@@ -93,3 +93,20 @@ branch did not perturb the SNOPT path.
 The twelfth row (iiwa contained-grasp native) had its shards straddle two collections and reports
 "could not be merged" -- that is `collect_results.sh`'s known split-shard case, not a failure; it
 merges on a later collection once all eight shards sit under one staging directory.
+
+## Results as they land
+
+**`Nonderivative linesearch` — REFUTED, 2026-09-17 15:20.** The lead candidate, and the only one
+with a mechanism tied to the gradients. On 11 of 12 rows it is **5 better, 6 worse, none
+significant**, pooled 3806 -> 3774. The pre-registered rule needs >= 9 of 12 better with at least
+one significant, so it fails decisively rather than narrowly.
+
+Two things worth keeping from it. Its real mechanism is a **throughput cost**: median iterations
+591 -> 761 and wall clock 10.2 -> 20.2 s on the grasp rows, timeouts 22 -> 70, because a
+gradient-free line search needs more function evaluations per major and here an evaluation is a
+flow Jacobian. And the **churn is enormous** — +95/-94 on iiwa contained-grasp paired, +98/-94 on
+Panda contained-grasp paired — the same symmetric reshuffle stage STEP measured, where ~20% of
+cells flip each way for a net of one to four.
+
+This is stage STEP repeating: a 60-cell lead (+12/240, p = 0.20) with a plausible mechanism, gone
+at 480 cells. **Weaken the prior on the two combinations built on this setting.**
