@@ -725,7 +725,8 @@ contained task joint space needs 970 median iterations against 48 on the free on
 fielded those rows under both solvers. **It does not move.** SNOPT never flips a verdict toward the
 learned arm and flips one away from it (Panda contained paired goes from a decisive learned win
 under IPOPT, 437-323 p = 2.3e-20, to a tie under SNOPT, 280-298 p = 0.26). The containment verdicts
-stand exactly as measured under IPOPT; step rejection is the remaining candidate.
+stand exactly as measured under IPOPT. Step rejection was the remaining candidate and is now
+refuted too, so the lever is closed on both axes.
 
 ### Future work on this axis
 
@@ -735,10 +736,9 @@ stand exactly as measured under IPOPT; step rejection is the remaining candidate
   inner local optimizer is not selectable on the cluster's Drake at all — leaving it unset is a
   supported state (NLopt supplies LD_LBFGS) — **TODO** when that Drake carries the local-optimizer
   PRs.
-- **The step-rejection family is untouched and is the next question.** `snopt_major_step_limit` and
-  `snopt_violation_limit` are plumbed and unset, as are IPOPT's three. `Major step limit` bounds
-  `||dx|| <= limit*(1+||x||)` per major iteration and `Violation limit` is the counterpart of
-  `ipopt_theta_max_fact`.
+- **The step-rejection family is DONE** (stage STEP): refuted at 480 cells, nothing adopted, all
+  five knobs left plumbed and `None`. SNOPT's `Major step limit` moves INFO 13, not the INFO 41 it
+  was predicted to move, and is a trade between the robots.
 - **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the robust
   logging we need btw, work with what you have, don't write new logging stuff in Drake or
   anything."*
@@ -862,7 +862,8 @@ property.** It is not that the learned formulation cannot express these grasps; 
 iteration costs 35 ms against joint space's 3.6 ms. Reported honestly, that parity costs **180 s
 against 1.6 s** — 629 median iterations to joint space's 448, at ~10x the per-iteration price, so
 roughly a 14x wall-clock premium for a tie. **Anything that lifts the learned arm to ~450 cells
-inside 45 s closes this row**; step rejection is the candidate, and a better chart is not, because
+inside 45 s closes this row**; step rejection was the candidate and is refuted (it recovers 35 of
+the 44 budget-bound cells and breaks as many elsewhere), and a better chart is not, because
 `n4`'s violations here are 2e-08 — it is converging correctly, just slowly.
 
 The learned arm's own residual failure set (28/17 cells free, 81/65 contained, cells joint space
@@ -1087,38 +1088,75 @@ A lesson these stages share: **suppressing the runaway does not buy success.** `
 runaway cells 31 → 7 for exactly 19/19 on success; `lift_q` reached zero runaways while losing 78
 cells net.
 
-### Step ACCEPTANCE is a different lever, and the best open lead
+### Step rejection: measured, refuted, and it exposed something bigger (stage STEP)
 
-Everything refuted above altered the *derivatives* the solver was handed. Filter tuning leaves the
-program exactly as written and changes only which trial points are accepted. The mechanism it
-attacks: IPOPT holds **variable bounds** at every iterate but general constraints only at
-convergence, and in the learned formulation `q` is not a decision variable, so the joint-limit rows
-are general constraints and an iterate may sit at `|q| = 1e8`. That is why `lift_q` gave zero
-runaways, at the cost of seven equality rows. `ipopt_theta_max_fact` attacks it without touching the
-formulation: IPOPT rejects any trial point whose constraint violation exceeds
-`theta_max_fact * max(1, theta(x_0))`.
+**The last lever on the solver axis, and it is closed.** Filter tuning leaves the program exactly
+as written and changes only which trial points are accepted, so it was never touched by the
+gradient-damping refutation. Two stages settled it. `stage_STEP` in `cluster/gen_manifest.py` owns
+the five knobs and reuses `STEP_REJECTION_KNOBS` as a **whitelist**, the mirror of stage SWEEP's
+blacklist, so the two questions cannot merge from either side. All five are now proven to reach
+their solver from its own parameter echo (`tests/test_solver_plumbing.py`) — they never had been.
 
-The trajectories say why this should work. Recording every iterate through `VarsToQ` on five runaway
-cells, **the solve is well behaved for 22 to 110 iterations and then jumps in a single step** — on
-three of the five `|q|_inf` goes from ~2.5 to past 1e3 in one iterate. Not a slow drift the solver
-could be nursed through; **one accepted catastrophic step, which is exactly what a filter ceiling can
-refuse.**
+**The screen: 16 settings x 6 rows x 60 cells, and not one reached significance.** Best pooled over
+the 240 selection cells was IPOPT `theta2`/`soc0`/`theta1` at 203 against 191 (p = 0.10-0.16) and
+SNOPT `mstep0p5` at 127 against 110 (p = 0.060). The `theta_max_fact` table was narrowed in advance
+by the old probe's own archive, which is still on disk: `full_theta10` is **bit-identical** to
+`full_base` to fourteen digits, so >= 10 is a proven null and the selftest refuses one.
 
-Local probe only, 16 cells, one seed, one chart — a lead, not a measurement: default 11/16 with 5
-runaways at median cost 7.61; `ipopt_theta_max_fact=1` **14/16 with 2 runaways at cost 6.75**; `=10`
-bit-identical to the default; `ipopt_watchdog_trigger=0` and `ipopt_max_soc=8` both 11/16. Three
-cells gained, **none lost**, cost *improved*, effect sharply thresholded between 1 and 10 — the first
-intervention that both suppresses the runaway **and** converts it into success. All three fields are
-plumbed and default to None. **Not measured**: needs the grasp task, the Panda, both protocols, 480
-cells.
+**The confirmation at 480 cells x 12 rows refuted both promoted settings, and reversed the screen.**
+`theta1` is **significantly worse** — pooled +322/-421 over 2,880 cells, p = 0.00032 — and on the
+very row the screen liked best, Panda pose paired, the screen's 45 -> 53 became **404 -> 391**.
+`soc0` is a clean null (+302/-321, p = 0.47). **The mechanism column reversed too**: at 60 cells
+`theta1` appeared to cut restoration on Panda pose 34.7% -> 24.9%, and at 480 cells it *raises* it,
+26.8% -> 31.4%. A plausible mechanism agreeing with a spurious outcome did **not** protect against
+the false positive; both were the same noise.
 
-**Step control is not only runaway prevention.** Thomas: *"step rejection (and trust region ideas)
-can still help even if we're not running away. There's a reason people like trust region solvers."*
-The runaway *mechanism* is absent on the adopted `n4`/`n6` rungs, and that does not retire the lever:
-a neural-network chart produces ill-conditioned derivatives whether or not any iterate blows up, and
-the live targets are the cells that converge too slowly and the cells that stall at a moderate
-violation with budget left. Trust-region *options inside an existing solver* are in scope;
-implementing a trust-region *solver* is a different project.
+**The SNOPT hypothesis is refuted with a named replacement.** A smaller `Major step limit` was
+predicted to convert INFO 41 (`current point cannot be improved`, a line search that cannot find a
+step) into convergence. It does not: `mstep0p5` gains 15 cells of 360 while INFO 41 stays at
+**exactly 81**, unchanged. What falls is INFO 13 `nonlinear infeasibilities minimized`, 51 -> 42. The
+step limit helps SNOPT *reach* feasibility, not escape a stalled line search. It is also a **trade,
+not a win** — +5/+7 on the iiwa against -7/-6 on the Panda — which is why the pre-registered harm
+clause excluded it. Measured at 60 cells only.
+
+#### What it exposed: per-cell outcomes are unstable, and that is the real finding
+
+Pooled over 5,760 cell-comparisons, with a same-configuration re-run as the control:
+
+| comparison | failures that became successes | successes that became failures | net |
+| --- | --- | --- | --- |
+| same config, different run | 27/458 = **5.9%** | 14/5302 = **0.3%** | +13 |
+| default -> `theta1` | 322/445 = **72.4%** | 421/5315 = **7.9%** | -99 |
+| default -> `soc0` | 302/445 = **67.9%** | 321/5315 = **6.0%** | -19 |
+
+**About 70% of the learned arm's residual failures are recovered by a single filter-option change —
+and the same change breaks 6-8% of the cells that already worked.** Successes outnumber failures
+about 12:1, so the small proportional loss cancels the large proportional gain almost exactly. This
+is not a cap artefact: the same-config control flips 5.9%, and even failures that **converged
+wrong rather than timing out** recover at 48-67%.
+
+So the residual failures are **not intrinsically hard**. On the iiwa contained-grasp row `soc0`
+recovers 35 of the 44 cells that only a 180 s budget otherwise reaches — but it also recovers 73% of
+the cells that *even 180 s cannot solve*, so the recovery is undirected, not targeted at the
+budget-bound ones. The honest statement is that a cell's outcome is close to a coin weighted by
+trajectory, and **no single global setting wins, because the reshuffle is symmetric in proportion.**
+
+**The implication is for multi-start, not for tuning.** If ~70% of failures yield to *some* setting,
+the value is in varying the setting per attempt and reporting "solved within k restarts" — the
+harness already supports exactly that (`solved_within_k`), and CLAUDE.md already lists more guesses
+per target as an open item. Picking one filter setting globally is refuted; picking several and
+taking the best is a different, untested, and **legitimate** proposition, since it searches over
+*solver configurations* rather than over initial guesses.
+
+**Nothing is adopted** (Thomas's call in advance: report, do not field). The knobs stay plumbed and
+`None`. The prior 16-cell lead that motivated this — `theta_max_fact=1` at 14/16 against 11/16 — was
+measured on `ddp-r1` when the runaway was live, and does not survive the adopted rungs.
+
+**A methodological number worth keeping**: CLAUDE.md's "reproducibility at the cap is +/-1 cell" was
+measured on 60-cell grids. At 480 cells with 52-88 timeouts a same-configuration re-run moves up to
+**7 net and 19 discordant** cells. Every one of the 41 discordant cells across 12 such rows was
+cap-bound, and the three rows with zero timeouts had zero discordance — so the solve path is exactly
+reproducible on cells that converge, and the band scales with the cap-bound population, not the grid.
 
 ## The analytic chart: eight branches, and what the last 0.6% is
 
@@ -1253,9 +1291,11 @@ made explicitly in advance.
 
 Live items:
 
-- **Step rejection (IPOPT filter tuning)** is the best open lead and the remaining candidate for the
-  iiwa grasp row — see "Step ACCEPTANCE" above. Needs the grasp task, the Panda, both protocols,
-  480 cells. `snopt_major_step_limit` / `snopt_violation_limit` are its SNOPT counterparts.
+- **Step rejection is CLOSED** — measured at 60 and 480 cells, refuted, see "Step rejection" above.
+  What it opened instead: ~70% of the learned arm's residual failures yield to *some* filter
+  setting, so **multi-start over solver configurations**, reported as "solved within k restarts", is
+  the live descendant of this lever. Untested, and legitimate — it searches over solver settings,
+  not over initial guesses.
 - **Whether pose containment is adopted** is Thomas's call; fingertip is the better point if it is.
 - **A harder problem formulation** beyond the hardened scene, if he wants one — his idea, his call.
 
