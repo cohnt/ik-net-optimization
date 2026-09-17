@@ -709,6 +709,30 @@ own successes, and with success counts from 34 to 213 those are different cell s
 cells-both-solved numbers quoted above are the honest form, and they are what the campaign's
 cost rule requires.
 
+### THE GRASP-CONTAINMENT LEVER IS CLOSED: a solver change does not flip it
+
+CLAUDE.md has carried a standing reminder that grasp containment is "the lever to revisit
+whenever another knob moves the picture, a solver change most of all" -- because on the
+contained task joint space needs 970 median iterations against 48 on the free one, so a solver
+that changes how the baseline copes with a hard active set could plausibly change the verdict.
+Stage SOLVER2 fielded those rows under both solvers. **It does not.**
+
+Learned against joint space, within each solver, 480 cells:
+
+| row | IPOPT | SNOPT |
+| --- | --- | --- |
+| iiwa contained, native | JS 442-392, p = 1.6e-06 | JS 292-175, p = 1.4e-14 |
+| iiwa contained, paired | JS 442-406, p = 3.1e-04 | JS 292-212, p = 1.6e-07 |
+| Panda contained, native | **L 461-323, p = 1.2e-32** | **L 438-298, p = 3.5e-27** |
+| Panda contained, paired | **L 437-323, p = 2.3e-20** | JS 298-280, p = 0.26 (tie) |
+
+**SNOPT never flips a verdict toward the learned arm and flips one away from it** -- Panda
+contained paired goes from a decisive learned win under IPOPT to a tie. Same on the free task:
+Panda grasp free paired is a learned win under IPOPT (474-453) and a tie under SNOPT
+(397-404). So the containment verdicts stand exactly as measured under IPOPT, and **the lever
+is closed for the solver axis**. Any future attempt to move it has to come from somewhere else
+-- step rejection is the remaining candidate.
+
 ### Future work on this axis
 
 - **NLopt settings are unswept**, by decision (Thomas, 2026-09-16: *"Store testing NLOPT
@@ -1628,11 +1652,9 @@ charts lost) or the contained one (where the iiwa lost at p = 0.0004). The iiwa 
 deficit.
 
 Note the baseline is back near saturation on this configuration (453 / 457), which is the
-ceiling the hardening was meant to remove -- so **grasp containment remains the lever to
-revisit**, and it is kept available behind `--target-placement shelf`. It should be re-tried
-whenever another knob moves the picture, a solver change most of all: on the contained task
-joint space needs 970 median iterations against its 48 here, so a solver that changes how the
-baseline copes with a hard active set could change that verdict.
+ceiling the hardening was meant to remove, so grasp containment is kept available behind
+`--target-placement shelf`. **The solver axis has since tested it and it does not move** --
+see "THE GRASP-CONTAINMENT LEVER IS CLOSED" above.
 
 ### WHY THE GRASP TASK LOOKS LIKE "ONLY A TIE", AND WHAT IS ACTUALLY THERE
 
@@ -1719,8 +1741,9 @@ ms/it.
 **These are cap-bound near-misses, not divergence.** The runaway signature is
 `max_violation` >= 1e+03; this is 1e-02. So the remaining iiwa grasp deficit is the learned
 arm converging too slowly on a subset of cells, which is a different problem from the
-gain-ceiling runaway and is plausibly reachable by the deferred solver work -- step
-rejection, or SNOPT/NLOPT -- rather than by another chart.
+gain-ceiling runaway and is not reachable by another chart. **The SNOPT/NLopt half of that
+hope is now refuted** -- both are worse here (see the solver axis) -- so step rejection is
+what is left.
 
 ### WHAT THE CALIBRATION FIX WAS WORTH ON THE IIWA, ISOLATED
 
