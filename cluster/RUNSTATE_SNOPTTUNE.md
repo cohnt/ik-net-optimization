@@ -5,7 +5,8 @@ paused session can be resumed by any session — including one with no memory of
 
 ## What is running
 
-Stage SNOPTTUNE, submitted 2026-09-17 from branch `step-rejection` at commit `e2a3642`.
+Stage SNOPTTUNE, submitted 2026-09-17 12:46 from branch `step-rejection`, staged at commit
+`4578996`. Slurm jobs **5667606-5667609**, one per node on `xeon-g6-volta`.
 SNOPT's own configuration at campaign scale: **13 settings columns x 12 rows x 480 cells**,
 1,248 sharded items, `PROCS=8`, 4 nodes on `xeon-g6-volta`. Allotment ~290 core-hours, ~12 h wall.
 
