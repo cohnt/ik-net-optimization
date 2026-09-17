@@ -2,9 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Keep this file compact.** It is read at the start of every session, so its cost is paid
+repeatedly. When a measurement supersedes an older one, **delete the old table and keep the
+conclusion**; git history holds the numbers.
+
 ## Project
 
-Research code (ROS-style package `combining_kinematics`) for solving inverse kinematics with a **normalizing-flow IK network (IKFlow) placed inside a Drake optimization program**, so that collision avoidance, joint limits, and task costs are imposed on the network's *output*. The point of the repo is the three-way comparison of formulations for the same IK problem:
+Research code (ROS-style package `combining_kinematics`) for solving inverse kinematics with a
+**normalizing-flow IK network (IKFlow) placed inside a Drake optimization program**, so that
+collision avoidance, joint limits and task costs are imposed on the network's *output*. The point
+of the repo is the three-way comparison of formulations for the same IK problem:
 
 | Formulation | Decision variables | `VarsToQ` |
 | --- | --- | --- |
@@ -12,472 +19,543 @@ Research code (ROS-style package `combining_kinematics`) for solving inverse kin
 | **numerical** (`...ProgramNumerical`) | joint angles `q` (7) | identity |
 | **analytic** (`...ProgramAnalytic`) | end-effector pose `xyz_rpy` (6) + redundancy parameter `psi` (1) | closed-form S-R-S IK (`src/*_analytic_ik.py`) |
 
-All three go through the same `IKFlowProgram` machinery, so a change to constraints/costs affects all of them. `workshop-paper-draft.pdf` is the write-up. The sibling repo `../codebase/` is the analytic-vs-numerical project this one builds on (`scripts/iiwa/iiwa_collision.py` imports `src.iiwa_experiments` from there); it has its own CLAUDE.md and should be treated as read-only from here.
+All three go through the same `IKFlowProgram` machinery, so a change to constraints/costs affects
+all of them. `workshop-paper-draft.pdf` is the write-up — an early rough draft, orientation only,
+not a replication target. The sibling repo `../codebase/` is the analytic-vs-numerical project this
+one builds on (`scripts/iiwa/iiwa_collision.py` imports from there); treat it as read-only.
 
 ## Environment and running
 
-No package manifest. Dependencies: `pydrake` from a local Drake build (`~/opt/rlg/drake-build`, already on `PYTHONPATH`; provides IPOPT and SNOPT), `torch`, `numpy`, `tqdm`, and `ikflow` + `jrl` (Jeremy Morgan's IKFlow / Jrl packages — **not** installed in the default env; check `python -c "import ikflow"` before assuming a script can run).
+No package manifest. Dependencies: `pydrake` from a local Drake build (`~/opt/rlg/drake-build`,
+already on `PYTHONPATH`; provides IPOPT and SNOPT), `torch`, `numpy`, `tqdm`, and `ikflow` + `jrl`
+(Jeremy Morgan's packages — **not** in the default env; check `python -c "import ikflow"` first).
 
 Scripts append the repo root to `sys.path` themselves, so run them from anywhere:
 
 ```bash
-# The current harness (paired grid, feasibility-verified success -- prefer these):
 python scripts/panda/panda_benchmark.py --task mug  --targets 15 --guesses 3 --config latent
 python scripts/panda/panda_benchmark.py --task pose --targets 15 --guesses 3 --config latent
 python scripts/iiwa/iiwa_benchmark.py   --task mug  --targets 12 --guesses 2 --config latent
 python scripts/collate.py 'results/*/benchmark/*/summary.json'
-
-# The older per-experiment scripts (panda_mug*.py, panda_pose_headtohead.py, *_collision.py,
-# iiwa_mug.py) are kept for comparability with archived results; iiwa_collision.py needs
-# ../codebase on sys.path.
 ```
 
-There is no test suite or lint config; the older scripts are configured by editing the `####### Options #######` block at the top. Solver logs and summary JSON go to `results/` (gitignored). Visualization goes to Meshcat via `StartMeshcat()`; the mug experiments start a *second* Meshcat instance because `GenerateDiagramWithMug` rebuilds the whole diagram per target.
+The older per-experiment scripts (`panda_mug*.py`, `panda_pose_headtohead.py`, `*_collision.py`,
+`iiwa_mug.py`) are kept for comparability with archived results and are configured by editing the
+`####### Options #######` block at the top; `iiwa_collision.py` needs `../codebase` on `sys.path`.
+There is no test suite beyond `tests/` (invariant guards, not a suite) and no lint config. Solver
+logs and summary JSON go to `results/` (gitignored). Visualization goes to Meshcat; the mug
+experiments start a *second* Meshcat because `GenerateDiagramWithMug` rebuilds the diagram per
+target.
 
-`models/panda/panda_no_hand.urdf` and `panda_jrl.urdf` used to contain hardcoded absolute mesh paths from the original development machine, which made the panda scene fail to load anywhere else. Both now use `package://combining_kinematics/...` URIs and the meshes are vendored, so the scene is portable (fixed in `c5f7ea0`).
-
-The panda model weights are downloaded by `ikflow` (`panda__full__lp191_5.25m`); the iiwa weights are a local pickle, `models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl` (gitignored — must be obtained separately).
+Panda weights download via `ikflow` (`panda__full__lp191_5.25m`); iiwa weights are local pickles
+under `models/iiwa14/` (gitignored — obtained separately). `models/panda/*.urdf` use
+`package://combining_kinematics/...` URIs with vendored meshes, so the scene is portable.
 
 ## Architecture
 
 ### `src/generic_program.py` — the shared program
 
-`ProgramOptions` is the single dataclass configuring everything (costs, tolerances, solver, seeding, dtype, logging). `IKFlowProgram` owns the Drake diagram, the plant, its `ToAutoDiffXd()` copy, and both contexts.
+`ProgramOptions` is the single dataclass configuring everything (costs, tolerances, solver,
+seeding, dtype, logging). `IKFlowProgram` owns the Drake diagram, the plant, its `ToAutoDiffXd()`
+copy and both contexts.
 
-Constraints are **not** added to Drake one at a time. Each `Create*Constraint` method builds an `IKFlowConstraints(lb, ub, eval_func)` and appends it to `self.constraints`; `ApplyConstraints` then adds a *single* Drake generic constraint whose evaluator (`EvalAllConstraints`) computes `q = VarsToQ(vars)` and the forward kinematics **once** and dispatches the cached `(vars, q, pose)` to every `eval_func`. That sharing is the reason for the indirection — the network forward/backward pass is the dominant cost, so never add a constraint that recomputes `VarsToQ` itself.
+Constraints are **not** added to Drake one at a time. Each `Create*Constraint` builds an
+`IKFlowConstraints(lb, ub, eval_func)` and appends it to `self.constraints`; `ApplyConstraints`
+adds a *single* Drake generic constraint whose evaluator (`EvalAllConstraints`) computes
+`q = VarsToQ(vars)` and the forward kinematics **once** and dispatches the cached `(vars, q, pose)`
+to every `eval_func`. The network pass dominates cost, so **never add a constraint that recomputes
+`VarsToQ` itself**.
 
-`Solve()` configures IPOPT or SNOPT from the options, registers a visualization callback (which also appends every iterate to `options.vars_file` when set), keeps `program.last_iterate` so any abnormal exit can still be verified, and returns Drake's `MathematicalProgramResult`.
+`Solve()` configures the solver from the options, registers a visualization callback (which also
+appends every iterate to `options.vars_file` when set), keeps `program.last_iterate` so any
+abnormal exit can still be verified, and returns Drake's `MathematicalProgramResult`.
 
 ### Per-robot subclasses (`src/panda_program.py`, `src/iiwa_program.py`)
 
-Each robot implements `__init__` (frames, plant sizes, model loading), `create_prog` (declares decision variables, sets initial guesses, builds `self.jacobian_gen`, calls `add_constraints` / `add_costs`), `ik_inference`, and `VarsToQ`. The `...MugProgram` subclasses additionally swap `self.frame` from the end-effector (the frame the flow was *trained* on) to `between_fingers` (the frame the grasp constraint acts on), keeping `X_grasp_ee` so seeds can still be expressed in the network's frame. A mug grasp constrains only the gripper's position in the mug frame (`x = y = 0` exactly — an equality, because that is what the task is; `z` within `mug_height`), leaving orientation free — hence the overridden `CreateIKConstraint` and `SeedCandidates`.
+Each robot implements `__init__` (frames, plant sizes, model loading), `create_prog` (decision
+variables, initial guesses, `self.jacobian_gen`, `add_constraints`/`add_costs`), `ik_inference` and
+`VarsToQ`. The `...MugProgram` subclasses swap `self.frame` from the end-effector (the frame the
+flow was *trained* on) to `between_fingers` (the frame the grasp acts on), keeping `X_grasp_ee` so
+seeds can still be expressed in the network's frame. A mug grasp constrains only the gripper's
+position in the mug frame (`x = y = 0` exactly — an equality, because that is the task; `z` within
+`mug_height`), leaving orientation free — hence the overridden `CreateIKConstraint` and
+`SeedCandidates`.
 
 ### Checkpoints carry their architecture (`src/flow_loading.py`)
 
 A `.pkl` is a bare `nn_model` state dict — `IKFlowSolver.load_state_dict` is a plain
-`pickle.load` — so **weights travel without their architecture**. It used to be hardcoded at
-four call sites, all asserting `nb_nodes = 12`, `coeff_fn_internal_size = 1024`,
-`rnvp_clamp = 2.5`. `nb_nodes` and `rnvp_clamp` change the forward pass **without changing
-any parameter shape**, so a mismatch loads cleanly and is silently a different chart.
+`pickle.load` — so **weights travel without their architecture**. `nb_nodes` and `rnvp_clamp`
+change the forward pass **without changing any parameter shape**, so a mismatch loads cleanly and
+is silently a different chart.
 
-Each checkpoint now has a sidecar, `<name>.arch.json`, written by
+Each checkpoint has a sidecar `<name>.arch.json`, written by
 `scripts/training/export_ckpt_to_pkl.py` from the training checkpoint's own
-`hyper_parameters.base_hparams`. `LoadFlowSolver(robot, checkpoint)` reads it, builds the
-solver, and cross-checks it against the weights: `nb_nodes` (module-list length / 2),
-`coeff_fn_config`, `coeff_fn_internal_size` and the network width are all recoverable from
-state-dict shapes and are verified; a sidecar contradicting them **raises**. **`rnvp_clamp`
-is the one field no check can catch** — a scalar used in the forward pass and stored nowhere
-— which is why the sidecar is mandatory for new checkpoints rather than merely convenient.
-The resolved architecture is attached as `solver.arch` so runs record what they loaded
-rather than what they asked for. A checkpoint with no sidecar falls back to the legacy
-architecture with a `RuntimeWarning`; sidecars are backfilled for all three checkpoints on
-disk (`scripts/training/backfill_arch_sidecars.py`), so nothing depends on that path.
+`hyper_parameters.base_hparams`. `LoadFlowSolver(robot, checkpoint)` reads it and cross-checks
+against the weights: `nb_nodes` (module-list length / 2), `coeff_fn_config`,
+`coeff_fn_internal_size` and the network width are all recoverable from state-dict shapes and are
+verified; a contradicting sidecar **raises**. **`rnvp_clamp` is the one field no check can
+catch**, which is why the sidecar is mandatory. The resolved architecture is attached as
+`solver.arch`. No sidecar → legacy architecture with a `RuntimeWarning`; all on-disk checkpoints
+are backfilled (`scripts/training/backfill_arch_sidecars.py`).
 
-**Hold `dim_latent_space` at each robot's baseline** — iiwa14 8, Panda 7. The latent width
-*is* the program's decision-variable count (21 for the iiwa, 20 for the Panda), so varying it
-changes the optimization problem rather than the chart; holding it also means a checkpoint
-loaded against the wrong robot fails the shape check instead of loading silently.
+**Hold `dim_latent_space` at each robot's baseline** — iiwa14 8, Panda 7. The latent width *is* the
+decision-variable count (21 iiwa, 20 Panda), so varying it changes the optimization problem rather
+than the chart; holding it also means a checkpoint loaded against the wrong robot fails the shape
+check instead of loading silently.
 
 ### Gradients through the flow
 
-`VarsToQ` is dual-path: under `float` it returns a plain forward pass; under `AutoDiffXd` it calls `self.jacobian_gen` (one reverse pass yields both `dq/dvars` and `q`) and chain-rules `jacobian @ vars_gradients` into fresh `AutoDiffXd` objects. Both paths go through `MakeFlowInference(nn_model, ...)`, a free function of the lumped variables that closes over the network and nothing else — which is what lets `FlowJacobianGen` memoise `torch.compile(jacrev(...))` per process instead of per program (`ProgramOptions.compile_flow_jacobian`). Analytic formulations instead evaluate `pydrake.math` trig on templated types (`RigidTransform_[T]`, `RollPitchYaw_[T]`) so Drake's own autodiff propagates.
+`VarsToQ` is dual-path: under `float` a plain forward pass; under `AutoDiffXd` it calls
+`self.jacobian_gen` (one reverse pass yields both `dq/dvars` and `q`) and chain-rules
+`jacobian @ vars_gradients` into fresh `AutoDiffXd` objects. Both go through
+`MakeFlowInference(nn_model, ...)`, a free function of the lumped variables closing over the
+network and nothing else — which is what lets `FlowJacobianGen` memoise `torch.compile(jacrev(...))`
+per process rather than per program. Analytic formulations instead evaluate `pydrake.math` trig on
+templated types so Drake's own autodiff propagates.
 
 Numerical facts worth not rediscovering, several encoded in `ProgramOptions` defaults:
 
-- Evaluate the flow in **float64** (`use_float64=True`). Gradients are analytic, so this is not about the solver differencing anything: a float32 network produces *values* with a ~1e-7 noise floor, which corrupts every quantity computed as a difference over a small step — line-search actual-vs-predicted reduction, convergence tests, and SNOPT's optional derivative verification. `snopt_function_precision` tells SNOPT that noise floor when running in float32.
-- **`ik_constraint_tol` forms no constraint bound.** The pose rows are a hard equality (`lb = ub = 0`); what survives of the option is the benchmark's gate. See "The tolerance ladder" below.
-- The IK pose constraint is six rows: the per-axis position error, then the **roll-pitch-yaw residual** `rpy(FK(q)) - rpy(target)` wrapped to (-pi, pi] (`orientation_error_rpy`). `ProgramOptions.orientation_error_form` picks the bounds — `rpy` (the default) pins the residual to zero as `../codebase`'s `EEPoseConstraint` does, `rpy_boxed` allows `±ori_tol` per row. **Three signed rows are deliberate**: earlier revisions used a scalar angle `2*arccos(|q.q_target|)`, and taking a norm of a three-component error is exactly what puts a branch point at zero error — infinite derivative there, plus an `eps` clamp that returned an `AutoDiffXd` with an *empty* derivative vector. Three rows have neither problem, and the chart's degeneracies (gimbal lock, the `±pi` wrap) are properties of the *target pose*, not of the error. Commit `0be5342` holds the retired forms and the measurements behind the decision.
-- Constraint rows with an identically-zero gradient (e.g. the homogeneous row of a transformed point) break LICQ — the mug constraints deliberately drop it.
-- The conditioning variable `c` is boxed near the target (`c_position_slack=0.25`) to keep the flow inside its trained workspace — a conditioning heuristic, not a correctness requirement, since the IK constraint is imposed on `FK(q)` and an out-of-distribution `c` cannot produce a false solution. Note the exposure cliff at 0.5 recorded under "The flow's own gain": the default sits just under it, which is luck rather than design.
-- **There is no seeding search, deliberately.** A previous revision drew 256 `(c, z)` candidates, scored them against the problem's own constraints and started from the best — not initialisation but solving part of the problem outside the solver, which only the learned formulation can afford, so it flatters exactly the column under test. The machinery is removed, not disabled. `SetStartFromQ(q_init)` is the only way to set an initial guess, and every formulation in a comparison gets the same `q_init`.
+- Evaluate the flow in **float64** (`use_float64=True`). Gradients are analytic, so this is not
+  about differencing: a float32 network produces *values* with a ~1e-7 noise floor, which corrupts
+  every quantity computed as a difference over a small step — line-search actual-vs-predicted
+  reduction, convergence tests, SNOPT's derivative verification. `snopt_function_precision` tells
+  SNOPT that noise floor when running in float32.
+- **`ik_constraint_tol` forms no constraint bound.** The pose rows are a hard equality
+  (`lb = ub = 0`); what survives of the option is the benchmark's gate (see the tolerance ladder).
+- The IK pose constraint is six rows: per-axis position error, then the **roll-pitch-yaw residual**
+  `rpy(FK(q)) - rpy(target)` wrapped to (-pi, pi] (`orientation_error_rpy`).
+  `orientation_error_form` picks the bounds — `rpy` (default) pins the residual to zero,
+  `rpy_boxed` allows `±ori_tol` per row. **Three signed rows are deliberate**: earlier revisions
+  used a scalar angle `2*arccos(|q.q_target|)`, and taking a norm of a three-component error puts a
+  branch point at zero error — infinite derivative, plus an `eps` clamp returning an `AutoDiffXd`
+  with an *empty* derivative vector. Commit `0be5342` holds the retired forms.
+- Constraint rows with an identically-zero gradient (e.g. the homogeneous row of a transformed
+  point) break LICQ — the mug constraints deliberately drop it.
+- The conditioning variable `c` is boxed near the target (`c_position_slack=0.25`) to keep the flow
+  inside its trained workspace — a heuristic, not a correctness requirement, since the IK
+  constraint is on `FK(q)` and an out-of-distribution `c` cannot produce a false solution. Note the
+  exposure cliff at 0.5 below: the default sits just under it, by luck rather than design.
+- **There is no seeding search, deliberately.** A previous revision drew 256 `(c, z)` candidates,
+  scored them against the problem's own constraints and started from the best — solving part of the
+  problem outside the solver, which only the learned formulation can afford. The machinery is
+  removed, not disabled. `SetStartFromQ(q_init)` is the only way to set an initial guess, and every
+  formulation in a comparison gets the same `q_init`.
 
-### Why the Jacobian is a `jacrev` and not a JVP
+### Why the Jacobian is a `jacrev`, not a JVP
 
-Measured, so it does not get re-litigated. The single `J = dq/dvars` (7 x 21) serves every consumer — all eleven constraint rows and the objective gradient — and on one Panda grasp solve **the Jacobian is 84% of the solve and the flow altogether is 96%**.
+Measured, so it does not get re-litigated. The single `J = dq/dvars` (7 x 21) serves every consumer
+— all eleven constraint rows and the objective gradient — and on one Panda grasp solve **the
+Jacobian is 84% of the solve and the flow altogether 96%**. Reverse mode wins on shape: 7 outputs
+against 21 inputs of which only 13 reach the network. Measured: `jacrev` + matmul 17.1 ms and a
+vmapped VJP 16.4 ms (bit-identical) against a vmapped JVP at 47 ms — **forward mode 2.8x slower**,
+with 13 tangents costing the same as 20 (CPU-dispatch bound). The one place a VJP would have won,
+the objective-gradient path, is already covered by sharing the constraint's Jacobian.
 
-Reverse mode is right because of the shape: 7 outputs against 21 inputs, of which only 13 reach the network, so reverse needs 7 passes where forward needs 13-20. Measured, `jacrev` + matmul 17.1 ms and a vmapped VJP 16.4 ms (bit-identical) against a vmapped JVP at 47 ms — **forward mode is 2.8x slower**, 13 tangents cost the same as 20 (confirming CPU-dispatch rather than FLOP binding), and it disagrees with reverse by 6e-8, float32-level error in a float64 model. The one place a VJP would have won, the objective-gradient path, is already covered by sharing the constraint's Jacobian.
-
-**`torch.compile` on the `jacrev` is implemented and worth taking**: **1.48x** on a whole AutoDiffXd `VarsToQ`, agreeing with eager to 3.5e-15, one dynamo graph and no recompiles, for a one-off 8-14 s local / ~35 s cold on the cluster. An old comment saying it was not worth it was measuring a *bound method* — `torch.compile` guards on everything the callable closes over, so each of thirty programs re-triggered dynamo. It is off by default and turned on with `--compile`, because more iterations inside a fixed cap **moves the learned arm's success rate** and only the learned arm benefits — so every run being compared must set it the same way.
+**`torch.compile` on the `jacrev` is worth taking**: **1.48x** on a whole AutoDiffXd `VarsToQ`,
+agreeing with eager to 3.5e-15, one dynamo graph, for a one-off 8-14 s local / ~35 s cluster cold
+cost. An old comment saying otherwise was measuring a *bound method* — `torch.compile` guards on
+everything the callable closes over, so each of thirty programs re-triggered dynamo. It is off by
+default, on with `--compile`, because more iterations inside a fixed cap **moves the learned arm's
+success rate** and only that arm benefits — so **every run being compared must set it the same way**.
 
 ### Profiling
 
-No profiler in the tree. A standalone one (no Drake, no mug scene) lives only in history — recover it with `git show ab3ea15:scripts/profiling/profile_flow.py`. The headline result is that at batch size 1 the flow evaluation is **entirely CPU-bound**: the GPU is never behind the CPU, and float64 and float32 cost the same wall time despite a 3.4x difference in actual GPU kernel time. Roughly 70% of a `jacrev` is CPU-side work — mostly PyTorch/FrEIA Python dispatch, with `cudaLaunchKernel` itself only about 17% — so runtime is bounded by how fast the CPU can describe 2853 operations. Even zero-overhead execution would leave only a ~3x ceiling.
+No profiler in the tree; recover one with `git show ab3ea15:scripts/profiling/profile_flow.py`. At
+batch size 1 the flow evaluation is **entirely CPU-bound**: the GPU is never behind the CPU, and
+float64 and float32 cost the same wall time despite a 3.4x difference in GPU kernel time. Roughly
+70% of a `jacrev` is CPU-side dispatch (PyTorch eager + FrEIA Python; `cudaLaunchKernel` only ~17%),
+so runtime is bounded by how fast the CPU can describe 2853 operations and **even zero-overhead
+execution leaves only a ~3x ceiling**. **Reducing that dispatch cost is out of scope** (Thomas: infra
+fixes for the CPU bottleneck are "future work/possibly not in scope at all") — a number to report,
+not a project.
 
 ### The conditioning frame (read this before touching the learned formulation)
 
-The flow is conditioned on the pose of **the frame it was trained on**, and in both grasp scenes that is *not* the frame the code used to look up by name. `panda_finray.sdf` contains its own body called `panda_hand`, welded to `panda_link7` at `[0, 0, 0.134]` with `rpy [90, 0, 45]`, whereas jrl's Panda — the model IKFlow was trained against — puts `panda_hand` at `[0, 0, 0.107]` with `rpy [0, 0, -45]`. `GetBodyByName("panda_hand")` returns the finray one, which is **27 mm and 120 degrees** away. The iiwa has the same class of error: the scene's `iiwa_link_7` is 45 mm short of the flow's frame.
+The flow is conditioned on the pose of **the frame it was trained on**, and in both grasp scenes
+that is *not* the frame the code used to look up by name. `panda_finray.sdf` contains its own
+`panda_hand` welded to `panda_link7` at `[0, 0, 0.134]`, rpy `[90, 0, 45]`, whereas jrl's Panda —
+the model IKFlow was trained against — puts `panda_hand` at `[0, 0, 0.107]`, rpy `[0, 0, -45]`.
+`GetBodyByName("panda_hand")` returns the finray one, **27 mm and 120 degrees** away. The iiwa's
+`iiwa_link_7` is 45 mm short of the flow's frame.
 
-The symptom is quantitative and unmistakable. Running the flow *forwards* on a random configuration (`rev=False`, which inverts it exactly) returns the latent that would have produced it:
+The symptom is unmistakable. Running the flow *forwards* on a random configuration (`rev=False`,
+which inverts it exactly) returns the latent that would have produced it:
 
-| robot | at the scene frame | at the calibrated frame | typical `|z|` under the prior |
+| robot | at the scene frame | at the calibrated frame | typical `\|z\|` under the prior |
 | --- | --- | --- | --- |
 | Panda | 67.6 | 2.23 | sqrt(7) = 2.65 |
 | iiwa14 | 12.1 | 2.45 | sqrt(8) = 2.83 |
 
-A latent of 67 is the network reporting that the configuration is astronomically unlikely for that conditioning pose. Every iterate of every grasp solve was in that regime. `IKFlowProgram.CalibrateFlowFrame` now measures the offset against `ik_solver.robot.forward_kinematics` at several configurations, checks it is constant (both frames are welded to the same link, so it must be), and caches it as `self.X_ee_flow`; `FlowPoseInWorld()` is what should be used wherever a conditioning pose is formed. `ProgramOptions.calibrate_flow_frame=False` restores the old behaviour for ablations. **This fix is worth 18 of the ablation ladder's 23 cells** — see the ladder below.
+A latent of 67 is the network reporting that the configuration is astronomically unlikely for that
+conditioning pose. `IKFlowProgram.CalibrateFlowFrame` measures the offset against
+`ik_solver.robot.forward_kinematics` at several configurations, checks it is constant (both frames
+are welded to the same link, so it must be) and caches it as `self.X_ee_flow`; `FlowPoseInWorld()`
+is what should be used wherever a conditioning pose is formed.
+`ProgramOptions.calibrate_flow_frame=False` restores the old behaviour for ablations.
+
+**It was called only by the grasp subclasses until 2026-09-16**, and the omission was invisible
+because the Panda pose scene used `panda_jrl.urdf` (whose `panda_hand` really is the trained frame)
+and the iiwa's 45 mm offset is a pure translation. Welding the finray into the pose scene destroyed
+that coincidence and the Panda pose task collapsed to **10/60 with median `max_violation` 0.4**,
+against 58/60 and 1.8e-08 for the grasp task in the *same* scene with the *same* chart. Both base
+pose programs now calibrate; it is a no-op where the frames agree and draws from its own fixed-seed
+generator so it cannot shift the grid. **Every pose column measured before this is superseded.**
+The general lesson: **a calibration that is skipped is indistinguishable from one that is correct,
+until the geometry it silently relied on changes** — and a miscalibration and an architectural
+weakness produce the same symptom, each masking the size of the other.
+
+### The latent trust region, and what the ablation ladder attributed
+
+Panda grasp, learned arm only, 60 cells, 20 s, paired, one grid: baseline (uncalibrated frame, no
+sharing) 11/60 → + conditioning-frame calibration **29/60** → + shared flow evaluation 30/60 → +
+latent trust region 34/60; per-rung exact McNemar 26/8 **p = 0.0029**, 1/0 p = 1.0, 15/11 p = 0.56,
+whole stack 28/5 **p = 6.6e-5**. **The frame calibration is worth 18 of the 23 cells and is the only
+significant rung**; sharing is worth one cell, as it must be, being bit-identical.
+
+`latent_trust_region` is +4 cells and not significant. It stays because IPOPT is poorly behaved on
+unbounded variables and a nonbinding constraint still shapes an interior-point trajectory — Thomas:
+*"The fact that it's nonbinding doesn't mean it didn't have a positive influence on the solver, since
+IPOPT is interior point."* It is a **stated deviation from eq. (6) that must be documented in the
+paper draft**; do not argue from binding fractions that it is inert.
 
 ### Sharing the flow evaluation between bindings
 
-Each Drake binding evaluates its own callback, so `EvalJointCenteringCost` used to run a second forward pass and a second `jacrev` at exactly the point `EvalAllConstraints` had just evaluated. An archived IPOPT log shows 1276 objective evaluations against 1276 constraint evaluations and 455 objective gradients against 490 constraint Jacobians — about half the network work was redundant. `IKFlowProgram.QAndPose` memoises `(q, pose)` on the iterate, keyed on the values **and** the AutoDiffXd derivative block (keying on the value alone would hand back a Jacobian computed against the wrong seed matrix), behind `ProgramOptions.share_flow_evaluations`, which **defaults on** — the memoised path returns bit-identical values and derivatives, so there is no reason to run without it except to reproduce a pre-overhaul measurement.
+Each Drake binding evaluates its own callback, so `EvalJointCenteringCost` used to run a second
+forward pass and `jacrev` exactly where `EvalAllConstraints` had just evaluated (an archived IPOPT
+log shows 1276 objective evaluations against 1276 constraint evaluations — about half the network
+work redundant). `IKFlowProgram.QAndPose` memoises `(q, pose)` on the iterate, keyed on the values
+**and** the AutoDiffXd derivative block (keying on the value alone would hand back a Jacobian
+computed against the wrong seed matrix), behind `share_flow_evaluations`, which **defaults on** —
+the memoised path is bit-identical, so there is no reason to run without it except to reproduce a
+pre-overhaul measurement.
 
 ### Scenes and utilities (`src/utils.py`, `models/`)
 
-`BuildEnv(meshcat, directives_file, extra_directives=None)` builds the diagram from a Drake model-directives YAML, registering `package.xml` so `package://combining_kinematics/...` URIs resolve; `extra_directives` is a list of `ModelDirective` objects appended to the loaded ones **in memory**, so a caller can add models to a scene without writing to the tracked YAML. `GenerateDiagramWithMug(q, program, yaml_file, meshcat)` uses exactly that: it constructs an `add_model`/`add_weld` pair for a mug at the gripper pose of `q` (the weld pose passed as a `pydrake.common.schema.Transform`, not formatted into text) and rebuilds the diagram. The YAML on disk is never modified, so a crash mid-call cannot leave a stray mug in a tracked scene — it used to append-then-truncate the file, which could. `BuildEnv(meshcat=None)` skips visualization outright, which is *not* the same as passing `None` through to `ApplyVisualizationConfig` (Drake would start its own).
+`BuildEnv(meshcat, directives_file, extra_directives=None)` builds the diagram from a Drake
+model-directives YAML, registering `package.xml` so `package://combining_kinematics/...` resolves;
+`extra_directives` is appended to the loaded ones **in memory**, so a caller can add models without
+writing to the tracked YAML. `GenerateDiagramWithMug(q, program, yaml_file, meshcat)` uses exactly
+that: an `add_model`/`add_weld` pair for a mug at the gripper pose of `q` (the weld pose passed as a
+`pydrake.common.schema.Transform`, not formatted into text). The YAML on disk is never modified, so
+a crash cannot leave a stray mug in a tracked scene — it used to append-then-truncate, which could.
+`BuildEnv(meshcat=None)` skips visualization outright, which is *not* the same as passing `None`
+through to `ApplyVisualizationConfig` (Drake would start its own).
 
-Targets in the mug experiments are generated by sampling collision-free `q` and welding a mug at the resulting gripper pose, so every target is known to admit a valid grasp. `HiddenPrints` suppresses Drake/ikflow output at the file-descriptor level and is used around program construction inside sweeps.
+Targets in the mug experiments are generated by sampling collision-free `q` and welding a mug at
+the resulting gripper pose, so every target is known to admit a valid grasp. `HiddenPrints`
+suppresses Drake/ikflow output at the file-descriptor level.
 
-### The hardened scene and shelf-contained targets (2026-09-15)
+Notebooks in `notebooks/` are the exploratory counterpart to `scripts/`, run from `notebooks/`.
 
-Sampling a collision-free `q` and accepting the gripper pose *wherever it landed* put targets
-in free air far more often than in clutter, so the collision-avoidance half of the problem
-barely bound. `../codebase` hit the same weakness in its Grasp Selection experiment and
-hardened it (`38f4eac`); this is the same treatment, on the same shelves, at the same inset.
+### The hardened scene and shelf-contained targets
 
-**The scene.** Three new YAMLs — `models/panda/panda_finray_collision_hardened.yaml`,
-`models/panda/panda_collision_hardened.yaml`, `models/iiwa14/iiwa14_collision_hardened.yaml`
-— are their legacy twins minus `binF` and (on the two scenes that had them) the seven welded
-decorative mugs. Four shelves and two tables remain. The legacy files are untouched and stay
-the default for the older per-experiment scripts, so archived runs still reproduce.
+Accepting the gripper pose *wherever a collision-free `q` landed* put targets in free air far more
+often than in clutter, so collision avoidance barely bound. `../codebase` hardened its Grasp
+Selection the same way (`38f4eac`); this is the same treatment, same shelves, same inset.
 
-**The target must land in a shelf.** `src/shelf_regions.py` holds the twelve compartments —
-four units x three bays — each as its **local** box plus the weld's translation and yaw, and
-`PointInShelfCompartments` rotates the query point into the region's own frame. A world-frame
-AABB is not usable: at these 135°/235° welds it over-approximates the footprint about **4x**
-and would accept targets in free air beside the unit. The inset is symmetric because
-`shelves.sdf` has **no back wall** — the unit is a tunnel and which `x` face is "front" depends
-on the yaw. `shelf_depth_inset = 0.10 m` is adopted, matching `../codebase`.
+**The scene.** `models/panda/panda_finray_collision_hardened.yaml`,
+`models/panda/panda_collision_hardened.yaml`, `models/iiwa14/iiwa14_collision_hardened.yaml` are
+their legacy twins minus `binF` and (where present) the seven welded decorative mugs. Four shelves
+and two tables remain. Legacy files are untouched and remain the default for the older scripts.
 
-**And the object must fit.** Containment alone is not enough — a mug centred in a compartment
-can still intersect a board. **Drake never generates collision candidates between two
-ANCHORED geometries**, and `GenerateDiagramWithMug` *welds* the target mug, so that overlap is
-silently invisible on the solve scene. `FloatingMugScreen` therefore runs on its own diagram
-with the mug appended **unwelded**. Its robot filter is exact model-instance names, and a
-filter that matched nothing would reject every candidate as "penetrating" — indistinguishable
-from a too-deep inset — so `tests/test_shelf_placement_screens.py` pins it.
+**The target must land in a shelf.** `src/shelf_regions.py` holds the twelve compartments — four
+units x three bays — each as its **local** box plus the weld's translation and yaw, and
+`PointInShelfCompartments` rotates the query point into the region's own frame. A world-frame AABB
+is not usable: at these 135°/235° welds it over-approximates the footprint about **4x**. The inset
+is symmetric because `shelves.sdf` has **no back wall** — the unit is a tunnel and which `x` face is
+"front" depends on the yaw. `shelf_depth_inset = 0.10 m`, matching the sibling.
 
-**Acceptance is ~0.2-0.7%, an order of magnitude below the sibling's**, measured by
-`scripts/probe_shelf_acceptance.py` (20000 draws per scene), as a fraction of collision-free
-draws:
+**And the object must fit.** **Drake never generates collision candidates between two ANCHORED
+geometries**, and `GenerateDiagramWithMug` *welds* the target mug, so a mug/board overlap is
+silently invisible on the solve scene. `FloatingMugScreen` therefore runs on its own diagram with
+the mug appended **unwelded**. Its robot filter is exact model-instance names, and a filter
+matching nothing would reject every candidate as "penetrating" — indistinguishable from a too-deep
+inset — so `tests/test_shelf_placement_screens.py` pins it.
 
-| inset | 0.0 | 0.05 | **0.10** | 0.125 |
-| --- | --- | --- | --- | --- |
-| panda grasp (`between_fingers`) | 2.000% | 1.215% | **0.675%** | 0.319% |
-| panda pose (`panda_hand`) | 1.320% | 0.764% | **0.371%** | 0.175% |
-| iiwa grasp (`between_fingers`) | 1.895% | 1.236% | **0.552%** | 0.216% |
-| iiwa pose (`iiwa_link_7`) | 0.972% | 0.540% | **0.228%** | 0.132% |
+**Acceptance is 0.2-0.7%**, an order of magnitude below the sibling's, measured by
+`scripts/probe_shelf_acceptance.py`, as a fraction of collision-free draws (at inset 0.10: panda
+grasp 0.675%, panda pose 0.371%, iiwa grasp 0.552%, iiwa pose 0.228%). That is ~400-1100 draws per
+target, ~12 s per grid — negligible. What it breaks is the sibling's rejection guard: acceptance
+restarts at every accepted target, so the guard is a per-target tail bound and a 60-target grid
+gets 60 chances to trip; at the sibling's 5000 the iiwa pose row trips 41% of runs, and a trip kills
+every shard of a queued run. **`MAX_CONSECUTIVE_REJECTIONS = 50000`**, where every row is zero to
+machine precision.
 
-That costs ~400-1100 draws per target, about **12 s of sampling per grid** at 0.19-0.33 ms a
-draw — negligible. What it *does* break is the sibling's rejection guard. Acceptance restarts
-at every accepted target, so the guard is a per-target tail bound and a 60-target grid gets 60
-chances to trip; at `../codebase`'s 5000 the **iiwa pose row trips 41% of runs**, and a trip
-raises partway through a queued run and kills every shard of it. **`MAX_CONSECUTIVE_REJECTIONS
-= 50000`**, where every row is zero to machine precision. It bounds only the tail, so it costs
-nothing and no manifest has to remember to raise it. **0.125 is not fielded**: 1818 draws per
-target on iiwa pose, and 98% of runs trip at the sibling's guard.
-
-**Two things to know before reading a hardened number.** The pose task's containment point is
-the frame its target *is* — `iiwa_link_7` or `panda_hand`, i.e. **the wrist, not the
-fingertips** — so "pose target in a compartment" is a harder and differently-hard condition on
-each robot. It is recorded per run as `placement_point`. And the panda *grasp* scene never had
+**Two things to know before reading a hardened number.** The pose task's containment point is the
+frame its target *is*, recorded per run as `placement_point`. And the panda *grasp* scene never had
 decorative mugs, so hardening removes strictly less from it than from the other two; say so
 wherever grasp and pose deltas appear in one table.
 
 **Guesses are deliberately not containment-filtered.** They are initial configurations, not
-targets; filtering them would couple the start distribution to the target distribution and
-change what "given a random collision-free start" means.
+targets; filtering them would couple the start distribution to the target distribution.
 
-`--scene legacy --target-placement free` reproduces the pre-hardening sampler exactly —
-`SampleShelfTargets` consumes one draw per iteration with both screens off, and a test pins
-that — so an archived grid is still re-runnable. `c_position_slack` is **not** touched: a
-±0.25 m conditioning box around a mug in a 0.10 m-deep compartment is now loose relative to
-the free space and plausibly hurts the learned arm specifically, but sweeping it here would
-confound hardening with slack.
-
-Notebooks in `notebooks/` are the exploratory counterpart to `scripts/` and import the same `src/` modules; they run from the `notebooks/` directory.
+`--scene legacy --target-placement free` reproduces the pre-hardening sampler exactly (a test pins
+it), so an archived grid is still re-runnable. `c_position_slack` is **not** touched: a ±0.25 m
+conditioning box around a mug in a 0.10 m compartment is loose relative to the free space and
+plausibly hurts the learned arm specifically, but sweeping it here would confound hardening with
+slack.
 
 ## Rules the campaign established
 
-These were each learned by getting them wrong, at the cost of whole tables. They govern the
-formulation and the harness, and none of them is negotiable without Thomas.
+Each was learned by getting it wrong, at the cost of whole tables. None is negotiable without
+Thomas.
 
 ### The tolerance ladder: constraint bounds exact, then solver tolerance, then a looser gate
 
-Thomas's ruling: *"IK constraint tol should always be zero. The whole point is that it's an
-equality constraint, satisfied exactly. Tolerance should be zero in the mathematical program,
-only appearing in solver tolerance."*
+Thomas: *"IK constraint tol should always be zero. The whole point is that it's an equality
+constraint, satisfied exactly. Tolerance should be zero in the mathematical program, only appearing
+in solver tolerance."*
 
-Until 2026-09-03 the pose constraint's position rows were `lb = -1e-4, ub = +1e-4`. That is
-not a slightly looser equality: it is an inequality, and an interior-point method parks *on*
-the face of one instead of driving the residual to zero. The evidence, from 480 persisted
-cells — orientation was already a true equality and converged five orders tighter than
-position, in the same constraint, in the same solve:
+`lb = -tol, ub = +tol` does not loosen an equality, it **changes its kind**, and an interior-point
+method parks *on* the face of an inequality. The evidence, from 480 persisted cells: orientation
+was already a true equality and converged five orders tighter than position, in the same
+constraint, in the same solve — learned median `pos_error` 9.999e-05 against `rpy_error` 1.38e-08,
+with 67-84% of solutions sitting exactly on the box. **The analytic arm's version was a fairness
+defect, not merely a numerical one**: its pose target was a box on its decision variables carrying
+the whole `ik_constraint_tol` tuple, so it got ±0.01 rad of orientation freedom per axis while the
+arms it baselines were pinned to zero, and `max_violation` reported 0.00 because a box is satisfied
+right up to its face.
 
-| arm | median `pos_error` (boxed) | median `rpy_error` | on the box |
-| --- | --- | --- | --- |
-| learned | 9.999e-05 | 1.38e-08 | 67-84% |
-| joint space | 1.000e-04 | 6.65e-10 | 93-97% |
-| analytic | 2.35e-05 | **8.46e-03** (p90 = 1.00e-02) | orientation, always |
+The fix collapsed residuals by five to nine orders of magnitude and is guarded:
+`tests/test_constraint_bounds.py` reads the bounds Drake was actually handed and fails if any drifts
+back. Both sibling projects already followed this ladder. **No ranking moved when it landed** —
+pooled over eight experiments and six caps, 225 cells better against 204 worse, p = 0.334 — because a
+boxed solution stopped at 1e-4 and the gate is 1e-3, so it passed anyway. **The defect was in
+solution quality and in fairness between the arms, not in the rankings.** The equality is also ~30%
+*cheaper* in iterations and wall clock: it is unambiguously active, so there is no active-set
+question and IPOPT handles it directly rather than through barrier terms on two inequality faces.
 
-**The analytic arm's was a fairness defect, not merely a numerical one.** Its pose target was
-imposed by a box on its decision variables carrying the whole `ik_constraint_tol` tuple, so it
-received ±0.01 rad of orientation freedom per axis while the arms it is a baseline for were
-pinned to zero. It used all of it, and `max_violation` reported 0.00, because a box is
-satisfied right up to its face.
-
-The fix collapsed the residuals by five to nine orders of magnitude (see EQ1 below) and is
-guarded: `tests/test_constraint_bounds.py` reads the bounds Drake was actually handed and
-fails if any of them drifts back. Both sibling projects already followed this ladder —
-`../codebase`'s `EEPoseConstraint` passes `lb = ub = extract_xyzrpy(target)`;
-`eaik-experiment`'s reachability row is `lb=[0], ub=[0]` under a comment reading "(no slack)".
-
-#### Rung 3: the gate stays deliberately looser, and the gap must not be closed
-
-**`ik_constraint_tol = 1e-4` for the program's rows, `task_tol = 1e-3` for the task gate.**
-Thomas: *"go back to 1e-4 actual tol and 1e-3 task tol, to avoid this issue (that's why I did it
-in the first place)."* The reason is the same parking behaviour: on 480 iiwa pose cells the
-joint-space arm's median `pos_error` was 1.0001e-04 against a 1e-4 bound, with 64% of its
-solutions a rounding error above it and none above 1.01e-4 (learned: 9.9971e-05, 33% above). A
-gate at exactly 1e-4 scores which side the last ulp fell on, and it *appeared to reverse* the one
-row the learned arm loses — iiwa pose paired going from 296-vs-332 (p = 0.016 against) to
-199-vs-120 (p = 2.5e-08 in favour). A coin toss dressed as a result.
+**Rung 3: the gate stays deliberately looser, and the gap must not be closed.**
+`ik_constraint_tol = 1e-4` for the program's rows, `task_tol = 1e-3` for the task gate. Thomas:
+*"go back to 1e-4 actual tol and 1e-3 task tol, to avoid this issue (that's why I did it in the
+first place)."* On 480 iiwa pose cells the joint-space arm's median `pos_error` was 1.0001e-04
+against a 1e-4 bound, with 64% a rounding error above it and none above 1.01e-4. A gate at exactly
+1e-4 scores which side the last ulp fell on, and it *appeared to reverse* a row: 296-vs-332
+(p = 0.016 against) became 199-vs-120 (p = 2.5e-08 in favour). A coin toss dressed as a result.
 
 **Never set an acceptance gate equal to a bound the solver is optimising against**, and before
-proposing to tighten one, check the distribution of the gated quantity: if the solutions are
-pinned to the bound, tightening measures noise. The collision gate carries the binding's own
-slack for the same reason. A second verdict `feasible_relaxed` is recorded at `task_tol` so the
-question stays re-analysable; the relaxation is worth +10 to +18 cells of 480 on the grasp task
-and **exactly zero on the pose task**, moving no ordering.
+proposing to tighten one, check the distribution of the gated quantity: if solutions are pinned to
+the bound, tightening measures noise. The collision gate carries the binding's own slack for the
+same reason. A second verdict `feasible_relaxed` is recorded at `task_tol` so the question stays
+re-analysable; the relaxation is worth +10 to +18 cells of 480 on the grasp task and **exactly zero
+on the pose task**, moving no ordering.
 
 ### A region an initial guess may violate must be a general constraint, never a variable bound
 
 IPOPT's `bound_push` projects the initial guess into every *bounding box* before evaluating
 anything, so a box silently reshapes the start protocol. This bit twice.
 
-**The conditioning-pose box.** Pre-clipping `c` into its box teleported it to the box face
-while the latent stayed tuned to the unprojected pose, making the "exact" and old
-"pre-clipped" protocols land on bit-identical iterate-0 lines. It is now
-`AddLinearConstraint(I, lb, ub, c)` (`CBoxConstraint`) at all three sites.
+**The conditioning-pose box.** Pre-clipping `c` teleported it to the box face while the latent
+stayed tuned to the unprojected pose, making the "exact" and old "pre-clipped" protocols land on
+bit-identical iterate-0 lines. It is now `AddLinearConstraint(I, lb, ub, c)` (`CBoxConstraint`).
 
-**The latent's own `±5` box** was left as a bounding box after that repair, and this one was
-worse — `SetStartFromQ` clipped the inverted latent itself, so the projection was ours, not
-IPOPT's. The flow is a bijection, so `flow(c, InvertFlow(q, c))` reproduces `q` exactly, but
-only at the *unclipped* latent; the inversion routinely returns components past ±5, so the
-clip moved the start by radians and the cell was scored `unrepresentable_start` — an arm
-recorded as unable to represent a configuration it represents exactly. Measured on iiwa pose
-paired, 20 s, same grid:
+**The latent's own `±5` box** was left as a bounding box after that repair, and was worse —
+`SetStartFromQ` clipped the inverted latent itself, so the projection was ours. The flow is a
+bijection, so `flow(c, InvertFlow(q, c))` reproduces `q` exactly, but only at the *unclipped*
+latent; the inversion routinely returns components past ±5, so the clip moved the start by radians
+and the cell was scored `unrepresentable_start` — an arm recorded as unable to represent a
+configuration it represents exactly. Measured on iiwa pose paired, 20 s, same grid: learned success
+11/60 → **40/60**, cells scored `unrepresentable_start` 49 → 0, median `|q(start) - q_init|`
+3.79 → 0.0000. The arm starts at `|z| ~ 7.9`, outside the region, and the solver walks it to
+`|z| ~ 2.9` on its own — the whole point of the region being a constraint. **Every archived paired
+learned column predating this is void.**
 
-| | before | after |
-| --- | --- | --- |
-| learned success | 11/60 | **40/60** |
-| cells scored `unrepresentable_start` | 49 | 0 |
-| median `\|q(start) - q_init\|` | 3.79 | 0.0000 |
-
-The arm starts at `\|z\| ~ 7.9`, outside the region, and the solver walks it to `\|z\| ~ 2.9` on
-its own — the whole point of the region being a constraint rather than a bound. **Every archived
-paired learned column predating this is void.**
-
-Two structural notes. The box now lives in **one** method, `LatentBoxConstraint()`, because the
-first repair fixed `generic_program.py` while the mug subclasses overrode `BoundingBoxConstraint`
-and carried their own copies — the pose arms were fixed and the grasp arms silently were not. And
-nothing may project a guess without recording that it did (`clip_distance`). Variable bounds
-remain fine for regions a start always respects (the correction's ±0.1), and infeasible initial
-guesses are acceptable by policy — Thomas: *"we're not assuming feasible initial guesses."*
+Two structural notes. The box lives in **one** method, `LatentBoxConstraint()`, because the first
+repair fixed `generic_program.py` while the mug subclasses overrode `BoundingBoxConstraint` and
+carried their own copies — the pose arms were fixed and the grasp arms silently were not. And
+nothing may project a guess without recording that it did (`clip_distance`). Variable bounds remain
+fine for regions a start always respects (the correction's ±0.1), and infeasible initial guesses
+are acceptable by policy — Thomas: *"we're not assuming feasible initial guesses."*
 
 ### No invented formulations, and no weakening of the problem
 
-A "task-parameterised" grasp reformulation (`GraspTaskParamMixin`, decision variable = the
-grasp pose in the mug frame) existed here and was fielded as the benchmark's "learned" arm.
-**It is not the paper's formulation and should never have existed** — Thomas: *"You were
-*never* supposed to do the task-parameterized version... Constructing new formulations and
-passing them off as ones I've already written is completely unacceptable."* The learned
-formulation is eq. (6) of the draft, exactly as `PandaMugProgram`/`IiwaMugProgram` implement
-it: free conditioning pose `c`, latent `z`, correction `q_c`, the grasp imposed as constraint
-rows through `FK(q)` (mug-axis equality, height band, orientation free). The machinery is
-**removed outright**, mirroring the seeding precedent, and every number produced with it is
-void and has been re-measured.
+A "task-parameterised" grasp reformulation (decision variable = the grasp pose in the mug frame)
+existed here and was fielded as the benchmark's "learned" arm. **It is not the paper's formulation
+and should never have existed** — Thomas: *"You were never supposed to do the task-parameterized
+version... Constructing new formulations and passing them off as ones I've already written is
+completely unacceptable."* The learned formulation is eq. (6) of the draft, exactly as
+`PandaMugProgram`/`IiwaMugProgram` implement it: free conditioning pose `c`, latent `z`, correction
+`q_c`, the grasp imposed as constraint rows through `FK(q)`. The machinery is **removed outright**,
+mirroring the seeding precedent, and every number produced with it is void and has been re-measured.
 
-The same principle bans weakening the problem. The mug-axis rows are an equality because that
-*is* the task — a `mug_axis_tol` option that widened them was removed, not defaulted to zero.
-Improvements must come from the formulation or the solver, never from making the question
-easier.
+The same principle bans weakening the problem. The mug-axis rows are an equality because that *is*
+the task — a `mug_axis_tol` option that widened them was removed, not defaulted to zero.
+Improvements must come from the formulation or the solver, never from making the question easier.
 
 ### The correction penalty is a stated part of the learned formulation
 
-`correction_cost_weight = 10`, approved by Thomas on 2026-09-02 (*"A penalty on the correction
-term is acceptable"*). The draft says `q_c ~ 0` without specifying how that is imposed; this is
-what imposes it. Two consequences: the weight is a **stated** part of the formulation and must
-appear wherever the learned arm is described, and every table must still show what the penalty
-buys and costs — the with/without comparison is paired on the same grid, never dropped once
-adopted.
+`correction_cost_weight = 10`, approved by Thomas on 2026-09-02 (*"A penalty on the correction term
+is acceptable"*). The draft says `q_c ~ 0` without specifying how that is imposed; this is what
+imposes it. So the weight is a **stated** part of the formulation and must appear wherever the
+learned arm is described, and every table must still show what the penalty buys and costs.
 
 **Options naming learned-only decision variables must be guarded.** `add_costs` applied
-`correction_cost_weight` unconditionally, but `correction` exists only on the learned arm and
-all three formulations share one `ProgramOptions`. So `--set correction_cost_weight=10` raised
-`AttributeError` inside every numerical/analytic program's construction and each of those
-columns scored **0 of 480 in about 10 ms per cell**. The failure mode is worth remembering:
-a whole column of zeroes with `median_max_violation = nan`, at three orders of magnitude below
-the cap, with `fail_reason = "error"` rather than a named task gate. **Any arm reporting a
-per-cell wall time three orders below the cap is not solving badly, it is not solving at all.**
-`_abort_on_dead_arm` in `src/benchmark.py` now aborts a run when an arm fails identically, in
-under a second, on its first three cells — this pattern has cost two whole columns of cluster
-campaigns, both caught only during analysis after the compute was spent.
+`correction_cost_weight` unconditionally, but `correction` exists only on the learned arm and all
+three formulations share one `ProgramOptions`. So `--set correction_cost_weight=10` raised
+`AttributeError` inside every numerical/analytic program's construction and each of those columns
+scored **0 of 480 in about 10 ms per cell**. The failure mode is worth remembering: a whole column
+of zeroes with `median_max_violation = nan`, three orders of magnitude below the cap, with
+`fail_reason = "error"` rather than a named task gate. **Any arm reporting a per-cell wall time
+three orders below the cap is not solving badly, it is not solving at all.** `_abort_on_dead_arm`
+in `src/benchmark.py` now aborts when an arm fails identically, in under a second, on its first
+three cells — this pattern cost two whole columns of cluster campaigns.
+
+### Every result is told in success, iterations, cost and wall clock
+
+Thomas's standing reporting rule. Iterations are hardware-independent and describe the
+*formulation*; seconds describe this implementation on this machine and are **never compared across
+machines**; cost says what the solution is worth. Reporting only seconds makes the cap story look
+arbitrary; only iterations hides that the learned arm's iteration is ten to thirty times more
+expensive; only success hides that on the grasp task its solutions cost roughly twice the
+baseline's.
+
+Two musts, both learned by getting them wrong: **cost is compared only on cells *both* arms
+solved** (a median over each arm's own successes compares different cell sets, and the easy cells
+are exactly the ones a weaker arm also solves, so that form flatters whichever arm fails more); and
+**learned-only regularizers are excluded from the reported objective** (`reported_cost`), so the
+column measures the objective every formulation shares.
+
+**Joint space is the comparison's target; the analytic columns are baselines.** Lead with
+learned-vs-joint-space McNemar, never claim a win off beating analytic alone, and state ties as
+ties. Baselines get bug fixes and standard treatments but no novel research (Thomas, on
+`analytic8`'s uniform branch draw: *"since it's a baseline, we're not trying to do novel research
+things to make it better"*).
+
+**A cap check before reporting any loss**: does the losing arm have meaningful timeouts? Timeouts
+~0 → the cap is innocent and the result is a formulation result. Timeouts significant → the cap is
+measuring throughput, not formulation; raise it and re-measure. The case that established this:
+iiwa `n4` contained grasp scored 391 v 442 (p = 1.4e-06, a clear loss) at 45 s with 88 timeouts; at
+180 s with 0 timeouts it is 447 v 442, a tie. The arms were tied all along. Relatedly, **the cap is a
+budget for the arm that evaluates a network, not a shared budget**: across 5/10/20/45/90/180 s every
+baseline is flat, with one exception — on iiwa grasp paired the joint-space arm is itself cap-bound
+below 20 s, with cells running 1300-1430 iterations against that arm's median of 70. So the
+joint-space arm is not uniformly cheap; it has a tail.
 
 ## Benchmarking (`src/benchmark.py`, `scripts/*/[a-z]*_benchmark.py`)
 
-The older head-to-head scripts remain for comparability, but new measurements use
-`src/benchmark.py`, which fixes what they got wrong:
-
 - **Paired grid.** `num_targets x num_guesses` cells, one solve per cell, no retry-on-failure,
-  every formulation on the identical cells — so success can be compared with an exact McNemar
-  test and the CI can bootstrap over whole *targets* (guesses within a target are correlated).
-  Guesses are drawn **per target** (`guesses[ti][gi]`), not shared across targets: sharing
-  across *arms* is what pairing needs, sharing across *targets* quantizes start-dependent
-  effects into target-sized blocks.
-- **Both start protocols are measured** (`--start`). `paired` puts every arm at the same `q_init`
-  in its own variables via `SetStartFromQ`: joint space at `q_init`, analytic at `FK(q_init)` with
-  `psi`/`GC` recovered by inversion, learned at `c = FK(q_init)` with `z` from running the flow
-  forwards. Order matters — invert **first**, then clip; clipping first and inverting at the
-  projected pose returns `|z| ~ 1e7`, because a random configuration is not a grasp of this mug
-  and the flow is right to say so. `native` gives each formulation the initialisation it would
-  have outside a comparison: the learned arm conditions on the pose the task hands it and draws
-  its latent from the prior, the analytic arm takes the target pose with a random redundancy
-  parameter and branch, and the joint-space arm takes a random configuration — which is what
-  `q_init` already is, so that arm's two protocols coincide and any difference between the tables
-  is attributable to the others. Neither protocol searches, and the paired start is *measured*
-  rather than assumed: every cell records `clip_distance` and `start_q_error`, because only the
-  joint-space arm can hold the shared start exactly.
+  every formulation on identical cells — so success can be compared with an exact McNemar test and
+  the CI can bootstrap over whole *targets* (guesses within a target are correlated). Guesses are
+  drawn **per target** (`guesses[ti][gi]`), not shared across targets: sharing across *arms* is
+  what pairing needs, sharing across *targets* quantizes start-dependent effects into target-sized
+  blocks.
+- **Both start protocols are measured** (`--start`), and both are first-class. `paired` puts every
+  arm at the same `q_init` in its own variables via `SetStartFromQ`: joint space at `q_init`,
+  analytic at `FK(q_init)` with `psi`/`GC` recovered by inversion, learned at `c = FK(q_init)` with
+  `z` from running the flow forwards. Order matters — invert **first**, then clip; clipping first
+  and inverting at the projected pose returns `|z| ~ 1e7`, because a random configuration is not a
+  grasp of this mug and the flow is right to say so. `native` gives each formulation the
+  initialisation it would have outside a comparison. The joint-space arm's two protocols coincide
+  (its native start *is* a random configuration), so any difference between the tables is
+  attributable to the others. Neither protocol searches, and the paired start is *measured* rather
+  than assumed: every cell records `clip_distance` and `start_q_error`.
 - **Success verified from the returned point**, not from `result.is_success()`: every binding is
-  re-evaluated at the solution and the task re-measured from `q`, with a named `fail_reason`. This
-  matters because *every* learned failure in the archived runs was a wall-clock timeout, and a
-  timeout that landed on a valid grasp is a success. Two gates that are easy to get wrong: an
-  interior-point method parks *on* the collision constraint (value 1 + 1e-7), so the collision gate
-  needs the binding's own slack; and `PandaMugProgramAnalytic` inherits from the *pose* analytic
-  class, so the grasp must be measured by asking for `between_fingers` by name.
+  re-evaluated at the solution and the task re-measured from `q`, with a named `fail_reason`. Every
+  learned failure in the archived runs was a wall-clock timeout, and a timeout that landed on a
+  valid grasp is a success. Two gates that are easy to get wrong: an interior-point method parks
+  *on* the collision constraint (value 1 + 1e-7) so that gate needs the binding's own slack; and
+  `PandaMugProgramAnalytic` inherits from the *pose* analytic class, so the grasp must be measured
+  by asking for `between_fingers` by name.
 - **Raw per-cell state is persisted**, not only derived summaries — the returned `q` (and the
-  recovered last iterate's `q` on abnormal exit), the decision-variable vector, per-binding
-  signed violations, the true `min_distance` and `min_distance_pair` beside `collision_value`,
-  and the start. Without this, no geometric quantity can be recomputed after a run without
-  re-solving the whole grid, which is exactly what once blocked answering a question from the
-  archive.
+  recovered last iterate's `q` on abnormal exit), the decision-variable vector, per-binding signed
+  violations, the true `min_distance` and `min_distance_pair` beside `collision_value`, and the
+  start. Without this, no geometric quantity can be recomputed after a run without re-solving the
+  whole grid. Decide the recorded schema *before* launching: the grid is the expensive thing, not
+  the disk.
 
-### Abnormal exits keep the iterate
-
-**Any time-limit or kill mechanism must be paired with recovery of the last iterate.** Thomas
-rejected a watchdog that raised from inside the flow-evaluation callback: *"I don't like the idea
-of messing with QAndPose to force kill it, since then we don't get an intermediate solution?"*
-Every learned-arm failure in the archived runs was a timeout, and a timeout that landed on a valid
-grasp is a success. So `Solve()` keeps `program.last_iterate`; any abnormal exit is verified from
-that point and recorded as `recovered_feasible` / `recovered_cost` alongside the failure reason;
-and the *process* is bounded from outside (OS-level `timeout`), never the solve from inside a
-hot-path callback. `SolveTimeout`, `CheckDeadline` and `hard_time_factor` were **deleted** and must
-not come back — a callback deadline poll was doubly wrong, unable to fire while the machine slept
-and destroying the iterate when it finally did.
+**Abnormal exits keep the iterate.** Thomas rejected a watchdog that raised from inside the
+flow-evaluation callback: *"I don't like the idea of messing with QAndPose to force kill it, since
+then we don't get an intermediate solution?"* So `Solve()` keeps `program.last_iterate`; any
+abnormal exit is verified from that point and recorded as `recovered_feasible`/`recovered_cost`
+alongside the failure reason; and the *process* is bounded from outside (OS-level `timeout`), never
+the solve from inside a hot-path callback. `SolveTimeout`, `CheckDeadline` and `hard_time_factor`
+were **deleted** and must not come back.
 
 Beyond the verdict a record carries `max_violation` and `detail["violations_all"]`;
 `collision_value`, `min_distance`, `min_distance_pair`; `start_q_error`, `clip_distance`, `z_norm`;
-`median_correction_inf` and `correction_binding` (how much of the ±0.1 box the solutions use — the
+`median_correction_inf` and `correction_binding` (how much of the ±0.1 box solutions use — the
 check that the learned arm is not quietly becoming a reparameterised joint-space arm); and `q`,
 plus `q_lift` and `q_flow` separately under `lift_q`. `median_max_violation` separates the arms by
 six orders of magnitude and is worth reading next to any success count.
 
-Three switches. `--compile` turns on the compiled flow Jacobian and warms it up before the grid;
-because it changes how many iterations the learned arm fits inside a fixed cap, **every run being
-compared has to set it the same way**. `--set NAME=VALUE` overrides any `ProgramOptions` field,
-so a sweep needs no code edit; it lands in the metadata and the default tag. And the grid is drawn
-from a generator local to the script and hashed into `metadata["grid_hash"]` (with the task as a
-*suffix*, since the iiwa's mug and pose grids otherwise hashed identically), so runs not measured
-on the same cells cannot be compared by accident — `python scripts/collate.py --pair learned
-'<glob>'` runs exact McNemar between runs on matching cells and refuses a grid mismatch.
+Three switches. `--compile` turns on the compiled flow Jacobian (see above: set it identically
+everywhere being compared). `--set NAME=VALUE` overrides any `ProgramOptions` field, so a sweep
+needs no code edit; it lands in the metadata and the default tag. And the grid is drawn from a
+generator local to the script and hashed into `metadata["grid_hash"]` (with the task as a *suffix*,
+since the iiwa's mug and pose grids otherwise hashed identically), so runs not measured on the same
+cells cannot be compared by accident — `python scripts/collate.py --pair learned '<glob>'` runs
+exact McNemar between runs on matching cells and refuses a grid mismatch.
 
 ### How paired the paired start actually is
 
-`SetStartFromQ` gives every arm the same `q_init` expressed in its own variables, but a
-formulation can only represent a configuration its variables reach.
+`SetStartFromQ` gives every arm the same `q_init` expressed in its own variables, but a formulation
+can only represent a configuration its variables reach.
 
 | arm | `\|q(start) - q_init\|` at the guess | why |
 | --- | --- | --- |
 | joint space | 0 exactly | its variables are the configuration |
-| learned, free `c` | ~1e-6 (pose task: 0.0 measured) | exact: unclipped conditioning pose + inverted latent + correction |
+| learned, free `c` | ~1e-6 (pose task: 0.0 measured) | exact: unclipped `c` + inverted latent + correction |
 | analytic, 8 branches | 1e-11, or several radians on ~0.6% of starts | exact where the chart covers the configuration |
 | analytic, 4 branches | 1e-11, or several radians on ~10% of starts | the historical chart; the `analytic` column |
 
-Two projections that were once necessary have been removed — the learned arm's pre-clipping of
-`c`, and the pose analytic arm's clipping into its `xyz_rpy` box (which had it always beginning
-at the target pose, a median 2.7 rad from the shared `q_init`, regardless of chart coverage).
-`legacy_paired_start=True` restores the old behaviour for reproducing archived runs.
-
-The number to keep in mind: `start_q_error` measures the *initial guess*. Where a guess sits
-outside a variable's bounds IPOPT projects it at iterate 0, and `clip_distance` records that
-projection per cell. "Paired" is exact at the guess; the two numbers together describe honestly
-how much survives the solver's own bound projection.
+Two projections that were once necessary have been removed — the learned arm's pre-clipping of `c`,
+and the pose analytic arm's clipping into its `xyz_rpy` box (which had it always beginning at the
+target pose, a median 2.7 rad from the shared `q_init`). `legacy_paired_start=True` restores the old
+behaviour. `start_q_error` measures the *initial guess*; where a guess sits outside a variable's
+bounds IPOPT projects it at iterate 0 and `clip_distance` records that. The two numbers together
+describe honestly how much survives the solver's own bound projection.
 
 ### `collision_value` is a penalty, not a clearance
 
-`detail["collision_value"]` is the **raw** value of Drake's `MinimumDistanceLowerBoundConstraint`
-— a smooth penalty aggregated over every geometry pair inside the influence distance
-(`bound=1e-3`, `influence_distance_offset=0.1`). It is a pure number, not a length, so "1.26
-against a limit of 1.0" says nothing about penetration depth. Calibrated against the true minimum
-signed distance over 4000 random iiwa configurations, raw < 1.0 is clear, 1.0-1.05 is roughly 0
-to -1 mm, 1.2-1.5 is -12 to -19 mm, and 2.0-4.0 is -59 to -124 mm. Every *success* sits at raw
+`detail["collision_value"]` is the **raw** value of Drake's `MinimumDistanceLowerBoundConstraint` —
+a smooth penalty aggregated over every geometry pair inside the influence distance (`bound=1e-3`,
+`influence_distance_offset=0.1`). It is a pure number, not a length. Calibrated against the true
+minimum signed distance over 4000 random iiwa configurations: raw < 1.0 is clear, 1.0-1.05 is
+roughly 0 to -1 mm, 1.2-1.5 is -12 to -19 mm, 2.0-4.0 is -59 to -124 mm. Every *success* sits at
 0.9997-1.0005 — parked exactly on contact, which is why the gate carries the binding's own slack.
+**`verify()` records the true signed `min_distance` in metres and the pair attaining it**, so read
+that instead. The row's shape is three `ProgramOptions` fields (`collision_bound`,
+`collision_influence_offset`, `collision_row_scale`).
 
-**`verify()` now records the true signed `min_distance` in metres and the pair attaining it**, so
-read that instead; the raw value is kept only because archived records carry it. The collision
-row's shape is three `ProgramOptions` fields (`collision_bound`, `collision_influence_offset`,
-`collision_row_scale`), defaulting to what was once hardcoded.
+## The solver axis: interior point, SQP, augmented Lagrangian
 
-## The solver axis: interior point, SQP, augmented Lagrangian (2026-09-16)
-
-**Three METHOD CLASSES, not three vendors.** Thomas: *"for NLOPT, we want to use it as an
-augmented lagrangian solver. This is important! We don't care about SLSQP, since SNOPT is
-already SQP. The point is that we test interior point, augmented lagrangian, and SQP."* So
-`--solver` is `ipopt` (interior point), `snopt` (SQP), `nlopt` (**`LD_AUGLAG`**). `LD_SLSQP`
-is the wrong NLopt default -- it is an SQP method and would leave the comparison with two SQP
-columns and no AL column. `LD_AUGLAG` rather than `LD_AUGLAG_EQ` because `_EQ` absorbs only
-*equality* constraints into the AL and leaves inequalities to the inner solver, and this
-program carries both. Any solver added later must be justified by the class it contributes.
+**Three METHOD CLASSES, not three vendors.** Thomas: *"for NLOPT, we want to use it as an augmented
+lagrangian solver. This is important! We don't care about SLSQP, since SNOPT is already SQP. The
+point is that we test interior point, augmented lagrangian, and SQP."* So `--solver` is `ipopt`
+(interior point), `snopt` (SQP), `nlopt` (**`LD_AUGLAG`** — not `LD_AUGLAG_EQ`, which absorbs only
+*equality* constraints into the AL and leaves inequalities to the inner solver, and this program
+carries both). Any solver added later must be justified by the class it contributes. **The solver
+is a reporting axis, never a choice**: Thomas, *"we would not pick one solver or the other, but
+rather report the performance for both solvers."* It is shared across arms within a run and varied
+across runs.
 
 All three take `kGenericConstraint`/`kGenericCost`/`kCallback`, and all three call
-`EvalVisualizationCallbacks` **inside their objective evaluation** -- so `last_iterate`
-recovery, which every abnormal exit depends on, works unchanged under each. Nothing about the
-watchdog design needed revisiting.
+`EvalVisualizationCallbacks` **inside their objective evaluation**, so `last_iterate` recovery works
+unchanged under each.
 
 ### Each solver converges at its own defaults
 
-The SNOPT branch used to read IPOPT's `acceptable_tol` and `acceptable_constr_viol_tol` as its
-`Major optimality`/`Major feasibility tolerance`. That is rung 2 of the tolerance ladder done
-wrong: IPOPT's `acceptable_*` family is its **relaxed early-stop** criterion, not what it
-converges to (its real `tol` is 1e-8), so SNOPT was being asked for 1e-3 while the solver it
-is compared against drove to 1e-8. **Do not transplant one solver's option values onto
-another.** Unset `snopt_*`/`nlopt_*` fields are simply not passed, so each solver sits at its
-own defaults and the shared, deliberately looser task gate decides success. No archived SNOPT
-run existed, so nothing was invalidated.
+The SNOPT branch used to read IPOPT's `acceptable_tol`/`acceptable_constr_viol_tol` as its `Major
+optimality`/`Major feasibility tolerance`. That is rung 2 of the tolerance ladder done wrong:
+IPOPT's `acceptable_*` family is its **relaxed early-stop** criterion, not what it converges to (its
+real `tol` is 1e-8). **Do not transplant one solver's option values onto another.** Unset
+`snopt_*`/`nlopt_*` fields are simply not passed, so each solver sits at its own defaults and the
+shared, deliberately looser task gate decides success.
 
-**But "each at its own defaults" is a CHOICE, and it is not a symmetric one.** Checking what
-the settings sweep actually covered turned up a second asymmetry, larger than the first and in
-the opposite direction. `acceptable_*` is IPOPT's early stop; `tol`, `constr_viol_tol`,
-`dual_inf_tol` and `compl_inf_tol` are what it actually converges to -- and those were never
-`ProgramOptions` fields at all, so every archived run took IPOPT's own defaults:
-
-| | IPOPT (never set) | SNOPT (default) |
-| --- | --- | --- |
-| constraint violation at convergence | `constr_viol_tol` **1e-4** | Major feasibility **1e-6** |
-| dual infeasibility | `dual_inf_tol` **1** | Major optimality **2e-6** |
-
-So the interior-point column has been allowed 100x the constraint violation and six orders
-more dual infeasibility than the SQP column it is compared against, on top of an early stop
-(`acceptable_tol=1e-3`, `acceptable_iter=1`) that SNOPT has no counterpart for. That is a
-property of the HARNESS, not of interior-point methods. The four fields are now plumbed and
-stage SWEEP measures what the choice is worth: `convsnopt` holds IPOPT to SNOPT's convergence
-numbers, `fair` does that and disables the early stop as well. **The task gate is untouched by
-any of it** -- success is verified from the returned point at `task_tol = 1e-3`, two orders
-above every tolerance involved, so none of this can manufacture a success.
+**But "each at its own defaults" is a CHOICE, and not a symmetric one.** `tol`, `constr_viol_tol`,
+`dual_inf_tol` and `compl_inf_tol` were never `ProgramOptions` fields at all, so every archived run
+took IPOPT's own defaults — `constr_viol_tol` **1e-4** against SNOPT's Major feasibility **1e-6**,
+`dual_inf_tol` **1** against Major optimality **2e-6**. So the interior-point column was allowed
+100x the constraint violation and six orders more dual infeasibility than the SQP column, on top of
+an early stop (`acceptable_tol=1e-3`, `acceptable_iter=1`) SNOPT has no counterpart for. That is a
+property of the HARNESS, not of interior-point methods. The four fields are now plumbed. **The task
+gate is untouched by any of it** — success is verified from the returned point at `task_tol = 1e-3`,
+two orders above every tolerance involved.
 
 ### What each solver will and will not tell you
 
 **No solver reports an iteration count through Drake.** `SnoptSolverDetails` carries `info`,
-`solve_time` and the multipliers but no count; `NloptSolverDetails` carries a single `status`
-field. So iteration counts come from the print file, and NLopt has none at all.
+`solve_time` and multipliers but no count; `NloptSolverDetails` carries a single `status`.
 
 | | IPOPT | SNOPT | NLopt |
 | --- | --- | --- | --- |
@@ -487,73 +565,63 @@ field. So iteration counts come from the print file, and NLopt has none at all.
 | seconds | log | `details.solve_time` | -- |
 | status | -- | `details.info` | `details.status` |
 
-`iterations` means **majors** under both solvers that report it, because IPOPT's count is
-majors -- this column is only comparable if it means the same thing in both. SNOPT's minors
-are kept separately. snOptA has one user function, so there is no funobj/funcon split and
-IPOPT's four eval counts have no SNOPT counterpart; they stay `None` rather than being filled
-with a different quantity.
+`iterations` means **majors** under both solvers that report it, because IPOPT's count is majors —
+the column is only comparable if it means the same thing. SNOPT's minors are kept separately. snOptA
+has one user function, so IPOPT's four eval counts have no SNOPT counterpart and stay `None` rather
+than being filled with a different quantity.
 
-**So the program counts map evaluations itself** (`IKFlowProgram.ResetEvalCounts`, counted in
-`QAndPose`, the one funnel every arm's solve passes through). `map_jacobian` is the
-AutoDiffXd count -- one `jacrev` through the network each for the learned arm. It is the only
-cost measure the NLopt column has, and it cross-validates: on the SNOPT smoke run
-`map_jacobian` equalled `User function calls (total)` **exactly** on every cell (377, 236,
-332, 272). It is *not* an iteration count -- a line search evaluates the map several times per
-accepted step -- so it measures work done, not steps taken. `collate.py` prints `--`, never
-`nan` or `0`, where a solver reports nothing: a `0` there would read as "converged instantly"
-rather than "does not tell us".
+**So the program counts evaluations itself** (`IKFlowProgram.ResetEvalCounts`, counted in
+`QAndPose`, the one funnel every arm's solve passes through). `map_jacobian` is the AutoDiffXd
+count — one `jacrev` through the network each for the learned arm. It is the only cost measure the
+NLopt column has, and it cross-validates: on the SNOPT smoke run it equalled `User function calls
+(total)` **exactly** on every cell. It is *not* an iteration count — a line search evaluates the map
+several times per accepted step. `collate.py` prints `--`, never `nan` or `0`, where a solver
+reports nothing.
 
-**Status is decoded numerically, not from log text.** SNOPT INFO 34 is the time limit and
-Drake leaves it as a generic solver error with no distinctive exit string; NLopt has no text
-at all. Matching exit strings alone would report `timeouts: 0` for a capped run of either --
-the same trap `is_iteration_cap` was written for. NLopt status 5 is `MAXEVAL_REACHED`, an
-*evaluation* cap recorded as `hit_eval_cap`, since NLopt has no notion of an iteration to cap.
+**Status is decoded numerically, not from log text.** SNOPT INFO 34 is the time limit and Drake
+leaves it as a generic solver error with no distinctive exit string; NLopt has no text at all.
+Matching exit strings alone would report `timeouts: 0` for a capped run of either. NLopt status 5 is
+`MAXEVAL_REACHED`, recorded as `hit_eval_cap`, since NLopt has no notion of an iteration to cap.
 
 ### Traps, all found by probing rather than by reading
 
-**A solver option can be ACCEPTED and do nothing**, and only the solver's own parameter echo
-tells the two apart. `"Timing Level"` was set for the life of this repo and silently wrote no
-timing block, because SNOPT's parser is case-sensitive on the second word while Drake raises
-only on keywords SNOPT does not know at all. Every option this branch exposes was verified
-reaching the solver -- for IPOPT by requiring `used = yes` in the user-options block that
-`print_user_options` emits, for SNOPT by requiring the value in the parameter echo -- and that
-check earned its place three times over:
+**A solver option can be ACCEPTED and do nothing**, and only the solver's own parameter echo tells
+the two apart. `"Timing Level"` was set for the life of this repo and silently wrote no timing
+block, because SNOPT's parser is case-sensitive on the second word while Drake raises only on
+keywords SNOPT does not know at all. Every option this branch exposes was verified reaching the
+solver — for IPOPT by requiring `used = yes` in the `print_user_options` block, for SNOPT by
+requiring the value in the parameter echo — and that check earned its place three times:
 
-- **`Hessian updates` is inert** at these problem sizes: SNOPT picks full-memory mode below 75
-  variables and the programs have 20-21, so the echo keeps reporting 99999999 however it is
-  set. `Hessian frequency` is the one that bites.
-- **`Nonderivative linesearch` is a VALUELESS keyword** -- passing 0 turns it ON exactly as 1
-  does, so it is a bool emitted only when True. It appears in the echo abbreviated as
-  `Nonderiv.  linesearch`, which is why a first probe grepping its full name wrongly called it
-  inert.
-- **`linear_solver=mumps` does not exist.** Drake's IPOPT is built against SPRAL and offers
-  only `spral` and `custom`, so there is no linear-solver axis on this problem.
+- **`Hessian updates` is inert** at these sizes: SNOPT picks full-memory mode below 75 variables and
+  the programs have 20-21, so the echo keeps reporting 99999999 however it is set. `Hessian
+  frequency` is the one that bites.
+- **`Nonderivative linesearch` is a VALUELESS keyword** — passing 0 turns it ON exactly as 1 does,
+  so it is a bool emitted only when True. The echo abbreviates it `Nonderiv.  linesearch`, which is
+  why a first probe grepping its full name wrongly called it inert.
+- **`linear_solver=mumps` does not exist.** Drake's IPOPT is built against SPRAL and offers only
+  `spral` and `custom`, so there is no linear-solver axis on this problem.
 
 **Read a solver's defaults out of the solver, not out of memory.** IPOPT's
-`print_options_documentation` dump contradicted the obvious assumption: `acceptable_dual_inf_tol`
-defaults to **1e+10** and the two acceptable infeasibility tolerances to **1e-2**, so this
-repo's fielded values are looser on two of the family and *tighter* on three. A sweep arm
-labelled "IPOPT's defaults" that was not cost a resubmission to correct.
+`print_options_documentation` dump contradicted the obvious assumption:
+`acceptable_dual_inf_tol` defaults to **1e+10** and the two acceptable infeasibility tolerances to
+**1e-2**. A sweep arm labelled "IPOPT's defaults" that was not cost a resubmission.
 
-**The Drake on the laptop is not the Drake on the cluster.** The workstation is a source build;
-the cluster runs the official 1.56.0 tarball, whose `NloptSolver` exposes exactly six options
-(`algorithm`, `constraint_tol`, `xtol_rel`, `xtol_abs`, `max_eval`, `max_time`) against the
-source build's eleven. Drake validates NLopt names strictly and **raises** on an unknown one,
-so code written against the newer API passes locally and fails on every cell of a cluster run.
-`tests/test_solver_plumbing.py` pins the emitted keys to 1.56.0's six; do not relax it to
-whatever the local build offers.
+**The Drake on the laptop is not the Drake on the cluster.** The workstation is a source build; the
+cluster runs the official 1.56.0 tarball, whose `NloptSolver` exposes exactly six options
+(`algorithm`, `constraint_tol`, `xtol_rel`, `xtol_abs`, `max_eval`, `max_time`) against the source
+build's eleven. Drake validates NLopt names strictly and **raises** on an unknown one, so code
+written against the newer API passes locally and fails on every cell of a cluster run.
+`tests/test_solver_plumbing.py` pins the emitted keys to 1.56.0's six; do not relax it.
 
-**`max_eval` is not "unset" by default** -- Drake defaults it to 1000, a cap that binds here,
-so it must be set deliberately or the NLopt column silently measures an evaluation budget
-rather than the wall clock.
+**`max_eval` is not "unset" by default** — Drake defaults it to 1000, a cap that binds here, so it
+must be set deliberately or the NLopt column silently measures an evaluation budget rather than the
+wall clock.
 
-### THE SOLVER AXIS AT 480 CELLS (stage SOLVER2, 2026-09-16)
+### The result: IPOPT > SNOPT >>> NLopt, as predicted
 
-60 targets x 8 guesses, 45 s, seed 1, `--compile`, adopted rungs (Panda `n6`, iiwa `n4`),
-`learned,numerical`, both protocols, and **three placements** -- the adopted grasp default
-(free), the contained grasp task, and fingertip pose containment. 216 items on 4 volta nodes,
-`PROCS=8`, about two and a half hours. The IPOPT column is measured on this grid and this
-code, not quoted from an archive. NLopt runs at the 60-cell triage grid instead (below).
+Stage SOLVER2, 480 cells (60 targets x 8 guesses), 45 s, seed 1, `--compile`, adopted rungs (Panda
+`n6`, iiwa `n4`), `learned,numerical`, both protocols, three placements. The IPOPT column is
+measured on this grid and this code, not quoted from an archive.
 
 Learned arm, successes of 480:
 
@@ -566,1067 +634,132 @@ Learned arm, successes of 480:
 | Panda grasp contained | **461** | 438 | **437** | 280 |
 | Panda pose fingertip | **461** | 438 | **405** | 251 |
 
-**IPOPT wins all 24 rows** (12 learned + 12 joint space), 23 of them significant, p from
-3.6e-08 to 4.8e-44. The single exception is Panda contained-grasp joint space, p = 0.09.
+**IPOPT wins all 24 rows** (12 learned + 12 joint space), 23 significant, p from 3.6e-08 to 4.8e-44;
+the exception is Panda contained-grasp joint space, p = 0.09.
 
-**This is a CONFIRMATION, not a finding.** Thomas, 2026-09-16: *"SNOPT performing worse than
-IPOPT is not surprising. In my experience, IPOPT is more robust to ill-posed problems, and our
-neural network gradients are definitely ill-posed. I expect to see IPOPT > SNOPT >>> NLOPT."*
-Write it up as the size and mechanism of a predicted gap, never as a discovery.
+**This is a CONFIRMATION, not a finding.** Thomas: *"SNOPT performing worse than IPOPT is not
+surprising. In my experience, IPOPT is more robust to ill-posed problems, and our neural network
+gradients are definitely ill-posed. I expect to see IPOPT > SNOPT >>> NLOPT."* Write it up as the
+size and mechanism of a predicted gap.
 
-**It is a property of the PROBLEM, not of the learned formulation.** The joint-space arm
-degrades too, on every row and by comparable margins -- 457 to 398, 442 to 292, 453 to 404,
-323 to 298, 299 to 236, 217 to 169. That arm never evaluates the network.
+**It is a property of the PROBLEM, not of the learned formulation.** The joint-space arm degrades
+too, on every row and by comparable margins (457→398, 442→292, 453→404, 323→298, 299→236, 217→169),
+and that arm never evaluates the network.
 
-**The gap is much larger under `paired`.** On four of the six learned row-pairs the `native`
-gap is 23-28 cells and the `paired` gap is 77-212. The paired protocol hands every arm the
-same random configuration, infeasible by policy, so **SNOPT copes far worse with an infeasible
-start.** (The iiwa grasp rows are the exception only because SNOPT is bad there under both.)
-A 60-cell triage read this backwards in both directions before 480 cells settled it -- first
-appearing to confine the effect to `paired`, then appearing to abolish it. Neither reading
-survived. **Do not draw a protocol conclusion from 60 cells.**
+**The gap is much larger under `paired`** — on four of six learned row-pairs the `native` gap is
+23-28 cells and the `paired` gap is 77-212 — so **SNOPT copes far worse with an infeasible start**.
+A 60-cell triage read this backwards in both directions before 480 cells settled it. **Do not draw a
+protocol conclusion from 60 cells.**
 
-**And it is NOT a budget artefact**, which the exit codes settle. Pooled over all 3,952 SNOPT
-failures in the stage:
+**And it is NOT a budget artefact.** Pooled over all 3,952 SNOPT failures: `nonlinear
+infeasibilities minimized` (INFO 13) **50.7%**, `current point cannot be improved` (INFO 41)
+**36.2%**, iteration limit 9.5%, time limit **3.6%**. About 87% are convergence failures and 11%
+budget, and SNOPT times out *less* often than IPOPT does. The two fail in opposite ways: IPOPT's
+learned-arm failures are mostly wall-clock — still descending when the clock runs out — where
+SNOPT's are INFO 41, giving up at a feasible-but-wrong point. **INFO 41 is the documented signature
+of inaccurate or badly scaled derivatives**, which is Thomas's explanation with a mechanism
+attached. This is distinct from the gain-ceiling runaway, absent here: `n4`'s solved cells return
+violations ~1e-08, so what SNOPT struggles with is ordinary ill-conditioning of an *exact* Jacobian.
 
-| exit | share | what it means |
-| --- | --- | --- |
-| `nonlinear infeasibilities minimized` (INFO 13) | **50.7%** | SNOPT concluded the problem is locally infeasible |
-| `current point cannot be improved` (INFO 41) | **36.2%** | the line search could not find an improving step |
-| major/minor iteration limit | 9.5% | budget |
-| time limit reached | **3.6%** | budget |
+**Iterations and cost.** SNOPT takes 2-4x the iterations on cells it does solve and its solutions
+are worse on the joint-space arm by a wide margin (median cost 3.627 against 1.828 on iiwa grasp
+free, on cells both solved). On the learned arm cost is closer and occasionally favours SNOPT — i.e.
+where it converges it sometimes finds a better optimum; it just converges far less often.
 
-**About 87% are convergence failures and 11% are budget**, and SNOPT actually times out *less*
-often than IPOPT does (22 against 38, 40 against 88 on the iiwa grasp rows). The two solvers
-fail in opposite ways: IPOPT's learned-arm failures are mostly `Maximum wallclock time
-exceeded` -- still descending when the clock runs out -- where SNOPT's are INFO 41, giving up
-at a feasible-but-wrong point. **INFO 41 is the documented signature of inaccurate or badly
-scaled derivatives**, which is Thomas's ill-posedness explanation with a mechanism attached.
-Note this is distinct from the gain-ceiling runaway, which is absent here: `n4`'s solved cells
-return violations ~1e-08, so what SNOPT struggles with is ordinary ill-conditioning of an
-exact network Jacobian.
-
-**Iterations and cost.** SNOPT takes 2-4x the iterations on the cells it does solve (591
-against 205, 703 against 349, 369 against 102) and its solutions are worse on the joint-space
-arm by a wide margin -- median cost 3.627 against 1.828 on iiwa grasp free, 4.522 against
-2.394 on the Panda, 5.521 against 2.864 contained, all on cells both solved. On the learned
-arm cost is closer and occasionally favours SNOPT (Panda grasp free native 4.644 against
-5.246), i.e. where it converges it sometimes finds a better optimum; it just converges far
-less often.
-
-**Harness self-check passes.** The joint-space arm is bit-identical between the two protocols
-in all six row-pairs, as it must be, since its native start *is* a random configuration. And
-the IPOPT column reproduces the archive: `sc_SOLVER2_iiwa_n4_ipopt_mugfree_480_45_paired`
-scores 456/480 learned and 457/480 joint space against the archived `sc_GRASPFREE` column's
-457 and 457, on the same `grid_hash`, with joint space exact and learned inside the +/-1 cell
-that cap-bound cells are reproducible to. **So the eleven new option fields and the rewritten
-three-way dispatch left the IPOPT path where it was.**
+**Harness self-check passes.** Joint space is bit-identical between protocols in all six row-pairs,
+and the IPOPT column reproduces the archive (456/457 against the archived 457/457 on the same
+`grid_hash`, learned inside the ±1 cell that cap-bound cells are reproducible to). **So the eleven
+new option fields and the rewritten three-way dispatch left the IPOPT path where it was.**
 
 ### NLopt: the augmented Lagrangian is not competitive on this problem
 
-Fielded at 60 cells (stage SOLVER's grid, so it pairs against the IPOPT and SNOPT triage
-columns cell for cell) rather than 480, because a column that may be empty does not need
-campaign scale to be honest. It was the right call.
-
-| row | IPOPT | SNOPT | NLopt | NLopt timeouts | flow Jacobians/cell | median violation |
-| --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp free, paired | 59/60 | 40/60 | **1/60** | 60 | 5836 | 8.1e-02 |
-| iiwa grasp contained, paired | -- | -- | **0/60** | 60 | 6100 | 9.7e-02 |
-| Panda grasp free, paired | 59/60 | 51/60 | **1/60** | 60 | 4888 | 4.5e-02 |
-| Panda pose fingertip, native | 58/60 | 56/60 | 38/60 | 23 | 1921 | 9.4e-07 |
-| iiwa pose fingertip, native | 60/60 | 57/60 | 39/60 | 30 | 3612 | 2.0e-06 |
-
-It solves essentially nothing outside the easiest row, burns **1,900-8,400 network Jacobians
-per cell** against IPOPT's 40-200 iterations, and still lands 1e-2 to 4e-1 from feasible. The
-one place it works is the pose task under `native`, where it reaches 1e-06 -- so it is not
-broken, it is simply far too slow to satisfy tight equality rows through an ill-conditioned
-chart inside any budget this campaign uses. **`max_time` also binds much more tightly than
-SNOPT's `Time limit`** (20.0-20.1 s against 24-28 s in a local probe), because SNOPT only
-checks at major-iteration boundaries; wall-clock columns are not capped equally across
+Fielded at 60 cells (stage SOLVER's grid, pairing against the IPOPT and SNOPT triage columns cell for
+cell) rather than 480, because a column that may be empty does not need campaign scale to be honest.
+On the three grasp rows under `paired` it scores **1/60, 0/60 and 1/60** against IPOPT's 59/60,
+timing out on every cell, burning 4,900-6,100 network Jacobians per cell and landing 4.5e-02 to
+9.7e-02 from feasible. The one place it works is the pose task under `native` — 38/60 and 39/60
+against IPOPT's 58 and 60, reaching 1e-06 — so it is not broken, it is far too slow to satisfy tight
+equality rows through an ill-conditioned chart inside any budget here. **`max_time` also binds much
+more tightly than SNOPT's `Time limit`** (20.0-20.1 s against 24-28 s in a local probe), because
+SNOPT only checks at major-iteration boundaries; wall-clock columns are not capped equally across
 solvers.
 
-### STAGE SWEEP: solver settings, and what IPOPT's early stop is actually worth (2026-09-16)
+### Stage SWEEP: solver settings, and what IPOPT's early stop is worth
 
-43 settings (20 SNOPT, 23 IPOPT), one factor at a time against each solver's own default, on
-stage SOLVER's 60-cell grid, `paired` only, pooled over four rows (2 robots x the two adopted
-tasks) = **240 cells**. Directional by design, as `stage_INSET` argued; 184 items.
-**Step rejection is deliberately absent** -- `ipopt_theta_max_fact`, `ipopt_watchdog_trigger`,
-`ipopt_max_soc`, `snopt_violation_limit`, `snopt_major_step_limit` are a separate question
-(Thomas, 2026-09-16), and `stage_SWEEP` **raises** if an entry names one.
+43 settings (20 SNOPT, 23 IPOPT), one factor at a time against each solver's own default, 240 pooled
+cells, `paired`. **Step rejection is deliberately absent** — those five fields are a separate
+question (Thomas, 2026-09-16), and `stage_SWEEP` **raises** if an entry names one.
 
-**SNOPT: no setting rescues it, and its defaults are already about right.** Against its own
-141/240: the best are the gradient-free line search at 153 (+12, p = 0.20), then `lstol0p99`,
-`majopt1em08` and `hessfreq20` at 152 (p = 0.16-0.20). **Not one of the twenty reaches
-significance**, and the extremes hurt (`scale2` 125, `elastic1e7` 130). That is consistent with
-the failure modes -- a solver losing on INFO 13/41 is not losing for want of tuning.
+**SNOPT: no setting rescues it.** Against its own 141/240 the best is the gradient-free line search
+at 153 (p = 0.20); **not one of the twenty reaches significance**, and the extremes hurt. A solver
+losing on INFO 13/41 is not losing for want of tuning.
 
-**IPOPT: the tolerances I plumbed for this are INERT, and the acceptable-point machinery is
-everything.** `convsnopt` (IPOPT held to SNOPT's convergence numbers) scores 212 against the
-fielded 211, and every single-factor convergence row is within noise -- because IPOPT already
-converges far tighter than either default, so the 1e-4-against-1e-6 asymmetry recorded above
-was real on paper and worth **zero cells**. The `acceptable_*` family is a different story:
+**IPOPT: the convergence tolerances are INERT and the acceptable-point machinery is everything.**
+`convsnopt` (IPOPT held to SNOPT's convergence numbers) scores 212 against the fielded 211 and every
+single-factor convergence row is within noise — IPOPT already converges far tighter than either
+default, so the 1e-4-against-1e-6 asymmetry above was real on paper and worth **zero cells**. The
+`acceptable_*` family, solved of 240: `accviolloose` 213 (66 median iterations, 0 timeouts, violation
+1.26e-06) > **as fielded 211** (147, 3, 1.29e-08) > **`ipoptdefault` 200** (840 iterations, 157
+timeouts) > `acctight` 121 > `accoff` 62 > `fair` 34; *SNOPT at its own defaults 141* (410, 16,
+2.03e-08).
 
-| IPOPT arm | solved/240 | vs SNOPT (b/w) | p | med violation | med iters | timeouts |
-| --- | --- | --- | --- | --- | --- | --- |
-| `accviolloose` (IPOPT's loose infeasibility triple) | **213** | 81/9 | 1.3e-15 | 1.26e-06 | **66** | **0** |
-| `convsnopt` | 212 | 82/11 | 1.4e-14 | 1.33e-08 | 147 | 3 |
-| **as fielded** | 211 | 82/12 | 5.6e-14 | 1.29e-08 | 147 | 3 |
-| `acciter5` | 202 | 81/20 | 6.9e-10 | 3.85e-09 | 430 | 39 |
-| **`ipoptdefault`** (IPOPT's true defaults) | **200** | 81/22 | **4.1e-09** | 1.09e-07 | 840 | 157 |
-| `acciter15` | 178 | 75/38 | 6.4e-04 | 8.73e-09 | 607 | 121 |
-| `acctight` (whole family at 1e-6) | 121 | 58/78 | 0.10 | 6.21e-12 | 587 | 156 |
-| `accoff` | 62 | 34/113 | 4.2e-11 (SNOPT) | 2.22e-15 | 319 | 158 |
-| `fair` (off + conv=SNOPT's) | 34 | 22/129 | 1.3e-19 (SNOPT) | 1.45e-13 | 232 | 111 |
-| *SNOPT at its own defaults* | *141* | -- | -- | *2.03e-08* | *410* | *16* |
+**The fairness question is answered: the ordering survives it.** At each solver's own defaults —
+what rung 2 asks for — **IPOPT 200, SNOPT 141, p = 4.1e-09**, and on the 119 cells both solve IPOPT's
+solutions also cost less (5.574 against 6.841).
 
-**THE ANSWER TO THE FAIRNESS QUESTION: the ordering survives it.** At each solver's own
-defaults -- which is what rung 2 of the tolerance ladder asks for -- **IPOPT 200, SNOPT 141,
-p = 4.1e-09**, and on the 119 cells both solve IPOPT's solutions also cost *less* (5.574
-against 6.841). So IPOPT's advantage is not an artefact of the early stop it was handed.
+**But the early stop is worth 39 cells and a 9x speedup, and that has to be stated** — and it is
+**NOT returning sloppy points**: fielded successes sit at 1.29e-08, five orders inside the gate and
+the same quality as SNOPT's. Turning it off drives the violation to 2.22e-15 and success to **62** —
+IPOPT without it keeps polishing a solution it already has until the clock kills it. So
+`acceptable_iter = 1` does not let IPOPT scrape past the gate, it lets IPOPT **recognise it is
+already done and stop**, which under a wall-clock cap is a real capability. SNOPT has no counterpart
+and would not benefit: only 3.6% of its failures are time limits. The trade is quality against
+throughput — `accviolloose` is fastest and best on success but **worst on cost** of the live arms.
+**Nothing is adopted**: the alternatives move success by at most +2 cells of 240 and changing it
+would break comparability with every archived run.
 
-**But the early stop is worth 39 cells and a 9x speedup, and that has to be stated.** Fielded,
-IPOPT solves 211 at 147 median iterations and 5.2 s; at its own defaults it solves 200 at
-**840** median iterations and **45.0 s** -- the entire cap -- with timeouts going 3 -> 157.
+### The grasp-containment lever is closed for the solver axis
 
-**And it is NOT returning sloppy points**, which was the worry. Fielded-arm successes sit at
-`max_violation` 1.29e-08, five orders inside the 1e-3 gate and the same quality as SNOPT's
-2.03e-08. Turning the early stop off drives the violation to 2.22e-15 and the success count to
-**62**: IPOPT without it keeps polishing a solution it already has until the clock kills it.
-So `acceptable_iter = 1` does not let IPOPT scrape past the gate -- it lets IPOPT **recognise
-it is already done and stop**, which under a wall-clock cap is a real capability. SNOPT has no
-counterpart and would not benefit from one anyway: only 3.6% of its failures are time limits.
-
-**The trade is quality against throughput, and `accviolloose` is the extreme.** It is the best
-arm on success (213), the fastest by far (66 iterations, 1.9 s, zero timeouts), and the
-**worst on cost** of the live arms (7.468 against the fielded 6.540 on cells both solve), at a
-violation of 1.26e-06 -- still three orders inside the gate. Stopping earlier buys cells and
-costs optimality. **Nothing here is adopted**: the fielded configuration sits at a reasonable
-point on that curve, the alternatives move success by at most +2 cells of 240, and changing it
-would break comparability with every archived run for no measured gain.
-
-**Read the `med cost` column of the first table with care** -- it is a median over each arm's
-own successes, and with success counts from 34 to 213 those are different cell sets. The
-cells-both-solved numbers quoted above are the honest form, and they are what the campaign's
-cost rule requires.
-
-### THE GRASP-CONTAINMENT LEVER IS CLOSED: a solver change does not flip it
-
-CLAUDE.md has carried a standing reminder that grasp containment is "the lever to revisit
-whenever another knob moves the picture, a solver change most of all" -- because on the
-contained task joint space needs 970 median iterations against 48 on the free one, so a solver
-that changes how the baseline copes with a hard active set could plausibly change the verdict.
-Stage SOLVER2 fielded those rows under both solvers. **It does not.**
-
-Learned against joint space, within each solver, 480 cells:
-
-| row | IPOPT | SNOPT |
-| --- | --- | --- |
-| iiwa contained, native | JS 442-392, p = 1.6e-06 | JS 292-175, p = 1.4e-14 |
-| iiwa contained, paired | JS 442-406, p = 3.1e-04 | JS 292-212, p = 1.6e-07 |
-| Panda contained, native | **L 461-323, p = 1.2e-32** | **L 438-298, p = 3.5e-27** |
-| Panda contained, paired | **L 437-323, p = 2.3e-20** | JS 298-280, p = 0.26 (tie) |
-
-**SNOPT never flips a verdict toward the learned arm and flips one away from it** -- Panda
-contained paired goes from a decisive learned win under IPOPT to a tie. Same on the free task:
-Panda grasp free paired is a learned win under IPOPT (474-453) and a tie under SNOPT
-(397-404). So the containment verdicts stand exactly as measured under IPOPT, and **the lever
-is closed for the solver axis**. Any future attempt to move it has to come from somewhere else
--- step rejection is the remaining candidate.
+Grasp containment was the standing "revisit whenever another knob moves" lever, because on the
+contained task joint space needs 970 median iterations against 48 on the free one. Stage SOLVER2
+fielded those rows under both solvers. **It does not move.** SNOPT never flips a verdict toward the
+learned arm and flips one away from it (Panda contained paired goes from a decisive learned win
+under IPOPT, 437-323 p = 2.3e-20, to a tie under SNOPT, 280-298 p = 0.26). The containment verdicts
+stand exactly as measured under IPOPT; step rejection is the remaining candidate.
 
 ### Future work on this axis
 
-- **NLopt settings are unswept**, by decision (Thomas, 2026-09-16: *"Store testing NLOPT
-  settings as future work"*) -- `LD_AUGLAG` vs `LD_AUGLAG_EQ`, `constraint_tol`, `xtol_*`,
-  `max_eval`. Stage SOLVER2 says the column is not competitive at Drake's defaults by a very
-  wide margin, so a sweep is unlikely to change the ordering; it would only say *why*. The
-  AL's inner local optimizer is not selectable on the cluster's Drake at all -- leaving it
-  unset is a supported state (NLopt then supplies LD_LBFGS, the right shape for a
-  bound-constrained inner problem) -- **TODO** when that Drake carries the local-optimizer PRs.
-- **The step-rejection family is untouched and is the next question.**
-  `snopt_major_step_limit` and `snopt_violation_limit` are plumbed and unset, as are IPOPT's
-  three. `Major step limit` bounds `||dx|| <= limit*(1+||x||)` per major iteration -- the trust
-  region the runaway wants, since it is *one accepted catastrophic step* out of a well-behaved
-  trajectory -- and `Violation limit` is the counterpart of `ipopt_theta_max_fact`, which
-  gained 3 cells and lost none on a 16-cell probe.
-- **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the
-  robust logging we need btw, work with what you have, don't write new logging stuff in Drake
-  or anything."* Instrument on our side and report honestly what a solver does not expose.
-
-**One latent bug this surfaced:** `scripts/iiwa/iiwa_benchmark.py`'s default tag omitted
-`args.solver` where the Panda's has always included it, so an iiwa SNOPT run and an iiwa IPOPT
-run with otherwise identical flags resolved to the same `summary.json` and overwrote each
-other -- the same trap `--shard` and `--checkpoint` were each fixed for. Fixed; archived iiwa
-runs were all tagged explicitly from manifests, so no archived path moved.
-
-## Results: the corrected campaign
-
-Everything below was measured on a program whose pose rows are a true equality, with the
-approved `correction_cost_weight = 10`, `--compile`, and the draft's own learned formulation.
-**Earlier campaigns (final3, final4, final5, Stages A-D) are superseded and their tables have
-been removed from this file** — they were measured either with the boxed pose rows, the
-task-parameterised arm, or the latent bounding box. Where one of them established something
-that still stands, it is restated here on corrected numbers. The git history holds the
-originals.
-
-### THE HEADLINE TABLE: the three-way comparison at 480 cells (2026-09-04)
-
-60 targets x 8 per-target guesses = **480 cells**, 45 s cap, both protocols, both robots, both
-tasks, **seed 1** — out of sample, no tuning decision was made on this grid. Joint space is the
-comparison's target; the analytic columns are baselines.
-
-| experiment | start | learned | joint space | analytic4 | analytic8 | L vs js | p |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Panda pose | native | **474/480** | 228/480 | 259/480 | 155/480 | 250 / 4 | **1.2e-68** |
-| Panda pose | paired | **339/480** | 228/480 | 244/480 | 251/480 | 169 / 58 | **9.0e-14** |
-| iiwa pose | native | **408/480** | 325/480 | -- | -- | 130 / 47 | **3.4e-10** |
-| iiwa pose | paired | 299/480 | 325/480 | -- | -- | 92 / 118 | 0.084 (tie) |
-| Panda grasp | native | 447/480 | 457/480 | 450/480 | 387/480 | 20 / 30 | 0.20 (tie) |
-| Panda grasp | paired | 424/480 | **457/480** | 376/480 | 418/480 | 18 / 51 | **8.8e-05** |
-| iiwa grasp | native | 229/480 | **462/480** | -- | -- | 11 / 244 | **2.2e-58** |
-| iiwa grasp | paired | 235/480 | **462/480** | -- | -- | 7 / 234 | **5.0e-60** |
-
-**The harness checks itself and passes.** The joint-space arm is bit-identical between the two
-protocols in all four experiments — 228/228, 457/457, 325/325, 462/462 — as it must be, since
-its native start *is* a random configuration. Every difference in the other columns is
-therefore attributable to their initialisation. `median_start_q_error` is 0.0 exactly for the
-learned and joint-space arms under `paired`, and ~1e-11 for the analytic arms where the chart
-covers `q_init`.
-
-**The draft's central claim is stronger on a correct program, not weaker.** The learned
-formulation wins the pose task on three of four rows — decisively on the Panda under both
-protocols and on the iiwa under `native` — and ties on the fourth. On the grasp task it ties on
-the Panda under `native` and loses under `paired`. The iiwa grasp row remains the one large
-deficit, and its cause is the flow's own gain (see below), not anything in the optimization.
-
-Against the same grid measured on the boxed program, **two conclusions moved, both in the
-learned arm's favour**: Panda grasp native went from a loss (437/457, p = 0.013) to a tie, and
-iiwa pose paired from a loss (296/332, p = 0.016) to a tie. The learned columns barely moved
-(466 → 474, 338 → 339, 407 → 408, 227 → 229). What moved is **joint space, and only on the
-pose task**: 249 → 228 on the Panda and 332 → 325 on the iiwa, its grasp columns unchanged.
-With the box gone that arm has to actually reach the target rather than stop 1e-4 away, and on
-the pose task it pays about 20 cells for it.
-
-**`analytic8` against `analytic4` is the unbalanced-bundle pathology, both signs intact.** Under
-`paired` the 8-branch chart wins the grasp task (418 against 376) because it can represent
-starts the 4-branch chart forfeits; under `native` it loses badly on both tasks (387 against
-450, and **155 against 259** on the pose task), because a uniform draw over eight branches lands
-in the narrow near-limit bundles half the time against roughly 10% of configuration-space
-volume. This is a genuine finding about unbalanced discrete solution bundles in
-optimization-IK, and exactly what the `analytic8` column was added to expose.
-
-### EQ1: what the equality fix actually changed
-
-15 targets x 4 = 60 cells, 45 s, seed 0, all arms, both protocols, both robots, both tasks;
-the grid and seed match the boxed run exactly, so every comparison is paired cell for cell.
-
-**The residuals collapse.** Medians over solved cells, boxed → equality:
-
-| experiment | arm | `pos_error` | `rpy_error` |
-| --- | --- | --- | --- |
-| Panda pose native | learned | 1.00e-04 → **1.82e-09** | 1.77e-08 → 7.03e-09 |
-| Panda pose native | analytic | 2.13e-05 → **2.48e-12** | **9.18e-03 → 9.29e-12** |
-| Panda pose paired | analytic8 | 1.02e-05 → **2.45e-12** | **6.81e-03 → 8.04e-12** |
-
-Five orders of magnitude on position for every arm, and **nine** on the analytic arm's
-orientation — it had been returning poses half a degree off target and scoring them as
-successes.
-
-**But no conclusion moved, and this is now measured on 2,880 cells.** At 60 cells, twenty-four
-arm-by-arm paired comparisons were **not one significant** (smallest p = 0.52, largest change ±4
-cells); pooling the learned arm over all eight experiments and all six caps of the cap curve
-below gives **225 better, 204 worse, p = 0.334**. The grasp task is bit-identical, as it must be:
-those rows were already `0 == 0` and the mug subclasses override `CreateIKConstraint`. The reason
-is clear in hindsight — a boxed solution stopped at 1e-4 and the task gate is 1e-3, so it
-**passed the gate anyway**. The box never made a cell easier to succeed at; what it did was
-return solutions four to nine orders looser than the program claimed. **The defect was in
-solution quality and in fairness between the arms, not in the rankings.**
-
-**The equality is also cheaper**, which is the opposite of what a tighter constraint suggests.
-Median iterations on cells both runs solved: learned 52 → 34, 103 → 75, 56 → 38, 118 → 83;
-joint space 29 → 24; analytic 10 → 8, 37 → 26. Roughly **30% fewer iterations and 30% less wall
-clock**, objective unchanged to within 3%. An equality is unambiguously active, so there is no
-active-set question and IPOPT handles it directly rather than through barrier terms on two
-inequality faces. That saving does **not** convert into cells — consistent with the diagnosis
-that the learned arm's cap-bound failures are a frozen divergent set rather than slow
-convergence. Making a diverged solve 30% faster does not rescue it.
-
-### EQ3: the cap curve — the claim holds at an adequate budget
-
-Eight experiments x six caps (5 / 10 / 20 / 45 / 90 / 180 s), 60 cells, seed 0, all arms, same
-grids as the boxed run.
-
-**At 180 s, where every arm has saturated:**
-
-| experiment | start | learned | joint space | better / worse | p |
-| --- | --- | --- | --- | --- | --- |
-| Panda pose | native | **59/60** | 30/60 | 30 / 1 | **3.0e-08** |
-| Panda pose | paired | **41/60** | 30/60 | 18 / 7 | **0.043** |
-| iiwa pose | native | **60/60** | 41/60 | 19 / 0 | **3.8e-06** |
-| iiwa pose | paired | 44/60 | 41/60 | 13 / 10 | 0.68 (tie) |
-| Panda grasp | native | 58/60 | 55/60 | 5 / 2 | 0.45 (tie) |
-| Panda grasp | paired | 55/60 | 55/60 | 5 / 5 | 1.0 (exact parity) |
-| iiwa grasp | paired | 53/60 | 58/60 | 2 / 7 | 0.18 (tie) |
-| iiwa grasp | native | 45/60 | **58/60** | 1 / 14 | **0.00098** |
-
-**This is the draft's central claim on a correct program at an adequate budget**: the learned
-formulation wins the pose task on both robots under `native` and on the Panda under `paired`,
-ties on the iiwa under `paired`, and reaches parity on the Panda grasp under both protocols.
-**Only one row of eight goes significantly against it** — the iiwa grasp under `native` — and
-its paired counterpart is no longer significant where at 45 s it was 18 vs 58.
-
-**The cap is a budget for the arm that evaluates a network, not a shared budget.** Every
-baseline is flat across all six caps, with one exception worth recording: on **iiwa grasp
-paired the joint-space arm is itself cap-bound below 20 s**, scoring 59 / 56 / 58 / 58 / 58 / 58
-with three cells exiting at the wall clock at 5 s and 10 s. Those cells run 1300-1430 iterations
-against that arm's median of 70 (p90 485, max 3000) — so the joint-space arm is not uniformly
-cheap, it has a tail. The same wobble predates the equality fix. Everywhere else the baselines
-are flat to the cell.
-
-Note the medians are over each arm's *succeeded* cells, and that set grows with the cap, so a
-median that rises from 5 s to 180 s is partly composition rather than the same cells taking
-longer — which is why comparisons are drawn at the one cap where every arm has saturated.
-
-### EQ4: the correction penalty replicates at 480 cells
-
-480 cells, 45 s, both protocols, both robots, both tasks, **seed 1** (out of sample).
-`correction_cost_weight = 10` against the same formulation with the penalty off, exact McNemar
-over all 480 shared cells:
-
-| experiment | start | penalty | no penalty | better / worse | p |
-| --- | --- | --- | --- | --- | --- |
-| iiwa grasp | native | **229/480** | 72/480 | 173 / 16 | **1.8e-34** |
-| iiwa grasp | paired | **235/480** | 98/480 | 170 / 33 | **2.0e-23** |
-| Panda grasp | native | **447/480** | 379/480 | 93 / 25 | **2.1e-10** |
-| Panda grasp | paired | **424/480** | 345/480 | 116 / 37 | **1.1e-10** |
-| iiwa pose | paired | 299/480 | 277/480 | 82 / 60 | 0.078 (tie) |
-| iiwa pose | native | 408/480 | 397/480 | 33 / 22 | 0.18 (tie) |
-| Panda pose | native | 474/480 | 469/480 | 7 / 2 | 0.18 (tie) |
-| Panda pose | paired | 339/480 | 343/480 | 64 / 68 | 0.79 (tie) |
-
-**The penalty is a grasp-task effect and only a grasp-task effect** — every grasp row
-significant at 1e-10 or below, every pose row a tie. That is what the mechanism predicts, so it is
-not a general success multiplier read off a lucky grid, and it costs the pose task nothing.
-
-**The mechanism**, and it is *not* that the correction box was binding (it never is — `on the box`
-is 0.00 at every weight): with `c` and `q_c` both free, many pairs give the same `q`, so the
-active constraint gradients are rank-deficient and IPOPT spends its budget on a degenerate
-direction. Penalising `q_c` breaks that degeneracy, which is why it bites hardest where the active
-set is largest. The instrumentation shows it directly — as the weight rises the correction is
-driven to zero and the median constraint violation falls three orders of magnitude on the iiwa,
-from grossly infeasible to the joint-space arm's own level, while the latent stays put:
-
-| `correction_cost_weight` | 0.001 | 0.01 | 0.1 | 1.0 | 10 (adopted) | 30 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Panda paired / native (60 cells) | 37 | 44 | 46 | **51** | 50 / **58** | 49 / 51 |
-| iiwa paired / native (60 cells) | 13 | 24 | 31 | 34 | **45** / 39 | 41 / **42** |
-| median `\|q_c\|`, iiwa | 4.99e-02 | 3.32e-02 | 1.98e-03 | 2.29e-04 | **2.09e-05** | -- |
-| median max violation, iiwa | 2.65e-02 | 1.28e-02 | 8.52e-05 | 2.90e-05 | **2.61e-08** | -- |
-
-At 480 cells the same instrumentation reproduces (medians, grasp paired): median `|q_c|`
-7.48e-02 / 6.72e-02 (Panda / iiwa) without the penalty against **2.06e-05 / 5.39e-04** with it,
-and median max violation 4.63e-05 → **3.44e-08** on the Panda, 9.04e-02 → **2.86e-04** on the
-iiwa. Three of the four 60-cell rows are flat or worse at weight 30, so **10 is at or near the
-optimum** rather than merely the largest value tried; read the per-row wobble as noise at 60
-cells, with the 480-cell table above carrying the penalty's case.
-
-**The other knobs keep their character too**, all swept and none worth revisiting: the
-collision-shaping pair (`collision_influence_offset`, `collision_row_scale`) peaks weakly around
-0.2-0.4 and is within noise of the default; `ipopt_mu_strategy=adaptive` is inert on both robots
-(42 and 19) despite the archived logs looking like its textbook case; `latent_cost_weight` helps
-the Panda (48 at 0.1) while hurting the iiwa (14), so not a general win; and `correction_bound`
-swept upward (0.1 / 0.2 / 0.4 / 0.8) is inert — the box is not binding on either robot, and the
-solver takes more of it when given more (median `|q_c|` 0.054 → 0.484) and gets nothing for it.
-
-### Iterations, cost and wall clock: the three numbers a result is told in
-
-**Standing reporting rule, Thomas's: every result is told in iteration count and in objective
-cost, as well as in runtime.** Iterations are hardware-independent and describe the *formulation*;
-seconds describe this implementation on this machine and are never compared across machines; cost
-says what the solution is worth. Reporting only seconds makes the cap story look arbitrary; only
-iterations hides that the learned arm's iteration is thirty times more expensive; only success
-hides that on the grasp task its solutions cost roughly twice the baseline's.
-
-Medians over each arm's succeeded cells at the 180 s cap, where the cap binds on nothing:
-
-| experiment | start | learned (solved / iters / s / ms-per-iter) | joint space |
-| --- | --- | --- | --- |
-| Panda pose | native | 58 / 52 / 4.57 / **69.7** | 29 / 34 / 0.10 / 2.9 |
-| Panda pose | paired | 41 / 101 / 7.26 / **72.3** | (same, both protocols) |
-| Panda grasp | native | 58 / 187 / 15.00 / **83.8** | 55 / 48 / 0.14 / 2.8 |
-| Panda grasp | paired | 55 / 215 / 18.12 / **84.2** | (same) |
-| iiwa pose | native | 60 / 57 / 3.71 / **59.0** | 39 / 30 / 0.06 / 2.3 |
-| iiwa pose | paired | 40 / 126 / 6.50 / **52.6** | (same) |
-| iiwa grasp | native | 45 / 207 / 15.77 / **83.4** | 58 / 66 / 0.17 / 2.6 |
-| iiwa grasp | paired | 53 / 213 / 19.07 / **82.2** | (same) |
-
-The analytic arms sit between: 10-13 iterations at 6.5 ms on the Panda pose task, 98-113 at
-8.0 ms on the grasp task.
-
-**The per-iteration cost is the honest headline, and it is a factor of 25-30**: 53-84 ms against
-joint space's 2.3-2.9 ms and the analytic arms' 6-8 ms, stable across robots, tasks and protocols
-— as it must be, being one network Jacobian against Drake kinematics. Profiling says that gap is
-CPU dispatch with a known ~3x floor, so it is an implementation property, not something tuning
-removes.
-
-**Iteration count is the formulation property, and it splits by task.** On the pose task the
-learned arm wins on success while taking a comparable number of steps (52 against 34 on the Panda
-under `native`, 57 against 30 on the iiwa) — it finds solutions the joint-space arm does not,
-rather than grinding longer. On the grasp task it takes **3-4x** as many steps *and* pays 30x per
-step; the two multiply to roughly 100x, which is the whole of the cap story and why 5 s is not a
-measurement of the grasp task and 180 s barely is. So "the learned arm reaches parity on the Panda
-grasp at 180 s" must always be stated as: parity in success at 55/60 each, at 215 median
-iterations against 48, and 18.1 s against 0.14 s.
-
-#### Cost, on the cells both arms solved
-
-Two things had to be right first. **Costs are compared only on cells *both* arms solved** — a
-median over each arm's own successes compares different cell sets, and the easy cells are exactly
-the ones a weaker arm also solves, so that form flatters whichever arm fails more. And **the
-learned-only regularizers are excluded from the reported objective** (`reported_cost`), so the
-column measures the objective every formulation shares. 480 cells, 45 s:
-
-| experiment | start | n both | learned | joint space |
-| --- | --- | --- | --- | --- |
-| Panda pose | native | 242 | **10.459** | 10.567 |
-| Panda pose | paired | 182 | **10.383** | 10.643 |
-| iiwa pose | native | 285 | **6.457** | 6.776 |
-| iiwa pose | paired | 209 | **6.367** | 7.112 |
-| Panda grasp | native | 417 | 5.322 | **2.826** |
-| Panda grasp | paired | 398 | 4.858 | **2.687** |
-| iiwa grasp | native | 216 | 5.952 | **2.647** |
-| iiwa grasp | paired | 230 | 5.299 | **2.618** |
-
-**On the pose task the learned arm wins on cost as well as on success**, on both robots and
-under both protocols — modestly (1-10%) but with the same sign in all four rows. This is the
-draft's central claim holding on the second of its two axes. **On the grasp task it loses on
-cost by roughly a factor of two, in every row.**
-
-#### What the correction penalty costs, and it is not nothing
-
-The same comparison against the penalty-free arm, on the cells both solved:
-
-| task | `w = 10` | `w = 0` | penalty costs |
-| --- | --- | --- | --- |
-| pose (4 rows, n = 206-460) | 6.364-9.893 | **6.061-9.459** | 0.5-5% |
-| grasp (4 rows, n = 58-343) | 4.815-7.185 | **2.444-4.663** | 30-100% |
-
-**The penalty is nearly free on the pose task (0.5-5%) and expensive on the grasp task
-(30-100%)** — and the grasp task is exactly where it buys its cells. So the penalty is a
-*trade*, not a free improvement, and must be reported as one: it converts objective value into
-feasibility. The mechanism is the redundancy it was adopted to break — with `q_c` free the arm
-can nudge `q` toward a well-centred configuration for nothing; pinning `q_c` to zero means `q`
-is whatever the flow emits at `(c, z)`, which is less centred. The whole grasp cost gap against
-joint space is this.
-
-This is **not** a bookkeeping artefact of the penalty term appearing in the objective: at
-`w = 10` the correction is driven to `|q_c|_inf ~ 1.8e-05`, so the term contributes about 2e-08
-to a cost of ~5, six orders too small to explain the gap. An earlier caution in this file
-claiming otherwise named the wrong mechanism; the columns are comparable, and the rise in cost
-with the weight is a real change in which solutions the solver returns.
-
-### The ablation ladder: the frame fix is the whole stack
-
-Panda grasp, learned arm only, 60 cells, 20 s, paired, one grid for every rung (the finals'
-grid), so the rungs are cell-comparable with each other and with the finals' learned column.
-
-| rung | success | iters | at the cap | `\|z\|` at start | median `\|q_c\|` |
-| --- | --- | --- | --- | --- | --- |
-| baseline (uncalibrated frame, no sharing) | 11/60 | 135 | 41 | **426** | 0.090 |
-| + conditioning-frame calibration | **29/60** | 126 | 31 | 2.81 | 0.086 |
-| + shared flow evaluation | 30/60 | 134 | 31 | 2.81 | 0.085 |
-| + latent trust region | 34/60 | 155 | 26 | 2.81 | 0.074 |
-
-Exact McNemar, each rung against the one below: frame calibration 26/8, **p = 0.0029**; shared
-evaluation 1/0, p = 1.0; latent trust region 15/11, p = 0.56; the whole stack 28/5,
-**p = 6.6e-5**. The median start error is 0 (exact) at every rung.
-
-**This is the first ladder in the repo that measures what it claims to** — earlier ladders were
-confounded by the latent bounding box (which silently projected every start) and by two rungs
-running the unauthorized task parameterisation. With the box a general constraint and the start
-exact at every rung, the attribution is clean and it is almost entirely one change:
-
-- **The conditioning-frame calibration is worth 18 cells and is the only significant rung.** Its
-  mechanism is the `|z|` column: uncalibrated, `SetStartFromQ` inverts the flow at a pose 27 mm
-  and 120 degrees from the trained frame, and the network answers with a latent of norm **426** —
-  and, the latent region now being a constraint, the solver actually *starts* there instead of
-  being quietly clipped. The old ladders could not see this because the clip hid it.
-- **Sharing the flow evaluation is worth one cell**, as it must be: bit-identical values and
-  derivatives, so its only effect is throughput inside a fixed cap.
-- **The latent trust region (`latent_trust_region`) is +4 cells and not significant.** It stays for the reason recorded
-  separately — IPOPT is poorly behaved on unbounded variables, and a nonbinding constraint still
-  shapes an interior-point trajectory — and remains a stated deviation from eq. (6) rather than
-  a proven improvement.
-
-### The analytic chart: eight branches, and what the last 0.6% is
-
-The closed-form map's discrete set is three binary choices — wrist (B), shoulder (C), elbow (A)
-— and the implementation historically charted only A = +1, the half away from the joint limits,
-following the Panda analytic IK paper. The missing half is a *single sign*: negate both triangle
-angles `O2O4O6` and `O2O6O4` (the elbow reflected across the shoulder-wrist axis). The old
-commented-out "Case A1" line matches no configuration. The measured elbow relations are
-`q3 = theta + q3_add - 2*pi` (A = +1) and `-theta + q3_add` (A = -1), partitioning at
-`q3 = q3_add - pi = -0.467`.
-
-`ProgramOptions.analytic_branches` selects the chart (default 4, so archived runs stay
-reproducible). `gc(q, branches=3)` recovers all three indices with zero mislabels in 4000
-samples. Round-trip coverage of `IK(FK(q), psi(q), gc(q)) == q`, 4000 random configurations:
-89.4% (4 branches) against 99.40% (8 branches) at 1e-6, rising to 99.83% at 1e-2.
-
-**The residual is not singularities** (measure zero; this set has positive measure) **and not
-branch mislabelling** (the 24/4000 misses are reproduced by *no* branch of the eight). Two are
-off by ~4 rad — a genuinely distinct solution — and 22 by 1e-3 to 1e-2, clustered where the
-wrist arcsin argument approaches 1, i.e. near a branch-merge locus. Consistent with the <=16
-self-motion-manifold bound (Burdick/Luck). **Left as future work by decision** — arXiv:2503.03992
-is the suggested starting point — and until then coverage is reported as the curve above, never
-as "100% up to singularities". Note the iiwa needs no such column: its Faria/SRS implementation
-already charts all eight branches, so analytic4-vs-analytic8 is a **Panda-only** experiment.
-
-**A separate grid confirms the whole `analytic4` disadvantage is start coverage.** Drawing
-`q_init` by rejection so it falls only in the four wide bundles the 4-branch chart covers (applied
-once to the shared guess list, so pairing is preserved — but it changes the cells, so that table is
-*not* cell-comparable with the finals), `analytic4` and `analytic8` become identical: 59/60 and
-59/60 on the grasp task, 34/60 and 34/60 on the pose task, with the same mean iteration counts and
-the same `start_q_error`. They must be, since every `q_init` then lies in a bundle both charts
-cover. **Nothing about the near-limit bundles makes the *solve* harder; they are simply
-configurations that arm cannot be given.**
-
-## The one open question: the residual failures are the flow's own gain
-
-This is the project's central scientific finding and the explanation of the iiwa grasp deficit.
-
-**The violated binding is `AllIKFlowConstraints`, and inside it the joint-limits row.** On the cells that never converge,
-`max_violation` equals `|q|_inf` exactly (Spearman 1.0, agreeing to the digit, on 55 of the 64
-badly-violating learned cells across all eight 180 s runs). The returned configurations have
-joint angles of **1e7 to 1e16 radians**. Everything else about those cells follows: a
-configuration of 1e8 rad puts the gripper anywhere, so "deeply in collision, a metre off
-target" is a *consequence* of the blow-up, and the collision penalty is a bystander
-(`max_violation` does not track `collision_value` at all, Spearman -0.15).
-
-**Every runaway lies on one ray, and it is a property of the network, not of the solve.**
-Normalising the exploded `q` vectors and taking pairwise `|cos|`:
-
-| | ray (unit, joint order) | pairwise `\|cos\|` |
-| --- | --- | --- |
-| iiwa (mug native, mug paired, pose paired) | `[0.001, -0.001, 0.016, -0.000, 0.003, 0.978, -0.208]` | **1.0000** |
-| Panda (mug native, mug paired, pose paired) | `[-0.016, 0.033, 0.998, -0.032, -0.002, 0.027, 0.023]` | **1.0000** |
-
-The same ray on both tasks and under both start protocols, dominated by a single joint — the
-iiwa's wrist (joint 6) and the Panda's elbow (joint 3).
-
-**Sampling the network directly reproduces it, with no Drake and no solver involved.** Draw `c`
-position uniformly in its ±0.25 m box, a uniform unit quaternion, and `z` uniformly in the ball
-of radius 4.3 — strictly inside the region the formulation allows — and evaluate
-`MakeFlowInference` in float64:
-
-| | Panda `lp191_5.25m` | iiwa14 `lemon-haze-7` |
-| --- | --- | --- |
-| median `\|q\|_inf` | 2.65 | 2.50 |
-| p99 | 3.71 | 8.7e+05 |
-| p100 of 20000 | 4.1e+12 | 5.5e+16 |
-| fraction `> 3` rad (outside joint limits) | 0.159 | 0.142 |
-| **fraction `> 1000` rad** | **0.00065** | **0.0334** |
-| ray recovered from those samples | `[-0.017, 0.035, 0.998, ...]` | `[0.008, 0.030, 0.017, ..., 0.984, -0.167]` |
-| `\|cos\|` against the ray the *solver* landed on | **0.9999** | **0.9976** |
-
-The distribution is bimodal, not heavy-tailed: on the Panda, 14 of 20000 exceed 10 rad and 13 of
-those exceed 1000. A draw is either an ordinary configuration or it is astronomical.
-
-**This is the answer to the iiwa grasp deficit.** The iiwa checkpoint puts **3.34% of the
-allowed region** into the blow-up regime against the Panda's **0.065% — a factor of 51**.
-
-**The mechanism is architectural headroom, not a numerical bug.** FrEIA's coupling blocks
-soft-clamp the log-scale to `clamp * 0.636 * atan(s/clamp)`, bounded by `clamp * 0.636 * pi/2`,
-so with `rnvp_clamp = 2.5` over `nb_nodes = 12` the worst-case output gain is about
-`e^(2.5*12) ~ 1e13` — exactly the scale of the observed maxima. These are near-worst-case gain
-regions of a bounded map, not poles. Both checkpoints have the same headroom; they differ only
-in how much of the conditioning domain sits near it.
-
-**`rnvp_clamp = 2.5` is confirmed correct**, worth checking because `src/iiwa_program.py`
-hardcodes the iiwa's hyperparameters and `rnvp_clamp` changes the forward pass without changing
-any parameter shape, so a wrong value would load silently. Sweeping it against the same weights,
-fraction `> 1000`: 0.893 / 0.410 / 0.090 / **0.035** / 0.126 / 0.999 at clamp 1.0 / 1.5 / 2.0 /
-**2.5** / 3.0 / 5.0. A clear optimum, so the 3.34% is a property of the weights.
-
-**Why the solver finds a 3%-measure set 30% of the time.** It does not sample; it follows
-gradients, and `dq/dvars` in these regions is as large as `q` is. A Newton step is *attracted*
-to them. That is also why more budget never helps: the cap-bound cells at 180 s are the same
-cells that were cap-bound at 20 s, and on iiwa pose paired the set is frozen at 19 cells across
-every cap tested.
-
-**Note the learned arm does control `q`** — Thomas: *"the network does get to control the joint
-limits a bit, since it can adjust z. That's the whole point of differentiating through the
-network — we take the constraint gradient for joint limits and pull it back through the network
-to z."* An earlier claim in this file that it imposes limits on something it cannot control was
-wrong. What differs from the baselines is *when* the limits hold (only at convergence), and that
-the gradient into a high-gain region is itself enormous, so the Newton step is attracted rather
-than repelled.
-
-### Neither region knob avoids them, because they are not at the edges
-
-Fraction of the region with `|q|_inf > 1000`:
-
-| knob | values | iiwa | Panda |
-| --- | --- | --- | --- |
-| latent trust-region radius | 1.0 / 2.0 / 3.0 / 4.3 / 6.0 / 8.0 | 0.033 / 0.026 / 0.032 / 0.035 / 0.040 / 0.071 | 0.0018 flat |
-| `c_position_slack` | 0.05 / 0.10 / 0.25 (default) / 0.50 | 0.039 / 0.041 / 0.035 / **0.225** | 0.000 / 0.000 / 0.0018 / **0.137** |
-
-Shrinking the trust region to `R = 1` leaves the iiwa's exposure unchanged at 3.3%: the blow-up
-regions are spread through the domain, including at `|z| <= 1`. **This is why the trust-region
-sweep measured inert** — it was never able to exclude them. The `c` box is flat from 0.05 to
-0.25 and then a **cliff** at 0.5, where exposure jumps 6x on the iiwa and 76x on the Panda; the
-default sits just under it, which is luck rather than design, and worth knowing before anyone
-widens it.
-
-### Every optimization-side remedy has been measured and refuted
-
-Thomas's ranking of the candidates: **(1) a better chart is preferred over everything else** —
-*"All of these actions are less preferred than just getting a better iiwa chart"*; (2) lifting
-`q` into a bounded decision variable, permitted but disliked (*"we're effectively adding a
-nonlinear equality constraint"*); (3) a joint-limit penalty, permitted but disliked (*"we should
-be able to rely on the constraint to handle it"*). "You can try it, but I don't like it" means
-measure it and report it as a stated deviation, not adopt it if the numbers look good.
-
-**Chart accuracy is not the mechanism.** `chart_error_scale = eps` adds a deterministic, smooth,
-seeded perturbation `eps * sin(W [c; z] + b)` to the flow's output, degrading the chart while
-holding the scene, kinematics, solver, grid and start protocol fixed. Panda grasp, 60 cells,
-20 s, paired:
-
-| `eps` (rad) | nominal median chart error | success | at the cap |
-| --- | --- | --- | --- |
-| 0 (the Panda flow as trained) | 3.8 mm | 35/60 | 25 |
-| 0.016 | ~12 mm | 34/60 | 26 |
-| 0.032 | ~20 mm | 32/60 | 30 |
-| 0.064 | ~43 mm | 22/60 | 40 |
-| 0.128 | ~83 mm | 1/60 | 1 |
-
-The iiwa's measured chart is 16.6 mm median / 64.5 mm p90 against the Panda's 3.8 / 9.4, so it
-sits between `eps = 0.016` and `0.032`, where the Panda still solves **34/60 and 32/60**. The
-iiwa solves 12/60. **Degrading the Panda's chart to the iiwa's accuracy costs it one to three
-cells; the iiwa is twenty-three cells worse** — the standing chart-accuracy hypothesis does not
-survive its own experiment. (The `eps = 0.128` row measures something else: 58 of its 60 cells
-fail as `unrepresentable_start`, 0.128 rad per joint exceeding what the ±0.1 correction can
-absorb. That row describes the correction box, not the dose curve.) Note also why this experiment
-could never have reproduced the real pathology: smooth `sin` error degrades accuracy while adding
-no high-gain regions.
-
-**IPOPT's scaling is not the lever.** `nlp_scaling_method=none` and `nlp_scaling_max_gradient`
-at 1e4 and 1e8, five experiments x 60 cells: every variant inert, largest movement ±2 cells, no
-comparison reaching p < 0.5, and the three settings reproducing each other almost cell for cell
-(which is what raising the cap far enough should do). So the runaway is not a scaling artefact —
-IPOPT is not mis-scaling a row it could have handled, it is being handed a chart with gain ~1e13
-and following the gradient into it. (`equilibration-based` is unavailable in Drake's IPOPT, needing
-HSL MC19; it raised `RuntimeError` on construction and scored 0/60 in ~10 ms a cell — a crash, not
-a measurement.)
-
-**The joint-limit penalty is inert**, which vindicates Thomas's objection to it. Across twelve
-measurements (`joint_limit_penalty_weight` at 1, 10, 100 on four rows) the smallest p against
-the default is 0.115, no weight has a consistent direction on either robot, the runaway counts
-do not move, and the median max violation is unchanged at ~1e-08. Adding a penalty on a quantity
-a constraint row already governs buys nothing. The knob stays in the tree, off.
-
-**Lifting `q` is net negative, and it is a task effect.** `lift_q` adds `q` as a decision
-variable whose bounding box is the joint limits and imposes the chart as a 7-row equality. All
-eight experiments, 60 cells each, against the default:
-
-| experiment | start | default | `liftq` | b/w | p | iters (def → lift) | runaway cells |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp | paired | 50 | **58** | 9/1 | **0.022** | 188 → 136 | 4 → 0 |
-| grasp, other 3 rows | | 39-57 | 43-59 | | 0.33-0.82 | 170-201 → 114-209 | 1-14 → 0 |
-| Panda pose | native | 58 | 52 | 2/8 | 0.11 | 52 → 44 | 0 → 0 |
-| iiwa pose | native | 60 | 44 | 0/16 | **3.1e-05** | 57 → 30 | 0 → 0 |
-| Panda pose | paired | 40 | **9** | 4/35 | **3.3e-07** | 100 → 161 | 13 → 0 |
-| iiwa pose | paired | 40 | **2** | 0/38 | **7.3e-12** | 126 → 317 | 18 → 0 |
-| **all eight** | | | | **38 / 116** | **2.2e-10** | | |
-
-**It delivers exactly one thing, universally: 0 runaway cells in all eight experiments** — the
-returned configuration is inside the joint limits by construction, always (max `|q_lift|` 3.05 rad
-on the iiwa against its 3.054 limit). **But the runaway does not stop, it relocates.** The flow
-still reaches 1.19e10, and since the chart is now an equality row that lands in `max_violation`
-instead of in `q` — median violation **3e+06 to 7e+06** on the collapsing pose rows. The cell
-fails either way; only the row it fails in changes.
-
-The split is by **task**, not robot: neutral-to-positive on the grasp task with consistently
-*fewer* iterations, negative on all four pose rows and catastrophic under `paired`. The mechanism
-is in the violation column — the pose task already pins the end-effector with six equality rows,
-so lifting adds seven more, giving thirteen equalities in 27 variables with the flow's badly
-scaled Jacobian inside seven of them, where the grasp task's rows are mostly inequalities with
-only the two mug-axis equalities. **An interior-point method's tolerance for a badly scaled row
-depends on how many equalities it is already carrying** — Thomas's objection with a mechanism
-attached. An arm scoring 2/60 and 9/60 on two of eight experiments is disqualified whatever it
-does elsewhere, so the 480-cell replication was **deliberately not run**: the negative result is
-complete at 60 cells.
-
-**Jacobian regularization is a clear negative and the line of investigation is closed.**
-`regularize_jacobian()` in `src/generic_program.py` implements three strategies acting on the
-Jacobian before the chain rule, so the solver sees a damped gradient while `q` is unchanged:
-Frobenius norm clipping (`jacobian_max_norm`), Tikhonov/LM damping of the singular values
-(`s_damped = s * λ / (s + λ)` — the correct shape for the runaway, since large singular values
-are damped more than small ones), and a singular-value floor (`jacobian_svd_floor`). Ten variants
-x eight experiments x 60 cells:
-| variant | success / 480 | delta | p | runaway cells / 480 |
-| --- | --- | --- | --- | --- |
-| *(default)* | 389 | | | 56 |
-| `jacobian_max_norm=1000` (the best) | 395 | +6 | 0.59 | 48 |
-| the six middling settings | 362-382 | -7 to -27 | 0.022-0.53 | 35-64 |
-| `tikhonov=10` / `max_norm=10` | 232 / 202 | -157 / -187 | 1e-27 / 4e-36 | 42 / 77 |
-| `tikhonov=1` / `=0.1` (most aggressive) | 2 / **0** | -387 / -389 | 6e-115 / 2e-117 | 106 / 142 |
-
-Aggregated over every row and variant: **310 cells better against 1,509 worse.** Not one setting
-is a significant improvement, and the only one not net-worse is indistinguishable from no
-regularization and does not reduce the runaway it was introduced to prevent.
-
-**Why it cannot work, which is the part to remember.** The flow's Jacobian is the *exact*
-derivative of an explicit function. Where the gain approaches its architectural ceiling of ~1e13,
-a sensitivity of 1e13 is the correct answer, not an artifact to be regularized away. Damping it
-does not regularize the problem — it breaks the correspondence between the constraint values
-IPOPT evaluates and the gradients it is handed, leaving an inconsistent nonlinear program. That
-is why the *most* aggressive damping fails hardest while *increasing* the runaway count: with the
-gradient scaled to nothing, the solver has neither the signal that would carry it into a
-high-gain region nor the one that would carry it out. LM damping is sound applied to the **Newton
-step** rather than to a reported derivative, but Drake's IPOPT does not expose the step
-computation, so the well-posed version is unreachable here and the reachable one is refuted.
-
-**Thomas's ruling: *"I think we can conclude gradient regularization and the other strategies
-isn't worth it."*** The knobs stay in the tree, off, with this table as the reason not to revisit
-them. (One pattern, recorded as post-hoc because it was chosen after seeing the data and is not
-significant: on the two runaway-heavy rows moderate damping is positive, pooled 27/15, p = 0.088,
-runaway cells 31 → 11. Note `tikhonov=10` cuts the runaway hardest there, 31 → 7, while scoring
-exactly 19/19 on success — **suppressing the runaway does not buy success**, the same conclusion
-lifting `q` reached.)
-
-**Step ACCEPTANCE is a different lever from step damping, and the first one that has worked.**
-Everything refuted above altered the *derivatives* the solver was handed, breaking the
-correspondence between the values IPOPT evaluates and the gradients it uses. Filter tuning leaves
-the program exactly as written and changes only which trial points are accepted. The mechanism it
-attacks: IPOPT holds **variable bounds** at every iterate but general constraints only at
-convergence, and in the learned formulation `q` is not a decision variable, so the joint-limit
-rows are general constraints and an iterate may sit at `|q| = 1e8`. That is why `lift_q` gave zero
-runaways — at the cost of seven equality rows. `ipopt_theta_max_fact` attacks it without touching
-the formulation: IPOPT rejects any trial point whose constraint violation exceeds
-`theta_max_fact * max(1, theta(x_0))`.
-
-The trajectories say why this should work. Recording every iterate through `VarsToQ` on five
-runaway cells (iiwa pose paired, ddp-r1, 20 s), **the solve is well behaved for 22 to 110
-iterations and then jumps in a single step** — on three of the five, `|q|_inf` goes from ~2.5 to
-past 1e3 in one iterate. The runaway is not a slow drift the solver could be nursed through; it is
-one accepted catastrophic step, which is exactly what a filter ceiling can refuse.
-
-**Local probe only, 16 cells, one seed, one chart, laptop GPU — a lead, not a measurement:**
-
-| variant | solved | runaway | median iters | median cost |
-| --- | --- | --- | --- | --- |
-| default | 11/16 | 5 | 139 | 7.61 |
-| `ipopt_theta_max_fact=1` | **14/16** | **2** | 131 | **6.75** |
-| `ipopt_theta_max_fact=10` | 11/16 | 5 | 138 | 7.61 (bit-identical to default) |
-| `ipopt_watchdog_trigger=0` | 11/16 | 5 | — | — |
-| `ipopt_max_soc=8` | 11/16 | 5 | — | — |
-
-Three cells gained, **none lost**, cost *improved*, effect sharply thresholded between 1 and 10.
-This is the first intervention that both suppresses the runaway **and** converts it into success —
-`tikhonov=10` cut runaways 31 → 7 for exactly 19/19, and `lift_q` reached zero runaways while
-losing 78 cells net. `ipopt_theta_max_fact`, `ipopt_watchdog_trigger` and `ipopt_max_soc` are
-plumbed and default to None (IPOPT's own defaults). **Not measured**: needs the grasp task, the
-Panda, both start protocols and 480 cells, which waits for the ladder to finish.
-
-SNOPT has the closer analogue of a trust region — `Major step limit` (default 2.0) bounds
-`||dx|| <= limit*(1+||x||)` per major iteration, and `Violation limit` is its theta ceiling.
-Neither is plumbed, and **`parse_log` must learn SNOPT's log format first** (iterations, eval
-counts and exit all return None under SNOPT), since iterations is the hardware-independent number.
-
-**So a better iiwa chart is the preferred remedy, and filter step-rejection is now a live second one.**
-
-## Running on MIT SuperCloud (`cluster/`)
-
-`cluster/README.md` is the playbook and `~/.claude/skills/supercloud/SKILL.md` carries the
-standing rules; what follows is what a reader of *this* file needs. The allocation is **4 nodes
-on `xeon-g6-volta`**, each 40 Xeon Gold 6248 cores and 2x V100 32 GB.
-
-**Timing is never compared across machines.** Thomas: *"There's never a need to compare
-wall-clock (or really, performance in general) between laptop and cluster. But wall clock limits
-can be adjusted on the cluster."* So the wall-clock cap stays as the measurement — no switch to
-iteration caps for portability's sake — but its value is chosen from `cluster/calibrate.sh` on
-that hardware. `metadata.host` and `metadata.device` exist so a cluster run cannot be paired
-cell-for-cell against a laptop one. The corollary is that **CPU contention still corrupts the
-measurement**, so how many worker processes may share a node is a measured quantity.
-
-**`--shard K/N` is the sharding primitive**, and it is a no-op by construction. It splits
-**target-major** — whole targets per shard, never a target's guesses split — because `success_ci`
-bootstraps over whole targets and `solved_within_k` counts restarts within one, and it appends
-`_shardKofN` to the tag (without which two shards resolve to the same `summary.json` and
-overwrite each other). `cluster/merge_shard_summaries.py` pools the records and **re-runs
-`summarise`** rather than stitching per-shard numbers, preserving arm order so `_mcnemar`'s pair
-directions survive. `bash cluster/verify_sharding.sh` proves the round trip locally in ~2 minutes,
-bounding solves with `max_iter` rather than the wall clock deliberately. **Run it after any change
-to sharding, the merger, or grid construction.**
-
-**Two cluster facts that shaped the design.** The account's `xeon-g6-volta` limit is a Slurm
-**`GrpTRES` group** cap (`node=4`, `MaxSubmit=240`), not a per-job `MaxNodes`: work beyond it is
-accepted and **queued**, so a whole stage is submitted at once and Slurm meters it — and the cap
-is shared with everything else the account runs. Because jobs therefore start at different times
-there is no stable rank space to deal work into, so `cluster/run_items.sh` claims items with an
-atomic `mkdir <id>.claim`. And **PyTorch 2.11's cu128 wheels dropped sm_70**, so the V100s need a
-cu126 build; the wrong wheel imports cleanly, reports a CUDA device, and fails only at the first
-kernel launch, which is why `cluster/smoke.sh` launches a real kernel rather than trusting
-`get_arch_list()`. Three smaller adaptations: Meshcat is optional (`BuildEnv(meshcat=None)`),
-mug scenes are built only for the shard's targets, and `hit_iteration_cap` is the counterpart to
-`timed_out` (`is_timeout` does not match IPOPT's "Maximum Number of Iterations Exceeded", so a
-`--set max_iter` run reported `timeouts: 0`).
-
-### The calibration (`xeon-g6-volta`, V100)
-
-Four arms, one per node, each a full job on a real partition. The workload is the **Panda grasp**
-task, learned arm only, 4 targets x 2 guesses, `--compile` — that task specifically, because it is
-the one that binds against the cap. A first attempt ran the *pose* task and measured nothing: a
-pose cell converges in ~74 iterations and ~6 s here, so its iteration count is identical at every
-cap and however contended the node is. **A converged solve takes the iterations it takes**; only
-its wall time moves. Both sweeps were structurally incapable of showing an effect, whatever the
-truth.
-
-**Workers per node.** Median iterations achieved inside a fixed 20 s cap, on the GPU:
-
-| workers | 1 | 2 | 4 | 8 | 20 | 40 |
-| --- | --- | --- | --- | --- | --- | --- |
-| median iters | 202 | 196 | **194** | 186 | 114 | 70 |
-| vs P=1 | 1.00x | 0.97x | **0.96x** | 0.92x | 0.56x | 0.35x |
-
-**`PROCS=4` is the conservative setting and `PROCS=8` is what exploratory stages ran at** — four
-workers cost 4% of the per-cell iteration count where 8 costs 8% and 20 costs 44%. Thomas ruled
-the 8% acceptable for sweeps, reserving instrumented uncontended runs for hard comparisons and
-paper numbers. The P=1 row is the *noisiest* (one worker's median against forty at P=40), so
-0.96-0.97x at P=2 and P=4 is within noise of unity while the collapse at P>=20 plainly is not.
-Since the benchmark is wall-clock capped, a worker that gets less done is a **different
-measurement**, not merely a slower one — so the worker count is held fixed across everything being
-compared.
-
-**CPU-only is not competitive and the campaign runs on the GPU**: at one worker the GPU reaches
-202 median iterations against 62, solving 4 of 8 cells against 1 of 8, and CPU-only degrades more
-gracefully under contention (0.74x at P=40 against 0.35x) only from a starting point 3.3x worse.
-This does not contradict the profiling result that the flow is CPU-bound at batch 1 — that says
-the GPU is never the bottleneck *while a GPU is present*, not that torch on CPU is as fast.
-
-**The cap.** Single worker, 8 cells: median iterations 142 / 203 / **338** / 338 / 338 at 10 / 20
-/ 45 / 90 / 180 s, with the median cell finishing at ~22 s and 3 / 4 / 5 / 5 / 6 feasible.
-**45 s is the campaign's cap**: medians saturate by 45 s and do not move at 90 or 180, so the
-median cell has converged with 2x headroom. Beyond that only the tail gains, which is what the
-cap curve is for rather than something to buy with a bigger default.
-
-**Staging and startup**: 40 concurrent `import torch, pydrake, ikflow, jrl` take **10 s** total,
-so Lustre read amplification is not a problem and the venv can stay on the shared filesystem —
-copying it to node-local `$TMPDIR` costs 231 s against Drake's 13 s and buys nothing.
-`torch.compile` of the flow Jacobian costs ~35 s cold and ~17 s warm per process.
-
-### Solver logs: node-local, and one archive per run
-
-`src/benchmark.py` once wrote one ~20 KB IPOPT log per (cell x arm) straight onto the shared
-filesystem — **35,596 of them, 87% of every collection's file count**, exactly the many-small-files
-pattern SuperCloud's guidance warns against. Lustre is metadata-op bound on files that size, so a
-routine collection had drifted from three minutes to thirty and worsened with every stage. Now
-per-cell logs go to node-local `$TMPDIR` (keyed on the run tag *and* the pid, since a node runs
-eight workers) and are rolled into one `solver_logs.tar.gz` per run at the end of `run_grid` —
-3.7x compression, every log still recoverable with `tar xf`. On a laptop run they stay in `log_dir`
-and are rolled up in place. After the fix: 40,733 files → 2,964, 950 MB → 316 MB, ~30 min →
-**43 s**. `collect_results.sh` is incremental by default (`--full` forces the old behaviour) and
-never ships `state/`, whose done markers are load-bearing on the cluster and never read locally;
-`cluster/compact_logs.sh` backfills pre-change runs from inside a debug-cpu job.
-
-**A guard bug this surfaced, worth remembering.** Both scripts refused while *any* job was running,
-via `LLstat | grep -c RUNNI`. SuperCloud accounts are **shared across Thomas's projects**, so that
-fired on an unrelated campaign's job. Both guards now filter by this project's own job name and
-count `PENDING` as well as `RUNNING`. **Any cluster-wide check on a shared account must be scoped
-to this project's own jobs.**
-
-### The laptop suspends when idle
-
-Every multi-hour stall this repo recorded — the archived 6106 s cell and four overnight "wedges"
-— was **the machine going to sleep**. GNOME suspends after 900 s idle *even on AC*
-(`sleep-inactive-ac-type='suspend'`), and `journalctl` matches every stall to the minute. Three
-wrong solver-level theories (SPRAL, GPU runtime-D3, a torch spin) each fit part of the evidence:
-it struck only *unattended* runs (16/16 attended reproductions ran clean), `timeout`/`sleep` run
-on CLOCK_MONOTONIC which pauses across suspend, and a CUDA context straddling a suspend leaves
-torch spinning at 100% CPU afterwards.
-
-**Any long unattended run on this machine must hold a sleep inhibitor**:
-`systemd-inhibit --what=sleep:idle --mode=block sleep infinity &`, launched with `setsid` so a
-session teardown cannot take it down with the queue. When an unattended process appears hung,
-check `journalctl -b | grep "suspend now"` against the stall window *before* any solver- or
-GPU-level theory. Long benchmarks now run on the cluster instead.
-
-**Reproducibility at the cap is ±1 cell.** Two runs of the same configuration on the same grid
-scored 34/60 and 35/60; the single differing cell hit the wall clock in both, reaching 264
-iterations in one and 286 in the other. Cells that exit at the cap are reproducible only up to
-machine load — worth remembering before reading a one-cell difference anywhere as a real effect.
-
-## THE HARDENED PROBLEM AT 480 CELLS (2026-09-15)
-
-All eleven rungs on the hardened scene, one grid per experiment, 60 targets x 8 guesses,
-seed 1, 45 s, `--compile`, `learned,numerical`. Grasp targets always shelf-contained; the
-pose task fielded **both** ways, because whether containment belongs there was the open
-question. 66 runs, 528 items, ~5 h on four nodes.
-
-**Not cell-comparable with `sc_LADDER_*`, by construction** — the hardened scene admits a
-different target set, `grid_hash` differs, and `collate.py` refuses the pairing. Compare
-HARD columns with each other; the archived columns are quoted below only as "what the same
-arm scored on the soft problem", never as a paired test.
-
-**Only the GRASP rows are kept here. This stage's pose columns are superseded** by stage
-POSE2, which re-measured them on the corrected program after the conditioning-frame bug --
-see that section; the originals are in the git history, and the iiwa `posefree` pair is
-quoted inline under "WHAT THE CALIBRATION FIX WAS WORTH" below.
-
-| panda | upstream | n12 | n8 | **n6** | n4 | n12w256 | **js** |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| grasp native | 432 | 407 | 455 | **462** | 468 | 437 | 323 |
-| grasp paired | 347 | 347 | 429 | **444** | 450 | 380 | 323 |
-
-| iiwa | ddpr1 | n8 | n6 | **n4** | n12w256 | **js** |
-| --- | --- | --- | --- | --- | --- | --- |
-| grasp native | 266 | 316 | 300 | **391** | 297 | 442 |
-| grasp paired | 320 | 338 | 368 | **407** | 334 | 442 |
-
-The harness checks itself and passes: joint space is identical across every rung of a robot
-within each experiment (323 panda, 442 iiwa), and `median_start_q_error` is 0.0 exactly
-under `paired`.
-
-### THE HEADLINE: hardening flipped the Panda grasp task, and only the Panda's
-
-Exact McNemar against joint space on the shared 480 cells:
-
-| experiment | learned | js | p | on the SOFT problem |
-| --- | --- | --- | --- | --- |
-| panda grasp native (`n6`) | **462** | 323 | **1.5e-33** | 471 vs 457, p = 0.02 |
-| panda grasp paired (`n6`) | **444** | 323 | **2.9e-23** | 471 vs 457, p = 0.02 |
-| panda pose paired (`n6`, contained) | **392** | 167 | **6.2e-47** | 435 vs 228 |
-| iiwa grasp native (`n4`) | 391 | **442** | **1.4e-06** | 448 vs 462, p = 0.05 |
-| iiwa grasp paired (`n4`) | 407 | **442** | **0.00042** | 449 vs 462, p = 0.07 |
-| iiwa pose paired (`n4`, contained) | **411** | 268 | **9.4e-24** | 448 vs 325 |
-
-**On the Panda the learned formulation now wins all six experiments** at p <= 2.9e-23 —
-including the grasp task, which the full-depth charts *lost significantly* on the soft
-problem. The mechanism is entirely on the baseline's side: joint space fell **457 -> 323**
-on Panda grasp while `n6` fell 471 -> 462. Its iteration count tells the same story — 970
-median iterations against its archived 48, and 4.26 s against 0.14 s. The hardened grasp
-task is a genuinely hard problem for a joint-space formulation, and that is exactly the
-saturation the change was meant to remove.
-
-**On the iiwa it went the other way**: joint space barely moved (462 -> 442) while `n4` fell
-449 -> 407, taking a row that was at near-parity (p = 0.07) to a clear loss (p = 0.0004).
-
-**The two robots are not measuring the same intervention, and this is the confound to
-state.** The Panda *grasp* scene never had decorative mugs, so hardening it is essentially
-pure containment (the bin sits at `[0.75, 0, 0]`, nowhere near the shelves). The iiwa scene
-lost the bin **and seven welded mugs**, four of them inside shelf compartments — so its
-grasp task gained a containment requirement while *losing* obstacles. Any claim of the form
-"hardening helps/hurts the learned arm" has to carry that caveat until the iiwa is re-run
-with its decorative mugs kept.
-
-### THE CLUTTER WAS NOT THE EXPLANATION (stage HARDMUG, 2026-09-15)
-
-The obvious suspicion about the table above was that the two robots did not receive the same
-intervention: the Panda GRASP scene never had decorative mugs, so hardening it is near-pure
-containment, while the iiwa scene lost seven of them, four inside shelf compartments. Stage
-HARDMUG re-ran all five iiwa rungs on `--scene nobin` — bin removed, **clutter kept**, which
-is the iiwa's match for what the Panda got. 30 runs, 240 items, same grid shape and seed.
-
-**It changes essentially nothing.** `n4`, against the hardened (clutter-free) columns:
-
-| experiment | learned nobin | learned hardened | Δ | js nobin | js hardened | Δ |
-| --- | --- | --- | --- | --- | --- | --- |
-| grasp native | 392 | 391 | **+1** | 428 | 442 | -14 |
-| grasp paired | 412 | 407 | **+5** | 428 | 442 | -14 |
-| pose contained, paired | 412 | 411 | **+1** | 280 | 268 | +12 |
-| pose free, paired | 449 | 452 | **-3** | 321 | 332 | -11 |
-
-Seven welded obstacles, four of them in the compartments targets are drawn from, are worth
-**-6 to +5 cells of 480 to the learned arm and -14 to +12 to joint space**. The one verdict
-that moves is iiwa grasp paired, from a joint-space win (p = 0.00042) to a tie (412 vs 428,
-p = 0.13); grasp native stays a loss (392 vs 428, p = 0.0012).
-
-**So the confound was real in principle and immaterial in practice, and the iiwa/Panda
-divergence is a property of the robots, not an artifact of the scene.** Recorded because the
-hypothesis was explicit and is now refuted — do not re-open it.
-
-### What each hardening step is actually worth
-
-With clutter measured at ~0, the three steps separate cleanly:
-
-| step | what it does | measured worth |
-| --- | --- | --- |
-| remove the bin | `binF` sits at `[0.75, 0, 0]`, nowhere near the shelves | nil by construction; `../codebase` measured it "statistically free" |
-| remove the decorative mugs | seven welded obstacles, four in compartments | **±14 cells of 480, both arms** (above) |
-| **contain the target in a shelf** | the target must be reachable *inside* a compartment | **everything** (below) |
-
-**Containment is the whole intervention, and its sign is opposite on the two robots:**
-
-| | Δ joint space | Δ learned |
-| --- | --- | --- |
-| **panda** grasp native (`n6`) | 457 -> 323, **-134** | 471 -> 462, **-9** |
-| **panda** grasp paired (`n6`) | 457 -> 323, **-134** | 471 -> 444, **-27** |
-| **iiwa** grasp native (`n4`) | 462 -> 442, **-20** | 448 -> 391, **-57** |
-| **iiwa** grasp paired (`n4`) | 462 -> 442, **-20** | 449 -> 407, **-42** |
-
-On the Panda containment costs joint space 5-15x what it costs the learned arm; on the iiwa
-it costs the learned arm 2-3x what it costs joint space. The iteration columns show why the
-Panda moved: reaching into a compartment takes its joint-space arm **970 median iterations
-against its archived 48**, where the iiwa's takes 448. The hardened grasp task is near the
-edge of what a joint-space formulation does cheaply on the Panda and is not on the iiwa.
-
-### POSE RE-MEASURED ON THE CORRECTED PROGRAM (stage POSE2, 2026-09-16)
-
-480 cells, 45 s, all eleven rungs, both placements, both protocols, on the corrected scene
-(one finray gripper for both robots, both tasks), with the conditioning frame calibrated and
-`c` seeded in the flow's frame, and containment keyed on the gripper base -- the same point
-on the hand for both robots. **This supersedes every earlier pose table in this file.**
-
-| panda | upstream | n12 | n8 | **n6** | n4 | n12w256 | **js** |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| pose contained, native | 435 | 434 | 444 | **428** | 432 | 394 | 185 |
-| pose contained, paired | 242 | 242 | 369 | **382** | 347 | 250 | 185 |
-| pose free, native | 466 | 471 | 455 | **458** | 453 | 447 | 201 |
-| pose free, paired | 294 | 293 | 418 | **438** | 390 | 303 | 201 |
-
-| iiwa | ddpr1 | n8 | n6 | **n4** | n12w256 | **js** |
-| --- | --- | --- | --- | --- | --- | --- |
-| pose contained, native | 434 | 430 | 433 | **433** | 420 | 268 |
-| pose contained, paired | 285 | 234 | 232 | **384** | 331 | 268 |
-| pose free, native | 442 | 443 | 452 | **470** | 431 | 332 |
-| pose free, paired | 284 | 267 | 269 | **447** | 354 | 332 |
-
-Joint space is identical across every rung of a robot within each experiment (185 / 201
-Panda, 268 / 332 iiwa), and the learned arm wins every one of the eight rows decisively --
-Panda `n6` contained paired 382 against 185 at **p = 2e-42**, iiwa `n4` 384 against 268 at
-**p = 5e-16**.
-
-#### The containment verdict REVERSES on the corrected program
-
-The earlier table had containment costing joint space 53-64 cells against the learned arm's
-30-46, which read as "containment hardens the task without narrowing the claim". That was
-measured on a program whose pose path never calibrated its conditioning frame. Corrected:
-
-| | learned | joint space | effect on the learned margin |
-| --- | --- | --- | --- |
-| panda `n6` native | -30 | -16 | **-14** |
-| panda `n6` paired | -56 | -16 | **-40** |
-| iiwa `n4` native | -37 | -64 | +27 |
-| iiwa `n4` paired | -63 | -64 | +1 |
-
-**On the Panda containment now costs the learned arm 2-3.5x what it costs joint space, and
-shrinks the margin by 14-40 cells; on the iiwa it is a wash.** So pose containment does not
-strengthen the comparison -- it makes the problem harder and, on one robot, harder for the
-arm under test specifically. It remains a legitimate harder problem; it is simply not the
-free win the pre-fix table suggested. **Whether to keep it is Thomas's call**, and the
-fingertip variant (stage FINGER) is the other half of the evidence.
-
-The rungs behave as the ladder predicts throughout: `n4` leads the iiwa on every row, and on
-the `paired` protocol the full-depth charts collapse on both robots (Panda `upstream`/`n12`
-242-294 against `n6`'s 382-438; iiwa `n8`/`n6` 232-269 against `n4`'s 384-447), which is the
-gain-ceiling runaway and not a containment effect -- it is present in the free columns too.
-
-### THE ADOPTED GRASP DEFAULT: HARDENED SCENE, FREE TARGETS (stage GRASPFREE, 2026-09-16)
-
-Grasp containment defaults **off** (Thomas, 2026-09-15: its sign is opposite on the two robots
-and too many other knobs are in flight). That configuration -- hardened scene, free grasp
-targets -- had never been measured: the archived columns are the legacy scene and stage HARD
-is the contained one. 480 cells, all eleven rungs, both protocols.
+- **NLopt settings are unswept, by decision** (Thomas: *"Store testing NLOPT settings as future
+  work"*) — `LD_AUGLAG` vs `LD_AUGLAG_EQ`, `constraint_tol`, `xtol_*`, `max_eval`. The column is not
+  competitive at Drake's defaults by a very wide margin, so a sweep would only say *why*. The AL's
+  inner local optimizer is not selectable on the cluster's Drake at all — leaving it unset is a
+  supported state (NLopt supplies LD_LBFGS) — **TODO** when that Drake carries the local-optimizer
+  PRs.
+- **The step-rejection family is untouched and is the next question.** `snopt_major_step_limit` and
+  `snopt_violation_limit` are plumbed and unset, as are IPOPT's three. `Major step limit` bounds
+  `||dx|| <= limit*(1+||x||)` per major iteration and `Violation limit` is the counterpart of
+  `ipopt_theta_max_fact`.
+- **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the robust
+  logging we need btw, work with what you have, don't write new logging stuff in Drake or
+  anything."*
+
+## Results: the current campaign
+
+All numbers below are on the **hardened scene** with the corrected program (true pose equality,
+`correction_cost_weight = 10`, calibrated conditioning frame on every task, `--compile`, IPOPT),
+480 cells = 60 targets x 8 guesses, seed 1 (out of sample), 45 s unless stated. Earlier campaigns
+(final3-5, Stages A-D, the legacy-scene headline tables, the pre-calibration pose tables) are
+**superseded and their tables removed**; git history holds the originals, and every conclusion of
+theirs that still stands is restated here on corrected numbers.
+
+Adopted defaults: **grasp targets free** (containment available behind `--target-placement shelf`),
+**pose containment at the fingertips** where containment is used at all. Adopted rungs: Panda `n6`,
+iiwa `n4`.
+
+Harness self-check, which passes everywhere below: joint space is identical across every chart rung
+of a robot within an experiment, and `median_start_q_error` is 0.0 exactly under `paired`.
+
+### Grasp task, adopted default (hardened scene, free targets)
 
 | panda | upstream | n12 | n8 | **n6** | n4 | n12w256 | **js** |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1638,29 +771,55 @@ is the contained one. 480 cells, all eleven rungs, both protocols.
 | grasp native | 282 | 318 | 294 | **446** | 311 | 457 |
 | grasp paired | 286 | 336 | 297 | **457** | 336 | 457 |
 
-| best rung | contained (stage HARD) | free (adopted) | p, free |
+Best rung against joint space: Panda `n6` **474 v 453** native (p = 0.00032) and **475 v 453**
+paired (p = 0.00011); iiwa `n4` 446 v 457 native (p = 0.14, tie) and **457 v 457** paired (exact
+parity — the first time that row has not been a deficit).
+
+### Pose task
+
+| panda | upstream | n12 | n8 | **n6** | n4 | n12w256 | **js** |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| pose free, native | 466 | 471 | 455 | **458** | 453 | 447 | 201 |
+| pose free, paired | 294 | 293 | 418 | **438** | 390 | 303 | 201 |
+
+| iiwa | ddpr1 | n8 | n6 | **n4** | n12w256 | **js** |
+| --- | --- | --- | --- | --- | --- | --- |
+| pose free, native | 442 | 443 | 452 | **470** | 431 | 332 |
+| pose free, paired | 284 | 267 | 269 | **447** | 354 | 332 |
+
+**The learned arm wins every pose row decisively**, at every placement — e.g. wrist-contained
+paired, Panda `n6` 382 against 185 at **p = 2e-42** and iiwa `n4` 384 against 268 at **p = 5e-16**. On the `paired` protocol the full-depth
+charts collapse on both robots (Panda `upstream`/`n12` 242-294 against `n6`'s 382-438; iiwa
+`n8`/`n6` 232-269 against `n4`'s 384-447) — that is the gain-ceiling runaway, present in the free
+columns too, not a containment effect.
+
+**Containment at the fingertips beats containment at the wrist, on both counts.** The two candidate
+points are one 0.100 m step apart along the gripper — the same step on both robots, which is why
+containment is keyed on the gripper rather than on each task's own target frame. Best rung, learned
+v joint space:
+
+| | free | wrist | **fingertip** |
 | --- | --- | --- | --- |
-| panda `n6` native | 462 v 323 | **474 v 453** | 0.00032 |
-| panda `n6` paired | 444 v 323 | **475 v 453** | 0.00011 |
-| iiwa `n4` native | 391 v 442 | 446 v 457 | 0.14 (tie) |
-| iiwa `n4` paired | 407 v 442 | **457 v 457** | 1.0 (exact parity) |
+| panda `n6` native | 458 v 201 | 428 v 185 | **461 v 217** |
+| panda `n6` paired | 438 v 201 | 382 v 185 | **405 v 217** |
+| iiwa `n4` native | 470 v 332 | 433 v 268 | **470 v 299** |
+| iiwa `n4` paired | 447 v 332 | 384 v 268 | **422 v 299** |
 
-**On the adopted default the learned arm wins the Panda grasp task and ties the iiwa's.**
-That is a better position than either the soft legacy problem (where the Panda's full-depth
-charts lost) or the contained one (where the iiwa lost at p = 0.0004). The iiwa reaches
-**exact parity at 457/457** under `paired`, which is the first time that row has not been a
-deficit.
+Both arms score higher at the fingertips on every row, which is what the geometry predicts: putting
+the *hand* in a compartment is a shallower reach than driving the *wrist* in behind it, so the wrist
+definition silently demands 0.1 m more penetration into a 0.10 m compartment. Fingertip is also the
+more faithful statement of the task, and preserves the learned margin at least as well as the wrist
+on three rows of four.
 
-Note the baseline is back near saturation on this configuration (453 / 457), which is the
-ceiling the hardening was meant to remove, so grasp containment is kept available behind
-`--target-placement shelf`. **The solver axis has since tested it and it does not move** --
-see "THE GRASP-CONTAINMENT LEVER IS CLOSED" above.
+**Pose containment is a genuine difficulty increase, not a free win**, and this reverses a
+pre-calibration conclusion that recommended adopting it. On the corrected program containment costs
+the learned arm 2-3.5x what it costs joint space on the Panda (margin −14 native, −40 paired) and is
+a wash on the iiwa (+27, +1). **Whether to keep it is Thomas's call.**
 
-### WHY THE GRASP TASK LOOKS LIKE "ONLY A TIE", AND WHAT IS ACTUALLY THERE
+### What the success counts hide: headroom and rescue rate
 
-Success counts on the adopted grasp default read as a narrow Panda win and an iiwa tie. That
-reading is an artefact of **headroom**: joint space is at 94-95% there, so only 23-27 cells
-of 480 are available to win at all. Decomposed:
+The grasp rows read as a narrow Panda win and an iiwa tie. That is an artefact of **headroom** —
+joint space is at 94-95% there, so only 23-27 cells of 480 are available to win at all:
 
 | config | L | JS | L only | JS only | both | neither | of JS's failures, rescued |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1668,476 +827,457 @@ of 480 are available to win at all. Decomposed:
 | panda paired, free | 475 | 453 | 27 | 5 | 448 | 0 | **27/27 = 100%** |
 | iiwa native, free | 446 | 457 | 17 | 28 | 429 | 6 | 17/23 = 74% |
 | iiwa paired, free | 457 | 457 | 17 | 17 | 440 | 6 | 17/23 = 74% |
+| panda native, contained | 462 | 323 | 148 | 9 | -- | -- | **148/157 = 94%** |
+| panda paired, contained | 444 | 323 | 142 | 21 | -- | -- | **142/157 = 90%** |
+| iiwa native, contained | 391 | 442 | 30 | 81 | -- | -- | 30/38 = 79% |
+| iiwa paired, contained | 407 | 442 | 30 | 65 | -- | -- | 30/38 = 79% |
 
-**On the Panda the learned arm solves every single cell joint space cannot** -- 27 of 27,
-under both protocols, with `neither` = 0. It is not marginally better; the task has nothing
-left to give. And the iiwa's 457-vs-457 is not the same 457 cells: 17 each way, so the arms
-are genuinely complementary even where the totals agree.
+**On the Panda the learned arm solves every single cell joint space cannot** — 27 of 27 under both
+protocols, with `neither` = 0. And the iiwa's 457-vs-457 is not the same 457 cells: 17 each way, so
+the arms are genuinely complementary even where the totals agree. **The rescue rate is high and
+stable everywhere — 74-100%** — and that is the quantity the success counts obscure. Containment is
+what creates headroom (27 cells → 157 on the Panda), which is the argument for revisiting it.
 
-**Containment is what creates headroom, which is the argument for revisiting it:**
+### The last deficit was budget, and it is gone at 180 s
 
-| config | L | JS | JS fails | rescued | p |
-| --- | --- | --- | --- | --- | --- |
-| panda native, contained | 462 | 323 | 157 | **148 (94%)** | 1.5e-33 |
-| panda paired, contained | 444 | 323 | 157 | **142 (90%)** | 2.9e-23 |
-| iiwa native, contained | 391 | 442 | 38 | 30 (79%) | 1.4e-06 |
-| iiwa paired, contained | 407 | 442 | 38 | 30 (79%) | 0.00042 |
-
-Containment takes the Panda's headroom from 27 cells to 157 and the learned arm takes 90-94%
-of it. **The learned arm's rescue rate is high and stable everywhere -- 74-100% -- on both
-robots and both configurations.** That is the quantity the success counts obscure.
-
-#### CONFIRMED: the iiwa contained-grasp deficit was budget, and it is now gone (stage CAP, 2026-09-16)
-
-The prediction was that the lost cells were cap-bound near-misses rather than divergence, so
-more clock should recover them. iiwa `n4`, contained grasp, 480 cells, caps 90/180/360 s
-against the existing 45 s column **on the same grid** -- the cap does not enter target
-sampling, so this pairs cell for cell.
+The iiwa's contained-grasp loss was predicted to be cap-bound near-misses rather than divergence.
+iiwa `n4`, contained grasp, 480 cells, caps against the existing 45 s column on the same grid (the
+cap does not enter target sampling, so this pairs cell for cell):
 
 | start | cap | learned | js | timeouts | median iters | median `max_violation` | vs 45 s |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| native | 45 | 391 | 442 | 88 | 434 | 3.0e-08 | -- |
-| native | 90 | 441 | 442 | 29 | 597 | 2.1e-08 | +51/-1, p = 2.4e-14 |
-| native | **180** | **447** | 442 | **0** | 629 | 2.0e-08 | +57/-1, p = 4.1e-16 |
+| native | 45 | 391 | 442 | 88 | 434 | 3.0e-08 | **p = 1.4e-06 (js wins)** |
+| native | **180** | **447** | 442 | **0** | 629 | 2.0e-08 | +57/-1, p = 4.1e-16; **tie, p = 0.60** |
 | native | 360 | 447 | 442 | 0 | 629 | 2.0e-08 | identical to 180 |
-| paired | 45 | 407 | 442 | 75 | 398 | 2.7e-08 | -- |
-| paired | 90 | 451 | 442 | 17 | 557 | 1.9e-08 | +44/-0, p = 1.1e-13 |
-| paired | **180** | **453** | 442 | **0** | 570 | 1.9e-08 | +46/-0, p = 2.8e-14 |
+| paired | 45 | 407 | 442 | 75 | 398 | 2.7e-08 | **p = 0.00042 (js wins)** |
+| paired | **180** | **453** | 442 | **0** | 570 | 1.9e-08 | +46/-0, p = 2.8e-14; **tie, p = 0.19** |
 | paired | 360 | 453 | 442 | 0 | 570 | 1.9e-08 | identical to 180 |
 
-**The deficit is entirely budget, and the arm saturates at 180 s.** Timeouts go 88 -> 29 -> 0,
-the 360 s column reproduces 180 s *exactly* -- same successes, same median iterations -- and
-the gain is almost purely one-directional (+57/-1, +46/-0), which is what recovering stalled
-cells looks like rather than resampling noise. The verdict against joint space moves from a
-loss to a tie:
+Timeouts 88 → 29 → 0, the 360 s column reproduces 180 s *exactly*, and the gain is almost purely
+one-directional (+57/-1, +46/-0), which is what recovering stalled cells looks like rather than
+resampling noise.
 
-| | 45 s | 180 s |
-| --- | --- | --- |
-| native | 391 v 442, **p = 1.4e-06 (js)** | 447 v 442, p = 0.60 (tie) |
-| paired | 407 v 442, **p = 0.00042 (js)** | 453 v 442, p = 0.19 (tie) |
+**So the last deficit in the project is an implementation property, not a formulation or chart
+property.** It is not that the learned formulation cannot express these grasps; it is that one
+iteration costs 35 ms against joint space's 3.6 ms. Reported honestly, that parity costs **180 s
+against 1.6 s** — 629 median iterations to joint space's 448, at ~10x the per-iteration price, so
+roughly a 14x wall-clock premium for a tie. **Anything that lifts the learned arm to ~450 cells
+inside 45 s closes this row**; step rejection is the candidate, and a better chart is not, because
+`n4`'s violations here are 2e-08 — it is converging correctly, just slowly.
 
-**So the last deficit in the project is an implementation property, not a formulation or
-chart property.** It is not that the learned formulation cannot express these grasps; it is
-that one iteration costs 35 ms against joint space's 3.6 ms, and 45 s does not buy enough of
-them. Reported honestly, that parity costs **180 s against 1.6 s** -- the learned arm needs
-629 median iterations to joint space's 448, at ~10x the per-iteration price, so roughly a
-14x wall-clock premium for a tie.
-
-That is exactly the quantity the deferred solver work targets, and it now has a concrete
-bar: **anything that lifts the learned arm to ~450 cells inside 45 s closes this row.** Step
-rejection (`ipopt_theta_max_fact`) and the SNOPT/NLOPT comparison are the candidates; a
-better chart is not, because `n4`'s violations here are 2e-08 -- it is converging correctly,
-just slowly.
-
-#### The iiwa grasp deficit is a convergence problem, not a runaway
-
-So the iiwa deficit is not a failure to rescue; it is that the iiwa learned arm carries **its
-own failure set** that joint space does not share (28 and 17 cells free, 81 and 65
-contained). Every one of those is `fail_reason = "constraint"` with median `max_violation`
-0.009-0.037 -- **centimetres off, not astronomical** -- against timeout counts that track the
-lost counts closely (38/27 free, 88/75 contained) at 286-434 median iterations and 34-36
-ms/it.
-
-**These are cap-bound near-misses, not divergence.** The runaway signature is
-`max_violation` >= 1e+03; this is 1e-02. So the remaining iiwa grasp deficit is the learned
-arm converging too slowly on a subset of cells, which is a different problem from the
-gain-ceiling runaway and is not reachable by another chart. **The SNOPT/NLopt half of that
-hope is now refuted** -- both are worse here (see the solver axis) -- so step rejection is
-what is left.
-
-### WHAT THE CALIBRATION FIX WAS WORTH ON THE IIWA, ISOLATED
-
-The iiwa's `posefree` columns isolate the fix exactly: its scene never changed, and with no
-containment the containment-point change cannot reach the sampler, so **the pre-fix (stage
-HARD) and post-fix (stage POSE2) runs are on the same grid** -- `grid_hash` matches and the
-comparison is a paired McNemar over all 480 cells. Joint space is 332 -> 332 on every row, as
-it must be, since it never touches the flow.
-
-| rung | start | pre-fix | post-fix | better/worse | p | median `max_violation` |
-| --- | --- | --- | --- | --- | --- | --- |
-| ddpr1 | native | 426 | 442 | 34/18 | 0.036 | 1.2e-08 -> 1.3e-08 |
-| ddpr1 | paired | 306 | 284 | 82/104 | 0.12 | 8.4e-08 -> 9.6e-08 |
-| **n8** | **paired** | **208** | **267** | 138/79 | **7.5e-05** | **3.1e+03 -> 7.2e-07** |
-| **n6** | **paired** | **211** | **269** | 138/80 | **0.0001** | **9.6e+04 -> 2.3e-07** |
-| n8 | native | 428 | 443 | 31/16 | 0.04 | 1.4e-08 -> 1.3e-08 |
-| n6 | native | 439 | 452 | 28/15 | 0.066 | 1.3e-08 -> 1.2e-08 |
-| n4 | native | 468 | 470 | 8/6 | 0.79 | 5.6e-09 -> 5.9e-09 |
-| n4 | paired | 452 | 447 | 25/30 | 0.59 | 1.0e-08 -> 1.0e-08 |
-| n12w256 | paired | 332 | 354 | 94/72 | 0.10 | 1.9e-08 -> 1.7e-08 |
-
-**The gain is concentrated exactly where the chart had headroom to run away into.** On `n8`
-and `n6` under `paired` the fix is worth ~58 cells apiece and collapses the median violation
-by **ten orders of magnitude** -- 3.1e+03 and 9.6e+04 down to ~1e-07 -- i.e. it removes the
-runaway outright. On `n4`, whose gain ceiling (2.2e4) sits below the runaway band, it is worth
-nothing at all: 468 -> 470 and 452 -> 447, both well inside noise, with `max_violation`
-unchanged at ~1e-08 because there was never anything wrong to fix.
-
-**This revises, but does not overturn, the runaway story.** The "n8/n6 pose-paired runaway"
-recorded in the ladder was *partly* this bug: conditioning the network 45 mm off its trained
-frame was pushing those charts into headroom they have and `n4` does not. After the fix they
-sit at 267/269 -- still far below `n4`'s 447, so the gain ceiling remains the dominant effect
-and the chart-selection rule is unchanged. What changes is the size of the deficit
-attributable to architecture alone.
-
-The lesson for reading this file: **a miscalibration and an architectural weakness produce the
-same symptom, and the one masks the size of the other.** Every pre-fix pose number
-over-attributed to the ceiling whatever the 45 mm was contributing.
-
-### FINGERTIP CONTAINMENT BEATS WRIST CONTAINMENT (stage FINGER, 2026-09-16)
-
-The pose task's containment point is a choice, and the two candidates are one 0.100 m step
-apart along the gripper -- the same step on both robots, which is the whole reason containment
-is keyed on the gripper rather than on each task's own target frame. 480 cells, all eleven
-rungs, both protocols; the wrist arm is stage POSE2's `posein` columns on the same grid.
-
-| best rung | free | wrist | **fingertip** |
-| --- | --- | --- | --- |
-| panda `n6` native | 458 v 201 (+257) | 428 v 185 (+243) | **461 v 217** (+244) |
-| panda `n6` paired | 438 v 201 (+237) | 382 v 185 (+197) | **405 v 217** (+188) |
-| iiwa `n4` native | 470 v 332 (+138) | 433 v 268 (+165) | **470 v 299** (+171) |
-| iiwa `n4` paired | 447 v 332 (+115) | 384 v 268 (+116) | **422 v 299** (+123) |
-
-**Both arms score higher at the fingertips than at the wrist, on every row** -- learned
-405-470 against 382-433, joint space 217/299 against 185/268. That is what the geometry
-predicts: putting the *hand* in a compartment is a shallower reach than driving the *wrist*
-in behind it, so the wrist definition silently demands 0.1 m more penetration into a 0.10 m
-deep compartment.
-
-The learned arm wins decisively under all three definitions -- under fingertip containment,
-p = 4.6e-68 / 9.0e-37 (Panda native/paired) and 1.1e-46 / 7.3e-20 (iiwa).
-
-**Fingertip is the better containment point on both counts.** It is the more faithful
-statement of the task -- "the gripper reaches into the shelf", not "the wrist does" -- and it
-preserves the learned margin at least as well as the wrist on three rows of four (iiwa +171
-against +165 and +123 against +116; Panda native +244 against +243), the exception being
-Panda paired (+188 against +197). Against no containment at all it still costs margin on the
-Panda (+188 against free's +237) and gains it on the iiwa (+123 against +115), so containment
-remains a genuine difficulty increase rather than a free win -- see the POSE2 section.
-
-### THE SHELF-DEPTH INSET DOES NOT CHANGE THE STORY (stage INSET, 2026-09-16)
-
-0.10 m was adopted from `../codebase` and this repo had never swept it. 60 cells, 45 s, one
-rung per robot (iiwa `n4`, Panda `n6`), both tasks contained, both protocols, insets
-0 / 0.05 / 0.10 / 0.125.
-
-**Success moves by 2-10 cells of 60 across the entire span, with no monotone trend and no
-ordering flip.** Every row's learned-vs-joint-space verdict is the same at every inset: the
-iiwa loses the grasp task and wins pose at all four, the Panda wins the grasp task at all
-four. At 60 cells, where reproducibility at the cap is +/-1 cell, a range of 9-10 is
-wobble rather than a dose curve.
-
-What the inset *does* move, steeply, is acceptance -- 0.60% -> 0.10% of raw draws on Panda
-grasp, 0.69% -> 0.06% on iiwa pose. So the inset buys sampling cost, not difficulty, and
-**0.10 m stands**: it is the sibling's value, it is comfortably samplable at the 50000 guard,
-and nothing downstream depends on it. Do not re-sweep it without a reason.
-
-### THE POSE TASK NEVER CALIBRATED THE CONDITIONING FRAME (found 2026-09-16)
-
-`CalibrateFlowFrame` was called only by the *grasp* subclasses. On the pose task it was
-skipped entirely, and that was invisible for two different reasons per robot:
-
-* the **Panda** pose scene was `panda_jrl.urdf`, whose `panda_hand` IS the Franka offset the
-  network was trained on, so the offset really was identity;
-* the **iiwa** pose scene's `iiwa_link_7` is 45 mm from the flow's frame -- a pure
-  translation, no rotation, mild enough to never announce itself.
-
-Removing the stock Panda hand destroyed the first coincidence. The pose scene now welds the
-finray, whose own `panda_hand` sits **27 mm and 120 degrees** away -- the exact trap
-`CalibrateFlowFrame`'s docstring was written about -- and the Panda pose task collapsed to
-**10/60 with median `max_violation` 0.4**, against 58/60 and 1.8e-08 for the grasp task in
-the *same scene* with the *same chart*. The grasp task was fine precisely because it was the
-only path that calibrated.
-
-Both base pose programs now calibrate. It is a no-op wherever the frames already agree, and
-it draws from its own fixed-seed generator so it cannot shift the grid. **Every archived
-pose column predates this**, including the iiwa's, which ran 45 mm off its trained frame
-throughout -- so the pose halves of the ladder, the training-step sweep and stage HARD are
-all superseded, not merely re-based.
-
-The lesson generalises past this bug: **a calibration that is skipped is indistinguishable
-from a calibration that is correct, until the geometry it was silently relying on changes.**
-The pose path had no test asserting `X_ee_flow` was ever measured.
-
-### The pose-placement verdict was measured pre-calibration and is SUPERSEDED
-
-The table that stood here had containment costing joint space 53-64 cells against the learned
-arm's 30-46, and recommended adopting `posein` on that basis. It was measured on a program
-whose pose path never calibrated its conditioning frame, and **stage POSE2 reverses it** -- on
-the corrected program containment costs the learned arm 2-3.5x what it costs joint space on
-the Panda and is a wash on the iiwa. See "THE CONTAINMENT VERDICT REVERSES" above; the
-original numbers are in the git history.
+The learned arm's own residual failure set (28/17 cells free, 81/65 contained, cells joint space
+solves) is every one `fail_reason = "constraint"` with median `max_violation` 0.009-0.037 —
+**centimetres off, not astronomical** — at 286-434 median iterations and 34-36 ms/it. The runaway
+signature is `max_violation` >= 1e+03; this is 1e-02. **A convergence problem, not a runaway.**
 
 ### Iterations, cost and wall clock
 
-Medians over succeeded cells; cost on the cells **both** arms solved, learned-only
-regularizers excluded.
+Medians over succeeded cells; cost on cells **both** arms solved, learned-only regularizers
+excluded.
 
 | experiment | L iters | L s | ms/it | JS iters | JS s | n both | L cost | JS cost |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| panda `n6` grasp native | 200 | 8.77 | 44 | 970 | 4.26 | 314 | 7.510 | **5.305** |
-| panda `n6` grasp paired | 301 | 13.39 | 44 | 970 | 4.24 | 302 | 6.846 | **5.164** |
+| panda `n6` grasp native (contained) | 200 | 8.77 | 44 | 970 | 4.26 | 314 | 7.510 | **5.305** |
+| panda `n6` grasp paired (contained) | 301 | 13.39 | 44 | 970 | 4.24 | 302 | 6.846 | **5.164** |
 | panda `n6` pose contained paired | 142 | 5.56 | 39 | 44 | 0.14 | 140 | **9.226** | 9.901 |
-| iiwa `n4` grasp native | 434 | 14.65 | 34 | 448 | 1.63 | 361 | 4.930 | **2.827** |
+| iiwa `n4` grasp native (contained) | 434 | 14.65 | 34 | 448 | 1.63 | 361 | 4.930 | **2.827** |
 | iiwa `n4` pose contained paired | 179 | 4.86 | 27 | 231 | 0.10 | 231 | **5.743** | 6.065 |
 
 Two things the success columns hide. **The hardened grasp task costs the joint-space arm its
-cheapness**: 970 and 448 median iterations against its archived 48 and 66, so its per-cell
-wall clock rose 30x on the Panda. The learned arm's per-iteration penalty is accordingly
-much smaller here — 44 ms against 4.4 ms on the Panda grasp row, ~10x rather than the ~13-30x
-of the soft problem. And **the cost split by task survives hardening**: the learned arm wins
-on cost on the pose task on both robots and loses by ~1.4-1.7x on the grasp task.
+cheapness** — 970 and 448 median iterations against its archived 48 and 66 on the soft problem, so
+its per-cell wall clock rose ~30x on the Panda, and the learned arm's per-iteration penalty is
+correspondingly smaller here (~10x rather than the ~13-30x of the soft problem). And **the cost
+split by task survives hardening**: the learned arm wins on cost on the pose task on both robots
+and loses by ~1.4-1.7x on the grasp task. On the soft problem the pose-task cost win held in all
+four rows (1-10%), which is the draft's central claim holding on the second of its two axes.
 
-### The rungs still behave as the ladder said
+**What the correction penalty costs.** On cells both solved, `w = 10` against `w = 0`: pose task
+0.5-5% more expensive, grasp task **30-100%** more expensive — and the grasp task is exactly where
+it buys its cells (+68 to +157 of 480, p ≤ 2.1e-10 on all four grasp rows, every pose row a tie).
+So the penalty is a **trade**, not a free improvement: it converts objective value into
+feasibility. The mechanism is the redundancy it was adopted to break — with `q_c` free the arm can
+nudge `q` toward a well-centred configuration for nothing; pinning `q_c` to zero means `q` is
+whatever the flow emits at `(c, z)`. This is not a bookkeeping artefact of the penalty term
+appearing in the objective: at `w = 10` the correction is driven to `|q_c|_inf ~ 1.8e-05`, so the
+term contributes ~2e-08 to a cost of ~5.
 
-`n4` is the iiwa's best rung on every row; on the Panda `n6`/`n4` lead and the full-depth
-`upstream`/`n12` trail by 40-100 cells on the grasp task. The `n8`/`n6` pose-paired runaway
-replicates on the iiwa (206-214 against `n4`'s 411), so the gain-ceiling selection rule is
-unaffected by the scene change.
+Deeper mechanism, and it is *not* that the correction box was binding (`on the box` is 0.00 at
+every weight): with `c` and `q_c` both free, many pairs give the same `q`, so the active constraint
+gradients are rank-deficient and IPOPT spends its budget on a degenerate direction. Penalising
+`q_c` breaks that degeneracy, which is why it bites hardest where the active set is largest. As the
+weight rises the correction is driven to zero and the median constraint violation falls three
+orders on the iiwa (2.65e-02 at w=0.001 → 2.61e-08 at w=10) while the latent stays put. Weight 30
+is flat or worse on three of four 60-cell rows, so **10 is at or near the optimum**.
 
-## Next steps
+### Settled negative results on the knobs — do not re-sweep
 
-**Thomas's roadmap, in priority order (2026-09-04)**, given once the corrected campaign finished:
-*"iiwa checkpoint training infra (and launching the multi-day training job), SNOPT and NLOPT, and
-then performance tuning and formulation tweaks for getting the best results with the learned
-formulation."*
+- **Collision shaping** (`collision_influence_offset`, `collision_row_scale`): peaks weakly around
+  0.2-0.4, within noise of the default.
+- **`ipopt_mu_strategy=adaptive`**: inert on both robots despite the archived logs looking like its
+  textbook case.
+- **`latent_cost_weight`**: helps the Panda (48 at 0.1), hurts the iiwa (14). Not a general win.
+- **`correction_bound`** swept 0.1/0.2/0.4/0.8: inert. The box never binds, the solver takes more of
+  it when given more (median `|q_c|` 0.054 → 0.484) and gets nothing for it.
+- **The shelf-depth inset** (0 / 0.05 / 0.10 / 0.125): success moves 2-10 cells of 60 across the
+  whole span with no monotone trend and **no ordering flip** on any row. What it moves steeply is
+  acceptance (0.60% → 0.10%), so it buys sampling cost, not difficulty. **0.10 m stands.**
+- **Scene clutter** (stage HARDMUG: the iiwa's seven welded decorative mugs, four inside
+  compartments, kept against removed): worth −6 to +5 cells of 480 to the learned arm and −14 to
+  +12 to joint space. The suspected Panda/iiwa confound — that the Panda grasp scene never had those
+  mugs, so hardening it is near-pure containment — was real in principle and **immaterial in
+  practice**. The iiwa/Panda divergence is a property of the robots. Do not re-open this.
 
-1. **Retrain the iiwa chart. DONE — the reduced-capacity ladder is trained and measured.**
-   `iiwa14_ddp_r1` (620k steps, adopted at `9b887c0`) cut `frac_gt_1000` from 3.34% to 0.0125%,
-   but left `pole/max` at 7.8e9 and iiwa grasp at 270/480 against joint space's 462 — the
-   headroom was still there, that run had only moved less of the domain into it. The follow-on
-   trained deliberately **simpler, less accurate** charts: `nb_nodes` 12/8/6/4 lowers the
-   architectural gain ceiling `exp(2.4975·nb_nodes)` from 1e13 to 2e4, with a width-only rung
-   (12 blocks, `coeff_fn_internal_size` 256) as the control separating "less accurate" from
-   "less headroom". Nine runs, both robots, 620k steps each at `ddp_r1`'s optimiser settings.
-   `cluster/ladder_runs.txt` is the spec; `--stage LADDER` measures it on stage CKPT's grid.
+## The chart: why the rungs differ and how one is chosen
 
-   **THE LADDER AT 480 CELLS (2026-09-14).** All eleven rungs, one grid, 60 targets x 8 guesses,
-   seed 1, 45 s, `--compile`, both tasks, both protocols, joint space in every run.
+The iiwa's upstream checkpoint was the project's bottleneck. `iiwa14_ddp_r1` (620k steps) cut
+`frac_gt_1000` from 3.34% to 0.0125% but left `pole/max` at 7.8e9 and iiwa grasp at 270/480 — the
+headroom was still there, that run had only moved less of the domain into it. The follow-on trained
+deliberately **simpler, less accurate** charts: `nb_nodes` 12/8/6/4 lowers the architectural gain
+ceiling `exp(2.4975*nb_nodes)` from 1e13 to 2e4, with a width-only rung (12 blocks,
+`coeff_fn_internal_size` 256) as the control separating "less accurate" from "less headroom". Nine
+runs, both robots, 620k steps each; `cluster/ladder_runs.txt` is the spec.
 
-   | experiment | `ddpr1` | `n8` | `n6` | `n4` | `n12w256` | **iiwa js** |
-   | --- | --- | --- | --- | --- | --- | --- |
-   | grasp native | 267 | 309 | 288 | **448** | 349 | 462 |
-   | grasp paired | 301 | 327 | 302 | **449** | 344 | 462 |
-   | pose native | 432 | 426 | 441 | **463** | 422 | 325 |
-   | pose paired | 307 | 221 | 232 | **448** | 337 | 325 |
+**Reducing depth from 12 helps on both robots, and the optimum rung differs by robot** — `n4` on the
+iiwa, `n6` on the Panda. "The smallest chart wins" was an iiwa-only result.
 
-   | experiment | `upstream` | `n12` | `n8` | `n6` | `n4` | `n12w256` | **Panda js** |
-   | --- | --- | --- | --- | --- | --- | --- | --- |
-   | grasp native | 443 | 430 | 465 | 471 | **476** | 459 | 457 |
-   | grasp paired | 418 | 416 | 467 | 471 | **474** | 447 | 457 |
-   | pose native | **474** | 463 | 461 | 462 | 459 | 451 | 228 |
-   | pose paired | 340 | 339 | 419 | **435** | 407 | 332 | 228 |
+**The two mechanisms differ by robot.** On the iiwa a smaller chart buys cells by eliminating runaway
+configurations; on the Panda, which has no runaway at all (`median_max_violation` 1e-08 on every
+rung), it buys them by fitting more iterations inside the fixed cap. Per-iteration cost falls
+monotonically with depth — iiwa grasp native 80 / 55 / 42 / 33 ms for n12 / n8 / n6 / n4, with
+`n12w256` at 72 holding depth — and timeouts collapse with it. The learned arm's per-iteration
+penalty is now **~10-13x, down from ~30x**. That second mechanism is an implementation-and-hardware
+property, which is why ms/it must be reported beside success. A net-faster chart that needs more
+steps is a **trade-off to report, not a confound to remove** (Thomas: *"More iterations but faster
+net is a trade-off, not automatically good or bad"*) — do not redesign to a fixed iteration cap.
 
-   **Reducing depth from 12 helps on both robots, and the optimum rung differs by robot** — `n4`
-   on the iiwa, `n6` on the Panda (435 against `n4`'s 407 on pose paired). "The smallest chart
-   wins" was an iiwa-only result and does not generalise.
+**Two controls land as intended.** Panda `upstream` and `n12` agree within noise on all rows, so our
+training recipe reproduces Jeremy's and no reduced-Panda result is confounded with recipe. And
+`n12_w256`, the accuracy-only control, never beats `n12` significantly while keeping the slow
+iteration: width costs accuracy without buying either headroom or speed. Depth buys the speed.
 
-   **Against joint space**, exact McNemar within each run (better/worse for learned):
+**Chart accuracy is a clean monotone dose curve and it runs BACKWARDS to cells.** Median FK error
+over 5000 poses, 4/6/8/12 blocks: 20.0 / 12.1 / 11.3 / 10.1 mm on the iiwa, 14.7 / 9.5 / 7.2 / 6.1
+mm on the Panda; the width rungs are 75.1 and 22.9 mm. The *least* accurate depth rung solves the
+most on the iiwa. 20 mm chart error does not appear in the solutions — the IK constraint is on
+`FK(q)`, so `n4`'s solved cells return `median_max_violation` 1.1e-08; the chart only decides where
+the solver starts.
 
-   | experiment | iiwa `ddpr1` | iiwa `n4` | Panda `n12` | Panda `n6` |
-   | --- | --- | --- | --- | --- |
-   | grasp native | JS 9/204, **3e-49** | JS 15/29, 0.05 | JS 20/47, **0.001** | L 23/9, **0.02** |
-   | grasp paired | JS 8/169, **2e-40** | JS 15/28, 0.07 | JS 22/63, **1e-05** | L 22/8, **0.02** |
-   | pose native | L 139/32, **4e-17** | L 147/9, **3e-33** | L 248/13, **2e-57** | L 239/5, **5e-64** |
-   | pose paired | JS 92/110, 0.2 | L 143/20, **4e-24** | L 170/59, **1e-13** | L 224/17, **3e-47** |
+**Neither intrinsic screen predicts cells, in either direction.** iiwa `n8` screens cleanest of the
+four (task-pose `frac_gt_1000` 0.0, `pole/max` 202) and is the worst rung on pose paired; `n4`
+screens dirtier and solves best. A chart can be clean everywhere the sampler looks and catastrophic
+everywhere the Newton step goes. **The screen is a smoke test, not a selection criterion.**
 
-   **Three things only 480 cells show, two of which move a claim:**
+**Pole mass is CREATED BY TRAINING, monotonically, on every rung.** Across all 31 kept checkpoints
+per rung, task-pose `pole/max` over 20k..620k steps runs 27 → 2.5e3 (iiwa `n4`), 409 → 1.3e5 (iiwa
+`n6`), 50 → 3.5e11 (Panda `n12`). The headroom is present at initialisation and barely used; SGD
+walks the network into it while buying accuracy. Accuracy itself is converged by ~480k.
 
-   - **iiwa `n4` does NOT reach grasp parity.** It is ~14 cells of 480 short, p = 0.05 and 0.07.
-     The exact parity seen at 60 cells was the small grid saturating joint space at 60/60 — there
-     are ~18 winnable cells there and `n4` takes most but not all. Still a transformation of
-     `ddp_r1`'s 9/204. **This is the project's one remaining deficit: one robot, one task.**
-   - **The Panda's full-depth charts significantly LOSE the grasp task** (`n12` p = 0.001 native,
-     1e-05 paired; `upstream` the same shape) while every reduced-depth rung wins it. At 60 cells
-     those rows were 59/60 against 54/60 and not significant, so the reduced-chart case on the
-     Panda is *stronger* than the triage suggested, not weaker.
-   - **The iiwa runaway on `n8`/`n6` pose paired replicates at scale** — `median_max_violation`
-     2e+03 and 1e+03, scoring 221 and 232, *below* `ddp_r1`'s 307. Only `n4` (1e-08) and
-     `n12w256` (2e-08) are clean. Depth is not a dose curve; there is a cliff between 6 and 4.
+**Stage TRAJ measured the training-step axis directly: training makes the iiwa `n6` chart WORSE and
+does nothing at all for `n4`.** Exact McNemar, earliest checkpoint against 620k: `n6` **loses three
+of four rows to its own first checkpoint** — grasp native 22/159 (p = 8.3e-27), grasp paired 15/142
+(p = 4.1e-27), pose paired 63/162 (p = 3.1e-11); `n4` moves on **none** of the four (p = 0.088 to
+1.0). `n4` at 20k has ~78 mm median FK error against 620k's 20 mm — a 4x accuracy gain over 600k
+steps, worth **zero cells** — while `n6` buys the same accuracy and *pays* 137 grasp cells, its
+`pole/max` climbing 409 → 1.3e5 and its pose-paired `median_max_violation` crossing 1e-08 → **1e+03**
+between 240k and 400k. **The sharpest statement the campaign has that accuracy is not the quantity
+that matters.** It is **not** a licence to pick early checkpoints: that is selecting on the test set
+and confounds architecture with selection.
 
-   **The two mechanisms, and they differ by robot.** On the iiwa a smaller chart buys cells by
-   eliminating runaway configurations; on the Panda, which has no runaway at all
-   (`median_max_violation` 1e-08 on every rung), it buys them by fitting more iterations inside
-   the fixed cap. Per-iteration cost falls monotonically with depth — iiwa grasp native 80 / 55 /
-   42 / 33 ms for n12 / n8 / n6 / n4, with `n12w256` at 72 holding depth — and timeouts collapse
-   with it (iiwa `n4` 33/31/6/10 against `ddp_r1`'s 212/194/42/170). The learned arm's
-   per-iteration penalty against joint space is now **~13x, down from ~30x**. The second
-   mechanism is an implementation-and-hardware property, not a better-shaped chart, which is why
-   ms/it must be reported beside success.
+### The chart-selection rule
 
-   **Two controls land as intended.** Panda `upstream` and `n12` agree within noise on all four
-   rows, so our training recipe reproduces Jeremy's and no reduced-Panda result is confounded
-   with "our recipe vs. his". And `n12_w256`, the accuracy-only control, never beats `n12`
-   significantly while keeping the slow iteration: width costs accuracy without buying either
-   headroom or speed. Depth buys the speed.
+**Choose an architecture whose gain ceiling `exp(2.4976 * nb_nodes)` sits below the ~1e7 runaway band
+— on the iiwa that is `nb_nodes = 4` — then take the final checkpoint, because below the ceiling the
+training-step axis is flat and above it later checkpoints are strictly worse.**
 
-   **Chart accuracy is a clean monotone dose curve and it runs BACKWARDS to cells.** Median FK
-   error over 5000 poses, 4/6/8/12 blocks: 20.0 / 12.1 / 11.3 / 10.1 mm on the iiwa,
-   14.7 / 9.5 / 7.2 / 6.1 mm on the Panda; the width rungs are 75.1 and 22.9 mm. The *least*
-   accurate depth rung solves the most on the iiwa. Note 20 mm chart error does not appear in the
-   solutions — the IK constraint is on `FK(q)`, so `n4`'s solved cells return
-   `median_max_violation` 1.1e-08; the chart only decides where the solver starts.
+The ceiling is `atan` and the block count, nothing else: FrEIA's coupling block is `y = exp(s)*x + t`
+with `s = clamp * 0.636 * atan(s_raw)`, so `|s| < clamp*0.636*pi/2 = 2.4976` at `rnvp_clamp = 2.5`
+and one block amplifies by at most 12.15x. Over `nb_nodes`: 2.2e4 / 3.2e6 / 4.8e8 / 1.0e13 at
+n4/n6/n8/n12. It bounds the weights, so no amount of training escapes it — and **training reliably
+walks 78-89% of the way up whatever log-ceiling it is given**, so the ceiling predicts where a
+trained chart lands rather than merely bounding it. The configurations that actually kill solves are
+**1e7 to 1e16 rad**; `frac_gt_1000`'s threshold is a bimodality separator (ordinary configurations
+~2.5 rad), *not* the level at which a solve dies — `n4`'s ceiling is above 1000 and is fine. 6→4 is a
+cliff, not a dose curve. Every competing criterion is disqualified by measurement (accuracy,
+intrinsic screening, "take the last checkpoint", "take whichever benchmarks best"). If a chart above
+its ceiling ever *must* be selected among, the only sound version is a held-out optimization grid.
 
-   **Neither intrinsic screen predicts cells, in either direction.** iiwa `n8` screens cleanest of
-   all four (task-pose `frac_gt_1000` 0.0, `pole/max` 202) and is the worst rung on pose paired;
-   `n4` screens dirtier and solves best. A chart can be clean everywhere the sampler looks and
-   catastrophic everywhere the Newton step goes. **The screen is a smoke test, not a selection
-   criterion** — which is the argument for folding a few optimization cells into checkpoint
-   validation (see "Smaller open items").
+**`rnvp_clamp = 2.5` is confirmed correct** — worth checking because `src/iiwa_program.py` hardcodes
+the iiwa's hyperparameters and `rnvp_clamp` changes the forward pass without changing any parameter
+shape. Sweeping it against the same weights, fraction `> 1000`: 0.893 / 0.410 / 0.090 / **0.035** /
+0.126 / 0.999 at clamp 1.0 / 1.5 / 2.0 / **2.5** / 3.0 / 5.0. A clear optimum.
 
-   **Pole mass is CREATED BY TRAINING, monotonically, on every rung.** Screening all 31 kept
-   checkpoints per rung: iiwa `n4`'s task-pose `pole/max` runs 27 -> 2.5e3 over 20k..620k steps,
-   iiwa `n6`'s 409 -> 1.3e5, Panda `n12`'s 50 -> 3.5e11. The headroom is present at initialisation
-   and barely used; SGD walks the network into it while buying accuracy. `n4`'s trajectory is
-   smooth; `n6`'s swings four orders between adjacent checkpoints, which predicts exactly the
-   erratic `n6` rows above. **Accuracy itself is converged by ~480k** — the last eight checkpoints
-   of every rung are within 3%, and 620000 is best or within 2% of best on all nine — so there is
-   no better checkpoint to hunt, and selecting one per rung would confound architecture with
-   selection. `--stage TRAJ` measured the training-step axis directly, and its answer is below.
+**A path bug cost a rung its first measurement (fixed in `6fbff55`).** `train_flow.sh` reassigns
+`HOME="$ROOT/home"` so ikflow resolves `DATASET_DIR` at import; `export_and_screen_job.sh` derived
+its own `ROOT` from `$HOME`, so the inline export resolved every path one level deep and died. The
+rung trained all 620k steps and exported nothing, and four interleaved benchmark jobs fired at a
+checkpoint that did not exist — **failing per cell rather than fast**. `submit_bench.sh` now refuses
+when a manifest names a checkpoint absent from the cluster (`dd24cc3`).
 
-   **THE TRAINING-STEP SWEEP (2026-09-15): training makes the iiwa `n6` chart WORSE, and does
-   nothing at all for `n4`.** Same 480-cell grid, seed 1, 45 s, `--compile`, both tasks, both
-   protocols, learned arm against joint space in every run; the 620k column is the ladder's own.
+## The gain ceiling: the project's central scientific finding
 
-   | iiwa `n4` | 20k | 100k | 200k | 400k | 620k | js |
-   | --- | --- | --- | --- | --- | --- | --- |
-   | grasp native | 459 | 449 | 447 | 456 | 448 | 462 |
-   | grasp paired | 461 | 456 | 453 | 452 | 449 | 462 |
-   | pose native | 460 | 463 | 464 | 467 | 463 | 325 |
-   | pose paired | 448 | 455 | 447 | 451 | 448 | 325 |
+This explains the residual learned-arm failures on the full-depth charts and the historical iiwa
+grasp deficit.
 
-   | iiwa `n6` | 40k | 120k | 240k | 400k | 620k | js |
-   | --- | --- | --- | --- | --- | --- | --- |
-   | grasp native | **425** | 317 | 299 | 298 | 288 | 462 |
-   | grasp paired | **429** | 325 | 318 | 305 | 302 | 462 |
-   | pose native | 446 | 440 | 450 | 443 | 441 | 325 |
-   | pose paired | **331** | 268 | 247 | 228 | 232 | 325 |
-   | `median_max_violation`, pose paired | 3.8e-08 | 4.1e-07 | 4.0e-06 | **5.1e+03** | 1e+03 | |
+**The violated binding is `AllIKFlowConstraints`, and inside it the joint-limits row.** On cells that
+never converge, `max_violation` equals `|q|_inf` exactly (Spearman 1.0 on 55 of 64 badly violating
+cells), with joint angles of **1e7 to 1e16 radians**. Everything else follows: a configuration of
+1e8 rad puts the gripper anywhere, so "deeply in collision, a metre off target" is a *consequence*,
+and the collision penalty is a bystander (Spearman −0.15).
 
-   Exact McNemar, earliest checkpoint against 620k: **`n6` loses three of four rows to its own
-   first checkpoint** — grasp native 22/159 (**p = 8.3e-27**), grasp paired 15/142
-   (**p = 4.1e-27**), pose paired 63/162 (**p = 3.1e-11**), pose native 28/33 (p = 0.61). **`n4`
-   moves on none of the four** — 17/28 (p = 0.14), 15/27 (p = 0.088), 16/13 (p = 0.71), 27/27
-   (p = 1.0).
+**Every runaway lies on one ray, and it is a property of the network, not of the solve.** Normalising
+the exploded `q` vectors: the iiwa's ray is `[.001, -.001, .016, -.000, .003, .978, -.208]` and the
+Panda's `[-.016, .033, .998, -.032, -.002, .027, .023]`, both at pairwise `|cos| = 1.0000` across two
+tasks and both protocols — dominated by a single joint (iiwa wrist, Panda elbow).
 
-   **This is the pole-mass screen's prediction confirmed downstream, and it is the sharpest
-   statement the campaign has that accuracy is not the quantity that matters.** `n4` at 20k
-   steps has ~78 mm median FK error against 620k's 20 mm — a 4x accuracy gain over 600k steps
-   of training, worth **zero cells** in all four experiments. Meanwhile `n6` buys the same kind
-   of accuracy and *pays* 137 grasp cells for it, because its `pole/max` climbs 409 -> 1.3e5 over
-   the same interval and the violation column shows the runaway arriving: `median_max_violation`
-   on pose paired crosses from 1e-08 to **1e+03** between 240k and 400k. Training is what walks
-   a chart into its architectural headroom; `n4`'s ceiling of 2.2e4 is below the runaway band, so
-   there is nothing for training to walk it into and its curve is flat.
+**Sampling the network directly reproduces it, with no Drake and no solver involved.** Draw `c`
+uniformly in its ±0.25 m box, a uniform unit quaternion, and `z` uniformly in the ball of radius 4.3
+— strictly inside the allowed region — and evaluate `MakeFlowInference` in float64: median `|q|_inf`
+~2.5-2.65, but p100 of 20000 is 4.1e+12 (Panda) and 5.5e+16 (iiwa), with **fraction > 1000 rad
+0.00065 (Panda) against 0.0334 (iiwa) — a factor of 51** — and the ray recovered from those samples
+matches the one the solver landed on to `|cos|` 0.9976-0.9999. The distribution is bimodal, not
+heavy-tailed: a draw is either an ordinary configuration or it is astronomical.
 
-   **This is not a licence to pick early checkpoints.** Selecting a checkpoint on this grid is
-   selecting on the test set, and it would confound architecture with selection — which is why
-   every ladder rung is reported at 620k. What the sweep licenses is the opposite conclusion:
-   **the rung to pick is the one whose ceiling makes the choice moot.**
+**The mechanism is architectural headroom, not a numerical bug** — the gain ceiling above. These are
+near-worst-case gain regions of a bounded map, not poles. Both checkpoints have the same headroom;
+they differ only in how much of the conditioning domain sits near it.
 
-   #### THE CHART-SELECTION RULE
+**Why the solver finds a 3%-measure set 30% of the time.** It does not sample; it follows gradients,
+and `dq/dvars` in these regions is as large as `q` is, so a Newton step is *attracted* to them. That
+is also why more budget never helps: cap-bound cells at 180 s are the same cells that were cap-bound
+at 20 s. **The learned arm does control `q`** — Thomas: *"the network does get to control the joint
+limits a bit, since it can adjust z. That's the whole point of differentiating through the network —
+we take the constraint gradient for joint limits and pull it back through the network to z."* What
+differs from the baselines is *when* the limits hold (only at convergence), and that the gradient
+into a high-gain region is itself enormous.
 
-   **Choose an architecture whose gain ceiling `exp(2.4976 · nb_nodes)` sits below the ~1e7
-   runaway band — on the iiwa that is `nb_nodes = 4` — then take the final checkpoint, because
-   below the ceiling the training-step axis is flat and above it later checkpoints are strictly
-   worse.**
+**Neither region knob avoids them, because they are not at the edges.** Fraction of the region with
+`|q|_inf > 1000`: the latent trust-region radius over 1.0..8.0 leaves the iiwa at 0.026-0.071 and the
+Panda flat at 0.0018 — shrinking to `R = 1` changes nothing, because the blow-up regions are spread
+through the domain including at `|z| <= 1`. **This is why the trust-region sweep measured inert.**
+`c_position_slack` is flat from 0.05 to 0.25 and then a **cliff** at 0.5, where exposure jumps 6x on
+the iiwa and 76x on the Panda; the default sits just under it by luck, worth knowing before anyone
+widens it.
 
-   The ceiling is `atan` and the block count, nothing else: FrEIA's coupling block is
-   `y = exp(s)·x + t` with `s = clamp · 0.636 · atan(s_raw)`, so `|s| < clamp·0.636·π/2 = 2.4976`
-   at `rnvp_clamp = 2.5` and one block amplifies by at most 12.15x. Over `nb_nodes`: 2.2e4 / 3.2e6
-   / 4.8e8 / 1.0e13 at n4 / n6 / n8 / n12. It bounds the weights, so no amount of training escapes
-   it — and **training reliably walks 78-89% of the way up whatever log-ceiling it is given**
-   (observed `pole/max` at 620k: `n4` 2.5e3, `n6` 1.3e5, Panda `n12` 3.5e11), so the ceiling
-   predicts where a trained chart lands rather than merely bounding it.
+### Every optimization-side remedy has been measured and refuted
 
-   Note the band: the configurations that actually kill solves are **1e7 to 1e16 rad**.
-   `frac_gt_1000`'s threshold of 1000 is a bimodality separator (ordinary configurations sit at
-   ~2.5 rad), *not* the level at which a solve dies — `n4`'s ceiling is above 1000 and is fine.
-   Every competing criterion is disqualified by measurement: accuracy (converged by 480k, and
-   backwards across rungs), intrinsic pole screening (`n8` screens cleanest and solves worst),
-   "take the last checkpoint" (true only below the ceiling), and "take whichever benchmarks best"
-   (selection on the reporting grid). If a chart above its ceiling ever *must* be selected among,
-   the only sound version is a held-out optimization grid — which is the deferred export-time
-   smoke-cells item, now with a design.
+Thomas's ranking: **(1) a better chart is preferred over everything else** — *"All of these actions
+are less preferred than just getting a better iiwa chart"*; (2) lifting `q` into a bounded decision
+variable, permitted but disliked (*"we're effectively adding a nonlinear equality constraint"*); (3)
+a joint-limit penalty, permitted but disliked. **"You can try it, but I don't like it" means measure
+it and report it as a stated deviation, not adopt it if the numbers look good.**
 
-   The harness checks itself and passes: joint space is identical across every rung of a robot
-   AND identical to the archived 480-cell columns (462 / 325 / 457 / 228), grid hashes match, and
-   `median_start_q_error` is 0.0000 exactly under `paired`.
+| remedy | verdict |
+| --- | --- |
+| **chart accuracy** (`chart_error_scale`, a smooth seeded perturbation) | **not the mechanism.** Degrading the Panda's chart to the iiwa's accuracy (~12-20 mm) costs it 1-3 cells of 60 (35 → 34 → 32); the iiwa is 23 cells worse. The standing chart-accuracy hypothesis does not survive its own experiment. Smooth `sin` error also adds no high-gain regions, so this could never have reproduced the real pathology. |
+| **IPOPT scaling** (`nlp_scaling_method=none`, `nlp_scaling_max_gradient` 1e4/1e8) | **inert**, five experiments x 60 cells, largest movement ±2 cells, no p < 0.5. Not a scaling artefact: IPOPT is being handed a chart with gain ~1e13 and following the gradient into it. (`equilibration-based` needs HSL MC19 and raises on construction.) |
+| **joint-limit penalty** at 1/10/100 on four rows | **inert** — smallest p = 0.115, no consistent direction, runaway counts unmoved, median violation unchanged at ~1e-08. Adding a penalty on a quantity a constraint row already governs buys nothing, vindicating Thomas's objection. |
+| **lifting `q`** (`lift_q`: `q` a bounded variable, chart as a 7-row equality) | **net negative, 38 better against 116 worse over eight experiments, p = 2.2e-10.** It delivers exactly one thing universally — **0 runaway cells in all eight** — but **the runaway does not stop, it relocates**: the flow still reaches 1.19e10 and it lands in `max_violation` instead of `q` (median 3e+06 to 7e+06 on the collapsing pose rows). The split is by **task**: neutral-to-positive on grasp with *fewer* iterations, catastrophic on pose paired (40 → 9 Panda, 40 → 2 iiwa). Mechanism: the pose task already pins the end-effector with six equality rows, so lifting adds seven more — thirteen equalities in 27 variables with the flow's badly scaled Jacobian inside seven. **An interior-point method's tolerance for a badly scaled row depends on how many equalities it is already carrying.** The 480-cell replication was deliberately not run. |
+| **Jacobian regularization** (Frobenius clipping, Tikhonov/LM damping of the singular values, an SVD floor) | **clear negative, line closed. 310 cells better against 1,509 worse** over ten variants x eight experiments. Not one setting is a significant improvement; the only one not net-worse (`jacobian_max_norm=1000`, +6, p = 0.59) does not reduce the runaway it was introduced to prevent, and the most aggressive damping scores **0/480**. |
 
+**Why damping cannot work, the transferable part.** The flow's Jacobian is the *exact* derivative of
+an explicit function. Where the gain approaches its ceiling, a sensitivity of 1e13 is the correct
+answer, not an artifact. Damping it breaks the correspondence between the constraint values IPOPT
+evaluates and the gradients it is handed, leaving an inconsistent nonlinear program — which is why
+the most aggressive damping fails hardest while *increasing* the runaway count. LM damping is sound
+applied to the **Newton step** rather than to a reported derivative, but Drake's IPOPT does not
+expose the step computation. **Thomas's ruling: *"I think we can conclude gradient regularization and
+the other strategies isn't worth it."*** The knobs stay in the tree, off.
 
-   **A path bug cost this rung its first measurement (2026-09-09, fixed in `6fbff55`).**
-   `train_flow.sh` reassigns `HOME="$ROOT/home"` so ikflow resolves `DATASET_DIR` at import;
-   `export_and_screen_job.sh` derives its own `ROOT` from `$HOME`, so the inline export resolved
-   every path one level deep and died with `no checkpoints under .../learned-ik/home/learned-ik/...`.
-   The rung trained all 620k steps and exported nothing, and the four interleaved benchmark jobs
-   fired at a checkpoint that did not exist — **failing per cell rather than fast**, so they burned
-   16 minutes each before anyone noticed. `submit_bench.sh` now refuses when a manifest names a
-   checkpoint absent from the cluster (`dd24cc3`), which is the guard that would have caught it.
+A lesson these stages share: **suppressing the runaway does not buy success.** `tikhonov=10` cut
+runaway cells 31 → 7 for exactly 19/19 on success; `lift_q` reached zero runaways while losing 78
+cells net.
 
-   **Plan around SuperCloud's monthly maintenance** — second Tuesday, compute down Monday evening
-   to Wednesday morning, nothing survives it. The window closed 2026-09-08; the next is
-   2026-10-12 to 10-14.
+### Step ACCEPTANCE is a different lever, and the best open lead
 
-2. **SNOPT and NLOPT. DONE as infrastructure** -- the blocker is fixed and all three solve the
-   real program. See "The solver axis" below. What remains is to *run* it: the first measurement
-   is stage SOLVER, a 60-cell triage on the adopted rungs.
+Everything refuted above altered the *derivatives* the solver was handed. Filter tuning leaves the
+program exactly as written and changes only which trial points are accepted. The mechanism it
+attacks: IPOPT holds **variable bounds** at every iterate but general constraints only at
+convergence, and in the learned formulation `q` is not a decision variable, so the joint-limit rows
+are general constraints and an iterate may sit at `|q| = 1e8`. That is why `lift_q` gave zero
+runaways, at the cost of seven equality rows. `ipopt_theta_max_fact` attacks it without touching the
+formulation: IPOPT rejects any trial point whose constraint violation exceeds
+`theta_max_fact * max(1, theta(x_0))`.
 
-3. **Performance tuning and formulation tweaks.** Note this is Thomas naming formulation work as a
-   work item, not a standing licence — what is compared remains his call, made explicitly in
-   advance.
+The trajectories say why this should work. Recording every iterate through `VarsToQ` on five runaway
+cells, **the solve is well behaved for 22 to 110 iterations and then jumps in a single step** — on
+three of the five `|q|_inf` goes from ~2.5 to past 1e3 in one iterate. Not a slow drift the solver
+could be nursed through; **one accepted catastrophic step, which is exactly what a filter ceiling can
+refuse.**
 
-**Thomas's update once the ladder landed (2026-09-14):** *"Sounds like we're making big strides
-in getting things better, but joint space is still a bit better than learned. I have a couple
-ideas for things that might help (using a harder problem formulation, trying some sort of step
-rejection tricks), but first, let's get these results in to see where we're at."* So the two
-live items, after the results are in:
+Local probe only, 16 cells, one seed, one chart — a lead, not a measurement: default 11/16 with 5
+runaways at median cost 7.61; `ipopt_theta_max_fact=1` **14/16 with 2 runaways at cost 6.75**; `=10`
+bit-identical to the default; `ipopt_watchdog_trigger=0` and `ipopt_max_soc=8` both 11/16. Three
+cells gained, **none lost**, cost *improved*, effect sharply thresholded between 1 and 10 — the first
+intervention that both suppresses the runaway **and** converts it into success. All three fields are
+plumbed and default to None. **Not measured**: needs the grasp task, the Panda, both protocols, 480
+cells.
 
-- **A harder problem formulation. DONE — measured at 480 cells, see "THE HARDENED PROBLEM"
-  above.** The scene keeps its four shelves but loses the bin and the decorative mugs, and a
-  target is accepted only if it lands inside a shelf compartment (0.10 m depth inset), mirroring
-  `../codebase`'s hardened Grasp Selection. It did what it was for **on the Panda**: joint space
-  fell 457 → 323 on the grasp task and the learned arm went from losing that row to winning it
-  at p = 1.5e-33. **On the iiwa it did not** — joint space barely moved (462 → 442) while `n4`
-  fell to 407, so that row got worse, not better.
+**Step control is not only runaway prevention.** Thomas: *"step rejection (and trust region ideas)
+can still help even if we're not running away. There's a reason people like trust region solvers."*
+The runaway *mechanism* is absent on the adopted `n4`/`n6` rungs, and that does not retire the lever:
+a neural-network chart produces ill-conditioned derivatives whether or not any iterate blows up, and
+the live targets are the cells that converge too slowly and the cells that stall at a moderate
+violation with budget left. Trust-region *options inside an existing solver* are in scope;
+implementing a trust-region *solver* is a different project.
 
-  The suspected confound — that the two robots did not receive the same intervention, the
-  Panda grasp scene never having had decorative mugs — was measured by stage HARDMUG and
-  **refuted**: keeping the iiwa's clutter moves either arm by at most 14 cells of 480. The
-  divergence is a property of the robots. What remains open: **adopt `posein` as the pose
-  default** — containment costs joint space
-  53-64 cells against the learned arm's 30-46, so it hardens the task without narrowing the
-  claim. Third, the pose containment point is the **wrist** (`iiwa_link_7` / `panda_hand`), not
-  the fingertips; if that should be defined differently it must change before the numbers are
-  written up.
-- **Step rejection (IPOPT filter tuning).** Already plumbed and carrying the best lead in the
-  repo — see "Step ACCEPTANCE is a different lever" above. `ipopt_theta_max_fact=1` gained three
-  cells and lost none on a 16-cell probe, cut runaways 5 → 2, and improved cost, with `=10`
-  bit-identical to the default. Needs the grasp task, the Panda, both protocols, 480 cells. It
-  was explicitly deferred until the ladder finished, which it now has.
+## The analytic chart: eight branches, and what the last 0.6% is
+
+The closed-form map's discrete set is three binary choices — wrist (B), shoulder (C), elbow (A) — and
+the implementation historically charted only A = +1, the half away from the joint limits. The missing
+half is a *single sign*: negate both triangle angles `O2O4O6` and `O2O6O4`. The old commented-out
+"Case A1" line matches no configuration. The measured elbow relations are `q3 = theta + q3_add - 2*pi`
+(A = +1) and `-theta + q3_add` (A = -1), partitioning at `q3 = q3_add - pi = -0.467`.
+`ProgramOptions.analytic_branches` selects the chart (default 4, so archived runs stay reproducible);
+`gc(q, branches=3)` recovers all three indices with zero mislabels in 4000 samples. Round-trip
+coverage of `IK(FK(q), psi(q), gc(q)) == q`: 89.4% (4 branches) against 99.40% (8) at 1e-6, rising to
+99.83% at 1e-2.
+
+**The residual is not singularities** (measure zero; this set has positive measure) **and not branch
+mislabelling** (the 24/4000 misses are reproduced by *no* branch of the eight). Two are off by ~4 rad
+and 22 by 1e-3 to 1e-2, clustered where the wrist arcsin argument approaches 1. Consistent with the
+<=16 self-motion-manifold bound (Burdick/Luck). **Left as future work by decision** —
+arXiv:2503.03992 is the starting point — and until then coverage is reported as the curve above,
+never as "100% up to singularities". The iiwa needs no such column: its Faria/SRS implementation
+already charts all eight branches, so analytic4-vs-analytic8 is a **Panda-only** experiment.
+
+**`analytic8` against `analytic4` is the unbalanced-bundle pathology, both signs intact.** Under
+`paired` the 8-branch chart wins the grasp task (418 against 376) because it can represent starts the
+4-branch chart forfeits; under `native` it loses badly on both tasks (387 against 450, and 155
+against 259 on the pose task), because a uniform draw over eight branches lands in the narrow
+near-limit bundles half the time against roughly 10% of configuration-space volume. A genuine finding
+about unbalanced discrete solution bundles in optimization-IK, and exactly what the column was added
+to expose. **The whole `analytic4` disadvantage is start coverage**: drawing `q_init` by rejection so
+it falls only in the four wide bundles, the two charts become identical (59/60 and 59/60 grasp, 34/60
+and 34/60 pose, same iteration counts). **Nothing about the near-limit bundles makes the *solve*
+harder; they are simply configurations that arm cannot be given.**
+
+## Running on MIT SuperCloud (`cluster/`)
+
+`cluster/README.md` is the playbook and `~/.claude/skills/supercloud/SKILL.md` carries the standing
+rules; this is what a reader of *this* file needs. Allocation: **4 nodes on `xeon-g6-volta`**, each
+40 Xeon Gold 6248 cores and 2x V100 32 GB.
+
+**Timing is never compared across machines.** Thomas: *"There's never a need to compare wall-clock
+(or really, performance in general) between laptop and cluster. But wall clock limits can be
+adjusted on the cluster."* So the wall-clock cap stays as the measurement — no switch to iteration
+caps for portability's sake — but its value comes from `cluster/calibrate.sh` on that hardware.
+`metadata.host`/`metadata.device` exist so a cluster run cannot be paired against a laptop one. The
+corollary: **CPU contention still corrupts the measurement**, so workers per node is a measured
+quantity.
+
+**`--shard K/N` is a no-op by construction.** It splits **target-major** — whole targets per shard,
+never a target's guesses split — because `success_ci` bootstraps over whole targets and
+`solved_within_k` counts restarts within one, and it appends `_shardKofN` to the tag (without which
+two shards overwrite each other's `summary.json`). `cluster/merge_shard_summaries.py` pools the
+records and **re-runs `summarise`** rather than stitching per-shard numbers, preserving arm order so
+`_mcnemar`'s pair directions survive. `bash cluster/verify_sharding.sh` proves the round trip in ~2
+minutes — **run it after any change to sharding, the merger, or grid construction.**
+
+**Two cluster facts that shaped the design.** The account's `xeon-g6-volta` limit is a Slurm
+**`GrpTRES` group** cap (`node=4`, `MaxSubmit=240`), not a per-job `MaxNodes`: work beyond it is
+accepted and **queued**, so a whole stage is submitted at once and Slurm meters it — and the cap is
+shared with everything else the account runs. Because jobs start at different times there is no
+stable rank space to deal work into, so `cluster/run_items.sh` claims items with an atomic
+`mkdir <id>.claim`. And **PyTorch 2.11's cu128 wheels dropped sm_70**, so the V100s need a cu126
+build; the wrong wheel imports cleanly, reports a CUDA device, and fails only at the first kernel
+launch, which is why `cluster/smoke.sh` launches a real kernel. Three smaller adaptations: Meshcat is
+optional (`BuildEnv(meshcat=None)`), mug scenes are built only for the shard's targets, and
+`hit_iteration_cap` is the counterpart to `timed_out` (`is_timeout` does not match IPOPT's "Maximum
+Number of Iterations Exceeded").
+
+**The calibration.** Four arms, one per node, each a full job on a real partition, on the **Panda
+grasp** task — that task specifically, because it is the one that binds against the cap. A first
+attempt ran the *pose* task and measured nothing: a pose cell converges in ~74 iterations here, so
+its iteration count is identical at every cap and however contended the node is. **A converged solve
+takes the iterations it takes**; only its wall time moves.
+- *Workers per node*, median iterations inside a fixed 20 s cap: 202 / 196 / 194 / 186 / 114 / 70 at
+  P = 1 / 2 / 4 / 8 / 20 / 40. `PROCS=4` is conservative, `PROCS=8` is what exploratory stages ran at
+  (Thomas ruled the 8% acceptable for sweeps, reserving uncontended runs for hard comparisons and
+  paper numbers). A worker that gets less done inside a wall-clock cap is a **different
+  measurement**, so the count is held fixed across everything compared.
+- *CPU-only is not competitive*: at one worker the GPU reaches 202 median iterations against 62,
+  solving 4 of 8 cells against 1 of 8. Not a contradiction of the CPU-bound profiling result — that
+  says the GPU is never the bottleneck *while a GPU is present*.
+- *The cap*: median iterations 142 / 203 / **338** / 338 / 338 at 10 / 20 / 45 / 90 / 180 s. **45 s
+  is the campaign's cap** — medians saturate by 45 s with 2x headroom; beyond that only the tail
+  gains, which is what the cap curve is for.
+- *Startup*: 40 concurrent `import torch, pydrake, ikflow, jrl` take 10 s total, so the venv can stay
+  on the shared filesystem (copying to node-local `$TMPDIR` costs 231 s and buys nothing).
+  `torch.compile` costs ~35 s cold, ~17 s warm per process.
+
+**Solver logs are node-local, one archive per run.** `src/benchmark.py` once wrote one ~20 KB IPOPT
+log per (cell x arm) onto the shared filesystem — **35,596 of them, 87% of every collection's file
+count**, exactly the many-small-files pattern SuperCloud warns against; Lustre is metadata-op bound
+at that size and a routine collection had drifted from three minutes to thirty. Per-cell logs now go
+to node-local `$TMPDIR` (keyed on run tag *and* pid, since a node runs eight workers) and roll into
+one `solver_logs.tar.gz` at the end of `run_grid`. After: 40,733 files → 2,964, 950 MB → 316 MB,
+~30 min → **43 s**. `collect_results.sh` is incremental by default and never ships `state/`.
+
+**Any cluster-wide check on a shared account must be scoped to this project's own jobs.** Both
+scripts used to refuse while *any* job was running (`LLstat | grep -c RUNNI`), which fired on an
+unrelated campaign's job since SuperCloud accounts are shared across Thomas's projects. Both guards
+now filter by this project's job name and count `PENDING` as well as `RUNNING`.
+
+**The laptop suspends when idle.** Every multi-hour stall this repo recorded — the archived 6106 s
+cell and four overnight "wedges" — was the machine going to sleep (GNOME suspends after 900 s idle
+*even on AC*; `journalctl` matches every stall to the minute). Three wrong solver-level theories each
+fit part of the evidence: it struck only *unattended* runs (16/16 attended reproductions clean),
+`timeout`/`sleep` run on CLOCK_MONOTONIC which pauses across suspend, and a CUDA context straddling a
+suspend leaves torch spinning at 100% CPU. **Any long unattended run here must hold a sleep
+inhibitor** (`systemd-inhibit --what=sleep:idle --mode=block`, launched with `setsid`), and a "hung"
+unattended process is diagnosed by checking `journalctl -b | grep "suspend now"` against the stall
+window *first*. Long benchmarks now run on the cluster.
+
+**Reproducibility at the cap is ±1 cell** — two runs of the same configuration scored 34/60 and
+35/60, the differing cell hitting the wall clock in both. Worth remembering before reading a
+one-cell difference as a real effect.
+
+**Plan around SuperCloud's monthly maintenance** — second Tuesday, compute down Monday evening to
+Wednesday morning, nothing survives it. Next window: 2026-10-12 to 10-14.
+
+## Where the project stands, and what is next
+
+**The learned formulation wins the pose task decisively on both robots and every placement, wins
+the Panda grasp task, and ties the iiwa grasp task** (at parity under `paired` on the adopted free
+default; at 180 s under containment). The one honest caveat everywhere is per-iteration cost: ~10x
+joint space's, which is an implementation property with a known ~3x dispatch floor and is **out of
+scope to fix** (Thomas: architecture/infra work on the CPU dispatch bottleneck is "future
+work/possibly not in scope at all"). It is a number to report.
+
+Thomas's roadmap (2026-09-04), with status: **(1) iiwa checkpoint training — DONE**, the
+reduced-capacity ladder is trained, measured and has a selection rule; **(2) SNOPT and NLOPT —
+DONE**, see the solver axis; **(3) performance tuning and formulation tweaks for getting the best
+results with the learned formulation** — the live item. Note that Thomas naming formulation work as
+a work item is **not** a standing licence to invent formulations; what is compared remains his call,
+made explicitly in advance.
+
+Live items:
+
+- **Step rejection (IPOPT filter tuning)** is the best open lead and the remaining candidate for the
+  iiwa grasp row — see "Step ACCEPTANCE" above. Needs the grasp task, the Panda, both protocols,
+  480 cells. `snopt_major_step_limit` / `snopt_violation_limit` are its SNOPT counterparts.
+- **Whether pose containment is adopted** is Thomas's call; fingertip is the better point if it is.
+- **A harder problem formulation** beyond the hardened scene, if he wants one — his idea, his call.
 
 ### Smaller open items
 
-- **Fold a small optimization smoke run into checkpoint validation.** Thomas's idea,
-  2026-09-08, explicitly deferred (*"Obviously, not worth it right now, but a cool idea for
-  the future"*). `cluster/export_and_screen_job.sh` currently screens a checkpoint on
-  intrinsic metrics only — pole exposure on both domains, chart accuracy — but what actually
-  matters is whether the chart makes the *optimization* work, and those are not the same
-  thing (the `chart_error_scale` experiment showed accuracy barely predicts cells). A handful
-  of cells through `src/benchmark.py` at export time would catch a chart that screens clean
-  and solves badly, without waiting for a full grid. Cheap: the export job already loads the
-  solver.
-- **More guesses per target** in the paired grid — same guesses for every arm — reported as
-  "solved within k restarts". The only honest form of multi-start, and the harness already does
-  it.
+- **Fold a small optimization smoke run into checkpoint validation.** Thomas's idea, explicitly
+  deferred (*"Obviously, not worth it right now, but a cool idea for the future"*).
+  `cluster/export_and_screen_job.sh` screens on intrinsic metrics only, and those do not predict
+  cells. A handful of cells through `src/benchmark.py` at export time would catch a chart that
+  screens clean and solves badly; the export job already loads the solver.
+- **More guesses per target** in the paired grid — same guesses for every arm — reported as "solved
+  within k restarts". The only honest form of multi-start, and the harness already does it.
 - **Non-dimensionalise the conditioning pose's translation against its rotation**, the way
-  `eaik-experiment` scales its Jacobian rows by a 1.12 m length scale, so the `c` block is
-  dimensionally coherent. Never tried.
+  `eaik-experiment` scales its Jacobian rows by a 1.12 m length scale. Never tried.
 - **A `q_c == 0` arm** (the draft's eq. 4) would quantify what the correction buys, now that the
   penalty has established the `c`/`q_c` redundancy is real.
-- **The analytic chart's residual 0.6%** — left as future work by decision; arXiv:2503.03992 is
-  the suggested starting point.
-- **Least-squares domain extension**, from Thomas's unreleased IFT-IK paper, is deferred but
-  belongs to *this* project. (Trust-region solving belongs to a different project and is out of
-  scope here entirely.)
-- `stage_H` in `cluster/gen_manifest.py` is a generic cross-test harness, built for a regularization
-  cross that died with Stage G. Kept for whatever knob next needs one.
+- **The analytic chart's residual 0.6%** — future work by decision; arXiv:2503.03992.
+- **Least-squares domain extension**, from Thomas's unreleased IFT-IK paper, is deferred but belongs
+  to *this* project. (Trust-region *solving* belongs to a different project and is out of scope.)
+- `stage_H` in `cluster/gen_manifest.py` is a generic cross-test harness kept for whatever knob next
+  needs one.
+- One latent bug worth remembering: `scripts/iiwa/iiwa_benchmark.py`'s default tag omitted
+  `args.solver` where the Panda's has always included it, so an iiwa SNOPT run and an iiwa IPOPT run
+  with otherwise identical flags resolved to the same `summary.json` and overwrote each other — the
+  same trap `--shard` and `--checkpoint` were each fixed for. Fixed.
