@@ -123,3 +123,30 @@ limit = 0.5` showed at 60 cells (iiwa +17, Panda -2), confirmed at scale — and
 per-solver-not-per-problem rule it is **unadoptable by construction**, not merely unproven. If the
 remaining columns keep this shape, that is the stage's result: SNOPT's useful settings are
 robot-specific, so SNOPT has no single best configuration on this problem.
+
+## Where it stood when the session closed, 2026-09-17 17:05
+
+**467 of 1248 items done (37%), all four jobs healthy, 499 claims, ETA ~00:20.** Five columns
+complete or nearly so: `default`, `nonderivls`, `ndlsmstep`, `ndlshess20mstep` (all 96/96) and
+`hessfreq20` at 83/96. Nothing collected since 16:34, so the last three columns' worth of results
+are still cluster-side.
+
+**On resuming, in this order:**
+
+1. `LLstat` — if zero jobs and `.done` < 1248, some items died: `bash cluster/collect_results.sh --reclaim`.
+2. `bash cluster/collect_results.sh` (several minutes; it merges every complete shard group).
+3. Read every column against the baseline. The comparison must be per row — **no pooling across
+   experiments** — with the pre-registered rule applied as written above.
+4. Promote only complete merged tags into `results/<robot>/benchmark/`; never the `*_shardKofN`
+   directories, which inflate later globs.
+
+**The live hypothesis to test against the remaining columns.** The three settings read so far all
+move iiwa contained-grasp paired UP and Panda grasp-free native DOWN, both significantly in the
+combinations. If the single factors that do NOT involve the nonderivative line search
+(`hessfreq20`, `mstep0p5`, `lstol0p99`, `lstol0p1`, `majopt1em08`, `elastic1e2`, `crash0`,
+`hessfreq100`) show the same split, the stage's result is that **SNOPT's useful settings are
+robot-specific, so SNOPT has no single best configuration on this problem** — which answers the
+fairness question that motivated the stage, just not the way it was expected to. If instead the
+split is confined to the gradient-free line search and its combinations, then it is a property of
+that line search rather than of SNOPT on this problem, and the remaining singles decide whether any
+uniform setting exists.
