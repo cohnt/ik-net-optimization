@@ -45,7 +45,10 @@ One configuration for all rows; a per-experiment pick is what the per-solver rul
 ```bash
 # 1. Is it still going?
 bash -c 'source cluster/ssh_common.sh; sc_run "LLstat | grep -c SNOPTTUNE"'
-bash -c 'source cluster/ssh_common.sh; sc_run "ls ~/learned-ik/state/*.done 2>/dev/null | wc -l"'   # of 1248
+# NOTE the per-manifest subdirectory -- run_items.sh uses $ROOT/state/$MANIFEST_NAME, and a
+# flat ~/learned-ik/state/*.done glob silently reports 0 forever.
+D=~/learned-ik/state/manifest_stageSNOPTTUNE
+bash -c "source cluster/ssh_common.sh; sc_run 'echo done \$(ls $D/*.done 2>/dev/null | wc -l) of 1248, claims \$(ls -d $D/*.claim 2>/dev/null | wc -l)'"
 
 # 2. Sleep inhibitor (the laptop suspends after 15 idle min even on AC, which has
 #    silently frozen every unattended run this repo ever recorded).
