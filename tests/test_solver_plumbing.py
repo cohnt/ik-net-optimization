@@ -231,6 +231,19 @@ IPOPT_ECHO_KNOBS = {
     ## Read only under mu_strategy=monotone, so the sweep entry has to pass both. Set alone
     ## it is echoed `used = no`, which is exactly the silent-no-op this test exists to catch.
     "ipopt_mu_init": (1.0, "mu_init"),
+    ## The step-rejection family, which stage STEP sweeps. These were plumbed and left
+    ## unverified for the life of the branch: `test_no_step_rejection_knob_is_set_by_default`
+    ## below proves only that they are UNSET by default, which says nothing about whether
+    ## setting one reaches IPOPT. All three are read unconditionally by the filter
+    ## line-search acceptor (IpFilterLSAcceptor.cpp:212-223) and the backtracking line search
+    ## (IpBacktrackingLineSearch.cpp:218), so unlike `mu_init` none needs a companion option
+    ## -- but that is an argument from the source, and this is the measurement.
+    ##
+    ## Usedness is set on RETRIEVAL, not per value, so proving the knob lands at one value
+    ## proves it for all of them. The values here are the ones stage STEP actually fields.
+    "ipopt_theta_max_fact": (1.0, "theta_max_fact"),
+    "ipopt_watchdog_trigger": (0, "watchdog_shortened_iter_trigger"),
+    "ipopt_max_soc": (8, "max_soc"),
 }
 SNOPT_ECHO_KNOBS = {
     "snopt_hessian_frequency": (50, "Hessian frequency......        50"),
@@ -238,6 +251,11 @@ SNOPT_ECHO_KNOBS = {
     "snopt_crash_option": (0, "Crash option...........         0"),
     ## SNOPT capitalises the second word here and nowhere else nearby.
     "snopt_proximal_point_method": (2, "Proximal Point method..         2"),
+    ## Step rejection, SNOPT's side. The dot counts differ between the two -- seven after
+    ## `limit` for the step limit and eight for the violation limit -- because SNOPT pads the
+    ## label to a fixed width, so these strings cannot be written by analogy from each other.
+    "snopt_major_step_limit": (0.5, "Major step limit.......  5.00E-01"),
+    "snopt_violation_limit": (1.0, "Violation limit........  1.00E+00"),
 }
 
 

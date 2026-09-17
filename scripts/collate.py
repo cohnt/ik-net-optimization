@@ -51,13 +51,28 @@ def pair(arm, paths):
         elif mine != theirs:
             note = "DIFFERENT GRID -- not comparable"
         else:
-            # A matching grid_hash is necessary but not sufficient. The hardened-scene axis
-            # changes which targets were admissible and which obstacles exist, and two runs
-            # differing only there would otherwise print a clean McNemar row.
-            differs = [k for k in ("scene", "target_placement", "shelf_inset")
+            # A matching grid_hash is necessary but not sufficient, in two separate ways.
+            #
+            # The hardened-scene axis changes which targets were admissible and which
+            # obstacles exist, and two runs differing only there would otherwise print a
+            # clean McNemar row.
+            #
+            # And the grid_hash does NOT depend on the start protocol, the solver or the
+            # checkpoint -- it hashes the targets and guesses, nothing else. Measured:
+            # sc_SOLVER2_iiwa_n4_ipopt_mugshelf_480_45_native, its _paired twin, the snopt
+            # version of both, and sc_CAP_iiwa_n4_mug_180_paired all carry the SAME
+            # fa692df81e7d-mug. Since a stage writes those columns into one
+            # results/<robot>/benchmark/ directory with tags differing only in a middle
+            # token, a glob like '..._mugshelf_480_45_*' sorts native before paired and
+            # would pair a native column against a paired one with no warning at all. That
+            # is the same class of collision that --shard, --checkpoint and the iiwa tag's
+            # missing solver token were each fixed for; here it corrupts an ANALYSIS rather
+            # than a filename, which is harder to notice afterwards.
+            differs = [k for k in ("scene", "target_placement", "shelf_inset",
+                                   "start", "solver", "checkpoint")
                        if data["metadata"].get(k) != ref["metadata"].get(k)]
             if differs:
-                note = ("DIFFERENT SCENE/PLACEMENT (%s) -- not comparable"
+                note = ("DIFFERENT SCENE/PLACEMENT/PROTOCOL (%s) -- not comparable"
                         % ", ".join(differs))
         shared = sorted(set(cells) & set(ref_cells))
         m = mcnemar_exact([cells[c] for c in shared], [ref_cells[c] for c in shared])
