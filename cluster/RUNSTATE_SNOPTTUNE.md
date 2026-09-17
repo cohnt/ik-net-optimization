@@ -80,8 +80,16 @@ Known failure modes: an item that dies leaves a `.claim` with no `.done` —
 - Compare **within this run**, never against the archive: the fresh baseline is what absorbs any
   difference in code version or node contention.
 
-**The baseline check PASSED, 2026-09-17 13:25**, on the first four columns to land — iiwa grasp
-free native 349/398 against the archived 348/398, grasp free paired 335/398 against 333/398, grasp
-contained paired 214/292 against 212/292, pose fingertip native 442/236 against 442/236 exactly.
-Zero `fail_reason = "error"` anywhere and wall clock 12-21 s on grasp, ~3 s on pose. So no SNOPT
-option was rejected, no arm is dead, and this branch did not perturb the SNOPT path.
+**The baseline check PASSED at full scale, 2026-09-17 14:00.** The `default` column finished
+first (96 of 96 shards) and 11 of its 12 rows reproduce the archived `sc_SOLVER2_*_snopt_*`
+columns within +/-2 cells on the learned arm: iiwa grasp-free 349/335 against 348/333, iiwa
+pose-fingertip 442/210 against 442/210 exactly, iiwa contained-grasp paired 214 against 212,
+Panda grasp-free 449/398 against 450/397, Panda contained-grasp 438/281 against 438/280, Panda
+pose-fingertip 438/252 against 438/251. **The joint-space arm is EXACT on all eight rows carrying
+an archived value (+0 every one)** and identical across protocols on all five checkable pairs.
+Zero `fail_reason = "error"` anywhere. So no SNOPT option was rejected, no arm is dead, and this
+branch did not perturb the SNOPT path.
+
+The twelfth row (iiwa contained-grasp native) had its shards straddle two collections and reports
+"could not be merged" -- that is `collect_results.sh`'s known split-shard case, not a failure; it
+merges on a later collection once all eight shards sit under one staging directory.
