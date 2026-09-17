@@ -94,6 +94,12 @@ def main(patterns):
                 solver_ok=s["solver_successes"], timeouts=s["timeouts"],
                 icap=s.get("iteration_capped", 0),
                 iters=s["mean_iterations"], jac=s["mean_jacobian_evals"],
+                ## The cross-solver cost column. NLopt reports no iteration count at all
+                ## (no log, and a details struct with one status field), so under it
+                ## `iters` and `jac` are nan by construction and THIS is what the run is
+                ## read by. Counted by the program itself, so it is comparable across
+                ## solvers and across arms.
+                mapjac=s.get("mean_map_jacobians", float("nan")),
                 ## Seconds are this machine's; iterations are the formulation's. Reporting
                 ## both is a standing rule (see CLAUDE.md, "Iterations alongside wall
                 ## clock"), and ms/iter is what separates the two -- the learned arm's
@@ -110,17 +116,26 @@ def main(patterns):
                 gain=s.get("relaxation_gain"),
                 maxviol=s.get("median_max_violation")))
 
+    ## A solver that reports no iteration count must print as "--", never as nan or 0.
+    ## NLopt genuinely has none, and a 0 in this column would read as "converged instantly"
+    ## rather than "this solver does not tell us".
+    def num(value, width, places):
+        if value is None or value != value:
+            return f"{'--':>{width}}"
+        return f"{value:>{width}.{places}f}"
+
     header = (f"{'run':<26} {'arm':<10} {'success':>9} {'rate':>6} {'95% CI':>14} "
               f"{'t/out':>6} {'i/cap':>6} {'iters':>7} {'ms/it':>7} {'jac':>7} "
-              f"{'wall':>7} {'cost':>7}")
+              f"{'mapjac':>7} {'wall':>7} {'cost':>7}")
     print(header)
     print("-" * len(header))
     for r in rows:
         print(f"{r['run']:<26} {r['arm']:<10} {r['ok']:>4}/{r['n']:<4} {r['rate']:>6.2f} "
-              f"[{r['lo']:.2f},{r['hi']:.2f}]".ljust(len(header) - 44)
-              + f"{r['timeouts']:>6} {r['icap']:>6} {r['iters']:>7.0f} "
-                f"{r['ms_it']:>7.1f} {r['jac']:>7.0f} "
-                f"{r['wall']:>7.2f} {r['cost']:>7.2f}")
+              f"[{r['lo']:.2f},{r['hi']:.2f}]".ljust(len(header) - 52)
+              + f"{r['timeouts']:>6} {r['icap']:>6} {num(r['iters'], 7, 0)} "
+                f"{num(r['ms_it'], 7, 1)} {num(r['jac'], 7, 0)} "
+                f"{num(r['mapjac'], 7, 0)} "
+                f"{num(r['wall'], 7, 2)} {num(r['cost'], 7, 2)}")
     ## Both success criteria, side by side. `strict` gates on the program's own
     ## constraint rows at ik_constraint_tol; `task-tol` relaxes that to the task gate's
     ## tolerance, which is the open question about what should count as a solve. Only

@@ -11,6 +11,7 @@ import numpy as np
 from pydrake.all import (
     AutoDiffXd,
     IpoptSolver,
+    NloptSolver,
     SnoptSolver,
     SolverOptions,
     CommonSolverOption,
@@ -120,6 +121,41 @@ class ProgramOptions:
     ## scaled as though it were ordinary. These two make that reachable from `--set`.
     ipopt_nlp_scaling_method: str = field(default=None, metadata={"help": "IPOPT 'nlp_scaling_method': 'gradient-based' (default), 'none', 'equilibration-based'"})
     ipopt_nlp_scaling_max_gradient: float = field(default=None, metadata={"help": "IPOPT 'nlp_scaling_max_gradient' (default 100)"})
+    ## Quasi-Newton and barrier knobs. Drake runs IPOPT with
+    ## `hessian_approximation = limited-memory` -- confirmed in the user-options echo of an
+    ## archived log -- because it supplies no second derivatives, so the L-BFGS history IS
+    ## the Hessian here and its length is a live knob. `mu_init` is read ONLY under
+    ## `mu_strategy = monotone`: set alone it is echoed `used = no`, and it becomes
+    ## `used = yes` only when the strategy is passed explicitly alongside it. Measured.
+    ##
+    ## Note what is NOT reachable: `linear_solver`. Drake's IPOPT is built against SPRAL
+    ## and offers only `spral` and `custom` -- `mumps` raises at SetOption -- so there is
+    ## no linear-solver axis on this problem.
+    ## IPOPT's REAL convergence test, as opposed to the `acceptable_*` family above --
+    ## which is its RELAXED EARLY STOP and a different thing entirely. Nothing in this repo
+    ## ever set these, so IPOPT has always converged at its own defaults, and two of them
+    ## are far looser than the SQP column is held to:
+    ##
+    ##     constr_viol_tol  1e-4   vs SNOPT's Major feasibility tolerance  1e-6
+    ##     dual_inf_tol     1      vs SNOPT's Major optimality tolerance   2e-6
+    ##     tol              1e-8
+    ##     compl_inf_tol    1e-4
+    ##
+    ## So a solver comparison that leaves these alone lets IPOPT stop at 100x the
+    ## constraint violation and six orders more dual infeasibility. That is a property of
+    ## the HARNESS, not of interior-point methods, and it has to be measured before the
+    ## solver table means anything. Rung 2 of the tolerance ladder says each solver gets
+    ## its own well-posed defaults -- but it does not say never check what that is worth.
+    ipopt_tol: float = field(default=None, metadata={"help": "IPOPT 'tol' (default 1e-8): the overall convergence tolerance"})
+    ipopt_constr_viol_tol: float = field(default=None, metadata={"help": "IPOPT 'constr_viol_tol' (default 1e-4): constraint violation at convergence. SNOPT's counterpart defaults to 1e-6"})
+    ipopt_dual_inf_tol: float = field(default=None, metadata={"help": "IPOPT 'dual_inf_tol' (default 1): dual infeasibility at convergence. SNOPT's counterpart defaults to 2e-6"})
+    ipopt_compl_inf_tol: float = field(default=None, metadata={"help": "IPOPT 'compl_inf_tol' (default 1e-4): complementarity at convergence"})
+    ipopt_limited_memory_max_history: int = field(default=None, metadata={"help": "IPOPT 'limited_memory_max_history' (default 6): the L-BFGS history length, which is the whole Hessian approximation here"})
+    ipopt_limited_memory_update_type: str = field(default=None, metadata={"help": "IPOPT 'limited_memory_update_type': 'bfgs' (default) or 'sr1'"})
+    ipopt_mu_init: float = field(default=None, metadata={"help": "IPOPT 'mu_init' (default 0.1). Only read under mu_strategy=monotone -- pass ipopt_mu_strategy=monotone with it or it is silently unused"})
+    ipopt_alpha_for_y: str = field(default=None, metadata={"help": "IPOPT 'alpha_for_y' (default 'primal'): how the dual step size is chosen"})
+    ipopt_recalc_y: str = field(default=None, metadata={"help": "IPOPT 'recalc_y' (default 'no'): recompute the multipliers from a least-squares estimate"})
+    ipopt_bound_relax_factor: float = field(default=None, metadata={"help": "IPOPT 'bound_relax_factor' (default 1e-8): how far bounds are relaxed before the solve"})
     ## STEP ACCEPTANCE, which is a different lever from everything already refuted. The
     ## damping strategies (`jacobian_max_norm` and friends) altered the DERIVATIVES the
     ## solver was handed, breaking the correspondence between the constraint values IPOPT
@@ -137,7 +173,94 @@ class ProgramOptions:
     ipopt_theta_max_fact: float = field(default=None, metadata={"help": "IPOPT 'theta_max_fact' (default 1e4): trial points above theta_max_fact*max(1,theta(x0)) constraint violation are rejected outright"})
     ipopt_watchdog_trigger: int = field(default=None, metadata={"help": "IPOPT 'watchdog_shortened_iter_trigger' (default 10); 0 disables the watchdog, which otherwise RELAXES filter acceptance for a few iterations"})
     ipopt_max_soc: int = field(default=None, metadata={"help": "IPOPT 'max_soc' (default 4): second-order corrections, which exist to rescue steps the filter rejected for constraint violation"})
-    max_iter: int = field(default=None, metadata={"help": "Iteration cap (IPOPT max_iter / SNOPT Major iterations limit)"})
+    max_iter: int = field(default=None, metadata={"help": "Iteration cap (IPOPT max_iter / SNOPT Major iterations limit / NLopt max_eval)"})
+
+    ## SNOPT, the SQP arm of the solver axis. Every field is None = "leave SNOPT's own
+    ## default alone", which is the rule for this axis: the three solvers stand for three
+    ## METHOD CLASSES (interior point, SQP, augmented Lagrangian) and each must converge
+    ## at its own well-posed tolerances. Transplanting IPOPT's numbers onto SNOPT is what
+    ## the code used to do -- it fed `acceptable_tol` and `acceptable_constr_viol_tol`,
+    ## IPOPT's RELAXED EARLY-STOP criteria, into SNOPT's Major tolerances, which are its
+    ## actual convergence test. IPOPT converges to `tol` (1e-8); SNOPT was being asked for
+    ## 1e-3. The shared, deliberately-looser task gate is what decides success.
+    ##
+    ## Drake routes these by Python type, so a float option passed as an int (or the
+    ## reverse) reaches the wrong snSet* and raises. Hence the explicit casts below.
+    snopt_major_feasibility_tol: float = field(default=None, metadata={"help": "SNOPT 'Major feasibility tolerance' (SNOPT default 1e-6)"})
+    snopt_major_optimality_tol: float = field(default=None, metadata={"help": "SNOPT 'Major optimality tolerance' (SNOPT default 1e-6)"})
+    snopt_minor_feasibility_tol: float = field(default=None, metadata={"help": "SNOPT 'Minor feasibility tolerance'"})
+    snopt_minor_iterations_limit: int = field(default=None, metadata={"help": "SNOPT 'Minor iterations limit'"})
+    snopt_scale_option: int = field(default=None, metadata={"help": "SNOPT 'Scale option' (0 none, 1 linear, 2 all). The counterpart of ipopt_nlp_scaling_method, which measured inert"})
+    snopt_verify_level: int = field(default=None, metadata={"help": "SNOPT 'Verify level'; -1 disables the derivative check. Our gradients are analytic, so a check costs evaluations for nothing"})
+    snopt_linesearch_tolerance: float = field(default=None, metadata={"help": "SNOPT 'Linesearch tolerance' (default 0.9); smaller means a more accurate line search"})
+    snopt_superbasics_limit: int = field(default=None, metadata={"help": "SNOPT 'Superbasics limit'; INFO 33 means this was too small"})
+    ## Four more knobs, every default below read off SNOPT's OWN parameter echo rather
+    ## than from documentation -- the echo is the only thing that proves an option landed.
+    ## Two traps this turned up, both of the "accepted and inert" kind that `Timing Level`
+    ## already cost this repo once:
+    ##
+    ##  * `Hessian updates` (default 99999999) is ignored in FULL-memory mode, which is
+    ##    what SNOPT picks at these problem sizes (n = 20 or 21, well under its 75-variable
+    ##    threshold). Setting it changes nothing. `Hessian frequency` is the one that bites,
+    ##    and setting it moves BOTH numbers in the echo. So only the frequency is exposed.
+    ##  * `Nonderivative linesearch` is a VALUELESS keyword: SNOPT switches on the keyword
+    ##    appearing at all, so passing 0 turns it ON exactly as passing 1 does. It is
+    ##    therefore a bool here, emitted only when True. It matters because the flow
+    ##    Jacobian is ~84% of a solve, so a line search that needs only function values is
+    ##    the largest single saving available on this problem. In the echo it appears
+    ##    abbreviated as `Nonderiv.  linesearch`, not by its full name.
+    snopt_hessian_frequency: int = field(default=None, metadata={"help": "SNOPT 'Hessian frequency' (default 99999999, i.e. never reset). 'Hessian updates' is inert in the full-memory mode this problem size selects"})
+    snopt_elastic_weight: float = field(default=None, metadata={"help": "SNOPT 'Elastic weight' (default 1e5): the penalty on constraint violation in elastic mode, which is how SNOPT copes with an infeasible start"})
+    snopt_crash_option: int = field(default=None, metadata={"help": "SNOPT 'Crash option' (default 3): how the initial basis is chosen"})
+    snopt_proximal_point_method: int = field(default=None, metadata={"help": "SNOPT 'Proximal point method' (default 1): how far the first major moves from the given start"})
+    snopt_nonderivative_linesearch: bool = field(default=False, metadata={"help": "SNOPT 'Nonderivative linesearch'. Valueless keyword -- emitted only when True, and passing 0 would turn it ON, not off"})
+    ## The two SNOPT knobs that are genuine analogues of the repo's best open IPOPT lead.
+    ## `Major step limit` bounds ||dx|| <= limit*(1 + ||x||) per major iteration, which is
+    ## the trust region the learned formulation wants -- the runaway is ONE accepted
+    ## catastrophic step out of a well-behaved trajectory. `Violation limit` is SNOPT's
+    ## counterpart to ipopt_theta_max_fact, which gained 3 cells and lost none on a probe.
+    snopt_major_step_limit: float = field(default=None, metadata={"help": "SNOPT 'Major step limit' (default 2.0): bounds ||dx|| <= limit*(1+||x||) per major iteration"})
+    snopt_violation_limit: float = field(default=None, metadata={"help": "SNOPT 'Violation limit' (default 10): the largest constraint violation allowed beyond the initial point; SNOPT's theta ceiling"})
+    ## Print verbosity. SNOPT's end-of-run summary block -- 'No. of major iterations' and
+    ## the funobj/funcon call counts -- is the ONLY place its iteration count exists, so
+    ## the major level must stay >= 1. The minor level stays 0 by default because a 45 s
+    ## solve writes one log per cell and minor lines dominate the size.
+    snopt_major_print_level: int = field(default=1, metadata={"help": "SNOPT 'Major print level'; >=1 is required for the summary block parse_log reads"})
+    snopt_minor_print_level: int = field(default=0, metadata={"help": "SNOPT 'Minor print level'; 0 keeps the per-cell log small"})
+    snopt_solution_print: bool = field(default=False, metadata={"help": "SNOPT 'Solution Yes': dump every row and column at the end. Off -- nothing parses it and it is a fifth of the file"})
+    ## Used only when `max_iter` is None. IPOPT's max_iter default is 3000 and SNOPT's Major
+    ## iterations limit default is 1000, so leaving both alone gives the two solvers
+    ## different budgets under a wall-clock-capped comparison. Measured binding.
+    snopt_major_iterations_default: int = field(default=3000, metadata={"help": "SNOPT 'Major iterations limit' when max_iter is unset; 3000 matches IPOPT's own default so the wall clock is what binds"})
+
+    ## NLopt, the AUGMENTED LAGRANGIAN arm. `LD_SLSQP` would be the wrong default: it is an
+    ## SQP method, so it would make this column a duplicate of SNOPT's rather than a third
+    ## method class. `LD_AUGLAG` rather than `LD_AUGLAG_EQ` because the `_EQ` variant
+    ## absorbs only EQUALITY constraints into the augmented Lagrangian and leaves
+    ## inequalities to the inner solver, and this program carries both kinds (pose or
+    ## mug-axis equalities alongside collision, joint-limit and trust-region inequalities).
+    ##
+    ## ONLY the six options Drake 1.56.0 exposes may be set here. The cluster runs the
+    ## official 1.56.0 tarball; this workstation is a later source build that ALSO offers
+    ## five `local_optimizer_*` options for choosing the AL's inner solver. Drake validates
+    ## NLopt option names strictly and raises on an unrecognised one, so code written
+    ## against the workstation's API would pass locally and raise on every cell of a
+    ## cluster run.
+    ##
+    ## TODO: once the cluster's Drake carries the local-optimizer PRs, expose
+    ## `local_optimizer_algorithm` and sweep the inner solver. Leaving it unset is a
+    ## supported state -- Drake does not call `set_local_optimizer` at all, so NLopt
+    ## supplies its own inner optimizer (LD_LBFGS for the gradient-based AUGLAG families),
+    ## which is the right shape since the inner problem is bound-constrained only.
+    nlopt_algorithm: str = field(default="LD_AUGLAG", metadata={"help": "NLopt 'algorithm'. An augmented-Lagrangian variant by design; LD_SLSQP would duplicate SNOPT's method class"})
+    nlopt_constraint_tol: float = field(default=None, metadata={"help": "NLopt 'constraint_tol' (Drake default 1e-6)"})
+    nlopt_xtol_rel: float = field(default=None, metadata={"help": "NLopt 'xtol_rel' (Drake default 1e-6)"})
+    nlopt_xtol_abs: float = field(default=None, metadata={"help": "NLopt 'xtol_abs' (Drake default 1e-6)"})
+    ## Drake DEFAULTS max_eval to 1000 -- this is a cap, not "unset", and it binds here:
+    ## the learned arm runs hundreds of major iterations and several map evaluations each.
+    ## Left alone, the NLopt column would silently measure a 1000-evaluation budget instead
+    ## of the wall-clock cap every other column is measured under. 0 disables it.
+    nlopt_max_eval: int = field(default=0, metadata={"help": "NLopt 'max_eval'; 0 disables. Drake's own default is 1000, which would bind and make this column an evaluation-budget measurement"})
 
     ## Starting point ##
     # A benchmark that starts each formulation somewhere different cannot attribute a
@@ -492,6 +615,33 @@ class IKFlowProgram:
             return (True, values.tobytes(), derivatives.shape, derivatives.tobytes())
         return (False, np.asarray(vars, dtype=float).tobytes())
 
+    ## The keys of `eval_counts`. Declared here so a consumer can rely on the shape even
+    ## for a program that never solved.
+    EVAL_COUNT_KEYS = ("map_forward", "map_jacobian", "memo_hits", "callback")
+
+    def ResetEvalCounts(self):
+        '''Zero the cross-solver evaluation counters. Called at the top of `Solve`.
+
+        These exist because **no solver reports an iteration count through Drake**.
+        `SnoptSolverDetails` carries `info`, `solve_time` and the multipliers but no
+        iteration count, and `NloptSolverDetails` carries a single `status` field and
+        nothing else -- NLopt writes no log of any kind and ignores `kPrintFileName`. So
+        the only quantity available under *every* solver is one we count ourselves.
+
+        `map_jacobian` is the number this project already says to quote when comparing
+        formulations: for the learned arm it is one `jacrev` through the network each, the
+        dominant cost of the solve. Counting it here rather than per solver also makes the
+        arms comparable -- the numerical and analytic arms evaluate Drake kinematics
+        through the same funnel -- and cross-validates IPOPT's own logged counts.
+
+        Deliberately NOT an iteration count. A line search evaluates the map several times
+        per accepted step, and each solver does so differently, so this measures work done
+        rather than steps taken. Where a solver does report iterations (IPOPT and SNOPT,
+        both via their print file) that is reported separately and is the number to compare
+        across solvers.
+        '''
+        self.eval_counts = {k: 0 for k in self.EVAL_COUNT_KEYS}
+
     def QAndPose(self, vars):
         '''`(q, pose)` for an iterate, evaluating the flow at most once per point.
 
@@ -499,16 +649,30 @@ class IKFlowProgram:
         formulation -- everything else in a `VarsToQ` evaluation is about 0.01 ms -- so
         sharing them between the constraint binding and the cost binding is close to a
         factor of two on the whole solve.
+
+        This is also the single funnel every arm's solve passes through -- the constraint
+        block, the joint-limit row and the joint-centering cost all call it -- which is why
+        the evaluation counters live here. See `ResetEvalCounts`.
         '''
+        counts = getattr(self, "eval_counts", None)
+        if counts is None:
+            self.ResetEvalCounts()
+            counts = self.eval_counts
         ## Under `lift_q` the configuration IS a decision variable, so there is nothing to
         ## evaluate: every task row and the joint-centering cost see the variable directly,
         ## and the network appears only in `CreateFlowConsistencyConstraint`. This makes the
         ## forward kinematics cheaper too (Drake trig on a plain variable rather than on a
         ## network output), and it is why lifting costs no extra flow evaluation.
+        ## An AutoDiffXd iterate is the expensive one -- it is the `jacrev` through the
+        ## network -- so the two are counted apart rather than lumped together.
+        bucket = ("map_jacobian" if isinstance(vars[0], AutoDiffXd)
+                  else "map_forward")
         if self._LiftingQ():
+            counts[bucket] += 1
             q = self.LiftedQ(vars)
             return q, self.fk(q)
         if not getattr(self.options, "share_flow_evaluations", False):
+            counts[bucket] += 1
             q = self.VarsToQ(vars)
             return q, self.fk(q)
         cache = getattr(self, "_flow_cache", None)
@@ -517,11 +681,14 @@ class IKFlowProgram:
         key = self._FlowCacheKey(vars)
         hit = cache.get(key)
         if hit is None:
+            counts[bucket] += 1
             q = self.VarsToQ(vars)
             hit = (q, self.fk(q))
             cache[key] = hit
             while len(cache) > 4:
                 cache.pop(next(iter(cache)))
+        else:
+            counts["memo_hits"] += 1
         return hit
 
     ## ------------------------- shared starting point ----------------------- ##
@@ -1058,64 +1225,196 @@ class IKFlowProgram:
         self.correction_cost.evaluator().set_description("CorrectionCost")
     
 
+    ## The solver axis. These are three METHOD CLASSES, not three vendors: IPOPT is an
+    ## interior-point method, SNOPT is SQP, and NLopt is here as an augmented Lagrangian.
+    ## A solver added to this dict should be justified by the class it contributes.
+    SOLVERS = ("ipopt", "snopt", "nlopt")
+
+    def _IpoptOptions(self):
+        solver = IpoptSolver()
+        solver_options = SolverOptions()
+        solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_tol", self.options.acceptable_tol)
+        solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_constr_viol_tol", self.options.acceptable_constr_viol_tol)
+        solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_dual_inf_tol", self.options.acceptable_dual_inf_tol)
+        solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_compl_inf_tol", self.options.acceptable_compl_inf_tol)
+        solver_options.SetOption(IpoptSolver().solver_id(), "file_print_level", self.options.file_print_level)
+        solver_options.SetOption(IpoptSolver().solver_id(), "print_user_options", "yes")
+        solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_iter", self.options.acceptable_iter)
+        solver_options.SetOption(IpoptSolver().solver_id(), "max_wall_time", self.options.max_wall_time)
+        if self.options.ipopt_mu_strategy is not None:
+            solver_options.SetOption(IpoptSolver().solver_id(), "mu_strategy", self.options.ipopt_mu_strategy)
+        if self.options.ipopt_nlp_scaling_method is not None:
+            solver_options.SetOption(IpoptSolver().solver_id(), "nlp_scaling_method",
+                                     self.options.ipopt_nlp_scaling_method)
+        if self.options.ipopt_nlp_scaling_max_gradient is not None:
+            solver_options.SetOption(IpoptSolver().solver_id(), "nlp_scaling_max_gradient",
+                                     float(self.options.ipopt_nlp_scaling_max_gradient))
+        if self.options.ipopt_theta_max_fact is not None:
+            solver_options.SetOption(IpoptSolver().solver_id(), "theta_max_fact",
+                                     float(self.options.ipopt_theta_max_fact))
+        if self.options.ipopt_watchdog_trigger is not None:
+            solver_options.SetOption(IpoptSolver().solver_id(), "watchdog_shortened_iter_trigger",
+                                     int(self.options.ipopt_watchdog_trigger))
+        if self.options.ipopt_max_soc is not None:
+            solver_options.SetOption(IpoptSolver().solver_id(), "max_soc", int(self.options.ipopt_max_soc))
+        ## The quasi-Newton and barrier knobs, added for the solver-settings sweep. Every
+        ## one of these was confirmed to reach IPOPT with `used = yes` in the user-options
+        ## echo before being exposed -- `print_user_options` above is what makes that
+        ## checkable, and it is why `linear_solver` is absent (Drake's IPOPT rejects
+        ## anything but `spral`/`custom`) and why `mu_init` carries the warning it does.
+        for name, value, cast in (
+                ("tol", self.options.ipopt_tol, float),
+                ("constr_viol_tol", self.options.ipopt_constr_viol_tol, float),
+                ("dual_inf_tol", self.options.ipopt_dual_inf_tol, float),
+                ("compl_inf_tol", self.options.ipopt_compl_inf_tol, float),
+                ("limited_memory_max_history", self.options.ipopt_limited_memory_max_history, int),
+                ("limited_memory_update_type", self.options.ipopt_limited_memory_update_type, str),
+                ("mu_init", self.options.ipopt_mu_init, float),
+                ("alpha_for_y", self.options.ipopt_alpha_for_y, str),
+                ("recalc_y", self.options.ipopt_recalc_y, str),
+                ("bound_relax_factor", self.options.ipopt_bound_relax_factor, float)):
+            if value is not None:
+                solver_options.SetOption(IpoptSolver().solver_id(), name, cast(value))
+        if self.options.max_iter is not None:
+            solver_options.SetOption(IpoptSolver().solver_id(), "max_iter", int(self.options.max_iter))
+        return solver, solver_options
+
+    def _SnoptOptions(self):
+        '''SNOPT, the SQP arm.
+
+        Note what is NOT here: `acceptable_tol` and `acceptable_constr_viol_tol`. An earlier
+        revision fed those into SNOPT's Major optimality and feasibility tolerances, but
+        IPOPT's `acceptable_*` family is its RELAXED EARLY-STOP criterion, not what it
+        converges to -- so SNOPT was being handed 1e-3 where IPOPT drives to 1e-8. Unset
+        `snopt_*` fields simply are not passed, leaving SNOPT at its own 1e-6 defaults.
+        '''
+        solver = SnoptSolver()
+        solver_options = SolverOptions()
+        solver_options.SetOption(SnoptSolver.id(), "Major print level",
+                                 int(self.options.snopt_major_print_level))
+        solver_options.SetOption(SnoptSolver.id(), "Minor print level",
+                                 int(self.options.snopt_minor_print_level))
+        ## "Timing level", NOT "Timing Level". Drake accepts either -- it only raises on a
+        ## keyword SNOPT's table does not know at all -- but SNOPT's parser is case
+        ## sensitive on the second word, so the capitalised form is silently INERT and
+        ## writes no timing block. Measured both ways. A SNOPT option can be accepted and
+        ## do nothing, so anything set here has to be confirmed in the print file.
+        solver_options.SetOption(SnoptSolver.id(), "Timing level", 3)
+        ## The solution dump (Sections 1 and 2, every row and column) is a fifth of the
+        ## print file and nothing parses it. One log per cell over a 480-cell grid is
+        ## exactly the many-small-files pattern this project already had to fix once.
+        solver_options.SetOption(SnoptSolver.id(), "Solution",
+                                 "Yes" if self.options.snopt_solution_print else "No")
+        ## SNOPT types its options: "Time limit" is a double and the iteration limits are
+        ## ints. The wrong Python type reaches the wrong snSet* and raises.
+        solver_options.SetOption(SnoptSolver.id(), "Time Limit", float(self.options.max_wall_time))
+        for name, value, cast in (
+                ("Major feasibility tolerance", self.options.snopt_major_feasibility_tol, float),
+                ("Major optimality tolerance", self.options.snopt_major_optimality_tol, float),
+                ("Minor feasibility tolerance", self.options.snopt_minor_feasibility_tol, float),
+                ("Minor iterations limit", self.options.snopt_minor_iterations_limit, int),
+                ("Scale option", self.options.snopt_scale_option, int),
+                ("Verify level", self.options.snopt_verify_level, int),
+                ("Linesearch tolerance", self.options.snopt_linesearch_tolerance, float),
+                ("Superbasics limit", self.options.snopt_superbasics_limit, int),
+                ("Major step limit", self.options.snopt_major_step_limit, float),
+                ("Violation limit", self.options.snopt_violation_limit, float),
+                ("Function precision", self.options.snopt_function_precision, float),
+                ("Hessian frequency", self.options.snopt_hessian_frequency, int),
+                ("Elastic weight", self.options.snopt_elastic_weight, float),
+                ("Crash option", self.options.snopt_crash_option, int),
+                ("Proximal point method", self.options.snopt_proximal_point_method, int)):
+            if value is not None:
+                solver_options.SetOption(SnoptSolver.id(), name, cast(value))
+        ## A VALUELESS keyword, so it cannot live in the table above: SNOPT switches to the
+        ## gradient-free line search on the keyword being present at all, and `= 0` turns it
+        ## ON exactly as `= 1` does. Emitting it only when True is the only way to express
+        ## "off". Verified in the parameter echo, where it reads `Nonderiv.  linesearch`.
+        if self.options.snopt_nonderivative_linesearch:
+            solver_options.SetOption(SnoptSolver.id(), "Nonderivative linesearch", 1)
+        ## The BUDGET, which is a different thing from the tolerances above and is NOT left
+        ## at each solver's own default. The controlled variable of this comparison is the
+        ## WALL CLOCK, so a solver quietly stopping at its own iteration default is being
+        ## given a different budget rather than converging at its own tolerance -- the same
+        ## class of unfairness as handing it someone else's tolerances.
+        ##
+        ## SNOPT's default Major iterations limit is 1000; IPOPT's max_iter default is 3000.
+        ## Measured: an iiwa joint-space cell stopped at exactly 1000 majors inside a 20 s
+        ## cap, so this binds in practice and is not hypothetical. Equalised at IPOPT's
+        ## 3000, rather than raised out of the way entirely, so that IPOPT's own path stays
+        ## byte-identical to every archived run and either solver capping is visible and
+        ## equal (`hit_iteration_cap`). NLopt has no notion of an iteration, so its nearest
+        ## analogue -- max_eval -- is disabled by default and the wall clock is all it has.
+        solver_options.SetOption(SnoptSolver.id(), "Major iterations limit",
+                                 int(self.options.max_iter) if self.options.max_iter is not None
+                                 else int(self.options.snopt_major_iterations_default))
+        return solver, solver_options
+
+    def _NloptOptions(self):
+        '''NLopt, the AUGMENTED LAGRANGIAN arm.
+
+        Two things to know before editing this.
+
+        **Only the six options Drake 1.56.0 exposes may be set.** The cluster runs the
+        official 1.56.0 tarball, whose `nlopt_solver.h` declares exactly `algorithm`,
+        `constraint_tol`, `xtol_rel`, `xtol_abs`, `max_eval` and `max_time`. A newer source
+        build additionally offers five `local_optimizer_*` options, and Drake validates
+        NLopt names strictly and RAISES on an unrecognised one -- so setting one of those
+        would pass on a workstation and fail on every cell of a cluster run. Leaving the
+        local optimizer unset is a supported state: Drake does not call
+        `set_local_optimizer`, and NLopt supplies its own (LD_LBFGS for the gradient-based
+        AUGLAG families), which is the right shape because an augmented Lagrangian's inner
+        problem is bound-constrained only.
+
+        **NLopt reports nothing.** No print file, no console output, and a details struct
+        with a single `status` field -- no iteration count, no evaluation count, not even a
+        solve time. `kPrintFileName` is accepted and silently ignored, which is why this is
+        the one branch that does not set it. The evaluation counters on the program
+        (`ResetEvalCounts`) exist because of this.
+        '''
+        solver = NloptSolver()
+        solver_options = SolverOptions()
+        solver_options.SetOption(NloptSolver.id(), NloptSolver.AlgorithmName(),
+                                 str(self.options.nlopt_algorithm))
+        ## `max_time` is what makes the wall-clock cap bind. Without it a cell runs until
+        ## the harness's own per-item timeout and takes the whole item with it.
+        solver_options.SetOption(NloptSolver.id(), NloptSolver.MaxTimeName(),
+                                 float(self.options.max_wall_time))
+        ## Drake DEFAULTS max_eval to 1000. That is a cap, not "unset", and it binds here --
+        ## left alone this column would measure an evaluation budget rather than the cap.
+        max_eval = (int(self.options.max_iter) if self.options.max_iter is not None
+                    else int(self.options.nlopt_max_eval))
+        solver_options.SetOption(NloptSolver.id(), NloptSolver.MaxEvalName(), max_eval)
+        for name, value in (
+                (NloptSolver.ConstraintToleranceName(), self.options.nlopt_constraint_tol),
+                (NloptSolver.XRelativeToleranceName(), self.options.nlopt_xtol_rel),
+                (NloptSolver.XAbsoluteToleranceName(), self.options.nlopt_xtol_abs)):
+            if value is not None:
+                solver_options.SetOption(NloptSolver.id(), name, float(value))
+        return solver, solver_options
+
     def Solve(self):
         if os.path.exists(self.options.file_print_name):
             with open(self.options.file_print_name, "r+") as f:
                 f.seek(0)
                 f.truncate()
-        
-        if self.options.which_solver == "ipopt":
-            solver = IpoptSolver()
-            solver_options = SolverOptions()
-            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_tol", self.options.acceptable_tol)
-            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_constr_viol_tol", self.options.acceptable_constr_viol_tol)
-            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_dual_inf_tol", self.options.acceptable_dual_inf_tol)
-            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_compl_inf_tol", self.options.acceptable_compl_inf_tol)
-            solver_options.SetOption(IpoptSolver().solver_id(), "file_print_level", self.options.file_print_level)
-            solver_options.SetOption(IpoptSolver().solver_id(), "print_user_options", "yes")
-            solver_options.SetOption(IpoptSolver().solver_id(), "acceptable_iter", self.options.acceptable_iter)
-            solver_options.SetOption(IpoptSolver().solver_id(), "max_wall_time", self.options.max_wall_time)
-            if self.options.ipopt_mu_strategy is not None:
-                solver_options.SetOption(IpoptSolver().solver_id(), "mu_strategy", self.options.ipopt_mu_strategy)
-            if self.options.ipopt_nlp_scaling_method is not None:
-                solver_options.SetOption(IpoptSolver().solver_id(), "nlp_scaling_method",
-                                         self.options.ipopt_nlp_scaling_method)
-            if self.options.ipopt_nlp_scaling_max_gradient is not None:
-                solver_options.SetOption(IpoptSolver().solver_id(), "nlp_scaling_max_gradient",
-                                         float(self.options.ipopt_nlp_scaling_max_gradient))
-            if self.options.ipopt_theta_max_fact is not None:
-                solver_options.SetOption(IpoptSolver().solver_id(), "theta_max_fact",
-                                         float(self.options.ipopt_theta_max_fact))
-            if self.options.ipopt_watchdog_trigger is not None:
-                solver_options.SetOption(IpoptSolver().solver_id(), "watchdog_shortened_iter_trigger",
-                                         int(self.options.ipopt_watchdog_trigger))
-            if self.options.ipopt_max_soc is not None:
-                solver_options.SetOption(IpoptSolver().solver_id(), "max_soc", int(self.options.ipopt_max_soc))
-            if self.options.max_iter is not None:
-                solver_options.SetOption(IpoptSolver().solver_id(), "max_iter", int(self.options.max_iter))
-            
-        if self.options.which_solver == 'snopt':
-            solver = SnoptSolver()
-            solver_options = SolverOptions()
-            solver_options.SetOption(SnoptSolver.id(), "Major print level", self.options.file_print_level)
-            solver_options.SetOption(SnoptSolver.id(), "Timing Level", 3)
-            solver_options.SetOption(SnoptSolver.id(), "Time Limit", self.options.max_wall_time)
-            solver_options.SetOption(SnoptSolver.id(), "Major optimality tolerance", self.options.acceptable_tol)
-            solver_options.SetOption(SnoptSolver.id(), "Minor optimality tolerance", self.options.acceptable_tol)
-            solver_options.SetOption(SnoptSolver.id(), "Major feasibility tolerance", self.options.acceptable_constr_viol_tol)
-            if self.options.max_iter is not None:
-                solver_options.SetOption(SnoptSolver.id(), "Major iterations limit", int(self.options.max_iter))
-            if self.options.snopt_function_precision is not None:
-                # SNOPT otherwise assumes the constraints are accurate to ~1e-13 and
-                # probes derivatives at h=5.5e-7, which is pure noise for a float32 flow.
-                solver_options.SetOption(SnoptSolver.id(), "Function precision", self.options.snopt_function_precision)
-            # solver_options.SetOption(SnoptSolver.id(), "Major Iteration Limit", 4 * self.options.max_wall_time)
 
+        which = self.options.which_solver
+        ## An explicit check, because the predecessor was two bare `if`s: any value outside
+        ## {ipopt, snopt} left `solver` unbound and died with UnboundLocalError several
+        ## lines later. `--set which_solver=...` bypasses argparse's `choices`, so that was
+        ## reachable from the command line.
+        if which not in self.SOLVERS:
+            raise ValueError(f"unknown which_solver {which!r}; expected one of {self.SOLVERS}")
+        solver, solver_options = {"ipopt": self._IpoptOptions,
+                                  "snopt": self._SnoptOptions,
+                                  "nlopt": self._NloptOptions}[which]()
 
-        
-        solver_options.SetOption(CommonSolverOption.kPrintFileName, self.options.file_print_name)
+        ## NLopt writes no log and ignores this key, so it is set only where a log exists.
+        if which != "nlopt":
+            solver_options.SetOption(CommonSolverOption.kPrintFileName, self.options.file_print_name)
 
-
+        self.ResetEvalCounts()
 
         inner = partial(visualization_callback, diagram=self.diagram, diagram_context=self.diagram_context,
                                                 plant=self.plant, plant_context=self.plant_context,
@@ -1132,6 +1431,7 @@ class IKFlowProgram:
             # releases, IPOPT's own max_wall_time ends the solve at the next iteration
             # boundary with the iterate intact, which needs no help from us.
             self.last_iterate = np.array(vars, dtype=float)
+            self.eval_counts["callback"] += 1
             inner(vars)
 
         self.prog.AddVisualizationCallback(record_iterate, self.lumped_vars)
