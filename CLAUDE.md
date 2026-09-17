@@ -426,6 +426,338 @@ read that instead; the raw value is kept only because archived records carry it.
 row's shape is three `ProgramOptions` fields (`collision_bound`, `collision_influence_offset`,
 `collision_row_scale`), defaulting to what was once hardcoded.
 
+## The solver axis: interior point, SQP, augmented Lagrangian (2026-09-16)
+
+**Three METHOD CLASSES, not three vendors.** Thomas: *"for NLOPT, we want to use it as an
+augmented lagrangian solver. This is important! We don't care about SLSQP, since SNOPT is
+already SQP. The point is that we test interior point, augmented lagrangian, and SQP."* So
+`--solver` is `ipopt` (interior point), `snopt` (SQP), `nlopt` (**`LD_AUGLAG`**). `LD_SLSQP`
+is the wrong NLopt default -- it is an SQP method and would leave the comparison with two SQP
+columns and no AL column. `LD_AUGLAG` rather than `LD_AUGLAG_EQ` because `_EQ` absorbs only
+*equality* constraints into the AL and leaves inequalities to the inner solver, and this
+program carries both. Any solver added later must be justified by the class it contributes.
+
+All three take `kGenericConstraint`/`kGenericCost`/`kCallback`, and all three call
+`EvalVisualizationCallbacks` **inside their objective evaluation** -- so `last_iterate`
+recovery, which every abnormal exit depends on, works unchanged under each. Nothing about the
+watchdog design needed revisiting.
+
+### Each solver converges at its own defaults
+
+The SNOPT branch used to read IPOPT's `acceptable_tol` and `acceptable_constr_viol_tol` as its
+`Major optimality`/`Major feasibility tolerance`. That is rung 2 of the tolerance ladder done
+wrong: IPOPT's `acceptable_*` family is its **relaxed early-stop** criterion, not what it
+converges to (its real `tol` is 1e-8), so SNOPT was being asked for 1e-3 while the solver it
+is compared against drove to 1e-8. **Do not transplant one solver's option values onto
+another.** Unset `snopt_*`/`nlopt_*` fields are simply not passed, so each solver sits at its
+own defaults and the shared, deliberately looser task gate decides success. No archived SNOPT
+run existed, so nothing was invalidated.
+
+**But "each at its own defaults" is a CHOICE, and it is not a symmetric one.** Checking what
+the settings sweep actually covered turned up a second asymmetry, larger than the first and in
+the opposite direction. `acceptable_*` is IPOPT's early stop; `tol`, `constr_viol_tol`,
+`dual_inf_tol` and `compl_inf_tol` are what it actually converges to -- and those were never
+`ProgramOptions` fields at all, so every archived run took IPOPT's own defaults:
+
+| | IPOPT (never set) | SNOPT (default) |
+| --- | --- | --- |
+| constraint violation at convergence | `constr_viol_tol` **1e-4** | Major feasibility **1e-6** |
+| dual infeasibility | `dual_inf_tol` **1** | Major optimality **2e-6** |
+
+So the interior-point column has been allowed 100x the constraint violation and six orders
+more dual infeasibility than the SQP column it is compared against, on top of an early stop
+(`acceptable_tol=1e-3`, `acceptable_iter=1`) that SNOPT has no counterpart for. That is a
+property of the HARNESS, not of interior-point methods. The four fields are now plumbed and
+stage SWEEP measures what the choice is worth: `convsnopt` holds IPOPT to SNOPT's convergence
+numbers, `fair` does that and disables the early stop as well. **The task gate is untouched by
+any of it** -- success is verified from the returned point at `task_tol = 1e-3`, two orders
+above every tolerance involved, so none of this can manufacture a success.
+
+### What each solver will and will not tell you
+
+**No solver reports an iteration count through Drake.** `SnoptSolverDetails` carries `info`,
+`solve_time` and the multipliers but no count; `NloptSolverDetails` carries a single `status`
+field. So iteration counts come from the print file, and NLopt has none at all.
+
+| | IPOPT | SNOPT | NLopt |
+| --- | --- | --- | --- |
+| print file | yes | yes | **none, and `kPrintFileName` is silently ignored** |
+| `iterations` | "Number of Iterations" | "No. of major iterations" | -- |
+| eval counts | 4 separate counts | one `User function calls (total)` | -- |
+| seconds | log | `details.solve_time` | -- |
+| status | -- | `details.info` | `details.status` |
+
+`iterations` means **majors** under both solvers that report it, because IPOPT's count is
+majors -- this column is only comparable if it means the same thing in both. SNOPT's minors
+are kept separately. snOptA has one user function, so there is no funobj/funcon split and
+IPOPT's four eval counts have no SNOPT counterpart; they stay `None` rather than being filled
+with a different quantity.
+
+**So the program counts map evaluations itself** (`IKFlowProgram.ResetEvalCounts`, counted in
+`QAndPose`, the one funnel every arm's solve passes through). `map_jacobian` is the
+AutoDiffXd count -- one `jacrev` through the network each for the learned arm. It is the only
+cost measure the NLopt column has, and it cross-validates: on the SNOPT smoke run
+`map_jacobian` equalled `User function calls (total)` **exactly** on every cell (377, 236,
+332, 272). It is *not* an iteration count -- a line search evaluates the map several times per
+accepted step -- so it measures work done, not steps taken. `collate.py` prints `--`, never
+`nan` or `0`, where a solver reports nothing: a `0` there would read as "converged instantly"
+rather than "does not tell us".
+
+**Status is decoded numerically, not from log text.** SNOPT INFO 34 is the time limit and
+Drake leaves it as a generic solver error with no distinctive exit string; NLopt has no text
+at all. Matching exit strings alone would report `timeouts: 0` for a capped run of either --
+the same trap `is_iteration_cap` was written for. NLopt status 5 is `MAXEVAL_REACHED`, an
+*evaluation* cap recorded as `hit_eval_cap`, since NLopt has no notion of an iteration to cap.
+
+### Traps, all found by probing rather than by reading
+
+**A solver option can be ACCEPTED and do nothing**, and only the solver's own parameter echo
+tells the two apart. `"Timing Level"` was set for the life of this repo and silently wrote no
+timing block, because SNOPT's parser is case-sensitive on the second word while Drake raises
+only on keywords SNOPT does not know at all. Every option this branch exposes was verified
+reaching the solver -- for IPOPT by requiring `used = yes` in the user-options block that
+`print_user_options` emits, for SNOPT by requiring the value in the parameter echo -- and that
+check earned its place three times over:
+
+- **`Hessian updates` is inert** at these problem sizes: SNOPT picks full-memory mode below 75
+  variables and the programs have 20-21, so the echo keeps reporting 99999999 however it is
+  set. `Hessian frequency` is the one that bites.
+- **`Nonderivative linesearch` is a VALUELESS keyword** -- passing 0 turns it ON exactly as 1
+  does, so it is a bool emitted only when True. It appears in the echo abbreviated as
+  `Nonderiv.  linesearch`, which is why a first probe grepping its full name wrongly called it
+  inert.
+- **`linear_solver=mumps` does not exist.** Drake's IPOPT is built against SPRAL and offers
+  only `spral` and `custom`, so there is no linear-solver axis on this problem.
+
+**Read a solver's defaults out of the solver, not out of memory.** IPOPT's
+`print_options_documentation` dump contradicted the obvious assumption: `acceptable_dual_inf_tol`
+defaults to **1e+10** and the two acceptable infeasibility tolerances to **1e-2**, so this
+repo's fielded values are looser on two of the family and *tighter* on three. A sweep arm
+labelled "IPOPT's defaults" that was not cost a resubmission to correct.
+
+**The Drake on the laptop is not the Drake on the cluster.** The workstation is a source build;
+the cluster runs the official 1.56.0 tarball, whose `NloptSolver` exposes exactly six options
+(`algorithm`, `constraint_tol`, `xtol_rel`, `xtol_abs`, `max_eval`, `max_time`) against the
+source build's eleven. Drake validates NLopt names strictly and **raises** on an unknown one,
+so code written against the newer API passes locally and fails on every cell of a cluster run.
+`tests/test_solver_plumbing.py` pins the emitted keys to 1.56.0's six; do not relax it to
+whatever the local build offers.
+
+**`max_eval` is not "unset" by default** -- Drake defaults it to 1000, a cap that binds here,
+so it must be set deliberately or the NLopt column silently measures an evaluation budget
+rather than the wall clock.
+
+### THE SOLVER AXIS AT 480 CELLS (stage SOLVER2, 2026-09-16)
+
+60 targets x 8 guesses, 45 s, seed 1, `--compile`, adopted rungs (Panda `n6`, iiwa `n4`),
+`learned,numerical`, both protocols, and **three placements** -- the adopted grasp default
+(free), the contained grasp task, and fingertip pose containment. 216 items on 4 volta nodes,
+`PROCS=8`, about two and a half hours. The IPOPT column is measured on this grid and this
+code, not quoted from an archive. NLopt runs at the 60-cell triage grid instead (below).
+
+Learned arm, successes of 480:
+
+| | native IPOPT | native SNOPT | paired IPOPT | paired SNOPT |
+| --- | --- | --- | --- | --- |
+| iiwa grasp free | **444** | 348 | **456** | 333 |
+| iiwa grasp contained | **392** | 175 | **406** | 212 |
+| iiwa pose fingertip | **470** | 442 | **422** | 210 |
+| Panda grasp free | **474** | 450 | **474** | 397 |
+| Panda grasp contained | **461** | 438 | **437** | 280 |
+| Panda pose fingertip | **461** | 438 | **405** | 251 |
+
+**IPOPT wins all 24 rows** (12 learned + 12 joint space), 23 of them significant, p from
+3.6e-08 to 4.8e-44. The single exception is Panda contained-grasp joint space, p = 0.09.
+
+**This is a CONFIRMATION, not a finding.** Thomas, 2026-09-16: *"SNOPT performing worse than
+IPOPT is not surprising. In my experience, IPOPT is more robust to ill-posed problems, and our
+neural network gradients are definitely ill-posed. I expect to see IPOPT > SNOPT >>> NLOPT."*
+Write it up as the size and mechanism of a predicted gap, never as a discovery.
+
+**It is a property of the PROBLEM, not of the learned formulation.** The joint-space arm
+degrades too, on every row and by comparable margins -- 457 to 398, 442 to 292, 453 to 404,
+323 to 298, 299 to 236, 217 to 169. That arm never evaluates the network.
+
+**The gap is much larger under `paired`.** On four of the six learned row-pairs the `native`
+gap is 23-28 cells and the `paired` gap is 77-212. The paired protocol hands every arm the
+same random configuration, infeasible by policy, so **SNOPT copes far worse with an infeasible
+start.** (The iiwa grasp rows are the exception only because SNOPT is bad there under both.)
+A 60-cell triage read this backwards in both directions before 480 cells settled it -- first
+appearing to confine the effect to `paired`, then appearing to abolish it. Neither reading
+survived. **Do not draw a protocol conclusion from 60 cells.**
+
+**And it is NOT a budget artefact**, which the exit codes settle. Pooled over all 3,952 SNOPT
+failures in the stage:
+
+| exit | share | what it means |
+| --- | --- | --- |
+| `nonlinear infeasibilities minimized` (INFO 13) | **50.7%** | SNOPT concluded the problem is locally infeasible |
+| `current point cannot be improved` (INFO 41) | **36.2%** | the line search could not find an improving step |
+| major/minor iteration limit | 9.5% | budget |
+| time limit reached | **3.6%** | budget |
+
+**About 87% are convergence failures and 11% are budget**, and SNOPT actually times out *less*
+often than IPOPT does (22 against 38, 40 against 88 on the iiwa grasp rows). The two solvers
+fail in opposite ways: IPOPT's learned-arm failures are mostly `Maximum wallclock time
+exceeded` -- still descending when the clock runs out -- where SNOPT's are INFO 41, giving up
+at a feasible-but-wrong point. **INFO 41 is the documented signature of inaccurate or badly
+scaled derivatives**, which is Thomas's ill-posedness explanation with a mechanism attached.
+Note this is distinct from the gain-ceiling runaway, which is absent here: `n4`'s solved cells
+return violations ~1e-08, so what SNOPT struggles with is ordinary ill-conditioning of an
+exact network Jacobian.
+
+**Iterations and cost.** SNOPT takes 2-4x the iterations on the cells it does solve (591
+against 205, 703 against 349, 369 against 102) and its solutions are worse on the joint-space
+arm by a wide margin -- median cost 3.627 against 1.828 on iiwa grasp free, 4.522 against
+2.394 on the Panda, 5.521 against 2.864 contained, all on cells both solved. On the learned
+arm cost is closer and occasionally favours SNOPT (Panda grasp free native 4.644 against
+5.246), i.e. where it converges it sometimes finds a better optimum; it just converges far
+less often.
+
+**Harness self-check passes.** The joint-space arm is bit-identical between the two protocols
+in all six row-pairs, as it must be, since its native start *is* a random configuration. And
+the IPOPT column reproduces the archive: `sc_SOLVER2_iiwa_n4_ipopt_mugfree_480_45_paired`
+scores 456/480 learned and 457/480 joint space against the archived `sc_GRASPFREE` column's
+457 and 457, on the same `grid_hash`, with joint space exact and learned inside the +/-1 cell
+that cap-bound cells are reproducible to. **So the eleven new option fields and the rewritten
+three-way dispatch left the IPOPT path where it was.**
+
+### NLopt: the augmented Lagrangian is not competitive on this problem
+
+Fielded at 60 cells (stage SOLVER's grid, so it pairs against the IPOPT and SNOPT triage
+columns cell for cell) rather than 480, because a column that may be empty does not need
+campaign scale to be honest. It was the right call.
+
+| row | IPOPT | SNOPT | NLopt | NLopt timeouts | flow Jacobians/cell | median violation |
+| --- | --- | --- | --- | --- | --- | --- |
+| iiwa grasp free, paired | 59/60 | 40/60 | **1/60** | 60 | 5836 | 8.1e-02 |
+| iiwa grasp contained, paired | -- | -- | **0/60** | 60 | 6100 | 9.7e-02 |
+| Panda grasp free, paired | 59/60 | 51/60 | **1/60** | 60 | 4888 | 4.5e-02 |
+| Panda pose fingertip, native | 58/60 | 56/60 | 38/60 | 23 | 1921 | 9.4e-07 |
+| iiwa pose fingertip, native | 60/60 | 57/60 | 39/60 | 30 | 3612 | 2.0e-06 |
+
+It solves essentially nothing outside the easiest row, burns **1,900-8,400 network Jacobians
+per cell** against IPOPT's 40-200 iterations, and still lands 1e-2 to 4e-1 from feasible. The
+one place it works is the pose task under `native`, where it reaches 1e-06 -- so it is not
+broken, it is simply far too slow to satisfy tight equality rows through an ill-conditioned
+chart inside any budget this campaign uses. **`max_time` also binds much more tightly than
+SNOPT's `Time limit`** (20.0-20.1 s against 24-28 s in a local probe), because SNOPT only
+checks at major-iteration boundaries; wall-clock columns are not capped equally across
+solvers.
+
+### STAGE SWEEP: solver settings, and what IPOPT's early stop is actually worth (2026-09-16)
+
+43 settings (20 SNOPT, 23 IPOPT), one factor at a time against each solver's own default, on
+stage SOLVER's 60-cell grid, `paired` only, pooled over four rows (2 robots x the two adopted
+tasks) = **240 cells**. Directional by design, as `stage_INSET` argued; 184 items.
+**Step rejection is deliberately absent** -- `ipopt_theta_max_fact`, `ipopt_watchdog_trigger`,
+`ipopt_max_soc`, `snopt_violation_limit`, `snopt_major_step_limit` are a separate question
+(Thomas, 2026-09-16), and `stage_SWEEP` **raises** if an entry names one.
+
+**SNOPT: no setting rescues it, and its defaults are already about right.** Against its own
+141/240: the best are the gradient-free line search at 153 (+12, p = 0.20), then `lstol0p99`,
+`majopt1em08` and `hessfreq20` at 152 (p = 0.16-0.20). **Not one of the twenty reaches
+significance**, and the extremes hurt (`scale2` 125, `elastic1e7` 130). That is consistent with
+the failure modes -- a solver losing on INFO 13/41 is not losing for want of tuning.
+
+**IPOPT: the tolerances I plumbed for this are INERT, and the acceptable-point machinery is
+everything.** `convsnopt` (IPOPT held to SNOPT's convergence numbers) scores 212 against the
+fielded 211, and every single-factor convergence row is within noise -- because IPOPT already
+converges far tighter than either default, so the 1e-4-against-1e-6 asymmetry recorded above
+was real on paper and worth **zero cells**. The `acceptable_*` family is a different story:
+
+| IPOPT arm | solved/240 | vs SNOPT (b/w) | p | med violation | med iters | timeouts |
+| --- | --- | --- | --- | --- | --- | --- |
+| `accviolloose` (IPOPT's loose infeasibility triple) | **213** | 81/9 | 1.3e-15 | 1.26e-06 | **66** | **0** |
+| `convsnopt` | 212 | 82/11 | 1.4e-14 | 1.33e-08 | 147 | 3 |
+| **as fielded** | 211 | 82/12 | 5.6e-14 | 1.29e-08 | 147 | 3 |
+| `acciter5` | 202 | 81/20 | 6.9e-10 | 3.85e-09 | 430 | 39 |
+| **`ipoptdefault`** (IPOPT's true defaults) | **200** | 81/22 | **4.1e-09** | 1.09e-07 | 840 | 157 |
+| `acciter15` | 178 | 75/38 | 6.4e-04 | 8.73e-09 | 607 | 121 |
+| `acctight` (whole family at 1e-6) | 121 | 58/78 | 0.10 | 6.21e-12 | 587 | 156 |
+| `accoff` | 62 | 34/113 | 4.2e-11 (SNOPT) | 2.22e-15 | 319 | 158 |
+| `fair` (off + conv=SNOPT's) | 34 | 22/129 | 1.3e-19 (SNOPT) | 1.45e-13 | 232 | 111 |
+| *SNOPT at its own defaults* | *141* | -- | -- | *2.03e-08* | *410* | *16* |
+
+**THE ANSWER TO THE FAIRNESS QUESTION: the ordering survives it.** At each solver's own
+defaults -- which is what rung 2 of the tolerance ladder asks for -- **IPOPT 200, SNOPT 141,
+p = 4.1e-09**, and on the 119 cells both solve IPOPT's solutions also cost *less* (5.574
+against 6.841). So IPOPT's advantage is not an artefact of the early stop it was handed.
+
+**But the early stop is worth 39 cells and a 9x speedup, and that has to be stated.** Fielded,
+IPOPT solves 211 at 147 median iterations and 5.2 s; at its own defaults it solves 200 at
+**840** median iterations and **45.0 s** -- the entire cap -- with timeouts going 3 -> 157.
+
+**And it is NOT returning sloppy points**, which was the worry. Fielded-arm successes sit at
+`max_violation` 1.29e-08, five orders inside the 1e-3 gate and the same quality as SNOPT's
+2.03e-08. Turning the early stop off drives the violation to 2.22e-15 and the success count to
+**62**: IPOPT without it keeps polishing a solution it already has until the clock kills it.
+So `acceptable_iter = 1` does not let IPOPT scrape past the gate -- it lets IPOPT **recognise
+it is already done and stop**, which under a wall-clock cap is a real capability. SNOPT has no
+counterpart and would not benefit from one anyway: only 3.6% of its failures are time limits.
+
+**The trade is quality against throughput, and `accviolloose` is the extreme.** It is the best
+arm on success (213), the fastest by far (66 iterations, 1.9 s, zero timeouts), and the
+**worst on cost** of the live arms (7.468 against the fielded 6.540 on cells both solve), at a
+violation of 1.26e-06 -- still three orders inside the gate. Stopping earlier buys cells and
+costs optimality. **Nothing here is adopted**: the fielded configuration sits at a reasonable
+point on that curve, the alternatives move success by at most +2 cells of 240, and changing it
+would break comparability with every archived run for no measured gain.
+
+**Read the `med cost` column of the first table with care** -- it is a median over each arm's
+own successes, and with success counts from 34 to 213 those are different cell sets. The
+cells-both-solved numbers quoted above are the honest form, and they are what the campaign's
+cost rule requires.
+
+### THE GRASP-CONTAINMENT LEVER IS CLOSED: a solver change does not flip it
+
+CLAUDE.md has carried a standing reminder that grasp containment is "the lever to revisit
+whenever another knob moves the picture, a solver change most of all" -- because on the
+contained task joint space needs 970 median iterations against 48 on the free one, so a solver
+that changes how the baseline copes with a hard active set could plausibly change the verdict.
+Stage SOLVER2 fielded those rows under both solvers. **It does not.**
+
+Learned against joint space, within each solver, 480 cells:
+
+| row | IPOPT | SNOPT |
+| --- | --- | --- |
+| iiwa contained, native | JS 442-392, p = 1.6e-06 | JS 292-175, p = 1.4e-14 |
+| iiwa contained, paired | JS 442-406, p = 3.1e-04 | JS 292-212, p = 1.6e-07 |
+| Panda contained, native | **L 461-323, p = 1.2e-32** | **L 438-298, p = 3.5e-27** |
+| Panda contained, paired | **L 437-323, p = 2.3e-20** | JS 298-280, p = 0.26 (tie) |
+
+**SNOPT never flips a verdict toward the learned arm and flips one away from it** -- Panda
+contained paired goes from a decisive learned win under IPOPT to a tie. Same on the free task:
+Panda grasp free paired is a learned win under IPOPT (474-453) and a tie under SNOPT
+(397-404). So the containment verdicts stand exactly as measured under IPOPT, and **the lever
+is closed for the solver axis**. Any future attempt to move it has to come from somewhere else
+-- step rejection is the remaining candidate.
+
+### Future work on this axis
+
+- **NLopt settings are unswept**, by decision (Thomas, 2026-09-16: *"Store testing NLOPT
+  settings as future work"*) -- `LD_AUGLAG` vs `LD_AUGLAG_EQ`, `constraint_tol`, `xtol_*`,
+  `max_eval`. Stage SOLVER2 says the column is not competitive at Drake's defaults by a very
+  wide margin, so a sweep is unlikely to change the ordering; it would only say *why*. The
+  AL's inner local optimizer is not selectable on the cluster's Drake at all -- leaving it
+  unset is a supported state (NLopt then supplies LD_LBFGS, the right shape for a
+  bound-constrained inner problem) -- **TODO** when that Drake carries the local-optimizer PRs.
+- **The step-rejection family is untouched and is the next question.**
+  `snopt_major_step_limit` and `snopt_violation_limit` are plumbed and unset, as are IPOPT's
+  three. `Major step limit` bounds `||dx|| <= limit*(1+||x||)` per major iteration -- the trust
+  region the runaway wants, since it is *one accepted catastrophic step* out of a well-behaved
+  trajectory -- and `Violation limit` is the counterpart of `ipopt_theta_max_fact`, which
+  gained 3 cells and lost none on a 16-cell probe.
+- **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the
+  robust logging we need btw, work with what you have, don't write new logging stuff in Drake
+  or anything."* Instrument on our side and report honestly what a solver does not expose.
+
+**One latent bug this surfaced:** `scripts/iiwa/iiwa_benchmark.py`'s default tag omitted
+`args.solver` where the Panda's has always included it, so an iiwa SNOPT run and an iiwa IPOPT
+run with otherwise identical flags resolved to the same `summary.json` and overwrote each
+other -- the same trap `--shard` and `--checkpoint` were each fixed for. Fixed; archived iiwa
+runs were all tagged explicitly from manifests, so no archived path moved.
+
 ## Results: the corrected campaign
 
 Everything below was measured on a program whose pose rows are a true equality, with the
@@ -1136,27 +1468,24 @@ different target set, `grid_hash` differs, and `collate.py` refuses the pairing.
 HARD columns with each other; the archived columns are quoted below only as "what the same
 arm scored on the soft problem", never as a paired test.
 
+**Only the GRASP rows are kept here. This stage's pose columns are superseded** by stage
+POSE2, which re-measured them on the corrected program after the conditioning-frame bug --
+see that section; the originals are in the git history, and the iiwa `posefree` pair is
+quoted inline under "WHAT THE CALIBRATION FIX WAS WORTH" below.
+
 | panda | upstream | n12 | n8 | **n6** | n4 | n12w256 | **js** |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | grasp native | 432 | 407 | 455 | **462** | 468 | 437 | 323 |
 | grasp paired | 347 | 347 | 429 | **444** | 450 | 380 | 323 |
-| pose contained, native | 436 | 434 | 439 | **429** | 437 | 417 | 167 |
-| pose contained, paired | 271 | 275 | 387 | **392** | 352 | 272 | 167 |
-| pose free, native | 466 | 460 | 460 | **460** | 461 | 449 | 220 |
-| pose free, paired | 341 | 330 | 422 | **438** | 400 | 347 | 220 |
 
 | iiwa | ddpr1 | n8 | n6 | **n4** | n12w256 | **js** |
 | --- | --- | --- | --- | --- | --- | --- |
 | grasp native | 266 | 316 | 300 | **391** | 297 | 442 |
 | grasp paired | 320 | 338 | 368 | **407** | 334 | 442 |
-| pose contained, native | 432 | 441 | 436 | **438** | 417 | 268 |
-| pose contained, paired | 287 | 214 | 206 | **411** | 338 | 268 |
-| pose free, native | 426 | 428 | 439 | **468** | 425 | 332 |
-| pose free, paired | 306 | 208 | 211 | **452** | 332 | 332 |
 
 The harness checks itself and passes: joint space is identical across every rung of a robot
-within each experiment (323 / 167 / 220 panda, 442 / 268 / 332 iiwa), and
-`median_start_q_error` is 0.0 exactly under `paired`.
+within each experiment (323 panda, 442 iiwa), and `median_start_q_error` is 0.0 exactly
+under `paired`.
 
 ### THE HEADLINE: hardening flipped the Panda grasp task, and only the Panda's
 
@@ -1323,11 +1652,9 @@ charts lost) or the contained one (where the iiwa lost at p = 0.0004). The iiwa 
 deficit.
 
 Note the baseline is back near saturation on this configuration (453 / 457), which is the
-ceiling the hardening was meant to remove -- so **grasp containment remains the lever to
-revisit**, and it is kept available behind `--target-placement shelf`. It should be re-tried
-whenever another knob moves the picture, a solver change most of all: on the contained task
-joint space needs 970 median iterations against its 48 here, so a solver that changes how the
-baseline copes with a hard active set could change that verdict.
+ceiling the hardening was meant to remove, so grasp containment is kept available behind
+`--target-placement shelf`. **The solver axis has since tested it and it does not move** --
+see "THE GRASP-CONTAINMENT LEVER IS CLOSED" above.
 
 ### WHY THE GRASP TASK LOOKS LIKE "ONLY A TIE", AND WHAT IS ACTUALLY THERE
 
@@ -1414,8 +1741,9 @@ ms/it.
 **These are cap-bound near-misses, not divergence.** The runaway signature is
 `max_violation` >= 1e+03; this is 1e-02. So the remaining iiwa grasp deficit is the learned
 arm converging too slowly on a subset of cells, which is a different problem from the
-gain-ceiling runaway and is plausibly reachable by the deferred solver work -- step
-rejection, or SNOPT/NLOPT -- rather than by another chart.
+gain-ceiling runaway and is not reachable by another chart. **The SNOPT/NLopt half of that
+hope is now refuted** -- both are worse here (see the solver axis) -- so step rejection is
+what is left.
 
 ### WHAT THE CALIBRATION FIX WAS WORTH ON THE IIWA, ISOLATED
 
@@ -1530,21 +1858,14 @@ The lesson generalises past this bug: **a calibration that is skipped is indisti
 from a calibration that is correct, until the geometry it was silently relying on changes.**
 The pose path had no test asserting `X_ee_flow` was ever measured.
 
-### The pose-placement verdict: containment costs the baseline roughly twice what it costs the learned arm
+### The pose-placement verdict was measured pre-calibration and is SUPERSEDED
 
-| | js free | js contained | learned free | learned contained |
-| --- | --- | --- | --- | --- |
-| panda (`n6` paired) | 220 | **167** (-53) | 438 | **392** (-46) |
-| iiwa (`n4` paired) | 332 | **268** (-64) | 452 | **411** (-41) |
-| iiwa (`n4` native) | 332 | **268** (-64) | 468 | **438** (-30) |
-
-Containment is a real difficulty increase for both arms, and it is **not** symmetric: it
-costs joint space 53-64 cells against the learned arm's 30-46. So it hardens the pose task
-without narrowing the claim — the learned margin widens. **Recommend adopting `posein` as
-the pose default**, with `posefree` retained as the ablation that shows what containment
-did. Note the caveat recorded above: the pose containment point is the frame the target
-*is* — `iiwa_link_7` / `panda_hand`, the **wrist, not the fingertips** — so it is a
-different and differently-hard condition on each robot.
+The table that stood here had containment costing joint space 53-64 cells against the learned
+arm's 30-46, and recommended adopting `posein` on that basis. It was measured on a program
+whose pose path never calibrated its conditioning frame, and **stage POSE2 reverses it** -- on
+the corrected program containment costs the learned arm 2-3.5x what it costs joint space on
+the Panda and is a wash on the iiwa. See "THE CONTAINMENT VERDICT REVERSES" above; the
+original numbers are in the git history.
 
 ### Iterations, cost and wall clock
 
@@ -1757,12 +2078,9 @@ formulation."*
    to Wednesday morning, nothing survives it. The window closed 2026-09-08; the next is
    2026-10-12 to 10-14.
 
-2. **SNOPT and NLOPT.** All ~395 archived runs are IPOPT; both scripts already accept `--solver`
-   and Drake supplies all three on both machines. The point is to *report* every solver, not to
-   pick one. **Known blocker, found by a smoke test and not fixed:** SNOPT runs, but `parse_log`
-   matches only IPOPT's log format, so `iterations`, the evaluation counts, `solver_seconds` and
-   `exit` all come back `None`. Iterations is the hardware-independent number, so the parser needs
-   per-solver formats before a solver comparison means anything.
+2. **SNOPT and NLOPT. DONE as infrastructure** -- the blocker is fixed and all three solve the
+   real program. See "The solver axis" below. What remains is to *run* it: the first measurement
+   is stage SOLVER, a 60-cell triage on the adopted rungs.
 
 3. **Performance tuning and formulation tweaks.** Note this is Thomas naming formulation work as a
    work item, not a standing licence — what is compared remains his call, made explicitly in

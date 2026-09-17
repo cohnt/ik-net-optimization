@@ -83,7 +83,14 @@ def parse_args():
     p.add_argument("--targets", type=int, default=20)
     p.add_argument("--guesses", type=int, default=3)
     p.add_argument("--wall-time", type=float, default=20.0)
-    p.add_argument("--solver", choices=["ipopt", "snopt"], default="ipopt")
+    p.add_argument("--solver", choices=["ipopt", "snopt", "nlopt"], default="ipopt",
+                   help="the solver axis is three METHOD CLASSES, not three vendors: "
+                        "ipopt is interior point, snopt is SQP, nlopt is an augmented "
+                        "Lagrangian (LD_AUGLAG). Each converges at its own defaults -- "
+                        "transplanting one solver's tolerances onto another makes the "
+                        "axis a handicap rather than a comparison. Note nlopt reports no "
+                        "iteration count at all, so its runs are read by the map-evaluation "
+                        "counters instead; see src/generic_program.py ResetEvalCounts.")
     p.add_argument("--start", choices=["paired", "native"], default="paired",
                    help="paired: every arm starts at the same q_init, in its own variables "
                         "(SetStartFromQ). native: every arm uses its own initialisation -- "
