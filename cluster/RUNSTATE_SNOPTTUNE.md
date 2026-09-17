@@ -55,7 +55,12 @@ bash -c "source cluster/ssh_common.sh; sc_run 'echo done \$(ls $D/*.done 2>/dev/
 pgrep -x systemd-inhibit || setsid systemd-inhibit --what=sleep:idle --mode=block \
   --who=learned-ik --why="SNOPTTUNE" sleep 57600 </dev/null >/dev/null 2>&1 &
 
-# 3. Collect (incremental by default; never ships state/)
+# 3. Collect. NOTE results land in results/_cluster_staging/<timestamp>/ and must be
+#    PROMOTED into results/<robot>/benchmark/ -- a glob over the promoted location while a
+#    run is in flight matches NOTHING, so any check written against it passes vacuously.
+#    Read staged output at results/_cluster_staging/*/results/*/benchmark/<tag>/summary.json
+#    and promote only complete, merged tags (per-shard dirs are *_shardKofN -- do not promote
+#    those, they inflate every later glob).
 bash cluster/collect_results.sh
 
 # 4. Read it. report_step.py takes its baseline BY NAME -- `crash0` sorts before `default`.
@@ -74,3 +79,9 @@ Known failure modes: an item that dies leaves a `.claim` with no `.done` —
 - `median_start_q_error` is 0.0 exactly under `paired`.
 - Compare **within this run**, never against the archive: the fresh baseline is what absorbs any
   difference in code version or node contention.
+
+**The baseline check PASSED, 2026-09-17 13:25**, on the first four columns to land — iiwa grasp
+free native 349/398 against the archived 348/398, grasp free paired 335/398 against 333/398, grasp
+contained paired 214/292 against 212/292, pose fingertip native 442/236 against 442/236 exactly.
+Zero `fail_reason = "error"` anywhere and wall clock 12-21 s on grasp, ~3 s on pose. So no SNOPT
+option was rejected, no arm is dead, and this branch did not perturb the SNOPT path.
