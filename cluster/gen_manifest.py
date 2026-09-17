@@ -1006,6 +1006,192 @@ def stage_SWEEP(wall, targets, guesses, shards, only=None, tag="SWEEP", seed=1,
     return items
 
 
+## ======================= Step rejection: the last lever on the solver axis ==============
+##
+## `stage_SWEEP` deliberately EXCLUDES this family and raises if one of its knobs appears
+## there; this stage owns them, and reuses the same tuple as a WHITELIST so the two
+## questions cannot silently merge from either side.
+##
+## Step rejection is not the same lever as the gradient damping that was refuted. Damping
+## altered the DERIVATIVES IPOPT was handed and broke the correspondence between the values
+## it evaluates and the gradients it uses (310 cells better against 1,509 worse, line
+## closed). Filter tuning leaves the program exactly as written and changes only which trial
+## points are ACCEPTED. And per Thomas it is worth measuring whether or not anything runs
+## away: "step rejection (and trust region ideas) can still help even if we're not running
+## away. There's a reason people like trust region solvers."
+##
+## WHAT THE OUTCOME VARIABLE IS, since the historical one is gone. The 16-cell lead was
+## measured on `ddp-r1` when the runaway was live. On the adopted rungs there are ZERO
+## runaway cells, so runaway count measures nothing. The two live targets, from the 480-cell
+## paired columns: the iiwa grasp rows fail ~100% at the wall clock (budget bound -- step
+## control helps only by making iterations more productive), and the Panda pose row does NOT
+## (75 failures, 5 at the clock, median violation 2.3e-01 -- stalling with budget left).
+## Those are different mechanisms and are reported separately.
+
+## The IPOPT table. The band is narrow BY MEASUREMENT, not by taste -- the old probe's raw
+## results are still on disk under results/iiwa/benchmark/:
+##
+##   full_base       11/16   mean iters 115.818181...   median cost 7.611527805
+##   full_theta1     14/16   +3 / -0 per cell           cost 6.754
+##   full_theta10    11/16   0 / 0 -- BIT-IDENTICAL to full_base, to fourteen digits
+##   x_pose_theta0p1 10/16   +1 / -2                    net negative
+##
+## So theta_max_fact >= 10 is a PROVEN NULL and must not be re-added. The mechanism for the
+## low end is readable in IPOPT's source: IpFilterLSAcceptor.cpp:328 sets
+## theta_max = theta_max_fact * max(1, reference_theta) ONCE, from the first iterate's
+## violation (:259). Iterate-0 inf_pr on the adopted n4 rung is 1.15-2.91, i.e. O(1), so a
+## factor below 1 puts the ceiling UNDER the start's own violation and every trial point is
+## refused until IPOPT drops into feasibility restoration -- on the probe's lost cell, 100 of
+## 176 iterations in restoration against 2 of 36 at the default. The legality floor is
+## theta_min_fact (1e-4, asserted < theta_max_fact at :214); the USEFUL floor is 1.0. One
+## sub-1 arm is kept as the mechanism exhibit, on the adopted rungs so the claim is measured
+## here rather than inherited from ddp-r1.
+##
+## max_soc and watchdog_shortened_iter_trigger are CONDITIONALLY meaningful, which is why
+## they appear crossed. Both echo `used = yes` and both measured equal to the default at the
+## default 1e4 ceiling -- as they must: at that ceiling the filter essentially never rejects
+## on violation, so the machinery that rescues violation-rejected steps has nothing to act
+## on. `soc0` stays as the one unconditional control, where it also tests a throughput angle
+## (each second-order correction costs a constraint evaluation, which here is a flow
+## Jacobian).
+STEP_IPOPT = [
+    ("default", []),
+    ## The live axis, [1, 10). theta1 is the only value with a positive measurement.
+    ("theta1", ["ipopt_theta_max_fact=1.0"]),
+    ("theta2", ["ipopt_theta_max_fact=2.0"]),
+    ("theta3", ["ipopt_theta_max_fact=3.0"]),
+    ("theta5", ["ipopt_theta_max_fact=5.0"]),
+    ## Below 1: predicted to force restoration from iteration 1. The exhibit, not a candidate.
+    ("theta0p3", ["ipopt_theta_max_fact=0.3"]),
+    ## The two rescue mechanisms, crossed with a ceiling tight enough to give them something
+    ## to rescue. Bare soc8/wdoff were measured equal to the default and are not repeated.
+    ("theta1soc8", ["ipopt_theta_max_fact=1.0", "ipopt_max_soc=8"]),
+    ("theta1wdoff", ["ipopt_theta_max_fact=1.0", "ipopt_watchdog_trigger=0"]),
+    ## The one unconditional arm: no second-order corrections at all, which also makes every
+    ## rejected iteration cheaper on a problem where a constraint evaluation is a flow pass.
+    ("soc0", ["ipopt_max_soc=0"]),
+]
+
+## SNOPT's counterparts. Secondary by decision -- the axis is settled, IPOPT > SNOPT >>>
+## NLopt at 480 cells on both arms -- but one hypothesis here is real rather than a fishing
+## expedition. SNOPT's failures under `paired` are 36.2% INFO 41 `current point cannot be
+## improved`, which IS a line search that cannot find an acceptable step, so a SMALLER
+## `Major step limit` may let it succeed; mstep10 is the control in the other direction.
+##
+## `Violation limit` is swept in BOTH directions on purpose. SNOPT's dominant failure is INFO
+## 13 `nonlinear infeasibilities minimized` at 50.7%, i.e. it gives up on feasibility.
+## Tightening the violation limit pushes it into elastic mode earlier and plausibly makes
+## INFO 13 MORE likely, so loosening is the untested direction that could actually help.
+STEP_SNOPT = [
+    ("default", []),
+    ("mstep0p1", ["snopt_major_step_limit=0.1"]),
+    ("mstep0p5", ["snopt_major_step_limit=0.5"]),
+    ("mstep10", ["snopt_major_step_limit=10.0"]),
+    ("viol1", ["snopt_violation_limit=1.0"]),
+    ("viol100", ["snopt_violation_limit=100.0"]),
+    ("sstrict", ["snopt_major_step_limit=0.5", "snopt_violation_limit=1.0"]),
+]
+
+STEP_SETTINGS = {"ipopt": STEP_IPOPT, "snopt": STEP_SNOPT}
+
+## All three placements, unlike stage SWEEP's two. `mugshelf` is where the last deficit in
+## the project lives, and it is the row with the sharp bar: of its 74 paired failures at
+## 45 s, the 180 s CAP column solves exactly 47 and the 360 s column adds nothing, so +47 ->
+## 453/480 is the budget-recoverable ceiling and those 47 cells are individually named.
+##
+## The two `mugfree` rows are at 58/60 and 59/60, so they can only register HARM, not gain --
+## kept deliberately (Thomas, 2026-09-16), because a step-rejection knob is a global solver
+## setting and must be shown not to regress the adopted default grasp row. Selection is read
+## off `mugshelf` + `posetip` only; say so when reporting rather than pooling all six rows
+## into one selection number.
+STEP_ROWS = SOLVER2_ROWS
+
+
+def stage_STEP(wall, targets, guesses, shards, only=None, tag="STEP", seed=1,
+               solvers="ipopt,snopt", settings=None, starts="paired"):
+    """Step rejection and step-size limits, one factor at a time, against each solver's own
+    defaults.
+
+    Runs at TWO scales, which is why the cell count is in the tag exactly as `stage_SOLVER2`
+    does it: a 60-cell screen on stage SOLVER's own grid (so the mugfree and posetip columns
+    pair against the defaults already on disk), then a 480-cell confirmation of whatever
+    survives. Those grids are DIFFERENT OBJECTS -- 15x4 hashes 0a6d3cba534e-mug, 60x8 free
+    hashes fdca0bad64bc-mug and 60x8 shelf hashes fa692df81e7d-mug -- so the screen cannot
+    address the 47-cell question and the confirmation must report fa692df81e7d-mug or that
+    question is unanswerable.
+
+    `settings` filters the tables by token, which is how the confirmation fields only the
+    survivors without a code edit. `starts` is `paired` for the screen (the diagnostic
+    protocol, which hands every arm the same infeasible start) and `paired,native` for the
+    confirmation. Do NOT read a protocol conclusion off the 60-cell screen -- that has
+    misled twice in this repo, and `theta_max_fact` makes it sharper than usual, because
+    under `native` the start is near-feasible so `max(1, theta_0)` is 1 and the ceiling
+    becomes theta_max_fact in ABSOLUTE units. A different regime, not a weaker version.
+
+    Nothing here is adopted whatever the result (Thomas's call on this plan): a knob that
+    wins is reported, not fielded, because changing a default breaks comparability with every
+    archived run.
+    """
+    wanted = set(only.split(",")) if only else None
+    chosen = [x.strip() for x in solvers.split(",") if x.strip()]
+    for name in chosen:
+        if name not in STEP_SETTINGS:
+            raise SystemExit(f"--solvers: {name!r} has no step-rejection settings table; "
+                             f"expected from {sorted(STEP_SETTINGS)}")
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    for s in want_starts:
+        if s not in ("paired", "native"):
+            raise SystemExit(f"--starts: unknown protocol {s!r}; expected paired or native")
+    keep = set(settings.split(",")) if settings else None
+    ## The WHITELIST, and it is asserted over the TABLES rather than over the emitted args:
+    ## every row carries `--set correction_cost_weight=...` from `base`, so an args-level
+    ## check would fire on that and the stage could never generate at all. `stage_SWEEP` uses
+    ## the same tuple as a blacklist, so between them the two questions are provably disjoint.
+    for solver in chosen:
+        for name, sets in STEP_SETTINGS[solver]:
+            for knob in sets:
+                if knob.split("=")[0] not in STEP_REJECTION_KNOBS:
+                    raise SystemExit(
+                        f"stage_STEP entry {name!r} names {knob.split('=')[0]!r}, which is "
+                        "not a step-rejection knob -- this stage owns that family and "
+                        "nothing else, or the sweep and the step question merge")
+    if keep is not None:
+        known = {n for s in chosen for n, _ in STEP_SETTINGS[s]}
+        unknown = keep - known
+        if unknown:
+            raise SystemExit(f"--settings: no such token(s) {sorted(unknown)}; "
+                             f"expected from {sorted(known)}")
+        if "default" not in keep:
+            ## Without the untouched baseline on the same grid and the same code there is
+            ## nothing to read the surviving settings against.
+            raise SystemExit("--settings must include 'default': a confirmation without its "
+                             "own baseline column pairs against an archived one, i.e. across "
+                             "code versions")
+    items = []
+    for robot, label, ckpt in ADOPTED_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                 "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET)]
+                + (["--checkpoint", ckpt] if ckpt else []))
+        for solver in chosen:
+            for name, sets in STEP_SETTINGS[solver]:
+                if keep is not None and name not in keep:
+                    continue
+                for task, token, placement in STEP_ROWS:
+                    for start in want_starts:
+                        args = (["--task", task, "--start", start, "--solver", solver]
+                                + placement + base)
+                        for knob in sets:
+                            args += ["--set", knob]
+                        items += item(robot,
+                                      f"sc_{tag}_{robot}_{label}_{solver}_{token}"
+                                      f"_{targets * guesses}_{int(wall)}_{start}_{name}",
+                                      args, targets, guesses, LADDER_ARMS, wall, shards,
+                                      seed=seed)
+    return items
+
+
 def stage_INSET(wall, targets, guesses, shards, only=None, tag="INSET", seed=1):
     """Sweep the compartment depth inset, on both tasks, at reduced scale.
 
@@ -1286,6 +1472,10 @@ def selftest():
                          ("SOLVER2", stage_SOLVER2(45, 60, 8, 8)),
                          ("SWEEP", stage_SWEEP(45, 15, 4, 1,
                                                solvers="ipopt,snopt")),
+                         ("STEP", stage_STEP(45, 15, 4, 1, solvers="ipopt,snopt")),
+                         ("STEP480", stage_STEP(45, 60, 8, 8, solvers="ipopt",
+                                                settings="default,theta1",
+                                                starts="paired,native", tag="STEP480")),
                          ("FINGER", stage_FINGER(45, 60, 8, 8)),
                          ("GRASPFREE", stage_GRASPFREE(45, 60, 8, 8)),
                          ("INSET", stage_INSET(45, 15, 4, 1)),
@@ -1503,6 +1693,120 @@ def selftest():
               "no step-rejection knob" % want_runs)
     fails += len(sw_fails)
 
+    ## Stage STEP. The load-bearing invariants, in rough order of how expensive getting them
+    ## wrong is: the seed (a forgotten keyword silently puts every run on the in-sample
+    ## seed-0 grid, comparable to nothing, and NO other stage's block checks this); the
+    ## whitelist, which is the other half of stage SWEEP's blacklist and keeps the two
+    ## questions disjoint from both sides; and `default` sorting FIRST, because
+    ## `collate.py --pair` takes its reference from the first path in argument order, so a
+    ## table whose alphabetically-first token is not `default` silently pairs every setting
+    ## against the wrong column. stage SWEEP's own tables fail that (`accoff` and `crash0`
+    ## both sort before `default`), which is why this is asserted here rather than assumed.
+    st_fails = []
+    runs4 = stage_STEP(45, 15, 4, 1, solvers="ipopt,snopt")
+    want4 = 2 * 3 * (len(STEP_IPOPT) + len(STEP_SNOPT))
+    if len(runs4) != want4:
+        st_fails.append("should be %d runs (2 robots x 3 placements x %d settings), got %d"
+                        % (want4, len(STEP_IPOPT) + len(STEP_SNOPT), len(runs4)))
+    for table, solver in ((STEP_IPOPT, "ipopt"), (STEP_SNOPT, "snopt")):
+        names = [n for n, _ in table]
+        if len(names) != len(set(names)):
+            st_fails.append("%s settings table has duplicate names" % solver)
+        if names[0] != "default" or table[0][1]:
+            st_fails.append("%s's first entry must be the untouched default baseline" % solver)
+        ## Not the same check: this one is about --pair's reference selection, not about
+        ## the table having a baseline at all.
+        if sorted(names)[0] != "default":
+            st_fails.append("%s's tokens do not sort `default` first (%r does) -- "
+                            "collate.py --pair would reference the wrong column"
+                            % (solver, sorted(names)[0]))
+        for name, sets in table:
+            for knob in sets:
+                if knob.split("=")[0] not in STEP_REJECTION_KNOBS:
+                    st_fails.append("%s entry %s sets %s, which this stage does not own"
+                                    % (solver, name, knob))
+    ## theta_max_fact >= 10 is BIT-IDENTICAL to the default (full_theta10 against full_base,
+    ## fourteen digits of agreement, 0 better / 0 worse per cell). Re-adding one would spend a
+    ## column to re-measure a null, so the table is pinned against it.
+    for name, sets in STEP_IPOPT:
+        for knob in sets:
+            k, _, v = knob.partition("=")
+            if k == "ipopt_theta_max_fact" and float(v) >= 10.0:
+                st_fails.append("entry %s sets theta_max_fact=%s; >= 10 is measured "
+                                "bit-identical to the default" % (name, v))
+    seen_placements, seen_starts = set(), set()
+    for it in runs4:
+        a = it["args"]
+        if "--seed" not in a or a[a.index("--seed") + 1] != "1":
+            st_fails.append("%s is not on seed 1" % it["id"])
+        if a[a.index("--start") + 1] != "paired":
+            st_fails.append("%s is not on the paired protocol" % it["id"])
+        seen_starts.add(a[a.index("--start") + 1])
+        if "--scene" not in a or a[a.index("--scene") + 1] != "hardened":
+            st_fails.append("%s is not on the hardened scene" % it["id"])
+        task = a[a.index("--task") + 1]
+        seen_placements.add((it["robot"], task, a[a.index("--target-placement") + 1]))
+        if task == "mug" and "--placement-point" in a:
+            st_fails.append("%s passes --placement-point on the grasp task, where the mug is "
+                            "welded at between_fingers and it is a no-op" % it["id"])
+        if task == "pose" and a[a.index("--placement-point") + 1] != "fingertips":
+            st_fails.append("%s: pose should use the adopted fingertip containment" % it["id"])
+        solver = a[a.index("--solver") + 1]
+        if solver not in it["id"]:
+            st_fails.append("%s does not carry its solver in the tag" % it["id"])
+        ## Two scales live in this stage, so the cell count must be in the tag or the 60- and
+        ## 480-cell columns of one setting collide on one summary.json.
+        if "_60_" not in it["id"]:
+            st_fails.append("%s does not carry its cell count in the tag" % it["id"])
+    for robot in ("panda", "iiwa"):
+        want = {(robot, "mug", "free"), (robot, "mug", "shelf"), (robot, "pose", "shelf")}
+        if not want <= seen_placements:
+            st_fails.append("%s is missing placements %r"
+                            % (robot, sorted(want - seen_placements)))
+    ## The 480-cell confirmation form: a settings filter, both protocols, cell count moves.
+    conf = stage_STEP(45, 60, 8, 8, solvers="ipopt", settings="default,theta1",
+                      starts="paired,native")
+    if len(conf) != 2 * 3 * 2 * 2 * 8:
+        st_fails.append("confirmation form should be 2 robots x 3 placements x 2 settings x "
+                        "2 starts x 8 shards = 192 items, got %d" % len(conf))
+    if not all("_480_" in it["id"] for it in conf):
+        st_fails.append("the confirmation form does not carry 480 in its tags")
+    if {it["args"][it["args"].index("--start") + 1] for it in conf} != {"paired", "native"}:
+        st_fails.append("the confirmation form does not field both protocols")
+    ## Every guard must FIRE, not merely be present.
+    for bad, why in ((dict(solvers="nlopt"), "a solver with no step-rejection table"),
+                     (dict(starts="warmstart"), "an unknown start protocol"),
+                     (dict(settings="default,nosuchtoken"), "an unknown setting token"),
+                     (dict(settings="theta1"), "a settings filter with no default baseline")):
+        try:
+            stage_STEP(45, 15, 4, 1, **bad)
+            st_fails.append("%s was accepted" % why)
+        except SystemExit:
+            pass
+    try:
+        STEP_IPOPT.append(("smuggled", ["ipopt_mu_strategy=adaptive"]))
+        stage_STEP(45, 15, 4, 1, solvers="ipopt")
+        st_fails.append("a non-step-rejection knob was accepted into the step table")
+    except SystemExit:
+        pass
+    finally:
+        STEP_IPOPT[:] = [e for e in STEP_IPOPT if e[0] != "smuggled"]
+    ## And the two questions must stay disjoint the OTHER way round, which is stage SWEEP's
+    ## blacklist. If a future edit widened STEP_REJECTION_KNOBS to cover something SWEEP
+    ## fields, SWEEP would start raising -- so assert the two tables share no knob.
+    sweep_knobs = {k.split("=")[0] for _, sets in SWEEP_IPOPT + SWEEP_SNOPT for k in sets}
+    step_knobs = {k.split("=")[0] for _, sets in STEP_IPOPT + STEP_SNOPT for k in sets}
+    if sweep_knobs & step_knobs:
+        st_fails.append("stage SWEEP and stage STEP both field %r"
+                        % sorted(sweep_knobs & step_knobs))
+    for msg in st_fails:
+        print(f"FAIL stage STEP: {msg}")
+    if not st_fails:
+        print("ok   stage STEP: %d screen runs on seed 1, paired, three placements per "
+              "robot, `default` sorting first, only step-rejection knobs, and a 192-item "
+              "480-cell confirmation form" % want4)
+    fails += len(st_fails)
+
     for msg in hard_fails:
         print(f"FAIL stage HARD: {msg}")
     if not hard_fails:
@@ -1546,9 +1850,17 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
+    p.add_argument("--settings", default=None,
+                   help="STEP stage only: comma-separated setting tokens to field, so the "
+                        "480-cell confirmation runs only the screen's survivors without a "
+                        "code edit. Must include 'default'.")
+    p.add_argument("--starts", default="paired",
+                   help="STEP stage only: comma-separated start protocols. The 60-cell "
+                        "screen is 'paired' (diagnostic); the confirmation is "
+                        "'paired,native'.")
     p.add_argument("--triage-solvers", default="nlopt",
                    help="SOLVER2 stage only: solvers fielded at the 60-cell triage grid "
                         "instead of full scale, so a column that may be near-empty costs "
@@ -1604,6 +1916,10 @@ def main():
              "SWEEP": lambda: stage_SWEEP(args.wall_time, args.targets, args.guesses,
                                           args.shards, only=args.rungs,
                                           solvers=args.solvers),
+             "STEP": lambda: stage_STEP(args.wall_time, args.targets, args.guesses,
+                                        args.shards, only=args.rungs,
+                                        solvers=args.solvers, settings=args.settings,
+                                        starts=args.starts),
              "HARD": lambda: stage_HARD(args.wall_time, args.targets,
                                         args.guesses, args.shards, only=args.rungs),
              "HARDTRI": lambda: stage_HARD(args.wall_time, args.targets, args.guesses,
