@@ -256,6 +256,15 @@ SNOPT_ECHO_KNOBS = {
     ## label to a fixed width, so these strings cannot be written by analogy from each other.
     "snopt_major_step_limit": (0.5, "Major step limit.......  5.00E-01"),
     "snopt_violation_limit": (1.0, "Violation limit........  1.00E+00"),
+    ## Fielded by stage SNOPTTUNE, which chooses SNOPT's own configuration, so these have to
+    ## be proven to land for the same reason the step-rejection five did.
+    "snopt_linesearch_tolerance": (0.99, "Linesearch tolerance...   0.99000"),
+    "snopt_major_optimality_tol": (1e-8, "Major optimality tol...  1.00E-08"),
+    ## A VALUELESS keyword: passing 0 turns it on exactly as 1 does, so it is emitted only
+    ## when True and the echo prints the label with an EMPTY value field. Verification is
+    ## therefore the presence of the line at all -- it is absent from a default run, which is
+    ## what makes presence sufficient. Note the two spaces after the abbreviating period.
+    "snopt_nonderivative_linesearch": (True, "Nonderiv.  linesearch.."),
 }
 
 

@@ -28,6 +28,7 @@ Usage:
     python cluster/gen_manifest.py --selftest
 """
 import argparse
+import re
 import os
 import sys
 
@@ -1192,6 +1193,160 @@ def stage_STEP(wall, targets, guesses, shards, only=None, tag="STEP", seed=1,
     return items
 
 
+## ================= SNOPT's own configuration, at campaign scale =========================
+##
+## WHY THIS STAGE EXISTS, and it is a FAIRNESS repair rather than tuning for its own sake.
+## Every table in the campaign fields IPOPT with the acceptable-point early stop
+## (acceptable_tol=1e-4, acceptable_iter=1) and SNOPT at bare Drake defaults. That early stop
+## is worth 39 cells and a 9x speedup on stage SWEEP's grid -- turning it off drops IPOPT to
+## 62/240 -- so the solver-class comparison currently reads "a tuned interior-point method
+## against an untuned SQP". Thomas, 2026-09-17:
+##
+##     I'm okay with playing with solver settings on a per-solver basis, as long as it's not
+##     per-problem.
+##
+## So SNOPT is entitled to its own configuration, chosen ONCE and applied to every row. The
+## rule cuts the other way too: a setting that helps one robot and hurts the other is not
+## adoptable by picking the robot it helps, which is why every candidate runs on all twelve
+## rows and the decision rule below counts rows rather than pooling them.
+##
+## THE CANDIDATES are stage SWEEP's own top performers plus the one step-rejection knob that
+## screened well, and then the combinations. None of the singles reached significance at 60
+## cells (best was +12 of 240, p = 0.20), which is the entire reason this runs at 480: stage
+## STEP's headline is a 60-cell lead that REVERSED at 480 with its mechanism column reversing
+## alongside it. Treat every number below as a direction, not a result.
+##
+##   nonderivls   +12/240, never loses a row, and the only candidate with a mechanism tied to
+##                the gradients: INFO 41 `current point cannot be improved` -- the documented
+##                signature of inaccurate or badly scaled derivatives -- falls 41 -> 32.
+##                Thomas's reading is that SNOPT's derivative-based line search does not cope
+##                with the flow's Jacobian, and a line search that never asks for a gradient
+##                is the direct test of it.
+##   hessfreq20   +11/240, and its strongest single row is iiwa grasp 40 -> 48 (p = 0.077),
+##                the row SNOPT is worst on. SNOPT never resets its quasi-Newton approximation
+##                by default (99999999) and the chart's gain varies by orders of magnitude
+##                across the domain, so a stale one is suspect. NOTE `Hessian updates` is
+##                inert below 75 variables and these programs have 20-21; frequency is the
+##                knob that bites.
+##   lstol0p99    +11/240. The loose end of the line-search tolerance, i.e. accept sooner.
+##   lstol0p1     +6/240 pooled but the best single setting on iiwa pose (25 -> 34).
+##   majopt1em08  +11/240. Converge harder rather than sooner -- the opposite direction to
+##                everything else here, kept precisely for that reason.
+##   elastic1e2   +0/240 pooled but the best setting on Panda grasp (51 -> 53); the paired
+##                start is infeasible by policy and elastic mode is how SNOPT copes with it.
+##   crash0       +7/240. Cold-start the basis instead of crashing one.
+##   mstep0p5     +15/360 on stage STEP's six rows (p = 0.18) and a DIFFERENT mechanism from
+##                every other entry: INFO 41 stays at exactly 81 while INFO 13 `nonlinear
+##                infeasibilities minimized` falls 51 -> 42. It helps SNOPT REACH feasibility
+##                rather than escape a stalled line search. It is also the one candidate
+##                measured as a robot TRADE (iiwa +17, Panda -2), which is exactly the thing
+##                480 cells has to resolve before the per-solver rule can accept it.
+##
+## `snopt_major_step_limit` belongs to STEP_REJECTION_KNOBS, which stage_SWEEP blacklists and
+## stage_STEP whitelists so those two questions can never merge. This stage has neither guard
+## ON PURPOSE: step rejection as a QUESTION is closed (measured, refuted, nothing adopted), so
+## the knob is available here as an ordinary SNOPT setting among others. Do not re-add a guard
+## without also deciding what happens to the combination rows.
+##
+## THE COMBINATIONS are the part 60 cells could not address at all. nonderivls and mstep0p5
+## cut different exit codes, so they are the one pair with a reason to be additive rather than
+## redundant; hessfreq20 is crossed in because its gain sits on the row the other two are
+## weakest on.
+SNOPTTUNE_SNOPT = [
+    ("default", []),
+    ("nonderivls", ["snopt_nonderivative_linesearch=True"]),
+    ("hessfreq20", ["snopt_hessian_frequency=20"]),
+    ("hessfreq100", ["snopt_hessian_frequency=100"]),
+    ("lstol0p99", ["snopt_linesearch_tolerance=0.99"]),
+    ("lstol0p1", ["snopt_linesearch_tolerance=0.1"]),
+    ("majopt1em08", ["snopt_major_optimality_tol=1e-8"]),
+    ("elastic1e2", ["snopt_elastic_weight=100.0"]),
+    ("crash0", ["snopt_crash_option=0"]),
+    ("mstep0p5", ["snopt_major_step_limit=0.5"]),
+    ("ndlsmstep", ["snopt_nonderivative_linesearch=True",
+                   "snopt_major_step_limit=0.5"]),
+    ("ndlshess20", ["snopt_nonderivative_linesearch=True",
+                    "snopt_hessian_frequency=20"]),
+    ("ndlshess20mstep", ["snopt_nonderivative_linesearch=True",
+                         "snopt_hessian_frequency=20",
+                         "snopt_major_step_limit=0.5"]),
+]
+
+## Every entry must name a SNOPT option and nothing else: this stage decides SNOPT's column
+## and an IPOPT knob here would silently make it a two-solver comparison.
+SNOPTTUNE_SETTINGS = {"snopt": SNOPTTUNE_SNOPT}
+
+
+def stage_SNOPTTUNE(wall, targets, guesses, shards, only=None, tag="SNOPTTUNE", seed=1,
+                    settings=None, starts="paired,native"):
+    """SNOPT's own best configuration, twelve rows at 480 cells, one setting for all of them.
+
+    Rows are `SOLVER2_ROWS` x both protocols x both adopted rungs -- the same twelve rows the
+    archived `sc_SOLVER2_*_snopt_*` columns cover, on the same grids, so every cell pairs
+    against the fielded default. The fresh `default` column rides along anyway rather than
+    being read off that archive: it absorbs any difference in code version or in node
+    contention, and reproducing the archived counts is itself the check that nothing else
+    moved. Compare WITHIN this run, not against the archive.
+
+    THE DECISION RULE IS PRE-REGISTERED, because thirteen columns x twelve rows is 156
+    McNemar tests and that many will manufacture a winner. A setting is adopted as SNOPT's
+    configuration only if, on the LEARNED arm, it beats `default` on at least 9 of the 12
+    rows, is significantly worse (p < 0.05) on none, and is significantly better on at least
+    one. No pooling across experiments -- Thomas, 2026-09-17: "Do not pool experiments, that
+    is useless." The same configuration must apply to every row; a per-experiment pick is
+    exactly what the per-solver rule forbids.
+
+    Expect this NOT to flip a verdict. The candidates are worth about +12 of 240 on the sweep
+    grid, so ~+24 of 480; applied to the rows SNOPT loses (iiwa grasp native 348 v 457,
+    paired 333 v 398) that is nowhere near parity. The point is a defensible SNOPT column,
+    not a rescue.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    for s in want_starts:
+        if s not in ("paired", "native"):
+            raise SystemExit(f"--starts: unknown protocol {s!r}; expected paired or native")
+    keep = set(settings.split(",")) if settings else None
+    for name, sets in SNOPTTUNE_SNOPT:
+        for knob in sets:
+            if not knob.startswith("snopt_"):
+                raise SystemExit(
+                    f"stage_SNOPTTUNE entry {name!r} names {knob.split('=')[0]!r}, which is "
+                    "not a SNOPT option -- this stage decides SNOPT's column alone")
+    if keep is not None:
+        known = {n for n, _ in SNOPTTUNE_SNOPT}
+        unknown = keep - known
+        if unknown:
+            raise SystemExit(f"--settings: no such token(s) {sorted(unknown)}; "
+                             f"expected from {sorted(known)}")
+        if "default" not in keep:
+            raise SystemExit("--settings must include 'default': without its own baseline "
+                             "column a run pairs against an archived one, i.e. across code "
+                             "versions and node contention")
+    items = []
+    for robot, label, ckpt in ADOPTED_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                 "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET)]
+                + (["--checkpoint", ckpt] if ckpt else []))
+        for name, sets in SNOPTTUNE_SNOPT:
+            if keep is not None and name not in keep:
+                continue
+            for task, token, placement in SOLVER2_ROWS:
+                for start in want_starts:
+                    args = (["--task", task, "--start", start, "--solver", "snopt"]
+                            + placement + base)
+                    for knob in sets:
+                        args += ["--set", knob]
+                    items += item(robot,
+                                  f"sc_{tag}_{robot}_{label}_snopt_{token}"
+                                  f"_{targets * guesses}_{int(wall)}_{start}_{name}",
+                                  args, targets, guesses, LADDER_ARMS, wall, shards,
+                                  seed=seed)
+    return items
+
+
 def stage_INSET(wall, targets, guesses, shards, only=None, tag="INSET", seed=1):
     """Sweep the compartment depth inset, on both tasks, at reduced scale.
 
@@ -1473,6 +1628,10 @@ def selftest():
                          ("SWEEP", stage_SWEEP(45, 15, 4, 1,
                                                solvers="ipopt,snopt")),
                          ("STEP", stage_STEP(45, 15, 4, 1, solvers="ipopt,snopt")),
+                         ("SNOPTTUNE", stage_SNOPTTUNE(45, 60, 8, 8)),
+                         ("SNOPTTUNE-one", stage_SNOPTTUNE(45, 60, 8, 8,
+                                                          settings="default,nonderivls",
+                                                          starts="paired")),
                          ("STEP480", stage_STEP(45, 60, 8, 8, solvers="ipopt",
                                                 settings="default,theta1",
                                                 starts="paired,native", tag="STEP480")),
@@ -1807,6 +1966,78 @@ def selftest():
               "480-cell confirmation form" % want4)
     fails += len(st_fails)
 
+    ## Stage SNOPTTUNE. This stage decides a FIELDED default, so its invariants are stricter
+    ## than a sweep's: every candidate must reach all twelve rows (a setting measured on a
+    ## subset cannot satisfy the per-solver rule), the seed must be the out-of-sample 1, the
+    ## cell count must be in the tag, and no entry may name a non-SNOPT option. `default`
+    ## does NOT sort first here (`crash0` precedes it), which is exactly why collate.py now
+    ## picks a `_default` run as its pairing reference rather than the first path.
+    sn_fails = []
+    runs_sn = stage_SNOPTTUNE(45, 60, 8, 8)
+    want_sn = 2 * 3 * 2 * len(SNOPTTUNE_SNOPT) * 8
+    if len(runs_sn) != want_sn:
+        sn_fails.append("should be %d items (2 robots x 3 placements x 2 starts x %d "
+                        "settings x 8 shards), got %d"
+                        % (want_sn, len(SNOPTTUNE_SNOPT), len(runs_sn)))
+    names_sn = [n for n, _ in SNOPTTUNE_SNOPT]
+    if len(set(names_sn)) != len(names_sn):
+        sn_fails.append("duplicate setting tokens %r" % names_sn)
+    if "default" not in names_sn:
+        sn_fails.append("no untouched baseline column")
+    seen_sn = set()
+    for it in runs_sn:
+        a = it["args"]
+        if "--seed" not in a or a[a.index("--seed") + 1] != "1":
+            sn_fails.append("%s is not on seed 1" % it["id"])
+        if a[a.index("--solver") + 1] != "snopt":
+            sn_fails.append("%s is not a SNOPT run" % it["id"])
+        if "--scene" not in a or a[a.index("--scene") + 1] != "hardened":
+            sn_fails.append("%s is not on the hardened scene" % it["id"])
+        if "_480_" not in it["id"]:
+            sn_fails.append("%s does not carry its cell count in the tag" % it["id"])
+        task = a[a.index("--task") + 1]
+        if task == "mug" and "--placement-point" in a:
+            sn_fails.append("%s passes --placement-point on the grasp task" % it["id"])
+        if task == "pose" and a[a.index("--placement-point") + 1] != "fingertips":
+            sn_fails.append("%s: pose should use the adopted fingertip containment" % it["id"])
+        ## The id carries a trailing _shardKofN, so the setting token is the field before it.
+        setting = re.sub(r"_shard\d+of\d+$", "", it["id"]).rsplit("_", 1)[-1]
+        seen_sn.add((it["robot"], task, a[a.index("--target-placement") + 1],
+                     a[a.index("--start") + 1], setting))
+    ## Uniform coverage is the load-bearing one: adding a row to one column and not another is
+    ## how a robot trade gets reported as a win.
+    for name in names_sn:
+        rows_for = {k[:4] for k in seen_sn if k[4] == name}
+        if len(rows_for) != 12:
+            sn_fails.append("setting %r reaches %d of the 12 rows" % (name, len(rows_for)))
+    ## The combinations must actually combine, or the stage answers a question it did not ask.
+    combo = dict(SNOPTTUNE_SNOPT)["ndlshess20mstep"]
+    if len(combo) != 3:
+        sn_fails.append("the three-factor combination does not carry three options")
+    for bad, why in ((dict(starts="warmstart"), "an unknown start protocol"),
+                     (dict(settings="default,nosuchtoken"), "an unknown setting token"),
+                     (dict(settings="nonderivls"), "a filter with no default baseline")):
+        try:
+            stage_SNOPTTUNE(45, 60, 8, 8, **bad)
+            sn_fails.append("%s was accepted" % why)
+        except SystemExit:
+            pass
+    try:
+        SNOPTTUNE_SNOPT.append(("smuggled", ["ipopt_mu_strategy=adaptive"]))
+        stage_SNOPTTUNE(45, 60, 8, 8)
+        sn_fails.append("an IPOPT knob was accepted into SNOPT's configuration table")
+    except SystemExit:
+        pass
+    finally:
+        SNOPTTUNE_SNOPT[:] = [e for e in SNOPTTUNE_SNOPT if e[0] != "smuggled"]
+    for msg in sn_fails:
+        print(f"FAIL stage SNOPTTUNE: {msg}")
+    if not sn_fails:
+        print("ok   stage SNOPTTUNE: %d items, %d settings x 12 rows each, seed 1, SNOPT "
+              "only, 480 in every tag" % (want_sn, len(SNOPTTUNE_SNOPT)))
+    fails += len(sn_fails)
+
+
     for msg in hard_fails:
         print(f"FAIL stage HARD: {msg}")
     if not hard_fails:
@@ -1850,7 +2081,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -1858,9 +2089,11 @@ def main():
                         "480-cell confirmation runs only the screen's survivors without a "
                         "code edit. Must include 'default'.")
     p.add_argument("--starts", default="paired",
-                   help="STEP stage only: comma-separated start protocols. The 60-cell "
-                        "screen is 'paired' (diagnostic); the confirmation is "
-                        "'paired,native'.")
+                   help="STEP and SNOPTTUNE stages: comma-separated start protocols. "
+                        "STEP's 60-cell screen is 'paired' (diagnostic) and its confirmation "
+                        "is 'paired,native'. SNOPTTUNE needs 'paired,native' explicitly -- "
+                        "the default here is the screen's, and a setting measured on one "
+                        "protocol cannot be fielded as SNOPT's configuration.")
     p.add_argument("--triage-solvers", default="nlopt",
                    help="SOLVER2 stage only: solvers fielded at the 60-cell triage grid "
                         "instead of full scale, so a column that may be near-empty costs "
@@ -1920,6 +2153,11 @@ def main():
                                         args.shards, only=args.rungs,
                                         solvers=args.solvers, settings=args.settings,
                                         starts=args.starts),
+             "SNOPTTUNE": lambda: stage_SNOPTTUNE(args.wall_time, args.targets,
+                                                 args.guesses, args.shards,
+                                                 only=args.rungs,
+                                                 settings=args.settings,
+                                                 starts=args.starts),
              "HARD": lambda: stage_HARD(args.wall_time, args.targets,
                                         args.guesses, args.shards, only=args.rungs),
              "HARDTRI": lambda: stage_HARD(args.wall_time, args.targets, args.guesses,

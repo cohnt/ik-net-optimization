@@ -33,7 +33,15 @@ def pair(arm, paths):
     if len(runs) < 2:
         print(f"need at least two runs carrying an arm named {arm!r}")
         return
-    ref_name, ref = runs[0]
+    # The reference is the first path in argument order, which makes it depend on
+    # lexicographic luck whenever a glob expands a settings table: `accoff` and `crash0` both
+    # sort before `default`, so a sweep glob would silently baseline every setting against a
+    # non-default column. Prefer a run whose tag ends in `_default` when one is present, and
+    # say which rule picked it.
+    _pick = [i for i, (n, _) in enumerate(runs) if n.endswith("_default")]
+    ref_name, ref = runs[_pick[0]] if _pick else runs[0]
+    if _pick:
+        runs = [runs[_pick[0]]] + [r for i, r in enumerate(runs) if i != _pick[0]]
     ref_cells = {(r["target"], r["guess"]): bool(r.get("feasible"))
                  for r in ref["records"][arm]}
     print(f"paired against {ref_name} "
