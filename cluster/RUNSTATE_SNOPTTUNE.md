@@ -110,3 +110,16 @@ cells flip each way for a net of one to four.
 
 This is stage STEP repeating: a 60-cell lead (+12/240, p = 0.20) with a plausible mechanism, gone
 at 480 cells. **Weaken the prior on the two combinations built on this setting.**
+
+**The two `Nonderivative linesearch` combinations — 2026-09-17 16:40, and the pattern is a ROBOT
+TRADE.** `+ Major step limit 0.5` is the best showing so far (total 3806 -> 3850, 8 rows better, 2
+worse) but **Panda grasp-free native is significantly WORSE** (449 -> 434, p = 0.036), which trips
+clause 2. The three-factor version (6 rows in) does the same thing harder: iiwa contained-grasp
+paired 214 -> 247 significantly BETTER (p = 0.025) while Panda grasp-free native 449 -> 428
+significantly WORSE (p = 0.0065).
+
+Same two rows, opposite directions, both significant. This is the iiwa/Panda split `Major step
+limit = 0.5` showed at 60 cells (iiwa +17, Panda -2), confirmed at scale — and under the
+per-solver-not-per-problem rule it is **unadoptable by construction**, not merely unproven. If the
+remaining columns keep this shape, that is the stage's result: SNOPT's useful settings are
+robot-specific, so SNOPT has no single best configuration on this problem.
