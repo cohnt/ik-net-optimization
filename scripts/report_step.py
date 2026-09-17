@@ -18,11 +18,14 @@ Usage:
     scripts/report_step.py --arm numerical '<glob>'
     scripts/report_step.py --ref accdefault '<glob>'          # any baseline, by name
     scripts/report_step.py --recover <baseline-summary> <candidate-summary> ...
+    scripts/report_step.py --resto '<glob>'                   # IPOPT restoration fraction
 """
 import glob
 import json
 import os
+import re
 import sys
+import tarfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.benchmark import mcnemar_exact  # noqa: E402
@@ -176,6 +179,53 @@ def recover(baseline, candidates, arm):
               + ("   NOT COMPARABLE (%s)" % ", ".join(diff) if diff else ""))
 
 
+def restoration(paths, arm="learned"):
+    """Fraction of IPOPT iterations spent in the FEASIBILITY RESTORATION phase, per run.
+
+    This is the mechanism column for the theta_max_fact axis, and it is free: IPOPT marks a
+    restoration iteration with a trailing `r` on the iteration index in its own print file,
+    and `src/benchmark.py` already archives one print file per cell into
+    `solver_logs.tar.gz`.
+
+    Why it is the right column. IpFilterLSAcceptor.cpp:328 fixes
+    theta_max = theta_max_fact * max(1, theta(x_0)) once, from the first iterate. Below 1 the
+    ceiling sits UNDER the start's own violation, so every trial point that fails to reduce
+    violation immediately is refused and IPOPT falls into restoration -- which a success count
+    cannot distinguish from any other way of failing.
+    """
+    it_re = re.compile(r"^\s*(\d+)(r?)\s")
+    print(f"{'run':58s} {'cells':>6} {'tot it':>7} {'resto it':>9} {'resto %':>8} "
+          f"{'>50% resto':>11}")
+    for path in paths:
+        tar = path if path.endswith(".tar.gz") else os.path.join(
+            os.path.dirname(os.path.join(path, "x")), "solver_logs.tar.gz")
+        if not os.path.exists(tar):
+            continue
+        tot, res, hi = [], [], 0
+        with tarfile.open(tar) as tf:
+            for m in tf.getmembers():
+                if not m.isfile() or arm not in os.path.basename(m.name):
+                    continue
+                t = r = 0
+                fh = tf.extractfile(m)
+                if fh is None:
+                    continue
+                for raw in fh.read().decode("utf-8", "ignore").splitlines():
+                    mm = it_re.match(raw)
+                    if mm:
+                        t += 1
+                        r += mm.group(2) == "r"
+                if t:
+                    tot.append(t)
+                    res.append(r)
+                    hi += (r / t) > 0.5
+        if not tot:
+            continue
+        pct = [100.0 * r / t for r, t in zip(res, tot)]
+        print(f"{os.path.basename(os.path.dirname(tar)):58s} {len(tot):>6} "
+              f"{_median(tot):>7.0f} {_median(res):>9.0f} {_median(pct):>7.1f}% {hi:>11}")
+
+
 if __name__ == "__main__":
     argv = sys.argv[1:]
     arm, ref = "learned", None
@@ -187,7 +237,12 @@ if __name__ == "__main__":
         i = argv.index("--ref")
         ref = argv[i + 1]
         del argv[i:i + 2]
-    if argv and argv[0] == "--recover":
+    if argv and argv[0] == "--resto":
+        paths = [q for p in argv[1:] for q in (sorted(glob.glob(p)) or [p])]
+        if not paths:
+            sys.exit("usage: --resto <run-dir-or-glob>...")
+        restoration(paths, arm)
+    elif argv and argv[0] == "--recover":
         paths = [q for p in argv[1:] for q in (sorted(glob.glob(p)) or [p])]
         if len(paths) < 2:
             sys.exit("usage: --recover <baseline> <candidate> [<candidate>...]")
