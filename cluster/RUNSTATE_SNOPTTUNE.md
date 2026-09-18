@@ -150,3 +150,38 @@ fairness question that motivated the stage, just not the way it was expected to.
 split is confined to the gradient-free line search and its combinations, then it is a property of
 that line search rather than of SNOPT on this problem, and the remaining singles decide whether any
 uniform setting exists.
+
+## 2026-09-17 21:50 — `Major step limit = 0.5` leads, and the earlier robot-trade reading was WRONG
+
+Ten columns read at 11 of 12 rows. Rows better / worse, then significantly better / worse:
+
+| setting | better | worse | sig+ | sig- |
+| --- | --- | --- | --- | --- |
+| **`Major step limit = 0.5`** | **10** | 1 | **2** | **0** |
+| `Hessian frequency = 20` | 7 | 4 | 1 | 0 |
+| `Major optimality tolerance = 1e-8` | 7 | 3 | 0 | 0 |
+| `Nonderivative linesearch` + `Major step limit = 0.5` | 8 | 2 | 0 | 1 |
+| `Nonderiv LS` + `Hessian freq 20` + `Major step 0.5` | 6 | 4 | 1 | 2 |
+| `Linesearch tolerance = 0.99` | 5 | 5 | 0 | 0 |
+| `Nonderivative linesearch` | 5 | 6 | 0 | 0 |
+| `Crash option = 0` | 4 | 7 | 0 | 0 |
+| `Nonderivative linesearch` + `Hessian frequency = 20` | 3 | 8 | 0 | 1 |
+
+**`Major step limit = 0.5` is on track to PASS** (needs >= 9 of 12 better, 0 significantly worse,
+>= 1 significantly better). It gains exactly where SNOPT is weakest — iiwa pose-tip paired
+210 -> 247 (p = 0.0020), Panda pose-tip paired 252 -> 275 (p = 0.043), iiwa contained-grasp paired
+214 -> 239 (p = 0.071) — and its only losing row is Panda grasp-free native, 449 -> 442, p = 0.14,
+not significant. **It also improves the JOINT-SPACE arm on every row** (398->406, 236->270,
+404->416, 298->305, 169->178), so it is a property of SNOPT on this problem rather than of the
+chart.
+
+**The robot-trade hypothesis recorded at 17:05 is REFUTED, and it was my own overreach:** the split
+belongs to `Nonderivative linesearch`, not to the step limit. The line search is net-negative alone
+and poisons every combination it enters — `+ Hessian frequency 20` is the stage's worst column at
+3 better / 8 worse with a significant loss. Generalising from the two combinations before the
+single factor finished produced a conclusion the single factor contradicts. **Do not read a
+combination as evidence about its parts.**
+
+Still running: `Linesearch tolerance = 0.1` (3 rows in), `Elastic weight = 100`,
+`Hessian frequency = 100`. The twelfth row of every column (iiwa contained-grasp native) is the
+straddled-shard group and merges on a later collection.
