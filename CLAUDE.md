@@ -690,9 +690,11 @@ solvers.
 cells, `paired`. **Step rejection is deliberately absent** — those five fields are a separate
 question (Thomas, 2026-09-16), and `stage_SWEEP` **raises** if an entry names one.
 
-**SNOPT: no setting rescues it.** Against its own 141/240 the best is the gradient-free line search
-at 153 (p = 0.20); **not one of the twenty reaches significance**, and the extremes hurt. A solver
-losing on INFO 13/41 is not losing for want of tuning.
+**SNOPT: no setting rescues it at 240 cells.** Against its own 141/240 the best is the gradient-free
+line search at 153 (p = 0.20); **not one of the twenty reaches significance**, and the extremes hurt.
+That screen is **superseded by stage SNOPTTUNE below**, which fielded thirteen settings at 480 cells
+x 12 rows and found one that does hold up — and it is not this one. The gradient-free line search is
+net-negative at campaign scale.
 
 **IPOPT: the convergence tolerances are INERT and the acceptable-point machinery is everything.**
 `convsnopt` (IPOPT held to SNOPT's convergence numbers) scores 212 against the fielded 211 and every
@@ -718,6 +720,73 @@ throughput — `accviolloose` is fastest and best on success but **worst on cost
 **Nothing is adopted**: the alternatives move success by at most +2 cells of 240 and changing it
 would break comparability with every archived run.
 
+### Stage SNOPTTUNE: `Major step limit = 0.5` is the one SNOPT setting that survives 480 cells
+
+**Motivation was fairness, not rescue.** IPOPT's column runs a tuned configuration (the
+acceptable-point early stop, worth 39 cells and a 9x speedup) while SNOPT's ran bare Drake defaults.
+Per-solver tuning is permitted and per-problem tuning is not (Thomas, 2026-09-17: *"I'm okay with
+playing with solver settings on a per-solver basis, as long as it's not per-problem"*), so a setting
+qualifies only if it wins **uniformly across rows**, never by picking the robot it helps.
+
+Thirteen settings x 12 rows x 480 cells = 1248 sharded items, seed 1, 45 s, `--compile`, adopted
+rungs, hardened scene, `learned,numerical`, both protocols, three placements. `stage_SNOPTTUNE` in
+`cluster/gen_manifest.py` owns the table. **Rule pre-registered before reading anything**: a setting
+passes on **>= 9 of 12 rows better on the learned arm, none significantly worse, >= 1 significantly
+better**, counted by row — never pooled, since pooling hides a trade between robots.
+`scripts/report_snopttune.py` implements it inline so it cannot drift.
+
+**One setting of thirteen passes: `Major step limit = 0.5`.** Rows better/worse, then significant
+each way, learned arm, each against SNOPT's own default on the same cells:
+
+| setting | better | worse | sig+ | sig- | |
+| --- | --- | --- | --- | --- | --- |
+| **`Major step limit = 0.5`** | **11** | 1 | **3** | **0** | **PASSES** |
+| `Elastic weight = 100` | 8 | 4 | 3 | 0 | near-miss: misses >= 9 by one row |
+| `Hessian frequency = 20` | 8 | 4 | 1 | 0 | |
+| `Major optimality tolerance = 1e-8` | 8 | 3 | 0 | 0 | |
+| `Hessian frequency = 100` | 7 | 4 | 1 | 0 | |
+| `Nonderiv. linesearch + Major step limit 0.5` | 9 | 2 | 1 | 1 | |
+| `Nonderiv. linesearch + Hess. freq. 20 + Mstep` | 7 | 4 | 1 | 2 | |
+| `Nonderivative linesearch` | 6 | 6 | 0 | 0 | |
+| `Crash option = 0` | 5 | 7 | 0 | 0 | |
+| `Linesearch tolerance = 0.99` / `= 0.1` | 5 | 5-6 | 0 | 0-1 | |
+| `Nonderivative linesearch + Hessian frequency 20` | 4 | 8 | 0 | 1 | |
+
+`Major step limit = 0.5`, learned arm, per row: iiwa grasp free 349->357 native / 335->340 paired;
+iiwa grasp contained **175->202** native (p = 0.040) / 214->239 paired (p = 0.071); iiwa pose
+fingertip 442->444 native / **210->247** paired (p = 0.0020); Panda grasp free 449->442 native
+(p = 0.14, the only loss and not significant) / 398->403 paired; Panda grasp contained 438->441
+native / 281->298 paired; Panda pose fingertip 438->440 native / **252->275** paired (p = 0.043).
+Pooled 3981 -> 4128 of 5760, though the pooled number is not what the rule reads.
+
+**It is a property of SNOPT on this problem, not of the chart: the joint-space arm improves on all
+twelve rows** (292->304, 298->305, 236->270, 404->416, 169->178, 398->406), and that arm never
+evaluates the network. Cost is a wash on cells both settings solve (six rows slightly better, six
+slightly worse; the largest move is iiwa contained-grasp native 6.636 -> 5.606), and iterations and
+wall clock fall slightly, so the cells are bought without paying for them elsewhere.
+
+**The mechanism is diffuse, and the SNOPT hypothesis stays refuted.** SNOPT INFO histogram over
+5,760 learned cells: INFO 1 2659 -> 2774 (+115), and the 115 comes from INFO 41 -35, iteration and
+major-iteration limits (31/32) -45, time limit (34) -16, INFO 3 -15, INFO 13 -3. So INFO 41
+`current point cannot be improved` supplies less than a third of the gain and falls by under 2% of
+itself — the prediction that a smaller step limit converts INFO 41 into convergence is **wrong at
+480 cells as it was at 60**. Nor does it reproduce the 60-cell story that INFO 13 falls: INFO 13 is
+flat. What the setting actually does is stop SNOPT exhausting its iteration and time budgets.
+
+**Adoption is Thomas's call; nothing is fielded.** Changing SNOPT's configuration would break
+comparability with the archived SOLVER2 columns, so `snopt_major_step_limit` stays plumbed and
+`None`. Note the setting is in `STEP_REJECTION_KNOBS`, which stage SWEEP blacklists and stage STEP
+whitelists; `stage_SNOPTTUNE` deliberately carries neither guard, so the three questions stay
+separable.
+
+**Two harness lessons this campaign paid for.** `collect_results.sh` recovers a run whose shards
+straddle two collections by searching this staging directory plus the **previous** one — chosen as
+the last entry of a sorted glob, which is the most recent collection only because timestamp names
+sort chronologically. A hand-made directory in the staging tree wins that sort and silently becomes
+"the previous collection"; the glob is now restricted to `[0-9]*-[0-9]*/`. And target-major sharding
+of 60 targets over 8 shards gives sizes **64,64,64,64,56,56,56,56**, so a 56-record shard is
+complete — reading 56 as truncated is what made a merged-but-unassembled row look like data loss.
+
 ### The grasp-containment lever is closed for the solver axis
 
 Grasp containment was the standing "revisit whenever another knob moves" lever, because on the
@@ -737,8 +806,12 @@ refuted too, so the lever is closed on both axes.
   supported state (NLopt supplies LD_LBFGS) — **TODO** when that Drake carries the local-optimizer
   PRs.
 - **The step-rejection family is DONE** (stage STEP): refuted at 480 cells, nothing adopted, all
-  five knobs left plumbed and `None`. SNOPT's `Major step limit` moves INFO 13, not the INFO 41 it
-  was predicted to move, and is a trade between the robots.
+  five knobs left plumbed and `None`. The INFO 41 prediction for SNOPT's `Major step limit` is
+  refuted at both scales. The 60-cell reading that it moves INFO 13 and trades between the robots
+  did **not** replicate — at 480 cells x 12 rows (stage SNOPTTUNE) INFO 13 is flat, the gain comes
+  from budget exits, and it is the one SNOPT setting that improves nearly every row.
+- **SNOPT settings are DONE** (stage SNOPTTUNE): thirteen settings at 480 cells, one passes the
+  pre-registered bar, nothing fielded. Adoption of `Major step limit = 0.5` is Thomas's call.
 - **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the robust
   logging we need btw, work with what you have, don't write new logging stuff in Drake or
   anything."*
@@ -1291,7 +1364,8 @@ made explicitly in advance.
 
 Live items:
 
-- **Step rejection is CLOSED** — measured at 60 and 480 cells, refuted, see "Step rejection" above.
+- **The solver axis is CLOSED.** Step rejection refuted (stage STEP); SNOPT settings measured
+  (stage SNOPTTUNE) with `Major step limit = 0.5` the one survivor, awaiting Thomas's adoption call.
   What it opened instead: ~70% of the learned arm's residual failures yield to *some* filter
   setting, so **multi-start over solver configurations**, reported as "solved within k restarts", is
   the live descendant of this lever. Untested, and legitimate — it searches over solver settings,
