@@ -799,12 +799,8 @@ refuted too, so the lever is closed on both axes.
 
 ### Future work on this axis
 
-- **NLopt settings are unswept, by decision** (Thomas: *"Store testing NLOPT settings as future
-  work"*) — `LD_AUGLAG` vs `LD_AUGLAG_EQ`, `constraint_tol`, `xtol_*`, `max_eval`. The column is not
-  competitive at Drake's defaults by a very wide margin, so a sweep would only say *why*. The AL's
-  inner local optimizer is not selectable on the cluster's Drake at all — leaving it unset is a
-  supported state (NLopt supplies LD_LBFGS) — **TODO** when that Drake carries the local-optimizer
-  PRs.
+- **NLopt settings are IN FLIGHT** (stage NLOPTTUNE), Thomas having reopened the "future work"
+  decision on 2026-09-18 now that the blocking Drake capability exists. See "The Drake bump" below.
 - **The step-rejection family is DONE** (stage STEP): refuted at 480 cells, nothing adopted, all
   five knobs left plumbed and `None`. The INFO 41 prediction for SNOPT's `Major step limit` is
   refuted at both scales. The 60-cell reading that it moves INFO 13 and trades between the robots
@@ -815,6 +811,50 @@ refuted too, so the lever is closed on both axes.
 - **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the robust
   logging we need btw, work with what you have, don't write new logging stuff in Drake or
   anything."*
+
+### The Drake bump, and the algorithms Drake's NLopt offers but cannot run
+
+The AL column's inner local optimizer became selectable when Drake's local-optimizer PRs and
+**PR 25002** (merged 2026-09-17, `5a73436c`) took `NloptSolver` from **six** option names to
+**sixteen**. Neither set is in a release — **1.57.0 was cut before both and still declares six** —
+so the new surface is reachable only from a nightly, and `drake-0.0.20260918-noble.tar.gz` carries
+exactly PR 25002's merge commit as its tip.
+
+**Three NLopt option surfaces are now live at once**: the cluster's pinned 1.56.0 six, this
+workstation's source build's eleven, a nightly's sixteen. `cluster/install_drake_nightly.sh`
+installs the nightly **alongside** the pin at `$ROOT/drake-nightly`, never replacing it, because
+every archived IPOPT and SNOPT column was produced against 1.56.0; items opt in with a
+`DRAKE=nightly` sentinel that `run_items.sh` turns into that install's `PYTHONPATH`. Cluster Drake
+versions are per-project (Thomas, 2026-09-18), so both live inside this project's tree, and the
+nightly needs **its own** `drake_models` cache warm because the cache key includes the models commit
+that Drake version pins. Nightlies publish no `.sha256`, so the script verifies against a hash
+recorded in the repo — the bytes the local tests ran against. Nightly artifacts **expire after 45
+days**; move the pin to 1.58.0 when it carries PR 25002 and delete the script.
+
+**The trap, and it is a new instance of an old one.** Drake's NLopt is built without the LGPL
+**Luksan** sources, so `LD_LBFGS`, the `LD_VAR*` family and every `LD_TNEWTON*` variant are listed
+by `ParseNloptAlgorithm` as valid choices and then refused *inside the solve* with `attempting to
+use NLOPT_LD_LBFGS, but Luksan code disabled`, returning `kInvalidInput` and status 0. The symptom
+is quiet and misleading: a **0.5 s cell with `q=None`, `max_violation=None` and `fail_reason`
+unset**, which reads like a harness bug. A local smoke run hit it on six of eleven settings. Exactly
+eight algorithms are refused; **`LD_MMA`, `LD_CCSAQ`, `LD_SLSQP`, `LN_COBYLA` and `LN_BOBYQA` all
+work**, so the usable *gradient-based* inner optimizers are the first three and nothing else.
+`NLOPT_LUKSAN_DISABLED` refuses them at configuration time, for both the outer and inner algorithm.
+
+**This refutes a claim that stood in this file**: that NLopt supplies `LD_LBFGS` when the inner
+optimizer is unset. It cannot — naming `LD_LBFGS` *fails* while leaving it unset *solves*. Whatever
+NLopt picks when unset, it is not that, and there is therefore **no "name what NLopt already picks"
+control available**: `default` against any named inner algorithm unavoidably mixes "Drake called
+`set_local_optimizer` at all" with "which algorithm".
+
+Two more Drake behaviours worth not rediscovering. Every `local_optimizer_*` option is read
+unconditionally but **applied only inside `if (!parsed_options.local_optimizer_algorithm.empty())`**
+(`nlopt_solver.cc:546-564`), so an inner budget or tolerance without a named inner algorithm is
+accepted and inert — refused, not ignored. And an **unknown** NLopt name does not crash a run: Drake
+accepts it at `SetOption` and raises from inside `Solve`, which lands in `run_grid`'s per-cell
+`except Exception` and is recorded as `fail_reason="error"`, i.e. a **full column of instant
+failures** rather than an error. Hence the check lives in `ProgramOptions.__post_init__`, before the
+first cell.
 
 ## Results: the current campaign
 
