@@ -49,7 +49,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import src.benchmark as bm                                              # noqa: E402
 from src.generic_program import (IKFlowProgram, ProgramOptions,         # noqa: E402
-                                 NLOPT_POST_1_56_OPTIONS, NloptOptionSurface)
+                                 NLOPT_POST_1_56_OPTIONS, NLOPT_LUKSAN_DISABLED,
+                                 NloptOptionSurface)
 from src.utils import BuildEnv, HiddenPrints                            # noqa: E402
 from src.panda_program import PandaIKProgram                            # noqa: E402
 
@@ -82,7 +83,10 @@ NLOPT_POST_1_56_PROBES = {
     "nlopt_ftol_rel": 1e-8,
     "nlopt_ftol_abs": 1e-10,
     "nlopt_stopval": -1e30,
-    "nlopt_local_optimizer_algorithm": "LD_LBFGS",
+    ## LD_MMA and not LD_LBFGS: the Luksan family is compiled out of Drake's NLopt and is now
+    ## refused, so a probe naming one would test the wrong refusal. That substitution is itself
+    ## the bug this probe table had when the guard landed.
+    "nlopt_local_optimizer_algorithm": "LD_MMA",
     "nlopt_local_optimizer_xtol_rel": 1e-8,
     "nlopt_local_optimizer_xtol_abs": 1e-10,
     "nlopt_local_optimizer_ftol_rel": 1e-8,
@@ -508,7 +512,7 @@ def test_post_1_56_options_are_checked_against_the_running_drake():
         ## Inner options need the gate satisfied, or they are refused for the OTHER reason --
         ## which is the previous test's business, not this one's.
         if spec.inner:
-            p.options.nlopt_local_optimizer_algorithm = "LD_LBFGS"
+            p.options.nlopt_local_optimizer_algorithm = "LD_MMA"
         have = (spec.accessor in surface
                 and (not spec.inner or "LocalOptimizerAlgorithmName" in surface))
         try:
@@ -544,6 +548,48 @@ def test_post_1_56_options_are_checked_against_the_running_drake():
               "exercised on the cluster's 1.56.0 and on this workstation's source build")
 
 
+def test_algorithms_drake_lists_but_cannot_run_are_refused():
+    """Drake's NLopt omits the LGPL Luksan sources, and says so only from inside the solve.
+
+    `ParseNloptAlgorithm` accepts LD_LBFGS, the LD_VAR* family and every LD_TNEWTON* variant --
+    they are in the "valid choices are:" list it prints for a typo -- and then the solve emits
+    `attempting to use NLOPT_LD_LBFGS, but Luksan code disabled` on stderr and returns
+    kInvalidInput with status 0. Measured 2026-09-18: exactly the eight below are refused and
+    LD_MMA, LD_CCSAQ, LD_SLSQP, LN_COBYLA and LN_BOBYQA all solve.
+
+    This is worse than a raise, because the cell LOOKS like a harness bug: 0.5 s, q=None,
+    max_violation=None, fail_reason unset. A local smoke run of stage NLOPTTUNE's table hit it
+    on six of eleven settings, which is what this test exists to prevent recurring.
+    """
+    print("\n--- algorithms Drake lists but cannot run are refused ---")
+    check("the disabled set is the eight Luksan algorithms",
+          len(NLOPT_LUKSAN_DISABLED) == 8
+          and "LD_LBFGS" in NLOPT_LUKSAN_DISABLED
+          and "LD_TNEWTON_PRECOND_RESTART" in NLOPT_LUKSAN_DISABLED,
+          f"got {sorted(NLOPT_LUKSAN_DISABLED)}")
+    for algo in sorted(NLOPT_LUKSAN_DISABLED):
+        for field_name in ("nlopt_algorithm", "nlopt_local_optimizer_algorithm"):
+            ## The inner field does not exist before 1.56.0's successor; where it is missing the
+            ## availability check answers first, which is also a refusal, so accept either.
+            try:
+                ProgramOptions(which_solver="nlopt", **{field_name: algo})
+                check(f"{field_name}={algo} is refused", False,
+                      "accepted -- every cell would return kInvalidInput in ~0.5 s")
+            except ValueError as exc:
+                check(f"{field_name}={algo} is refused",
+                      algo in str(exc) or field_name in str(exc), str(exc))
+    ## And the three that DO work must still be accepted, or the guard is too broad.
+    for algo in ("LD_MMA", "LD_CCSAQ", "LD_SLSQP"):
+        surface = NloptOptionSurface()
+        if "LocalOptimizerAlgorithmName" not in surface:
+            continue
+        try:
+            ProgramOptions(which_solver="nlopt", nlopt_local_optimizer_algorithm=algo)
+            check(f"{algo} is still accepted as an inner algorithm", True)
+        except ValueError as exc:
+            check(f"{algo} is still accepted as an inner algorithm", False, str(exc))
+
+
 def main():
     print("solver plumbing: three method classes -- interior point, SQP, augmented Lagrangian")
     test_option_surface_is_the_cluster_s()
@@ -552,6 +598,7 @@ def main():
     test_the_accessor_table_names_the_options_it_claims_to()
     test_inner_solver_options_are_refused_without_an_algorithm()
     test_post_1_56_options_are_checked_against_the_running_drake()
+    test_algorithms_drake_lists_but_cannot_run_are_refused()
     test_nlopt_is_an_augmented_lagrangian()
     test_unknown_solver_raises_clearly()
     test_no_step_rejection_knob_is_set_by_default()
