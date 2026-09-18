@@ -106,6 +106,52 @@ NLOPT_POST_1_56_OPTIONS = {
 # discarded (nlopt_solver.cc:557-563). Ten is the complete set; do not invent an eleventh.
 
 
+## Algorithms Drake LISTS as valid and then cannot run. Drake's bundled NLopt is built
+## WITHOUT the Luksan sources (they are LGPL), which compiles out L-BFGS, the variable-metric
+## family and every truncated-Newton variant. `ParseNloptAlgorithm` still accepts the names --
+## they appear in the "valid choices are:" message it prints for a typo -- and the failure
+## arrives from inside the solve as
+##
+##     ERROR - attempting to use NLOPT_LD_LBFGS, but Luksan code disabled
+##
+## on stderr, with Drake returning SolutionResult.kInvalidInput and NloptSolverDetails.status
+## 0. Measured 2026-09-18 on the 0.0.20260918 nightly with a three-variable bound- and
+## nonlinear-constrained program: exactly these eight are refused, while LD_MMA, LD_CCSAQ,
+## LD_SLSQP, LN_COBYLA and LN_BOBYQA all solve it. So the usable GRADIENT-BASED inner
+## optimizers for an augmented Lagrangian here are LD_MMA, LD_CCSAQ and LD_SLSQP, and nothing
+## else.
+##
+## Refused here rather than discovered on the cluster, because the symptom is a quiet one: a
+## 0.5 s cell with q=None, max_violation=None and fail_reason unset, which reads like a harness
+## bug rather than an unavailable algorithm.
+NLOPT_LUKSAN_DISABLED = frozenset({
+    "LD_LBFGS", "NLOPT_LD_LBFGS_NOCEDAL",
+    "LD_VAR1", "LD_VAR2",
+    "LD_TNEWTON", "LD_TNEWTON_RESTART", "LD_TNEWTON_PRECOND",
+    "LD_TNEWTON_PRECOND_RESTART",
+})
+
+
+def CheckNloptAlgorithms(options):
+    """Refuse an algorithm Drake's NLopt accepts by name and then cannot run.
+
+    Checked for the OUTER algorithm as well as the inner one: `--set nlopt_algorithm=LD_LBFGS`
+    fails in exactly the same way, and this column's whole value is that it is a third method
+    class, so a silent kInvalidInput on every cell is the worst failure available here.
+    """
+    for field_name in ("nlopt_algorithm", "nlopt_local_optimizer_algorithm"):
+        value = getattr(options, field_name, None)
+        if value in NLOPT_LUKSAN_DISABLED:
+            raise ValueError(
+                f"NLopt: {field_name}={value!r} is compiled OUT of Drake's NLopt. Drake's "
+                f"ParseNloptAlgorithm lists it as a valid choice, but the solve then prints "
+                f"'attempting to use NLOPT_{value}, but Luksan code disabled' and returns "
+                f"kInvalidInput with status 0 -- a 0.5 s cell with no q and no violation, on "
+                f"every cell of the run. The Luksan sources are LGPL and Drake does not "
+                f"bundle them, so all of {sorted(NLOPT_LUKSAN_DISABLED)} are unavailable. The "
+                f"usable gradient-based choices are LD_MMA, LD_CCSAQ and LD_SLSQP.")
+
+
 def CheckNloptOptions(options):
     """Validate the post-1.56.0 NLopt fields, returning the ones to emit.
 
@@ -124,6 +170,8 @@ def CheckNloptOptions(options):
     An empty string counts as unset for the inner algorithm, because that is precisely what
     Drake means by it (`local_optimizer_algorithm.empty()`).
     """
+    ## Unconditional: the OUTER algorithm is a pre-1.56 option and can be wrong on its own.
+    CheckNloptAlgorithms(options)
     requested = {name: getattr(options, name) for name in NLOPT_POST_1_56_OPTIONS
                  if getattr(options, name) is not None and getattr(options, name) != ""}
     ## The common path -- nothing post-1.56 set -- costs one comprehension and touches Drake
@@ -139,8 +187,9 @@ def CheckNloptOptions(options):
             f"`if (!parsed_options.local_optimizer_algorithm.empty())` "
             f"(nlopt_solver.cc:546-564), so this combination is ACCEPTED AND INERT -- the "
             f"solve would run NLopt's own inner optimizer while the record claims a tuned "
-            f"one. Name the inner algorithm (LD_LBFGS is what NLopt itself picks for the "
-            f"gradient-based AUGLAG families) or drop the inner options.")
+            f"one. Name the inner algorithm (LD_MMA, LD_CCSAQ and LD_SLSQP are the "
+            f"gradient-based choices Drake's build can actually run) or drop the inner "
+            f"options.")
 
     surface = NloptOptionSurface()
     missing = [(n, NLOPT_POST_1_56_OPTIONS[n].accessor) for n in sorted(requested)
@@ -403,10 +452,15 @@ class ProgramOptions:
     nlopt_stopval: float = field(default=None, metadata={"help": "NLopt 'stopval': stop once cost <= this (Drake default -inf, never fires). Post-1.56.0. Plumbed but NOT swept -- this cost has no known optimum and stopping on it returns points that fail the task gate"})
     ## The AUGMENTED LAGRANGIAN's INNER SOLVER. AUGLAG solves nothing itself: it hands a
     ## sequence of bound-constrained subproblems to a second NLopt algorithm. Left unnamed,
-    ## NLopt picks its own (LD_LBFGS for the gradient-based AUGLAG families) and Drake never
-    ## calls set_local_optimizer -- a supported state, and the one every archived NLopt cell
-    ## ran in. Naming it is the only knob on this column that changes the METHOD rather than a
-    ## tolerance, which is what makes it worth the two traps below.
+    ## Drake never calls set_local_optimizer and NLopt picks its own -- a supported state, and
+    ## the one every archived NLopt cell ran in. Naming it is the only knob on this column that
+    ## changes the METHOD rather than a tolerance, which is what makes it worth the traps below.
+    ##
+    ## NOTE, measured rather than assumed: whatever NLopt picks when this is unset, it is NOT
+    ## LD_LBFGS. Drake's NLopt is built without the LGPL Luksan sources, so LD_LBFGS and the
+    ## whole variable-metric and truncated-Newton family are compiled out (see
+    ## NLOPT_LUKSAN_DISABLED). An earlier comment here and in CLAUDE.md asserted LD_LBFGS was
+    ## the default; it cannot be, because naming it FAILS while leaving this unset solves.
     ##
     ## TRAP ONE, and why the six fields after it are REFUSED rather than ignored when this one
     ## is unset: Drake reads every local_optimizer_* option unconditionally but applies them
@@ -421,8 +475,8 @@ class ProgramOptions:
     ## ftol_abs 0, max_eval 0, max_time 0) into the local optimizer, where before NLopt's own
     ## defaults applied. So "the same inner algorithm, said out loud" is a DIFFERENT
     ## configuration from leaving it unset, and a sweep wanting an unset baseline must field
-    ## one explicitly rather than assume LD_LBFGS reproduces it.
-    nlopt_local_optimizer_algorithm: str = field(default=None, metadata={"help": "NLopt 'local_optimizer_algorithm': the AUGLAG inner solver (e.g. LD_LBFGS, LD_VAR2, LD_TNEWTON_PRECOND_RESTART). None or '' leaves NLopt's own choice, as every archived cell ran; required before any nlopt_local_optimizer_* below. Post-1.56.0"})
+    ## one explicitly rather than assume a named algorithm reproduces it.
+    nlopt_local_optimizer_algorithm: str = field(default=None, metadata={"help": "NLopt 'local_optimizer_algorithm': the AUGLAG inner solver. Drake's build can run LD_MMA, LD_CCSAQ, LD_SLSQP; the LD_LBFGS/LD_VAR*/LD_TNEWTON* family is compiled out (Luksan, LGPL) and is refused. None or '' leaves NLopt's own choice, as every archived cell ran; required before any nlopt_local_optimizer_* below. Post-1.56.0"})
     nlopt_local_optimizer_xtol_rel: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_xtol_rel' (Drake's inner default 1e-6). Inert unless the inner algorithm is named -- refused, not ignored. Post-1.56.0"})
     nlopt_local_optimizer_xtol_abs: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_xtol_abs' (Drake's inner default 1e-6). Inert unless the inner algorithm is named. Post-1.56.0"})
     nlopt_local_optimizer_ftol_rel: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_ftol_rel' (Drake's inner default 0, disabled). Inert unless the inner algorithm is named. Post-1.56.0, and absent from this workstation's source build too"})
@@ -1552,8 +1606,9 @@ class IKFlowProgram:
         none of the new fields emits exactly these keys with exactly these values, which is
         what keeps archived NLopt results comparable. Leaving the local optimizer unset
         remains a supported state -- Drake does not call `set_local_optimizer`, and NLopt
-        supplies its own (LD_LBFGS for the gradient-based AUGLAG families), the right shape
-        because an augmented Lagrangian's inner problem is bound-constrained only.
+        supplies its own, which is the right shape because an augmented Lagrangian's inner
+        problem is bound-constrained only. It is NOT LD_LBFGS: Drake's NLopt is built without
+        the LGPL Luksan sources, so that family is compiled out (NLOPT_LUKSAN_DISABLED).
 
         **NLopt reports nothing.** No print file, no console output, and a details struct
         with a single `status` field -- no iteration count, no evaluation count, not even a

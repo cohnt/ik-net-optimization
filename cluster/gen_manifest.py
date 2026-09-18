@@ -1347,6 +1347,372 @@ def stage_SNOPTTUNE(wall, targets, guesses, shards, only=None, tag="SNOPTTUNE", 
     return items
 
 
+## ---------------------------------------------------------------------------- SNOPTCOMBO --
+##
+## Stage SNOPTTUNE fielded thirteen SNOPT settings at 480 cells x 12 rows and found ONE
+## survivor of the pre-registered bar, `Major step limit = 0.5` (11 of 12 rows better on the
+## learned arm, 3 significantly better, 0 significantly worse). Three further factors were
+## positive and failed the bar: `Elastic weight = 100` (8 better / 4 worse, 3 significant
+## gains -- one row short of the >= 9 clause), `Hessian frequency = 20` (8/4) and
+## `Major optimality tolerance = 1e-8` (8/3, no significant gain).
+##
+## But all four COMBINATIONS that stage tested contained `Nonderivative linesearch`, which
+## turned out to be the harmful factor: 6 better / 6 worse alone, and it dragged down every
+## combination it appeared in, including both that also carried the winner. So the survivor
+## was never crossed with the three other positive factors. That is what this stage does.
+##
+## `Nonderivative linesearch` and `Crash option = 0` are therefore DELIBERATELY ABSENT -- both
+## are refuted at 480 cells (6/6 and 5/7) and the former poisoned SNOPTTUNE's combinations.
+## Do not re-add them; a cross with a refuted factor is a cross with a refuted factor.
+##
+## Expect this NOT to reach parity with IPOPT. Pooled over these twelve rows the learned arm
+## scores 3981/5760 at SNOPT's defaults and 4128 with the step limit, against IPOPT's 5302, so
+## the survivor closes ~12% of the gap and factors of similar size will not close the rest.
+## The deliverable is a defensible SNOPT column, not a rescue.
+SNOPTCOMBO_SNOPT = [
+    ("default", []),
+    ## The two single factors ride along rather than being read off the SNOPTTUNE archive, so
+    ## every comparison is WITHIN one run on the same cells; reproducing their archived counts
+    ## is itself the check that nothing else moved.
+    ("mstep0p5", ["snopt_major_step_limit=0.5"]),
+    ("elastic1e2", ["snopt_elastic_weight=100.0"]),
+    ("mstepelastic", ["snopt_major_step_limit=0.5", "snopt_elastic_weight=100.0"]),
+    ("mstephess20", ["snopt_major_step_limit=0.5", "snopt_hessian_frequency=20"]),
+    ("mstepmajopt", ["snopt_major_step_limit=0.5", "snopt_major_optimality_tol=1e-8"]),
+    ("mstepelastichess", ["snopt_major_step_limit=0.5", "snopt_elastic_weight=100.0",
+                          "snopt_hessian_frequency=20"]),
+    ("mstepelastichessmajopt", ["snopt_major_step_limit=0.5", "snopt_elastic_weight=100.0",
+                                "snopt_hessian_frequency=20",
+                                "snopt_major_optimality_tol=1e-8"]),
+]
+## The two single-factor controls. Every other non-default entry must be a cross OF THE
+## SURVIVOR: an unrelated single factor appearing here would silently make this a second
+## SNOPTTUNE rather than a combination stage, and its result would be read against the wrong
+## question.
+SNOPTCOMBO_CONTROLS = ("mstep0p5", "elastic1e2")
+
+
+def stage_SNOPTCOMBO(wall, targets, guesses, shards, only=None, tag="SNOPTCOMBO", seed=1,
+                     settings=None, starts="paired,native"):
+    """Cross SNOPTTUNE's one survivor with the other positive factors, at 480 cells.
+
+    Straight to 480 with no 60-cell screen, deliberately: every factor here is already
+    screened at 480, and stage STEP's lesson is that a 60-cell screen REVERSES at scale (its
+    promoted `theta_max_fact = 1` went from the best row of the screen to significantly worse
+    at 480, and its mechanism column reversed with it). A screen would add risk, not reduce it.
+
+    Rows are `SOLVER2_ROWS` x both protocols x both adopted rungs -- SNOPTTUNE's twelve, on
+    the same grids, so every cell pairs against both the fielded default and the survivor.
+
+    THE DECISION RULE IS PRE-REGISTERED, and it is two bars rather than one, because "is this
+    a valid SNOPT configuration" and "is it better than the step limit alone" are different
+    questions and only the second justifies a more complicated configuration. Counted by ROW,
+    never pooled (Thomas, 2026-09-17: "Do not pool experiments, that is useless"), on the
+    LEARNED arm:
+
+      Bar A, against Drake's SNOPT defaults -- SNOPTTUNE's bar unchanged: better on >= 9 of
+        the 12 rows, significantly worse (p < 0.05) on none, significantly better on >= 1.
+      Bar B, against `mstep0p5` in the same run: better on >= 8 of the 12 rows and
+        significantly worse on none.
+
+    A combination is recommended over `Major step limit = 0.5` alone only if it clears BOTH.
+    `scripts/report_snoptcombo.py` implements both inline so they cannot drift.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    for st in want_starts:
+        if st not in ("paired", "native"):
+            raise SystemExit(f"--starts: unknown protocol {st!r}; expected paired or native")
+    keep = set(settings.split(",")) if settings else None
+    for name, sets in SNOPTCOMBO_SNOPT:
+        for knob in sets:
+            if not knob.startswith("snopt_"):
+                raise SystemExit(
+                    f"stage_SNOPTCOMBO entry {name!r} names {knob.split('=')[0]!r}, which is "
+                    "not a SNOPT option -- this stage decides SNOPT's column alone")
+        ## The guard SNOPTTUNE did not need: this stage's question is crosses OF the survivor.
+        if name != "default" and name not in SNOPTCOMBO_CONTROLS:
+            if "snopt_major_step_limit=0.5" not in sets:
+                raise SystemExit(
+                    f"stage_SNOPTCOMBO entry {name!r} is neither `default`, one of the "
+                    f"single-factor controls {SNOPTCOMBO_CONTROLS}, nor a cross containing "
+                    "snopt_major_step_limit=0.5. This stage exists to cross SNOPTTUNE's one "
+                    "survivor with the other positive factors; an unrelated setting here "
+                    "would make it a second SNOPTTUNE measured against the wrong question.")
+    if keep is not None:
+        known = {n for n, _ in SNOPTCOMBO_SNOPT}
+        unknown = keep - known
+        if unknown:
+            raise SystemExit(f"--settings: no such token(s) {sorted(unknown)}; "
+                             f"expected from {sorted(known)}")
+        for needed in ("default",) + SNOPTCOMBO_CONTROLS[:1]:
+            if needed not in keep:
+                raise SystemExit(
+                    f"--settings must include {needed!r}: without both its own baseline and "
+                    "its own `mstep0p5` column, Bar A or Bar B would have to be evaluated "
+                    "against an archived run, i.e. across code versions and node contention")
+    items = []
+    for robot, label, ckpt in ADOPTED_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                 "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET)]
+                + (["--checkpoint", ckpt] if ckpt else []))
+        for name, sets in SNOPTCOMBO_SNOPT:
+            if keep is not None and name not in keep:
+                continue
+            for task, token, placement in SOLVER2_ROWS:
+                for start in want_starts:
+                    args = (["--task", task, "--start", start, "--solver", "snopt"]
+                            + placement + base)
+                    for knob in sets:
+                        args += ["--set", knob]
+                    items += item(robot,
+                                  f"sc_{tag}_{robot}_{label}_snopt_{token}"
+                                  f"_{targets * guesses}_{int(wall)}_{start}_{name}",
+                                  args, targets, guesses, LADDER_ARMS, wall, shards,
+                                  seed=seed)
+    return items
+
+
+## ----------------------------------------------------------------------------- NLOPTTUNE --
+##
+## The augmented-Lagrangian column, reopened because Drake finally exposes the options it
+## needs. CLAUDE.md carried this as future work BY DECISION (Thomas: "Store testing NLOPT
+## settings as future work") with a standing TODO: the AL's inner local optimizer was not
+## selectable on the cluster's Drake at all. Drake PR 25002 (merged 2026-09-17) completes the
+## surface at sixteen options against 1.56.0's six, and 1.57.0 was cut before it, so these
+## rows require the nightly -- hence `env="DRAKE=nightly"` on every item, which
+## cluster/run_items.sh translates into that install's PYTHONPATH.
+##
+## TWO THINGS SHAPE THIS TABLE, both read out of Drake rather than assumed.
+##
+## First, nlopt_solver.cc:546-564 applies every `local_optimizer_*` option only inside
+## `if (!parsed_options.local_optimizer_algorithm.empty())`, so an inner budget or tolerance
+## set without naming the inner algorithm is ACCEPTED AND INERT. Every inner arm below names
+## the algorithm; ProgramOptions refuses the combination that would not.
+##
+## Second, and it is not a settings question at all: NLopt's failure here is the WALL CLOCK.
+## Of the twelve archived 60-cell columns the learned arm times out on 60 of 60 cells in four
+## of them and 52-58 in two more. CLAUDE.md's own cap rule says a losing arm with significant
+## timeouts is measuring throughput rather than method, so `cap180` is in the table by that
+## rule, not as an afterthought.
+##
+## `stopval` is plumbed but absent from this table on purpose: this program minimises a cost
+## with no known optimum, and stopping on cost returns iterates the task gate then rejects.
+## Inner algorithms Drake's NLopt can ACTUALLY RUN. Drake's build omits the LGPL Luksan
+## sources, so LD_LBFGS, the LD_VAR* family and every LD_TNEWTON* variant are listed by
+## ParseNloptAlgorithm as valid choices and then refused at solve time with
+## "attempting to use NLOPT_LD_LBFGS, but Luksan code disabled", returning kInvalidInput and
+## status 0. A local smoke run caught it: six settings returned 0.5 s cells with q=None and no
+## violation, which reads like a harness bug rather than a missing algorithm. So the
+## gradient-based inner choices here are LD_MMA, LD_CCSAQ and LD_SLSQP, and there is no
+## "name what NLopt already picks" control available -- whatever it picks when unset, it is
+## not LD_LBFGS, because naming that fails while leaving it unset solves.
+##
+## The inner-BUDGET arms are based on LD_MMA, with one LD_SLSQP counterpart: the budget lever
+## and the algorithm choice are separate questions, and testing the budget against a single
+## algorithm would let "the budget does not matter" be an artefact of that one algorithm.
+##
+## Top-level `ftol_rel`/`ftol_abs` are plumbed but absent here on purpose. They are STOPPING
+## criteria on the objective, and this column's problem is that it never reaches feasibility:
+## a looser one stops earlier at a point the task gate then rejects, and a tighter one is
+## inert because Drake's default of 0 already means "never stop on the objective". PR 25002's
+## contribution that CAN help is the INNER ftol, which `mmaloose` uses.
+## Kept in step with src.generic_program.NLOPT_LUKSAN_DISABLED, which is the source of truth
+## and carries the full explanation. Duplicated rather than imported because gen_manifest.py
+## runs on a login node with no pydrake and no torch on the path, and importing src pulls both.
+NLOPT_LUKSAN_DISABLED = frozenset({
+    "LD_LBFGS", "NLOPT_LD_LBFGS_NOCEDAL", "LD_VAR1", "LD_VAR2",
+    "LD_TNEWTON", "LD_TNEWTON_RESTART", "LD_TNEWTON_PRECOND",
+    "LD_TNEWTON_PRECOND_RESTART",
+})
+
+NLOPTTUNE_NLOPT = [
+    ("default", []),
+    ("innermma", ["nlopt_local_optimizer_algorithm=LD_MMA"]),
+    ("innerccsaq", ["nlopt_local_optimizer_algorithm=LD_CCSAQ"]),
+    ## FLAGGED FOR THOMAS, not decided here: this puts an SQP method inside the augmented
+    ## Lagrangian. The outer method is still AL and the inner subproblem is bound-constrained
+    ## only, so it reads as an AL column rather than a duplicate of SNOPT's -- but the
+    ## three-method-classes rule is his, so the reporter carries the caveat and this row is
+    ## excluded from any adoption recommendation if he disagrees.
+    ("innerslsqp", ["nlopt_local_optimizer_algorithm=LD_SLSQP"]),
+    ## The one inner knob with a mechanism rather than a tolerance behind it. A positive cap
+    ## TRUNCATES each subproblem, so the outer AL updates its multipliers far more often
+    ## instead of driving the first subproblem to convergence -- the classic AL tuning, and the
+    ## most plausible answer to burning 4,900-6,100 network Jacobians in a single cell.
+    ("mma50", ["nlopt_local_optimizer_algorithm=LD_MMA",
+               "nlopt_local_optimizer_max_eval=50"]),
+    ("mma200", ["nlopt_local_optimizer_algorithm=LD_MMA",
+                "nlopt_local_optimizer_max_eval=200"]),
+    ("slsqp50", ["nlopt_local_optimizer_algorithm=LD_SLSQP",
+                 "nlopt_local_optimizer_max_eval=50"]),
+    ## Loose early inner solves, standard AL practice. Uses a PR-25002 option
+    ## (local_optimizer_ftol_rel), so this row also proves the newest half of the surface
+    ## reaches the solver on the cluster.
+    ("mmaloose", ["nlopt_local_optimizer_algorithm=LD_MMA",
+                  "nlopt_local_optimizer_xtol_rel=1e-3",
+                  "nlopt_local_optimizer_ftol_rel=1e-3"]),
+    ## Rung-2 tolerance, never swept on this column. It cannot be gamed: the task gate stays
+    ## at task_tol=1e-3 and success is re-verified from the returned point, so a looser AL
+    ## constraint tolerance that returns worse points simply fails the gate.
+    ("ctol1em04", ["nlopt_constraint_tol=1e-4"]),
+]
+## The cap arm is a WALL-TIME change rather than an option, so it cannot live in the table
+## above -- and it needs its own sharding, because 60 cells x 2 arms x 180 s is ~6 h against
+## run_items.sh's 4 h ITEM_TIMEOUT, which would kill the item and leave a stale .claim.
+NLOPTTUNE_CAP_WALL = 180.0
+NLOPTTUNE_CAP_SHARDS = 4
+
+
+def stage_NLOPTTUNE(wall, targets, guesses, shards, only=None, tag="NLOPTTUNE", seed=1,
+                    settings=None, starts="paired,native", cap=True):
+    """Every NLopt option Drake now exposes, on the 60-cell triage grid, plus a cap arm.
+
+    Screened at 60 rather than 480 for the reason stage_SOLVER2 triaged NLopt in the first
+    place: a column that may be empty does not need campaign scale to be honest. The archived
+    learned-arm counts are 0, 1, 0, 0, 39, 8 (iiwa) and 27, 1, 12, 0, 38, 8 (Panda) of 60, so
+    most rows are at the floor and a 480-cell sweep of twelve settings would spend ~1,700
+    core-hours to answer what 60 cells answer. The grid IS stage_SOLVER2's triage grid, so
+    every cell pairs against those archived columns as well as against this run's own default.
+
+    PRE-REGISTERED PROMOTION GATE, fixed before any result is read: a setting advances to 480
+    cells only if, on the learned arm, it beats `default` by >= +8 cells of 60 on >= 6 of the
+    12 rows, or takes any single row from <= 2/60 to >= 20/60. At most three advance. A NULL
+    IS A COMPLETE RESULT -- "every option Drake now exposes, measured, and the augmented
+    Lagrangian is still not competitive" is what closes this axis.
+
+    Every item carries `DRAKE=nightly`: the local-optimizer and PR-25002 options do not exist
+    in the cluster's pinned 1.56.0, and ProgramOptions refuses them there rather than letting
+    Drake fail every cell with fail_reason="error".
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    for st in want_starts:
+        if st not in ("paired", "native"):
+            raise SystemExit(f"--starts: unknown protocol {st!r}; expected paired or native")
+    keep = set(settings.split(",")) if settings else None
+    for name, sets in NLOPTTUNE_NLOPT:
+        for knob in sets:
+            if not knob.startswith("nlopt_"):
+                raise SystemExit(
+                    f"stage_NLOPTTUNE entry {name!r} names {knob.split('=')[0]!r}, which is "
+                    "not an NLopt option -- this stage decides NLopt's column alone")
+        ## Drake's NLopt cannot run the Luksan family (LD_LBFGS, LD_VAR*, LD_TNEWTON*): it
+        ## accepts the NAME and then returns kInvalidInput from every solve. Refused here as
+        ## well as in ProgramOptions, because this is the copy that fails on a laptop in
+        ## milliseconds instead of after a cluster submission.
+        for knob in sets:
+            if knob.split("=", 1)[0].endswith("algorithm"):
+                algo = knob.split("=", 1)[1]
+                if algo in NLOPT_LUKSAN_DISABLED:
+                    raise SystemExit(
+                        f"stage_NLOPTTUNE entry {name!r} names {algo}, which Drake's NLopt "
+                        "lists as valid and cannot run -- the Luksan sources are LGPL and "
+                        "Drake does not bundle them, so the solve returns kInvalidInput on "
+                        "every cell. Usable gradient-based choices: LD_MMA, LD_CCSAQ, "
+                        "LD_SLSQP.")
+        ## The inert-combination guard, mirrored here for the same reason.
+        inner = [k for k in sets if k.startswith("nlopt_local_optimizer_")
+                 and not k.startswith("nlopt_local_optimizer_algorithm")]
+        if inner and not any(k.startswith("nlopt_local_optimizer_algorithm=") and
+                             k.split("=", 1)[1] for k in sets):
+            raise SystemExit(
+                f"stage_NLOPTTUNE entry {name!r} sets {inner} without naming "
+                "nlopt_local_optimizer_algorithm. Drake applies local_optimizer_* options "
+                "only when the inner algorithm is non-empty (nlopt_solver.cc:546-564), so "
+                "this row would measure the default inner solver while claiming a tuned one.")
+    if keep is not None:
+        known = {n for n, _ in NLOPTTUNE_NLOPT}
+        unknown = keep - known
+        if unknown:
+            raise SystemExit(f"--settings: no such token(s) {sorted(unknown)}; "
+                             f"expected from {sorted(known)}")
+        if "default" not in keep:
+            raise SystemExit("--settings must include 'default': without its own baseline "
+                             "column a run pairs against an archived one, i.e. across code "
+                             "versions, Drake versions and node contention")
+    items = []
+    for robot, label, ckpt in ADOPTED_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                 "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET)]
+                + (["--checkpoint", ckpt] if ckpt else []))
+        ## (name, knobs, wall, shards) -- the cap arm differs in wall and sharding, not in
+        ## options, so it is appended here rather than smuggled into the settings table.
+        arms = [(n, sets, wall, shards) for n, sets in NLOPTTUNE_NLOPT
+                if keep is None or n in keep]
+        if cap and (keep is None or "cap180" in keep):
+            arms.append(("cap180", [], NLOPTTUNE_CAP_WALL, NLOPTTUNE_CAP_SHARDS))
+        for name, sets, item_wall, item_shards in arms:
+            for task, token, placement in SOLVER2_ROWS:
+                for start in want_starts:
+                    args = (["--task", task, "--start", start, "--solver", "nlopt"]
+                            + placement + base)
+                    for knob in sets:
+                        args += ["--set", knob]
+                    items += item(robot,
+                                  f"sc_{tag}_{robot}_{label}_nlopt_{token}"
+                                  f"_{targets * guesses}_{int(item_wall)}_{start}_{name}",
+                                  args, targets, guesses, LADDER_ARMS, item_wall,
+                                  item_shards, env="DRAKE=nightly", seed=seed)
+    return items
+
+
+## ----------------------------------------------------------------------------- DRAKEBUMP --
+##
+## Does the Drake bump itself move a FIELDED column? Worth answering on its own, because it is
+## the only thing that could ever justify moving the project's pin off 1.56.0, and because
+## stage NLOPTTUNE's default column runs on the nightly while the twelve archived NLopt columns
+## ran on 1.56.0 -- without this, any difference between them is unattributable.
+##
+## Deliberately small: two rows per robot, both solvers that report enough to compare, one
+## protocol. The 1.56.0 halves also pair cell-for-cell against the archived sc_SOLVER2_*
+## columns on identical grid_hashes, so they are a second, free reproduction check.
+DRAKEBUMP_ROWS = (("mug", "mugshelf", ["--target-placement", "shelf"]),
+                  ("pose", "posetip", ["--target-placement", "shelf",
+                                       "--placement-point", "fingertips"]))
+
+
+def stage_DRAKEBUMP(wall, targets, guesses, shards, only=None, tag="DRAKEBUMP", seed=1,
+                    solvers="ipopt,snopt", starts="paired"):
+    """The same rows under the pinned 1.56.0 and under the nightly, as a version check.
+
+    Reported as a version check and never as a result: if the nightly moves a fielded column,
+    every cross-Drake comparison in stage NLOPTTUNE is stated with that caveat and the pin
+    stays where it is. NLopt is excluded here -- its own stage already carries a nightly
+    default, and on 1.56.0 it would be measuring a column that is at the floor anyway.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_solvers = [x.strip() for x in solvers.split(",") if x.strip()]
+    for sv in want_solvers:
+        if sv not in ("ipopt", "snopt"):
+            raise SystemExit(f"--solvers: {sv!r} is not a solver this stage compares across "
+                             "Drake versions; expected ipopt or snopt")
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    items = []
+    for robot, label, ckpt in ADOPTED_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                 "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET)]
+                + (["--checkpoint", ckpt] if ckpt else []))
+        for drake, env in (("pinned", "-"), ("nightly", "DRAKE=nightly")):
+            for solver in want_solvers:
+                for task, token, placement in DRAKEBUMP_ROWS:
+                    for start in want_starts:
+                        args = (["--task", task, "--start", start, "--solver", solver]
+                                + placement + base)
+                        items += item(robot,
+                                      f"sc_{tag}_{robot}_{label}_{solver}_{token}"
+                                      f"_{targets * guesses}_{int(wall)}_{start}_{drake}",
+                                      args, targets, guesses, LADDER_ARMS, wall, shards,
+                                      env=env, seed=seed)
+    return items
+
+
 def stage_INSET(wall, targets, guesses, shards, only=None, tag="INSET", seed=1):
     """Sweep the compartment depth inset, on both tasks, at reduced scale.
 
@@ -1632,6 +1998,13 @@ def selftest():
                          ("SNOPTTUNE-one", stage_SNOPTTUNE(45, 60, 8, 8,
                                                           settings="default,nonderivls",
                                                           starts="paired")),
+                         ("SNOPTCOMBO", stage_SNOPTCOMBO(45, 60, 8, 8)),
+                         ("SNOPTCOMBO-one", stage_SNOPTCOMBO(
+                             45, 60, 8, 8, settings="default,mstep0p5,mstepelastic",
+                             starts="paired")),
+                         ("NLOPTTUNE", stage_NLOPTTUNE(45, 15, 4, 1)),
+                         ("NLOPTTUNE-nocap", stage_NLOPTTUNE(45, 15, 4, 1, cap=False)),
+                         ("DRAKEBUMP", stage_DRAKEBUMP(45, 60, 8, 8)),
                          ("STEP480", stage_STEP(45, 60, 8, 8, solvers="ipopt",
                                                 settings="default,theta1",
                                                 starts="paired,native", tag="STEP480")),
@@ -2038,6 +2411,242 @@ def selftest():
     fails += len(sn_fails)
 
 
+    ## Stage SNOPTCOMBO. Same strictness as SNOPTTUNE -- it too would decide a fielded default
+    ## -- plus the guard that is this stage's whole point: every non-control entry must be a
+    ## cross containing the survivor, or the stage silently becomes a second SNOPTTUNE.
+    sc_fails = []
+    runs_sc = stage_SNOPTCOMBO(45, 60, 8, 8)
+    want_sc = 2 * 3 * 2 * len(SNOPTCOMBO_SNOPT) * 8
+    if len(runs_sc) != want_sc:
+        sc_fails.append("expected %d items, got %d" % (want_sc, len(runs_sc)))
+    names_sc = [n for n, _ in SNOPTCOMBO_SNOPT]
+    if len(set(names_sc)) != len(names_sc):
+        sc_fails.append("duplicate setting token in SNOPTCOMBO_SNOPT")
+    if "default" not in names_sc:
+        sc_fails.append("no `default` column -- nothing to pair Bar A against")
+    for ctl in SNOPTCOMBO_CONTROLS:
+        if ctl not in names_sc:
+            sc_fails.append("single-factor control %r is missing" % ctl)
+    ## The refuted factors must stay out. Named explicitly rather than inferred, so re-adding
+    ## one is a test failure and not a judgement call.
+    for refuted in ("snopt_nonderivative_linesearch", "snopt_crash_option"):
+        if any(any(k.startswith(refuted) for k in sets) for _, sets in SNOPTCOMBO_SNOPT):
+            sc_fails.append("%s is refuted at 480 cells and must not appear here" % refuted)
+    ## Bar B needs a `mstep0p5` column in the same run, so the survivor must be crossed with
+    ## every other factor exactly once and appear alone once.
+    if dict(SNOPTCOMBO_SNOPT)["mstep0p5"] != ["snopt_major_step_limit=0.5"]:
+        sc_fails.append("the `mstep0p5` control is not the bare survivor")
+    seen_sc = set()
+    for it in runs_sc:
+        a = it["args"]
+        task = a[a.index("--task") + 1]
+        if a[a.index("--seed") + 1] != "1":
+            sc_fails.append("%s is not on the out-of-sample seed 1" % it["id"])
+        if a[a.index("--solver") + 1] != "snopt":
+            sc_fails.append("%s is not a SNOPT run" % it["id"])
+        if a[a.index("--scene") + 1] != "hardened":
+            sc_fails.append("%s is not on the hardened scene" % it["id"])
+        if "_480_" not in it["id"]:
+            sc_fails.append("%s does not carry its cell count" % it["id"])
+        if it["env"] != "-":
+            sc_fails.append("%s carries an env override; this stage runs the PINNED Drake, "
+                            "or it is not comparable to the SNOPTTUNE archive" % it["id"])
+        if task == "mug" and "--placement-point" in a:
+            sc_fails.append("%s passes --placement-point on a grasp row" % it["id"])
+        if task == "pose" and "--placement-point" not in a:
+            sc_fails.append("%s is a pose row without a containment point" % it["id"])
+        setting = re.sub(r"_shard\d+of\d+$", "", it["id"]).rsplit("_", 1)[-1]
+        seen_sc.add((it["robot"], task, a[a.index("--target-placement") + 1],
+                     a[a.index("--start") + 1], setting))
+    for name in names_sc:
+        rows_for = {k[:4] for k in seen_sc if k[4] == name}
+        if len(rows_for) != 12:
+            sc_fails.append("setting %r reaches %d of the 12 rows" % (name, len(rows_for)))
+    for bad, why in ((dict(starts="warmstart"), "an unknown start protocol"),
+                     (dict(settings="default,nosuchtoken"), "an unknown setting token"),
+                     (dict(settings="default,mstepelastic"),
+                      "a filter with no `mstep0p5` column for Bar B")):
+        try:
+            stage_SNOPTCOMBO(45, 60, 8, 8, **bad)
+            sc_fails.append("%s was accepted" % why)
+        except SystemExit:
+            pass
+    ## Both guards fire: a non-SNOPT knob, and a setting that is not a cross of the survivor.
+    for smuggled, why in ((("smuggled", ["ipopt_mu_strategy=adaptive"]),
+                           "an IPOPT knob"),
+                          (("loneelastic", ["snopt_hessian_frequency=20"]),
+                           "a single factor that is not a cross of the survivor")):
+        try:
+            SNOPTCOMBO_SNOPT.append(smuggled)
+            stage_SNOPTCOMBO(45, 60, 8, 8)
+            sc_fails.append("%s was accepted into SNOPTCOMBO's table" % why)
+        except SystemExit:
+            pass
+        finally:
+            SNOPTCOMBO_SNOPT[:] = [e for e in SNOPTCOMBO_SNOPT
+                                   if e[0] not in ("smuggled", "loneelastic")]
+    for msg in sc_fails:
+        print(f"FAIL stage SNOPTCOMBO: {msg}")
+    if not sc_fails:
+        print("ok   stage SNOPTCOMBO: %d items, %d settings x 12 rows each, seed 1, SNOPT "
+              "only, pinned Drake, every cross carries the survivor"
+              % (want_sc, len(SNOPTCOMBO_SNOPT)))
+    fails += len(sc_fails)
+
+    ## Stage NLOPTTUNE. The invariants that matter here are different in kind: this stage is
+    ## the only one that runs a DIFFERENT DRAKE, and the only one whose options are silently
+    ## inert if mis-specified. So: every item must carry the nightly sentinel, no inner option
+    ## may appear without an inner algorithm, and the cap arm must be sharded or it dies on
+    ## run_items.sh's 4 h ITEM_TIMEOUT.
+    nl_fails = []
+    runs_nl = stage_NLOPTTUNE(45, 15, 4, 1)
+    want_nl = 2 * 3 * 2 * (len(NLOPTTUNE_NLOPT) + NLOPTTUNE_CAP_SHARDS)
+    if len(runs_nl) != want_nl:
+        nl_fails.append("expected %d items, got %d" % (want_nl, len(runs_nl)))
+    names_nl = [n for n, _ in NLOPTTUNE_NLOPT]
+    if len(set(names_nl)) != len(names_nl):
+        nl_fails.append("duplicate setting token in NLOPTTUNE_NLOPT")
+    if "default" not in names_nl:
+        nl_fails.append("no `default` column")
+    if "cap180" in names_nl:
+        nl_fails.append("`cap180` is a wall-time arm and must not be in the settings table -- "
+                        "in it, it would run at the screen's 45 s and measure nothing new")
+    ## `stopval` is plumbed and deliberately unswept; keep it out by test, not by memory.
+    for _n, _sets in NLOPTTUNE_NLOPT:
+        for _k in _sets:
+            if _k.split("=", 1)[0].endswith("algorithm") \
+                    and _k.split("=", 1)[1] in NLOPT_LUKSAN_DISABLED:
+                nl_fails.append("%s names %s, which Drake's NLopt cannot run"
+                                % (_n, _k.split("=", 1)[1]))
+    if any(any("nlopt_stopval" in k for k in sets) for _, sets in NLOPTTUNE_NLOPT):
+        nl_fails.append("nlopt_stopval is deliberately not swept: this cost has no known "
+                        "optimum and stopping on it returns points the task gate rejects")
+    seen_nl, caps = set(), set()
+    for it in runs_nl:
+        a = it["args"]
+        task = a[a.index("--task") + 1]
+        setting = re.sub(r"_shard\d+of\d+$", "", it["id"]).rsplit("_", 1)[-1]
+        if a[a.index("--seed") + 1] != "1":
+            nl_fails.append("%s is not on the out-of-sample seed 1" % it["id"])
+        if a[a.index("--solver") + 1] != "nlopt":
+            nl_fails.append("%s is not an NLopt run" % it["id"])
+        if it["env"] != "DRAKE=nightly":
+            nl_fails.append("%s does not select the nightly Drake; the local-optimizer and "
+                            "PR-25002 options do not exist in the pinned 1.56.0" % it["id"])
+        if a[a.index("--scene") + 1] != "hardened":
+            nl_fails.append("%s is not on the hardened scene" % it["id"])
+        if task == "mug" and "--placement-point" in a:
+            nl_fails.append("%s passes --placement-point on a grasp row" % it["id"])
+        ## Every emitted inner option must be accompanied by a non-empty inner algorithm.
+        inner = [a[i + 1] for i, x in enumerate(a) if x == "--set"
+                 and a[i + 1].startswith("nlopt_local_optimizer_")
+                 and not a[i + 1].startswith("nlopt_local_optimizer_algorithm")]
+        named = [a[i + 1].split("=", 1)[1] for i, x in enumerate(a) if x == "--set"
+                 and a[i + 1].startswith("nlopt_local_optimizer_algorithm=")]
+        if inner and not any(named):
+            nl_fails.append("%s sets %s with no inner algorithm -- Drake would accept it and "
+                            "discard it" % (it["id"], inner))
+        if setting == "cap180":
+            caps.add(it["id"])
+            if a[a.index("--wall-time") + 1] != str(NLOPTTUNE_CAP_WALL):
+                nl_fails.append("%s is the cap arm but not at %s s"
+                                % (it["id"], NLOPTTUNE_CAP_WALL))
+        seen_nl.add((it["robot"], task, a[a.index("--target-placement") + 1],
+                     a[a.index("--start") + 1], setting))
+    for name in names_nl + ["cap180"]:
+        rows_for = {k[:4] for k in seen_nl if k[4] == name}
+        if len(rows_for) != 12:
+            nl_fails.append("setting %r reaches %d of the 12 rows" % (name, len(rows_for)))
+    if len(caps) != 12 * NLOPTTUNE_CAP_SHARDS:
+        nl_fails.append("the cap arm expands to %d items, not 12 x %d -- at 180 s an "
+                        "unsharded 60-cell item is ~6 h against a 4 h ITEM_TIMEOUT"
+                        % (len(caps), NLOPTTUNE_CAP_SHARDS))
+    if NLOPTTUNE_CAP_SHARDS < 2:
+        nl_fails.append("the cap arm must be sharded")
+    if not stage_NLOPTTUNE(45, 15, 4, 1, cap=False):
+        nl_fails.append("cap=False produced nothing")
+    if any("cap180" in i["id"] for i in stage_NLOPTTUNE(45, 15, 4, 1, cap=False)):
+        nl_fails.append("cap=False still emitted the cap arm")
+    for bad, why in ((dict(starts="warmstart"), "an unknown start protocol"),
+                     (dict(settings="default,nosuchtoken"), "an unknown setting token"),
+                     (dict(settings="innerlbfgs"), "a filter with no default baseline")):
+        try:
+            stage_NLOPTTUNE(45, 15, 4, 1, **bad)
+            nl_fails.append("%s was accepted" % why)
+        except SystemExit:
+            pass
+    for smuggled, why in ((("smuggled", ["snopt_major_step_limit=0.5"]), "a SNOPT knob"),
+                          (("inert", ["nlopt_local_optimizer_max_eval=50"]),
+                           "an inner option with no inner algorithm"),
+                          (("inertempty", ["nlopt_local_optimizer_algorithm=",
+                                           "nlopt_local_optimizer_max_eval=50"]),
+                           "an inner option with an EMPTY inner algorithm"),
+                          (("luksan", ["nlopt_local_optimizer_algorithm=LD_LBFGS"]),
+                           "an inner algorithm Drake lists and cannot run"),
+                          (("luksanouter", ["nlopt_algorithm=LD_TNEWTON_PRECOND_RESTART"]),
+                           "an OUTER algorithm Drake lists and cannot run")):
+        try:
+            NLOPTTUNE_NLOPT.append(smuggled)
+            stage_NLOPTTUNE(45, 15, 4, 1)
+            nl_fails.append("%s was accepted into NLOPTTUNE's table" % why)
+        except SystemExit:
+            pass
+        finally:
+            NLOPTTUNE_NLOPT[:] = [e for e in NLOPTTUNE_NLOPT
+                                  if e[0] not in ("smuggled", "inert", "inertempty",
+                                                  "luksan", "luksanouter")]
+    for msg in nl_fails:
+        print(f"FAIL stage NLOPTTUNE: {msg}")
+    if not nl_fails:
+        print("ok   stage NLOPTTUNE: %d items, %d settings + a sharded 180 s cap arm x 12 "
+              "rows each, seed 1, NLopt only, nightly Drake on every item"
+              % (want_nl, len(NLOPTTUNE_NLOPT)))
+    fails += len(nl_fails)
+
+    ## Stage DRAKEBUMP. Its whole value is that the two halves differ in NOTHING but the Drake
+    ## install, so that is what the selftest checks: identical args, one `-` env and one
+    ## nightly env, paired per row.
+    db_fails = []
+    runs_db = stage_DRAKEBUMP(45, 60, 8, 8)
+    want_db = 2 * 2 * 2 * len(DRAKEBUMP_ROWS) * 8
+    if len(runs_db) != want_db:
+        db_fails.append("expected %d items, got %d" % (want_db, len(runs_db)))
+    by_args = {}
+    for it in runs_db:
+        a = it["args"]
+        drake = re.sub(r"_shard\d+of\d+$", "", it["id"]).rsplit("_", 1)[-1]
+        if drake not in ("pinned", "nightly"):
+            db_fails.append("%s does not name its Drake" % it["id"])
+        if a[a.index("--seed") + 1] != "1":
+            db_fails.append("%s is not on the out-of-sample seed 1" % it["id"])
+        if a[a.index("--solver") + 1] == "nlopt":
+            db_fails.append("%s fields NLopt; its own stage carries the nightly default and "
+                            "on 1.56.0 the column is at the floor anyway" % it["id"])
+        if (drake == "nightly") != (it["env"] == "DRAKE=nightly"):
+            db_fails.append("%s: the tag and the env disagree about which Drake" % it["id"])
+        ## Keyed on the args with `--tag` REMOVED: the tag necessarily differs between the
+        ## two halves (it is what names the Drake), so leaving it in would make every vector
+        ## unique and the pairing check vacuous in the failing direction.
+        t = a.index("--tag")
+        by_args.setdefault(tuple(a[:t] + a[t + 2:]), set()).add(drake)
+    ## Every argument vector must appear under BOTH Drakes: that pairing is the measurement.
+    unpaired = [k for k, v in by_args.items() if v != {"pinned", "nightly"}]
+    if unpaired:
+        db_fails.append("%d argument vector(s) do not appear under both Drakes"
+                        % len(unpaired))
+    try:
+        stage_DRAKEBUMP(45, 60, 8, 8, solvers="nlopt")
+        db_fails.append("NLopt was accepted as a cross-Drake comparison solver")
+    except SystemExit:
+        pass
+    for msg in db_fails:
+        print(f"FAIL stage DRAKEBUMP: {msg}")
+    if not db_fails:
+        print("ok   stage DRAKEBUMP: %d items, %d arg vectors each under both the pinned and "
+              "the nightly Drake" % (want_db, len(by_args)))
+    fails += len(db_fails)
+
+
     for msg in hard_fails:
         print(f"FAIL stage HARD: {msg}")
     if not hard_fails:
@@ -2081,15 +2690,17 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "DRAKEBUMP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
-                   help="STEP stage only: comma-separated setting tokens to field, so the "
-                        "480-cell confirmation runs only the screen's survivors without a "
-                        "code edit. Must include 'default'.")
+                   help="STEP, SNOPTTUNE, SNOPTCOMBO and NLOPTTUNE stages: comma-separated "
+                        "setting tokens to field, so a confirmation runs only the screen's "
+                        "survivors without a code edit. Must include 'default' (and, for "
+                        "SNOPTCOMBO, 'mstep0p5', which is its second pre-registered bar).")
     p.add_argument("--starts", default="paired",
-                   help="STEP and SNOPTTUNE stages: comma-separated start protocols. "
+                   help="STEP, SNOPTTUNE, SNOPTCOMBO and NLOPTTUNE stages: comma-separated "
+                        "start protocols. "
                         "STEP's 60-cell screen is 'paired' (diagnostic) and its confirmation "
                         "is 'paired,native'. SNOPTTUNE needs 'paired,native' explicitly -- "
                         "the default here is the screen's, and a setting measured on one "
@@ -2157,6 +2768,20 @@ def main():
                                                  args.guesses, args.shards,
                                                  only=args.rungs,
                                                  settings=args.settings,
+                                                 starts=args.starts),
+             "SNOPTCOMBO": lambda: stage_SNOPTCOMBO(args.wall_time, args.targets,
+                                                   args.guesses, args.shards,
+                                                   only=args.rungs,
+                                                   settings=args.settings,
+                                                   starts=args.starts),
+             "NLOPTTUNE": lambda: stage_NLOPTTUNE(args.wall_time, args.targets,
+                                                 args.guesses, args.shards,
+                                                 only=args.rungs,
+                                                 settings=args.settings,
+                                                 starts=args.starts),
+             "DRAKEBUMP": lambda: stage_DRAKEBUMP(args.wall_time, args.targets,
+                                                 args.guesses, args.shards,
+                                                 only=args.rungs, solvers=args.solvers,
                                                  starts=args.starts),
              "HARD": lambda: stage_HARD(args.wall_time, args.targets,
                                         args.guesses, args.shards, only=args.rungs),

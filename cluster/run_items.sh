@@ -131,7 +131,7 @@ Worker() {
     local OK=0 FAIL=0 SKIP=0
     ## Comments and blanks dropped first, so every worker numbers items alike.
     mapfile -t LINES < <(grep -vE '^[[:space:]]*(#|$)' "$MANIFEST")
-    local k LINE ID ENVS SCRIPT ARGS REST MARKER CLAIM T0 STATUS
+    local k LINE ID ENVS ITEM_ENVS NIGHTLY SCRIPT ARGS REST MARKER CLAIM T0 STATUS
     for ((k = 0; k < ${#LINES[@]}; k++)); do
         LINE="${LINES[$k]}"
         ID="${LINE%%|*}";      REST="${LINE#*|}"
@@ -146,13 +146,36 @@ Worker() {
         mkdir "$CLAIM" 2>/dev/null || { SKIP=$((SKIP + 1)); continue; }
         echo "$TAGID $(date -Is)" > "$CLAIM/owner"
 
-        { echo "--- [$k] $ID START $(date -Is)"; echo "    env $ENVS -- $SCRIPT $ARGS"; } \
+        ## `DRAKE=nightly` selects this project's SECOND Drake install instead of the pinned
+        ## one. Translated here rather than written into the manifest because gen_manifest.py
+        ## runs on a laptop and cannot know the cluster's absolute $HOME, and the manifest has
+        ## to stay host-independent. `env KEY=VAL` overrides the PYTHONPATH exported above for
+        ## this child only, so a nightly item and a pinned item can run side by side in the
+        ## same job -- which is exactly what stage DRAKEBUMP needs to compare them.
+        ##
+        ## Both installs live under $ROOT, i.e. inside THIS project's tree: cluster Drake
+        ## versions are per-project, and another project's runs must never resolve a Drake this
+        ## one bumped.
+        ITEM_ENVS="$ENVS"
+        case " $ENVS " in
+            *" DRAKE=nightly "*)
+                NIGHTLY="$ROOT/drake-nightly/lib/python3.12/site-packages"
+                if [ ! -d "$NIGHTLY" ]; then
+                    echo "--- [$k] $ID SKIP: DRAKE=nightly but $NIGHTLY is absent; run" \
+                         "cluster/install_drake_nightly.sh first" >> "$LOG" 2>&1
+                    rm -rf "$CLAIM"; SKIP=$((SKIP + 1)); continue
+                fi
+                ITEM_ENVS="${ENVS/DRAKE=nightly/PYTHONPATH=$NIGHTLY}"
+                ;;
+        esac
+
+        { echo "--- [$k] $ID START $(date -Is)"; echo "    env $ITEM_ENVS -- $SCRIPT $ARGS"; } \
             >> "$LOG" 2>&1
         T0=$SECONDS
         ## $ENVS and $ARGS are intentionally word-split; gen_manifest.py asserts
         ## that no token in either contains whitespace.
         # shellcheck disable=SC2086
-        env $ENVS timeout "$ITEM_TIMEOUT" "$PY" -u $SCRIPT $ARGS >> "$LOG" 2>&1
+        env $ITEM_ENVS timeout "$ITEM_TIMEOUT" "$PY" -u $SCRIPT $ARGS >> "$LOG" 2>&1
         STATUS=$?
         if [ $STATUS -eq 0 ]; then
             touch "$MARKER"; OK=$((OK + 1))
