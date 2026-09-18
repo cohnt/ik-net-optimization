@@ -210,3 +210,22 @@ of the other two conditions.
 
 Still in flight: `Hessian frequency = 100` (27 of 96 items). `Elastic weight = 100` is complete
 on the cluster (96/96) and needs only a collection.
+
+## 2026-09-17 23:30 — my own manual-merge directory broke straddle recovery
+
+Two `Elastic weight = 100` rows (iiwa grasp free paired, iiwa pose fingertip native) straddled the
+22:11 and 22:59 collections — the case `--also PREV_STAGING` exists to recover — and were still
+unmerged. Cause: `PREV_STAGING` is `ls -1d results/_cluster_staging/*/ | tail -1`, which wants the
+most recent collection and gets it only because timestamp names sort chronologically. The
+`manualmerge-row12` directory I created an hour earlier sorts **after** every `20260917-*`, so it
+became "the previous collection" and the real one was never searched.
+
+Fixed two ways: the glob in `cluster/collect_results.sh` is now `[0-9]*-[0-9]*/`, so a hand-made
+directory cannot win the sort; and the manual directory is renamed
+`00000000-000000-manualmerge-row12` so it sorts first under any glob. The two rows merged
+immediately afterwards.
+
+**With all 12 rows, `Elastic weight = 100` FAILS the pre-registered rule** — 8 rows better, 4
+worse, 3 significantly better, 0 significantly worse. It misses the >= 9-better clause by one row.
+Reported as a near-miss, not relaxed. `Major step limit = 0.5` remains the only setting that
+passes. Only `Hessian frequency = 100` is outstanding (2 of 1248 items).

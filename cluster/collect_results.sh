@@ -167,7 +167,13 @@ sc_run "rm -f ~/$ARCHIVE"
 ## like data loss while the shards sit on disk. `--also` adds it to the SEARCH; the merged
 ## run is written beside the shard that anchors it, so read the merger's own path when
 ## promoting rather than assuming this collection's staging directory.
-PREV_STAGING="$(ls -1d "$REPO_ROOT"/results/_cluster_staging/*/ 2>/dev/null \
+## Restricted to TIMESTAMP-shaped directory names. `tail -1` wants the most recent
+## collection, and it gets it only because the names sort chronologically -- so any
+## hand-made directory placed in the staging tree wins the sort and silently becomes
+## "the previous collection". That happened on 2026-09-17: a manual merge directory
+## named `manualmerge-row12` sorted after every `20260917-*`, so two straddled rows of
+## stage SNOPTTUNE went unmerged with all sixteen shards on disk.
+PREV_STAGING="$(ls -1d "$REPO_ROOT"/results/_cluster_staging/[0-9]*-[0-9]*/ 2>/dev/null \
                 | grep -v "^$STAGING/\?$" | tail -1)"
 ALSO=()
 [ -n "${PREV_STAGING:-}" ] && ALSO=(--also "$PREV_STAGING")
