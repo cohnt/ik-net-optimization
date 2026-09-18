@@ -847,6 +847,16 @@ NLopt picks when unset, it is not that, and there is therefore **no "name what N
 control available**: `default` against any named inner algorithm unavoidably mixes "Drake called
 `set_local_optimizer` at all" with "which algorithm".
 
+**There is a `stage_DRAKEBUMP` with no results, by decision.** It pairs identical argument vectors
+under both installs to ask whether the bump moves a fielded IPOPT/SNOPT column. It was generated,
+submitted and then **cancelled before it ran** — Thomas, 2026-09-18: *"There were no significant
+changes that would affect SNOPT between 1.56.0 and the current nightly. It's fine that you're being
+cautious, but these aren't final paper numbers."* The stage stays registered and selftested because
+it is the check to run if the project's pin is ever moved off 1.56.0; it is not a gap in the record.
+The general lesson is in the memory `ask-before-spending-compute-on-caution`: **ask before spending
+the allocation to verify an assumption he can rule out from knowledge**, and do not hold an
+exploratory sweep to a paper-numbers standard.
+
 Two more Drake behaviours worth not rediscovering. Every `local_optimizer_*` option is read
 unconditionally but **applied only inside `if (!parsed_options.local_optimizer_algorithm.empty())`**
 (`nlopt_solver.cc:546-564`), so an inner budget or tolerance without a named inner algorithm is
