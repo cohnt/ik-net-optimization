@@ -19,12 +19,19 @@ What this file protects, each learned by the thing being possible:
   * `Solve()` used to be two bare `if`s, so any `which_solver` outside {ipopt, snopt}
     left `solver` unbound and died with `UnboundLocalError` several lines later --
     reachable from `--set which_solver=`, which bypasses argparse's `choices`.
-  * **The NLopt option names are pinned to Drake 1.56.0's six.** The cluster runs the
-    official 1.56.0 tarball; a workstation source build additionally offers five
-    `local_optimizer_*` options, and Drake validates NLopt names strictly and RAISES on
-    one it does not know. So code written against a newer local Drake passes here and
-    fails on every cell of a cluster run. This is the check that catches that, and it
-    must keep failing on the newer API rather than being relaxed to whatever is present.
+  * **A default NLopt configuration emits Drake 1.56.0's option names and nothing else.**
+    The cluster runs the official 1.56.0 tarball (six NLopt options); this workstation's
+    source build has eleven and a 2026-09-18 nightly has sixteen, and Drake RAISES on a
+    name it does not know. Worse, that raise lands in `run_grid`'s per-cell
+    `except Exception` and is recorded as `fail_reason="error"`, so a wrong name does not
+    stop a run -- it returns a full COLUMN of instant failures. The post-1.56 fields
+    therefore default to unset and are refused at configuration time on a Drake lacking
+    them; the checks here pin both halves, and must not be relaxed to whatever is present.
+  * **An inner-solver option set without an inner algorithm is refused.** Drake applies
+    `local_optimizer_*` only when `local_optimizer_algorithm` is non-empty
+    (`nlopt_solver.cc:546-564`), so the combination is accepted and INERT -- a swept column
+    that measures the default inner solver at every setting and reports a real-looking
+    null. That is the `Timing Level` failure, caught at the door.
   * No solver reports an iteration count through Drake -- `SnoptSolverDetails` has `info`
     and `solve_time` but no count, and `NloptSolverDetails` has a single `status` field --
     so the program counts map evaluations itself. If that stops working, the NLopt column
@@ -41,7 +48,8 @@ from pydrake.solvers import NloptSolver
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import src.benchmark as bm                                              # noqa: E402
-from src.generic_program import IKFlowProgram, ProgramOptions           # noqa: E402
+from src.generic_program import (IKFlowProgram, ProgramOptions,         # noqa: E402
+                                 NLOPT_POST_1_56_OPTIONS, NloptOptionSurface)
 from src.utils import BuildEnv, HiddenPrints                            # noqa: E402
 from src.panda_program import PandaIKProgram                            # noqa: E402
 
@@ -55,6 +63,33 @@ CHECKS = [0]
 ## this from a local build's `dir(NloptSolver)` -- that is the failure this pins.
 NLOPT_KEYS_1_56 = {"algorithm", "constraint_tol", "xtol_rel", "xtol_abs",
                    "max_eval", "max_time"}
+
+## The ten option names that arrived AFTER 1.56.0, written out by hand for the same reason
+## NLOPT_KEYS_1_56 is: this file is the independent pin, and deriving either set from
+## dir(NloptSolver) would make it agree with whatever Drake happens to be installed. The two
+## sets must stay disjoint -- a field wired to the WRONG accessor would emit a real, valid
+## option under a plausible name, and nothing else here would notice.
+NLOPT_KEYS_POST_1_56 = {
+    "ftol_rel", "ftol_abs", "stopval",
+    "local_optimizer_algorithm", "local_optimizer_xtol_rel", "local_optimizer_xtol_abs",
+    "local_optimizer_ftol_rel", "local_optimizer_ftol_abs",
+    "local_optimizer_max_eval", "local_optimizer_max_time",
+}
+## A value per post-1.56 field, used only to prove the field LANDS. Note max_eval's 50 and
+## stopval's finite value: 0 and 0.0 are MEANINGFUL values for these options ("no cap",
+## "never fires"), so the unset sentinel has to be None and no probe may be falsy by accident.
+NLOPT_POST_1_56_PROBES = {
+    "nlopt_ftol_rel": 1e-8,
+    "nlopt_ftol_abs": 1e-10,
+    "nlopt_stopval": -1e30,
+    "nlopt_local_optimizer_algorithm": "LD_LBFGS",
+    "nlopt_local_optimizer_xtol_rel": 1e-8,
+    "nlopt_local_optimizer_xtol_abs": 1e-10,
+    "nlopt_local_optimizer_ftol_rel": 1e-8,
+    "nlopt_local_optimizer_ftol_abs": 1e-10,
+    "nlopt_local_optimizer_max_eval": 50,
+    "nlopt_local_optimizer_max_time": 5.0,
+}
 
 
 def check(name, condition, detail=""):
@@ -331,9 +366,192 @@ def test_no_step_rejection_knob_is_set_by_default():
               getattr(opts, field_name) is None, f"was {getattr(opts, field_name)!r}")
 
 
+def _clear_post_1_56(options):
+    for field_name in NLOPT_POST_1_56_PROBES:
+        setattr(options, field_name, None)
+
+
+def test_defaults_emit_exactly_what_they_always_have():
+    """The byte-identity pin: a default NLopt cell must be the archived one.
+
+    `test_option_surface_is_the_cluster_s` only bounds the key SET. This bounds the keys AND
+    the values, because the whole point of the post-1.56 fields being opt-in is that adding
+    them changed nothing for a run that does not ask for one -- and "nothing" has to include
+    `max_time`'s 60.0 and `max_eval`'s 0, either of which would silently redefine what the
+    NLopt column measures.
+    """
+    print("\n--- a default NLopt configuration is unchanged ---")
+    target = a_reachable_target(ProgramOptions())
+    p = build(ProgramOptions(which_solver="nlopt"), target)
+    _, solver_options = p._NloptOptions()
+    emitted = dict(solver_options.options.get(NloptSolver.id().name(), {}))
+    check("a default NLopt configuration emits exactly three keys",
+          set(emitted) == {"algorithm", "max_time", "max_eval"},
+          f"emitted {sorted(emitted)}; the three tolerances are None by default and the "
+          f"post-1.56 fields must add nothing")
+    check("and exactly the values every archived NLopt cell ran with",
+          emitted == {"algorithm": "LD_AUGLAG", "max_time": 60.0, "max_eval": 0},
+          f"emitted {emitted}")
+    check("no post-1.56 key appears in a default configuration",
+          not (set(emitted) & NLOPT_KEYS_POST_1_56), f"emitted {sorted(emitted)}")
+
+
+def test_new_nlopt_fields_are_unset_by_default():
+    """Unset, and unset as None -- 0 is a real value for two of them."""
+    print("\n--- the post-1.56 NLopt fields are opt-in ---")
+    opts = ProgramOptions()
+    for field_name in NLOPT_POST_1_56_PROBES:
+        check(f"{field_name} is None by default",
+              getattr(opts, field_name) is None,
+              f"was {getattr(opts, field_name)!r}. A default other than None would be "
+              f"emitted, and on the cluster's Drake that fails every cell.")
+
+
+def test_the_accessor_table_names_the_options_it_claims_to():
+    """A field wired to the wrong accessor emits a REAL option under a plausible name.
+
+    NLOPT_POST_1_56_OPTIONS maps each field to a static accessor on NloptSolver rather than
+    to a string, so Drake decides the spelling. The cost of that is that swapping
+    FRelativeToleranceName for XRelativeToleranceName would be invisible: the run would set a
+    valid option, Drake would accept it, and the sweep would report the wrong knob's effect
+    under the right knob's name. This reads the mapping back.
+    """
+    print("\n--- the post-1.56 accessor table ---")
+    surface = NloptOptionSurface()
+    check("the code exposes exactly the ten post-1.56 fields this file knows about",
+          set(NLOPT_POST_1_56_OPTIONS) == set(NLOPT_POST_1_56_PROBES),
+          f"code has {sorted(NLOPT_POST_1_56_OPTIONS)}")
+    check("the 1.56.0 six and the post-1.56 ten are disjoint",
+          not (NLOPT_KEYS_1_56 & NLOPT_KEYS_POST_1_56), "a name cannot be in both eras")
+    for field_name, spec in NLOPT_POST_1_56_OPTIONS.items():
+        if spec.accessor not in surface:
+            continue
+        expected = field_name[len("nlopt_"):]
+        check(f"{field_name} -> NloptSolver.{spec.accessor}() == {expected!r}",
+              surface[spec.accessor] == expected,
+              f"got {surface[spec.accessor]!r}; the field name and the option name must "
+              f"agree or --set is lying about which knob it moves")
+    for name in surface.values():
+        check(f"the option {name!r} Drake reports is one this file knows",
+              name in (NLOPT_KEYS_1_56 | NLOPT_KEYS_POST_1_56),
+              f"this Drake has an NLopt option this file has never heard of -- a surface "
+              f"newer than the sixteen; extend NLOPT_ACCESSORS and this set together")
+
+
+def test_inner_solver_options_are_refused_without_an_algorithm():
+    """Drake would accept these and throw them away. That is not an option this repo takes.
+
+    nlopt_solver.cc:546-564 applies every local_optimizer_* setting inside
+    `if (!parsed_options.local_optimizer_algorithm.empty())`. With the algorithm unnamed Drake
+    never calls set_local_optimizer and the numbers vanish -- a swept column measuring the
+    default inner solver at every setting, reporting no difference, which reads exactly like a
+    real null result.
+
+    Checked BEFORE availability on purpose, so this refusal is reproducible on the cluster's
+    1.56.0 too: there every one of these options is also missing, and reporting only that
+    would hide a modelling error behind a packaging one.
+    """
+    print("\n--- an inner-solver option without an inner algorithm is refused ---")
+    for field_name, spec in NLOPT_POST_1_56_OPTIONS.items():
+        if not spec.inner:
+            continue
+        try:
+            ProgramOptions(which_solver="nlopt",
+                           **{field_name: NLOPT_POST_1_56_PROBES[field_name]})
+            check(f"{field_name} alone is refused", False,
+                  "accepted -- Drake would read it and silently discard it")
+        except ValueError as exc:
+            check(f"{field_name} alone is refused, naming the gate",
+                  field_name in str(exc) and "nlopt_local_optimizer_algorithm" in str(exc),
+                  str(exc))
+    ## An empty string is Drake's own spelling of "no inner optimizer", so it must not count
+    ## as naming one.
+    try:
+        ProgramOptions(which_solver="nlopt", nlopt_local_optimizer_algorithm="",
+                       nlopt_local_optimizer_max_eval=50)
+        check("an EMPTY inner algorithm does not satisfy the gate", False,
+              "'' is what Drake's `local_optimizer_algorithm.empty()` tests for")
+    except ValueError as exc:
+        check("an EMPTY inner algorithm does not satisfy the gate", True, str(exc))
+    ## And the mutation path, which __post_init__ never sees: benchmark.py assigns onto a live
+    ## options object, so _NloptOptions has to re-check rather than trust it.
+    target = a_reachable_target(ProgramOptions())
+    p = build(ProgramOptions(which_solver="nlopt"), target)
+    p.options.nlopt_local_optimizer_max_eval = 50
+    try:
+        p._NloptOptions()
+        check("_NloptOptions re-checks a mutated options object", False,
+              "the inner option was emitted or dropped silently after an attribute "
+              "assignment bypassed __post_init__")
+    except ValueError as exc:
+        check("_NloptOptions re-checks a mutated options object",
+              "nlopt_local_optimizer_algorithm" in str(exc), str(exc))
+    _clear_post_1_56(p.options)
+
+
+def test_post_1_56_options_are_checked_against_the_running_drake():
+    """Each new field either emits its option or refuses, per what THIS Drake carries.
+
+    Written to pass on all three surfaces without being relaxed on any: the assertion is not
+    "stopval works", it is "stopval works iff NloptSolver declares StopValName, and says so by
+    name when it does not". On the cluster's 1.56.0 all ten take the refusal branch; on a
+    nightly all ten take the emit branch; this workstation's build splits five and five.
+    """
+    print("\n--- post-1.56 NLopt options are gated on the running Drake ---")
+    surface = NloptOptionSurface()
+    target = a_reachable_target(ProgramOptions())
+    p = build(ProgramOptions(which_solver="nlopt"), target)
+    for field_name, probe in NLOPT_POST_1_56_PROBES.items():
+        spec = NLOPT_POST_1_56_OPTIONS[field_name]
+        _clear_post_1_56(p.options)
+        setattr(p.options, field_name, probe)
+        ## Inner options need the gate satisfied, or they are refused for the OTHER reason --
+        ## which is the previous test's business, not this one's.
+        if spec.inner:
+            p.options.nlopt_local_optimizer_algorithm = "LD_LBFGS"
+        have = (spec.accessor in surface
+                and (not spec.inner or "LocalOptimizerAlgorithmName" in surface))
+        try:
+            _, solver_options = p._NloptOptions()
+            emitted = set(solver_options.options.get(NloptSolver.id().name(), {}))
+            check(f"{field_name} emits its option on a Drake that has it",
+                  have and surface[spec.accessor] in emitted,
+                  (f"emitted {sorted(emitted)}; this Drake's NLopt surface is "
+                   f"{sorted(surface.values())}") if have else
+                  (f"NO RAISE, but NloptSolver has no {spec.accessor} -- this is the key "
+                   f"that would reach Drake and fail every cell of a cluster run"))
+        except ValueError as exc:
+            check(f"{field_name} is refused by name on a Drake that lacks it",
+                  not have and field_name in str(exc) and spec.accessor in str(exc),
+                  str(exc) if not have else
+                  f"refused although NloptSolver.{spec.accessor} exists here: {exc}")
+    _clear_post_1_56(p.options)
+    ## The same refusal from the EARLY side. __post_init__ is what makes this a configuration
+    ## error rather than a per-cell one, and the difference is a whole column of compute.
+    missing = [n for n, spec in NLOPT_POST_1_56_OPTIONS.items()
+               if spec.accessor not in surface]
+    if missing:
+        try:
+            ProgramOptions(which_solver="nlopt",
+                           **{missing[0]: NLOPT_POST_1_56_PROBES[missing[0]]})
+            check("constructing ProgramOptions with an unavailable NLopt option raises",
+                  False, "it was accepted, so the failure would arrive per-cell instead")
+        except ValueError as exc:
+            check("constructing ProgramOptions with an unavailable NLopt option raises",
+                  missing[0] in str(exc), str(exc))
+    else:
+        print("  skip  every post-1.56 option exists on this Drake; the refusal path is "
+              "exercised on the cluster's 1.56.0 and on this workstation's source build")
+
+
 def main():
     print("solver plumbing: three method classes -- interior point, SQP, augmented Lagrangian")
     test_option_surface_is_the_cluster_s()
+    test_defaults_emit_exactly_what_they_always_have()
+    test_new_nlopt_fields_are_unset_by_default()
+    test_the_accessor_table_names_the_options_it_claims_to()
+    test_inner_solver_options_are_refused_without_an_algorithm()
+    test_post_1_56_options_are_checked_against_the_running_drake()
     test_nlopt_is_an_augmented_lagrangian()
     test_unknown_solver_raises_clearly()
     test_no_step_rejection_knob_is_set_by_default()
