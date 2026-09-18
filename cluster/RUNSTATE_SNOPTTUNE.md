@@ -185,3 +185,28 @@ combination as evidence about its parts.**
 Still running: `Linesearch tolerance = 0.1` (3 rows in), `Elastic weight = 100`,
 `Hessian frequency = 100`. The twelfth row of every column (iiwa contained-grasp native) is the
 straddled-shard group and merges on a later collection.
+
+## 2026-09-17 23:05 — the twelfth row landed, and `Major step limit = 0.5` PASSES
+
+The missing twelfth row was never a run problem: the **baseline** row
+`sc_SNOPTTUNE_iiwa_n4_snopt_mugshelf_480_45_native_default` had its eight shards straddle
+*four* consecutive collections (staging 132130 / 132731 / 135938 / 150412), and
+`collect_results.sh` hands the merger only this staging directory plus the **previous one**
+(`--also`), so no single merger invocation ever saw all eight. Every shard was complete on disk
+the whole time. Note the shard sizes are **64,64,64,64,56,56,56,56** — 60 targets split
+target-major over 8 shards — so a 56-record shard is COMPLETE, not truncated; reading 56 as
+partial is what made this look like data loss.
+
+Repaired by hand: the eight complete shard directories were copied into
+`results/_cluster_staging/manualmerge-row12/results/iiwa/benchmark/` and
+`cluster/merge_shard_summaries.py` run on that directory alone. Merged cleanly, 480 cells x 2 arms.
+
+**Result, pre-registered rule applied unchanged (>= 9 of 12 rows better on the learned arm, none
+significantly worse, >= 1 significantly better):**
+
+`Major step limit = 0.5` — **11 of 12 rows better, 3 significantly better, 0 significantly worse
+-> PASSES.** Nothing else does. Every other setting is 4-9 rows better and fails on one or both
+of the other two conditions.
+
+Still in flight: `Hessian frequency = 100` (27 of 96 items). `Elastic weight = 100` is complete
+on the cluster (96/96) and needs only a collection.
