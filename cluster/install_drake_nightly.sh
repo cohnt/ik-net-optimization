@@ -116,6 +116,15 @@ esac
 echo "===== [2/3] warming the Drake model cache with the NIGHTLY ====="
 PY="${TEST_PYTHON:-$ROOT/venv/bin/python}"
 [ -x "$PY" ] || Fail "no venv at $PY -- run cluster/setup_supercloud.sh first"
+# gridos ships neither libfmt.so.9 nor libspdlog.so.1.12, which the Drake noble tarballs link,
+# so setup_supercloud.sh extracts them into $ROOT/sysdeps and run_items.sh exports this for
+# every worker. This script has to do the same for its OWN python steps: without it pydrake
+# fails at `from . import common` with "libspdlog.so.1.12: cannot open shared object file",
+# which reads like a broken download rather than a missing export. The nightly needs exactly
+# the same two sonames as the pinned 1.56.0 -- checked with readelf on both tarballs -- so the
+# existing prefix serves both and nothing new has to be fetched.
+export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+[ -f "$ROOT/sysdeps/.deb-ok" ] || Fail "no sysdeps prefix at $ROOT/sysdeps -- run cluster/setup_supercloud.sh first"
 HOME="$ROOT/home" CUDA_VISIBLE_DEVICES="" LEARNED_IK_REPO="$ROOT/repo" \
 PYTHONPATH="$DEST/lib/python3.12/site-packages" \
     "$PY" - <<'PYDRAKE' || Fail "drake model warm-up under the nightly"
