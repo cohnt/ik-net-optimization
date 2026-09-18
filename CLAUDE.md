@@ -787,6 +787,64 @@ sort chronologically. A hand-made directory in the staging tree wins that sort a
 of 60 targets over 8 shards gives sizes **64,64,64,64,56,56,56,56**, so a 56-record shard is
 complete — reading 56 as truncated is what made a merged-but-unassembled row look like data loss.
 
+### Stage SNOPTCOMBO: no combination beats `Major step limit = 0.5` alone
+
+**The question stage SNOPTTUNE could not answer.** All four combinations it tested contained
+`Nonderivative linesearch`, which turned out to be the harmful factor (6 better / 6 worse alone), so
+it dragged down every combination it appeared in — including both that carried the winner. The
+survivor was therefore never crossed with the three other *positive* factors. Eight columns x 12
+rows x 480 cells, seed 1, 45 s, `--compile`, adopted rungs, hardened scene, `learned,numerical`,
+both protocols, three placements, **pinned Drake 1.56.0** so the archive pairs.
+
+**Two bars, pre-registered, counted by row and never pooled.** Bar A against Drake's SNOPT defaults
+is SNOPTTUNE's bar unchanged (>= 9 of 12 rows better on the learned arm, 0 significantly worse, >= 1
+significantly better). Bar B against `Major step limit = 0.5` *in the same run* asks the question the
+stage exists for (>= 8 of 12 better, 0 significantly worse). A combination is recommended only if it
+clears **both**. `scripts/report_snoptcombo.py` implements both inline.
+
+| column | Bar A vs defaults | Bar B vs the survivor | verdict |
+| --- | --- | --- | --- |
+| **`Major step limit = 0.5`** | **11/1, 3 sig+, 0 sig-  PASSES** | (is the reference) | **still the only survivor** |
+| `+ Major optimality tolerance = 1e-8` | 11/1, 5 sig+, 0 sig-  PASSES | 7/4, 1 sig+, 0 sig-  fails | valid, no better |
+| `+ Elastic weight = 100` | 9/3, 6 sig+, 0 sig-  PASSES | 6/5, 3 sig+, 0 sig-  fails | valid, no better |
+| `+ Elastic weight = 100 + Hessian frequency = 20 + Major optimality tolerance = 1e-8` | 10/2, 7 sig+, 0 sig-  PASSES | 7/5, 5 sig+, 0 sig-  fails | valid, no better |
+| `+ Hessian frequency = 20` | 11/1, 4 sig+, **1 sig-**  fails | 8/4, 1 sig+, 0 sig-  PASSES | rejected |
+| `+ Elastic weight = 100 + Hessian frequency = 20` | 8/4, 7 sig+, **1 sig-**  fails | 7/5, 5 sig+, 0 sig-  fails | rejected |
+| `Elastic weight = 100` alone | 8/4, 4 sig+, 0 sig-  fails | 6/6, 1 sig+, **2 sig-**  fails | rejected |
+
+**Nothing clears both bars, so the combination question is closed: `Major step limit = 0.5` alone
+remains the whole of what SNOPT tuning is worth here.** Four columns are *valid* SNOPT
+configurations — they beat Drake's defaults on the row rule — but none improves on the survivor, and
+the one column that clears Bar B (`+ Hessian frequency = 20`) has a significantly worse row against
+defaults.
+
+**The pooled numbers disagree with the rule, and the rule is what stands.** Pooled over 5,760
+learned cells: the four-factor stack 4352, `+ Elastic + Hessian frequency 20` 4279, `+ Elastic` 4210,
+`+ Major optimality tolerance` 4175, `+ Hessian frequency 20` 4173, **the survivor 4131**, `Elastic`
+alone 4129, defaults 3970 — against IPOPT's 5302 on the same rows. So a pooled reading would have
+fielded the four-factor stack for +221 cells. **It is a TASK TRADE**: against the survivor it gains
++35/+41/+58/+51 on the four iiwa grasp rows and +41 on Panda contained-grasp paired, all
+significant, and loses on every pose row (-3, -2, -1, -19) plus Panda free-grasp native. This is
+exactly what pooling hides and why the rule reads rows.
+
+**And the trade is bought with work, not insight.** On the rows it wins, the four-factor stack runs
+855/884/978/982 median iterations against the survivor's 564/574/801/637, wall clock 13.8-16.6 s
+against 9.7-15.0 s, and timeouts 53/42/40/39 against 28/24/30/36. Cost on cells both solve is a wash
+(5.25-5.40 against 5.37-5.63). So it converts budget into grasp cells and pays for it in pose cells.
+
+**It is a property of SNOPT, not of the chart**: the joint-space arm rises on essentially every row
+of every column (defaults 3594 pooled → 3758 with the survivor → 3978 with the four-factor stack),
+and that arm never evaluates the network.
+
+**Harness self-check passes.** On the same 12 rows the fresh columns reproduce the SNOPTTUNE archive
+pooled over 5,760 cells: `Major step limit = 0.5` 4131 against 4128 (+3), `Elastic weight = 100` 4129
+against 4126 (+3), defaults 3970 against 3981 (-11) — all inside the +/-2-cells-per-row band that
+cap-bound rows are reproducible to. So the ten new NLopt fields, the `__post_init__` check and the
+Luksan guard left the SNOPT path exactly where it was.
+
+**Adoption remains Thomas's call and nothing is fielded**; `snopt_major_step_limit` stays plumbed and
+`None`.
+
 ### The grasp-containment lever is closed for the solver axis
 
 Grasp containment was the standing "revisit whenever another knob moves" lever, because on the
@@ -806,8 +864,10 @@ refuted too, so the lever is closed on both axes.
   refuted at both scales. The 60-cell reading that it moves INFO 13 and trades between the robots
   did **not** replicate — at 480 cells x 12 rows (stage SNOPTTUNE) INFO 13 is flat, the gain comes
   from budget exits, and it is the one SNOPT setting that improves nearly every row.
-- **SNOPT settings are DONE** (stage SNOPTTUNE): thirteen settings at 480 cells, one passes the
-  pre-registered bar, nothing fielded. Adoption of `Major step limit = 0.5` is Thomas's call.
+- **SNOPT settings are DONE** (stages SNOPTTUNE and SNOPTCOMBO): thirteen single settings, then
+  seven crosses of the one survivor, all at 480 cells x 12 rows. `Major step limit = 0.5` is the
+  whole of what SNOPT tuning is worth; no combination improves on it. Nothing fielded, and adoption
+  is Thomas's call. **Do not re-sweep SNOPT.**
 - **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the robust
   logging we need btw, work with what you have, don't write new logging stuff in Drake or
   anything."*
