@@ -59,7 +59,7 @@ def token(tag):
 def comparable(a, b):
     """The same guard collate.py uses, so this script cannot pair what that one refuses."""
     ka = ("grid_hash", "scene", "target_placement", "shelf_inset", "start", "solver",
-          "checkpoint")
+          "checkpoint", "task")
     return [k for k in ka if a["metadata"].get(k) != b["metadata"].get(k)]
 
 

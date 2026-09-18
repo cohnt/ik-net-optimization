@@ -76,8 +76,19 @@ def pair(arm, paths):
             # is the same class of collision that --shard, --checkpoint and the iiwa tag's
             # missing solver token were each fixed for; here it corrupts an ANALYSIS rather
             # than a filename, which is harder to notice afterwards.
+            #
+            # And `task` is in the list because the PANDA's grasp and pose grids collide
+            # outright. The iiwa's script appends the task to its hash (see its own comment
+            # there, added because its mug and pose grids hashed identically); the Panda's
+            # never did, and measured on the archive
+            # sc_SOLVER2_panda_n6_*_mugshelf_* and sc_SOLVER2_panda_n6_*_posetip_* both
+            # carry grid_hash d7a4ef1609b9. So a Panda glob spanning tasks would pair a
+            # GRASP column against a POSE one with no warning. Deliberately fixed here
+            # rather than by suffixing the Panda hash: changing that hash would make every
+            # new Panda run incomparable to every archived one, which is a far larger loss
+            # than the trap, and `task` has always been in the metadata.
             differs = [k for k in ("scene", "target_placement", "shelf_inset",
-                                   "start", "solver", "checkpoint")
+                                   "start", "solver", "checkpoint", "task")
                        if data["metadata"].get(k) != ref["metadata"].get(k)]
             if differs:
                 note = ("DIFFERENT SCENE/PLACEMENT/PROTOCOL (%s) -- not comparable"
