@@ -131,7 +131,27 @@ def stats(s, arm="learned"):
         to=s["summary"][arm].get("timeouts"),
         viol=s["summary"][arm].get("median_max_violation"),
         jac=s["summary"][arm].get("mean_map_jacobians"),
+        wall=s["summary"][arm].get("mean_wall_time"),
         cost=median([r.get("cost") for r in recs if r["feasible"]]))
+
+
+def _num(x, fmt="%.3f"):
+    """`--`, never `nan`: a column with no shared solved cell has no cost to report."""
+    return "--" if x is None or x != x else fmt % x
+
+
+def both_solved_cost(A, B, shared):
+    """Median cost over cells BOTH columns solved.
+
+    The standing rule: a median over each column's own successes compares different cell
+    sets, and the easy cells are the ones a weaker column also solves, so that form
+    flatters whichever column fails more.  `record["cost"]` is already the reported cost,
+    with learned-only regularizers excluded.
+    """
+    both = [k for k in shared if A[k]["feasible"] and B[k]["feasible"]]
+    return (len(both),
+            median([A[k].get("cost") for k in both]),
+            median([B[k].get("cost") for k in both]))
 
 
 def status_hist(s, arm="learned"):
@@ -179,20 +199,23 @@ def main(only):
             deltas.append(sc["solved"] - sb["solved"])
             if sb["solved"] <= GATE_FLOOR and sc["solved"] >= GATE_LIFT:
                 lifted = True
+            nboth, cb, cc = both_solved_cost(A, B, shared)
             table.append((f"{key[0]} {ROW_NAME[key[2]]} {key[3]}", sb, sc, b, w,
-                          mcnemar(b, w), jb["solved"], jc["solved"]))
+                          mcnemar(b, w), jb["solved"], jc["solved"], nboth, cb, cc))
         if not table:
             continue
         print(f"    {'row':<32}{'base':>5}{'cand':>6}{'+':>4}{'-':>4}{'p':>9}"
               f"{'TOb':>5}{'TOc':>5}{'violb':>10}{'violc':>10}{'jacb':>8}{'jacc':>8}"
-              f"{'JSb':>5}{'JSc':>5}")
-        for label, sb, sc, b, w, pv, jsb, jsc in table:
+              f"{'sb':>7}{'sc':>7}{'nboth':>6}{'costb':>8}{'costc':>8}{'JSb':>5}{'JSc':>5}")
+        for label, sb, sc, b, w, pv, jsb, jsc, nboth, cb, cc in table:
             flag = ""
             if pv < 0.05:
                 flag = "  BETTER" if sc["solved"] > sb["solved"] else "  WORSE"
             print(f"    {label:<32}{sb['solved']:>5}{sc['solved']:>6}{b:>4}{w:>4}{pv:>9.3g}"
                   f"{sb['to']:>5}{sc['to']:>5}{sb['viol']:>10.2e}{sc['viol']:>10.2e}"
-                  f"{sb['jac']:>8.0f}{sc['jac']:>8.0f}{jsb:>5}{jsc:>5}{flag}")
+                  f"{_num(sb['jac'], '%.0f'):>8}{_num(sc['jac'], '%.0f'):>8}"
+                  f"{sb['wall']:>7.1f}{sc['wall']:>7.1f}{nboth:>6}"
+                  f"{_num(cb):>8}{_num(cc):>8}{jsb:>5}{jsc:>5}{flag}")
         n_big = sum(1 for d in deltas if d >= GATE_DELTA)
         passes = len(table) == 12 and (n_big >= GATE_ROWS or lifted)
         why = []
