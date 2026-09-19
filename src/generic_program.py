@@ -398,7 +398,26 @@ class ProgramOptions:
     ## the trust region the learned formulation wants -- the runaway is ONE accepted
     ## catastrophic step out of a well-behaved trajectory. `Violation limit` is SNOPT's
     ## counterpart to ipopt_theta_max_fact, which gained 3 cells and lost none on a probe.
-    snopt_major_step_limit: float = field(default=None, metadata={"help": "SNOPT 'Major step limit' (default 2.0): bounds ||dx|| <= limit*(1+||x||) per major iteration"})
+    ## ADOPTED 2026-09-19 by Thomas, and the ONE solver setting this project fields.
+    ## Drake/SNOPT's own default is 2.0; 0.5 is the single survivor of stages SNOPTTUNE
+    ## (13 settings) and SNOPTCOMBO (7 crosses of it), each at 480 cells x 12 rows. On the
+    ## learned arm it is better on 11 of 12 rows, significantly on 3, significantly worse on
+    ## none, and the joint-space arm rises on all 12 -- so it is a property of SNOPT on this
+    ## problem, not of the chart. It moves NO learned-vs-joint-space verdict (learned +161
+    ## cells of 5760, joint space +164; per-row margins sum to -3), so it is adopted for
+    ## FAIRNESS, not for the comparison: IPOPT's column already runs a tuned configuration
+    ## (the acceptable-point early stop) and SNOPT's ran bare defaults.
+    ##
+    ## Consequences for anything reading archived numbers:
+    ##   * The SNOPT numbers of record are now SNOPTCOMBO's `mstep0p5` column, NOT the
+    ##     `sc_SOLVER2_*_snopt_*` columns, which were measured at Drake's defaults.
+    ##   * A stage whose column means "Drake's SNOPT defaults" must now say so explicitly
+    ##     with `--set snopt_major_step_limit=None`; the four historical SNOPT tables in
+    ##     cluster/gen_manifest.py were updated so re-generating them reproduces what ran.
+    ## It is still a member of STEP_REJECTION_KNOBS, but stage STEP is not why it is here:
+    ## that stage refuted the family at 480 cells and this value was adopted on the separate
+    ## per-solver-tuning question.
+    snopt_major_step_limit: float = field(default=0.5, metadata={"help": "SNOPT 'Major step limit' (Drake/SNOPT default 2.0; ADOPTED at 0.5): bounds ||dx|| <= limit*(1+||x||) per major iteration"})
     snopt_violation_limit: float = field(default=None, metadata={"help": "SNOPT 'Violation limit' (default 10): the largest constraint violation allowed beyond the initial point; SNOPT's theta ceiling"})
     ## Print verbosity. SNOPT's end-of-run summary block -- 'No. of major iterations' and
     ## the funobj/funcon call counts -- is the ONLY place its iteration count exists, so

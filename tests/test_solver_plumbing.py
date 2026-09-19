@@ -43,7 +43,7 @@ import tempfile
 from dataclasses import replace
 
 import numpy as np
-from pydrake.solvers import NloptSolver
+from pydrake.solvers import NloptSolver, SnoptSolver
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -361,13 +361,48 @@ def test_new_knobs_reach_the_solver():
 
 
 def test_no_step_rejection_knob_is_set_by_default():
-    """The step-rejection family is a separate question and must stay at solver defaults."""
+    """The step-rejection family is a separate question and must stay at solver defaults.
+
+    `snopt_major_step_limit` is deliberately NOT in this list any more. It is still a member
+    of the family by name, but it was adopted at 0.5 on 2026-09-19 on the separate
+    per-solver-tuning question (stages SNOPTTUNE and SNOPTCOMBO, 480 cells x 12 rows), not on
+    stage STEP's -- which refuted the family. `test_the_adopted_snopt_step_limit_is_the_default`
+    pins it instead, so neither fact can drift into the other.
+    """
     print("\n--- step rejection stays out of this branch ---")
     opts = ProgramOptions()
     for field_name in ("ipopt_theta_max_fact", "ipopt_watchdog_trigger", "ipopt_max_soc",
-                       "snopt_violation_limit", "snopt_major_step_limit"):
+                       "snopt_violation_limit"):
         check(f"{field_name} is unset by default",
               getattr(opts, field_name) is None, f"was {getattr(opts, field_name)!r}")
+
+
+def test_the_adopted_snopt_step_limit_is_the_default():
+    """The one solver setting this project fields, and the escape hatch that un-fields it.
+
+    Two directions, because both are load-bearing. A default run must SET the option -- if it
+    silently reverted, every new SNOPT column would be measured at Drake's 2.0 while the
+    tables claimed the adopted configuration. And `=None` must EMIT NOTHING, because that is
+    how the four historical stages express "Drake's SNOPT defaults" now that setting nothing
+    no longer does; an archived `default` column is unreproducible without it.
+    """
+    print("\n--- the adopted SNOPT major step limit ---")
+    check("snopt_major_step_limit defaults to the adopted 0.5",
+          ProgramOptions().snopt_major_step_limit == 0.5,
+          f"was {ProgramOptions().snopt_major_step_limit!r}; adopted 2026-09-19")
+    target = a_reachable_target(ProgramOptions())
+    emitted = {}
+    for label, value in (("adopted", 0.5), ("restored", None)):
+        p = build(ProgramOptions(which_solver="snopt", snopt_major_step_limit=value), target)
+        _, solver_options = p._SnoptOptions()
+        emitted[label] = dict(solver_options.options.get(SnoptSolver.id().name(), {}))
+    check("a default SNOPT configuration emits Major step limit = 0.5",
+          emitted["adopted"].get("Major step limit") == 0.5,
+          f"emitted {emitted['adopted'].get('Major step limit')!r}")
+    check("and snopt_major_step_limit=None emits no Major step limit at all",
+          "Major step limit" not in emitted["restored"],
+          f"emitted {emitted['restored'].get('Major step limit')!r}; "
+          f"an archived defaults column cannot be reproduced")
 
 
 def _clear_post_1_56(options):
@@ -602,6 +637,7 @@ def main():
     test_nlopt_is_an_augmented_lagrangian()
     test_unknown_solver_raises_clearly()
     test_no_step_rejection_knob_is_set_by_default()
+    test_the_adopted_snopt_step_limit_is_the_default()
     test_new_knobs_reach_the_solver()
     for solver in ("ipopt", "snopt", "nlopt"):
         test_each_solver_solves_and_reports(solver)
