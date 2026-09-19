@@ -678,11 +678,84 @@ cell) rather than 480, because a column that may be empty does not need campaign
 On the three grasp rows under `paired` it scores **1/60, 0/60 and 1/60** against IPOPT's 59/60,
 timing out on every cell, burning 4,900-6,100 network Jacobians per cell and landing 4.5e-02 to
 9.7e-02 from feasible. The one place it works is the pose task under `native` — 38/60 and 39/60
-against IPOPT's 58 and 60, reaching 1e-06 — so it is not broken, it is far too slow to satisfy tight
-equality rows through an ill-conditioned chart inside any budget here. **`max_time` also binds much
-more tightly than SNOPT's `Time limit`** (20.0-20.1 s against 24-28 s in a local probe), because
-SNOPT only checks at major-iteration boundaries; wall-clock columns are not capped equally across
-solvers.
+against IPOPT's 58 and 60, reaching 1e-06. **`max_time` also binds much more tightly than SNOPT's
+`Time limit`** (20.0-20.1 s against 24-28 s in a local probe), because SNOPT only checks at
+major-iteration boundaries; wall-clock columns are not capped equally across solvers.
+
+The obvious reading — too slow to satisfy tight equality rows inside any budget — is **wrong**, and
+stage NLOPTTUNE below is what refutes it. At a **180 s** cap on these same twelve rows, ten are
+identical to 45 s and one moves four cells (iiwa pose native 39 -> 43). Sixty-of-sixty timeouts
+looked like the throughput case CLAUDE.md's cap rule is written for; in fact the default
+configuration never terminates its *inner* solve, so more wall clock buys no outer progress. The cap
+rule still holds — it just needed the cap arm to be run rather than assumed, and the answer was the
+unusual one.
+
+### Stage NLOPTTUNE: every option Drake now exposes, and the AL is still not competitive
+
+The standing TODO Thomas reopened on 2026-09-18 once PR 25002 made the inner optimizer selectable.
+Nine settings + a 180 s budget arm x 12 rows x 60 cells (stage SOLVER2's triage grid, so every cell
+pairs against the fielded column *and* the archive), seed 1, `--compile`, adopted rungs, hardened
+scene, `learned,numerical`, both protocols, three placements, `LD_AUGLAG` throughout, **on the Drake
+nightly** (`DRAKE=nightly`; the project's pin stays 1.56.0). `stage_NLOPTTUNE` owns the table and
+`scripts/report_nlopttune.py` implements the gate inline.
+
+**Pre-registered promotion gate, fixed before any result was read:** on the learned arm, >= +8 cells
+of 60 on >= 6 of 12 rows, or any row from <= 2/60 to >= 20/60; at most three settings advance to 480.
+**Nothing advances.** Learned arm, successes of 60, each against `default` on the same cells:
+
+| setting | rows >= +8 | biggest rows | verdict |
+| --- | --- | --- | --- |
+| `LD_MMA` + `xtol_rel`/`ftol_rel = 1e-3` | **4** of 12 | panda grasp cont. nat **12->42** (p=1.9e-09), panda grasp free nat **27->53** (p=2.2e-07), iiwa pose paired **9->21** (p=0.012), panda pose paired 8->16 | closest, still short |
+| `LD_MMA` + `local_optimizer_max_eval = 50` | 2 | panda grasp free nat 27->48 (p=4.9e-05), panda grasp cont. nat 12->24 (p=0.0075) | |
+| `LD_SLSQP` | 1 | panda grasp cont. nat 12->23 (p=0.043) | AL-taxonomy caveat below |
+| `LD_SLSQP` + `local_optimizer_max_eval = 50` | 1 | panda grasp free nat 27->39 (p=0.029) | |
+| `LD_MMA` + `local_optimizer_max_eval = 200` | 0 | — | |
+| `LD_CCSAQ` | 0 | — | |
+| `LD_MMA` | 0 | **reproduces `default` to within one cell on all twelve rows** | the acceptance control |
+| `constraint_tol = 1e-4` | 0 | — | |
+| defaults at a **180 s** cap | 0 | — | a budget arm, not a setting |
+
+**Naming the inner optimizer is worth nothing; truncating it is worth a great deal.** `LD_MMA` named
+alone matches Drake's default column cell for cell with identical median violations — so PR 25002's
+*algorithm selector*, the thing that unblocked this stage, is inert here. What moves cells is the
+inner **budget and tolerance** options that shipped with it. On Panda contained grasp the default
+burns 3,532 network Jacobians per cell, times out 58 of 60 and lands 3.7e-04 from feasible; loose
+inner tolerances use **66** Jacobians, time out 18 and reach 6.8e-07. Panda free grasp goes
+3,528 -> **41** Jacobians and 40.1 s -> 5.6 s. That is the classic augmented-Lagrangian failure (an
+inner subproblem solved to convergence before the multipliers are ever updated) with the classic fix.
+
+**But it is a trade, not an improvement, and the sign flips by row.** On cells both columns solve,
+loose inner tolerances cost more nearly everywhere — iiwa pose native 5.132 -> 6.633, iiwa pose
+paired 5.402 -> 7.614, panda grasp free native 6.263 -> 7.960, panda grasp contained native
+9.901 -> 11.439 — and on **Panda pose native**, a row the default already solves 38 of 60,
+truncation *loses* cells monotonically in how aggressive it is: 38 (default) -> 37 (`max_eval=200`)
+-> 34 (`max_eval=50`) -> 33 (loose), with cost 11.288 -> 11.826 -> 12.158. So the inner budget buys
+feasibility where feasibility was the binding problem and costs optimality everywhere else.
+
+**Three things no setting changes.** The **four iiwa grasp rows are 0-3 of 60** under every setting
+and at 180 s — nothing Drake exposes makes the AL solve that task at all. The **joint-space arm moves
+with these settings too** (iiwa pose native 0 -> 9/11 under the `LD_SLSQP` columns), so this is NLopt
+on this program, not the chart. And the **ordering IPOPT > SNOPT >>> NLopt is untouched**; what
+changes is that the third column is now measured across Drake's whole option surface instead of left
+unswept by decision. **Do not re-sweep NLopt.**
+
+**The `LD_SLSQP` caveat, unresolved by design.** It puts an SQP method inside the augmented
+Lagrangian; the outer method is still AL and the inner subproblem bound-constrained only, so it reads
+as an AL column rather than a duplicate of SNOPT's — but the three-method-classes rule is Thomas's
+(2026-09-18: *"For now, it's okay to have LD_SLSQP as the inner optimizer. We can always decide
+later."*), so the caveat travels with the number rather than resolving it. Mechanistically it behaves
+like SNOPT: **0 timeouts on every row** and 2.3-4.4 s mean wall clock against the default's 27-45 s,
+i.e. its failures are convergence failures at a feasible-but-wrong point, not budget.
+
+**Acceptance checks pass, and one of them retires a question for free.** NLOPTTUNE's `default`
+reproduces the twelve archived `sc_SOLVER2_*_nlopt_*` columns **exactly on eleven rows** and by one
+cell on the twelfth, on matching `grid_hash`es. Since that column ran on the nightly and the archive
+ran on 1.56.0, this is the cross-Drake check stage DRAKEBUMP was cancelled for — **the bump does not
+move a fielded column** — obtained from a column that had to exist anyway. `median_start_q_error` is
+0.0 on every paired row.
+
+**Nothing is adopted**; all ten new `nlopt_*` fields stay plumbed and `None`, and the pin stays
+1.56.0.
 
 ### Stage SWEEP: solver settings, and what IPOPT's early stop is worth
 
@@ -857,8 +930,10 @@ refuted too, so the lever is closed on both axes.
 
 ### Future work on this axis
 
-- **NLopt settings are IN FLIGHT** (stage NLOPTTUNE), Thomas having reopened the "future work"
-  decision on 2026-09-18 now that the blocking Drake capability exists. See "The Drake bump" below.
+- **NLopt settings are DONE** (stage NLOPTTUNE): nine settings plus a 180 s budget arm, 12 rows x 60
+  cells on the nightly Drake. Nothing clears the pre-registered gate; the inner budget/tolerance
+  options are a large but row-dependent trade and the algorithm selector is inert. **Do not re-sweep
+  NLopt.**
 - **The step-rejection family is DONE** (stage STEP): refuted at 480 cells, nothing adopted, all
   five knobs left plumbed and `None`. The INFO 41 prediction for SNOPT's `Major step limit` is
   refuted at both scales. The 60-cell reading that it moves INFO 13 and trades between the robots
@@ -913,6 +988,9 @@ submitted and then **cancelled before it ran** — Thomas, 2026-09-18: *"There w
 changes that would affect SNOPT between 1.56.0 and the current nightly. It's fine that you're being
 cautious, but these aren't final paper numbers."* The stage stays registered and selftested because
 it is the check to run if the project's pin is ever moved off 1.56.0; it is not a gap in the record.
+**And it turned out not to be needed at all**: stage NLOPTTUNE's `default` column ran on the nightly
+against an archive produced on 1.56.0 and reproduced it exactly on eleven of twelve rows, so the
+cross-Drake check arrived for free from a column the stage already required.
 The general lesson is in the memory `ask-before-spending-compute-on-caution`: **ask before spending
 the allocation to verify an assumption he can rule out from knowledge**, and do not hold an
 exploratory sweep to a paper-numbers standard.
@@ -1474,8 +1552,10 @@ made explicitly in advance.
 
 Live items:
 
-- **The solver axis is CLOSED.** Step rejection refuted (stage STEP); SNOPT settings measured
-  (stage SNOPTTUNE) with `Major step limit = 0.5` the one survivor, awaiting Thomas's adoption call.
+- **The solver axis is CLOSED on all three method classes.** Step rejection refuted (stage STEP);
+  SNOPT settings measured (stages SNOPTTUNE and SNOPTCOMBO) with `Major step limit = 0.5` the one
+  survivor and no combination beating it; NLopt settings measured (stage NLOPTTUNE) with nothing
+  clearing its gate. All three await only Thomas's adoption call, and nothing is fielded.
   What it opened instead: ~70% of the learned arm's residual failures yield to *some* filter
   setting, so **multi-start over solver configurations**, reported as "solved within k restarts", is
   the live descendant of this lever. Untested, and legitimate — it searches over solver settings,
