@@ -849,7 +849,10 @@ def stage_SOLVER2(wall, targets, guesses, shards, only=None, tag="SOLVER2", seed
 ## are a separate question (Thomas, 2026-09-16) and the selftest asserts none of them
 ## appears here. Do not add one to this table -- add it to that stage when it exists.
 SWEEP_SNOPT = [
-    ("default", []),
+    ## snopt_major_step_limit was ADOPTED at 0.5 on 2026-09-19, so "set nothing" no
+    ## longer means Drake's defaults. This column does, and now says so explicitly;
+    ## without the =None a re-generation would silently measure the tuned value.
+    ("default", ["snopt_major_step_limit=None"]),
     ## The flow Jacobian is ~84% of a solve, so evaluations per major IS the cost model.
     ("lstol0p1", ["snopt_linesearch_tolerance=0.1"]),
     ("lstol0p5", ["snopt_linesearch_tolerance=0.5"]),
@@ -962,6 +965,19 @@ STEP_REJECTION_KNOBS = ("ipopt_theta_max_fact", "ipopt_watchdog_trigger", "ipopt
                         "snopt_violation_limit", "snopt_major_step_limit")
 
 
+def FieldsAValue(knob):
+    """True if a `NAME=VALUE` override FIELDS a setting, False if it restores a solver default.
+
+    `NAME=None` emits nothing at all -- `_SnoptOptions`/`_IpoptOptions` skip a None -- so it is
+    the exact opposite of fielding a setting, and every blacklist and disjointness check below
+    has to stop counting it as one. This became necessary on 2026-09-19, when
+    `snopt_major_step_limit` was adopted at 0.5: from that point an entry that sets nothing no
+    longer means "Drake's SNOPT defaults", so the four historical SNOPT tables say `=None`
+    explicitly, and they must not thereby look like they field a step-rejection knob.
+    """
+    return knob.split("=", 1)[1] != "None"
+
+
 def stage_SWEEP(wall, targets, guesses, shards, only=None, tag="SWEEP", seed=1,
                 solvers="ipopt,snopt"):
     """Solver settings, one factor at a time, on stage SOLVER's own 60-cell grid.
@@ -990,7 +1006,13 @@ def stage_SWEEP(wall, targets, guesses, shards, only=None, tag="SWEEP", seed=1,
         for solver in chosen:
             for name, sets in SWEEP_SETTINGS[solver]:
                 for knob in sets:
-                    if knob.split("=")[0] in STEP_REJECTION_KNOBS:
+                    ## `NAME=None` is the one permitted form: it RESTORES the solver's own
+                    ## default, which is the opposite of fielding a step-rejection setting.
+                    ## It became necessary on 2026-09-19, when snopt_major_step_limit was
+                    ## adopted at 0.5 -- after which an entry that sets nothing no longer
+                    ## means "Drake's defaults" and a `default` column has to say so.
+                    if (knob.split("=")[0] in STEP_REJECTION_KNOBS
+                            and FieldsAValue(knob)):
                         raise SystemExit(
                             f"stage_SWEEP entry {name!r} names {knob.split('=')[0]!r}, "
                             "which belongs to the separate step-rejection question")
@@ -1084,7 +1106,10 @@ STEP_IPOPT = [
 ## Tightening the violation limit pushes it into elastic mode earlier and plausibly makes
 ## INFO 13 MORE likely, so loosening is the untested direction that could actually help.
 STEP_SNOPT = [
-    ("default", []),
+    ## snopt_major_step_limit was ADOPTED at 0.5 on 2026-09-19, so "set nothing" no
+    ## longer means Drake's defaults. This column does, and now says so explicitly;
+    ## without the =None a re-generation would silently measure the tuned value.
+    ("default", ["snopt_major_step_limit=None"]),
     ("mstep0p1", ["snopt_major_step_limit=0.1"]),
     ("mstep0p5", ["snopt_major_step_limit=0.5"]),
     ("mstep10", ["snopt_major_step_limit=10.0"]),
@@ -1253,7 +1278,10 @@ def stage_STEP(wall, targets, guesses, shards, only=None, tag="STEP", seed=1,
 ## redundant; hessfreq20 is crossed in because its gain sits on the row the other two are
 ## weakest on.
 SNOPTTUNE_SNOPT = [
-    ("default", []),
+    ## snopt_major_step_limit was ADOPTED at 0.5 on 2026-09-19, so "set nothing" no
+    ## longer means Drake's defaults. This column does, and now says so explicitly;
+    ## without the =None a re-generation would silently measure the tuned value.
+    ("default", ["snopt_major_step_limit=None"]),
     ("nonderivls", ["snopt_nonderivative_linesearch=True"]),
     ("hessfreq20", ["snopt_hessian_frequency=20"]),
     ("hessfreq100", ["snopt_hessian_frequency=100"]),
@@ -1370,7 +1398,10 @@ def stage_SNOPTTUNE(wall, targets, guesses, shards, only=None, tag="SNOPTTUNE", 
 ## the survivor closes ~12% of the gap and factors of similar size will not close the rest.
 ## The deliverable is a defensible SNOPT column, not a rescue.
 SNOPTCOMBO_SNOPT = [
-    ("default", []),
+    ## snopt_major_step_limit was ADOPTED at 0.5 on 2026-09-19, so "set nothing" no
+    ## longer means Drake's defaults. This column does, and now says so explicitly;
+    ## without the =None a re-generation would silently measure the tuned value.
+    ("default", ["snopt_major_step_limit=None"]),
     ## The two single factors ride along rather than being read off the SNOPTTUNE archive, so
     ## every comparison is WITHIN one run on the same cells; reproducing their archived counts
     ## is itself the check that nothing else moved.
@@ -2197,7 +2228,7 @@ def selftest():
         names = [n for n, _ in table]
         if len(names) != len(set(names)):
             sw_fails.append("%s settings table has duplicate names" % solver)
-        if names[0] != "default" or table[0][1]:
+        if names[0] != "default" or any(FieldsAValue(k) for k in table[0][1]):
             sw_fails.append("%s's first entry must be the untouched default baseline, "
                             "or there is nothing on this grid to read the sweep against"
                             % solver)
@@ -2206,7 +2237,8 @@ def selftest():
         if a[a.index("--start") + 1] != "paired":
             sw_fails.append("%s is not on the paired protocol" % it["id"])
         for i, tok in enumerate(a):
-            if tok == "--set" and a[i + 1].split("=")[0] in STEP_REJECTION_KNOBS:
+            if (tok == "--set" and a[i + 1].split("=")[0] in STEP_REJECTION_KNOBS
+                    and FieldsAValue(a[i + 1])):
                 sw_fails.append("%s sets %s, which the step-rejection question owns"
                                 % (it["id"], a[i + 1]))
     ## And the guard itself must fire, not merely be present.
@@ -2244,7 +2276,7 @@ def selftest():
         names = [n for n, _ in table]
         if len(names) != len(set(names)):
             st_fails.append("%s settings table has duplicate names" % solver)
-        if names[0] != "default" or table[0][1]:
+        if names[0] != "default" or any(FieldsAValue(k) for k in table[0][1]):
             st_fails.append("%s's first entry must be the untouched default baseline" % solver)
         ## Not the same check: this one is about --pair's reference selection, not about
         ## the table having a baseline at all.
@@ -2326,8 +2358,10 @@ def selftest():
     ## And the two questions must stay disjoint the OTHER way round, which is stage SWEEP's
     ## blacklist. If a future edit widened STEP_REJECTION_KNOBS to cover something SWEEP
     ## fields, SWEEP would start raising -- so assert the two tables share no knob.
-    sweep_knobs = {k.split("=")[0] for _, sets in SWEEP_IPOPT + SWEEP_SNOPT for k in sets}
-    step_knobs = {k.split("=")[0] for _, sets in STEP_IPOPT + STEP_SNOPT for k in sets}
+    sweep_knobs = {k.split("=")[0] for _, sets in SWEEP_IPOPT + SWEEP_SNOPT
+                   for k in sets if FieldsAValue(k)}
+    step_knobs = {k.split("=")[0] for _, sets in STEP_IPOPT + STEP_SNOPT
+                  for k in sets if FieldsAValue(k)}
     if sweep_knobs & step_knobs:
         st_fails.append("stage SWEEP and stage STEP both field %r"
                         % sorted(sweep_knobs & step_knobs))

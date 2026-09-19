@@ -637,6 +637,11 @@ Learned arm, successes of 480:
 **IPOPT wins all 24 rows** (12 learned + 12 joint space), 23 significant, p from 3.6e-08 to 4.8e-44;
 the exception is Panda contained-grasp joint space, p = 0.09.
 
+**Read this table as SNOPT AT DRAKE'S DEFAULTS.** `Major step limit = 0.5` was adopted on
+2026-09-19, so the SNOPT column of record is now SNOPTCOMBO's `mstep0p5` column on these same twelve
+rows; the ordering and every conclusion below are unchanged by it (zero verdict flips), but the cell
+counts are not the fielded ones.
+
 **This is a CONFIRMATION, not a finding.** Thomas: *"SNOPT performing worse than IPOPT is not
 surprising. In my experience, IPOPT is more robust to ill-posed problems, and our neural network
 gradients are definitely ill-posed. I expect to see IPOPT > SNOPT >>> NLOPT."* Write it up as the
@@ -846,11 +851,11 @@ itself — the prediction that a smaller step limit converts INFO 41 into conver
 480 cells as it was at 60**. Nor does it reproduce the 60-cell story that INFO 13 falls: INFO 13 is
 flat. What the setting actually does is stop SNOPT exhausting its iteration and time budgets.
 
-**Adoption is Thomas's call; nothing is fielded.** Changing SNOPT's configuration would break
-comparability with the archived SOLVER2 columns, so `snopt_major_step_limit` stays plumbed and
-`None`. Note the setting is in `STEP_REJECTION_KNOBS`, which stage SWEEP blacklists and stage STEP
-whitelists; `stage_SNOPTTUNE` deliberately carries neither guard, so the three questions stay
-separable.
+**ADOPTED 2026-09-19 (Thomas): `snopt_major_step_limit` now DEFAULTS to 0.5.** It is the only
+solver setting this project fields. See "The adopted SNOPT configuration" below for what that
+changes about reading archived numbers. Note the setting is in `STEP_REJECTION_KNOBS`, which stage
+SWEEP blacklists and stage STEP whitelists; `stage_SNOPTTUNE` deliberately carries neither guard, so
+the three questions stay separable.
 
 **Two harness lessons this campaign paid for.** `collect_results.sh` recovers a run whose shards
 straddle two collections by searching this staging directory plus the **previous** one — chosen as
@@ -915,8 +920,39 @@ against 4126 (+3), defaults 3970 against 3981 (-11) — all inside the +/-2-cell
 cap-bound rows are reproducible to. So the ten new NLopt fields, the `__post_init__` check and the
 Luksan guard left the SNOPT path exactly where it was.
 
-**Adoption remains Thomas's call and nothing is fielded**; `snopt_major_step_limit` stays plumbed and
-`None`.
+**The survivor was adopted on 2026-09-19 and no combination was**; see below.
+
+### The adopted SNOPT configuration: `Major step limit = 0.5`
+
+`ProgramOptions.snopt_major_step_limit` **defaults to 0.5** (Drake/SNOPT's own default is 2.0).
+Adopted by Thomas on 2026-09-19 after stages SNOPTTUNE and SNOPTCOMBO, each 480 cells x 12 rows.
+
+**It was adopted for FAIRNESS, not for the comparison, and that distinction must survive into the
+write-up.** On the learned-vs-joint-space question it changes nothing: five learned wins, four
+joint-space wins and three ties before and after, with **zero verdict flips** and the same rows in
+each bucket. It gives the learned arm +161 cells of 5,760 and joint space +164 — the same size — and
+the per-row margins (L - JS) move between -32 and +15 and sum to **-3**. What justifies it is that
+IPOPT's column runs a tuned configuration (the acceptable-point early stop, worth 39 cells and a 9x
+speedup) while SNOPT's ran bare Drake defaults; that asymmetry is a property of the harness, not of
+SQP. **Do not present it as helping the learned formulation.**
+
+Three consequences, all load-bearing:
+
+- **The SNOPT numbers of record are SNOPTCOMBO's `mstep0p5` column, not `sc_SOLVER2_*_snopt_*`**,
+  which was measured at Drake's defaults. No new compute was needed: that column already exists at
+  480 cells on all twelve rows, adopted rungs, hardened scene, both protocols.
+- **"Set nothing" no longer means Drake's SNOPT defaults.** A stage whose column means that must say
+  `--set snopt_major_step_limit=None`, which emits the option not at all. The four historical SNOPT
+  tables in `cluster/gen_manifest.py` were updated so re-generating them reproduces what ran, and
+  `FieldsAValue()` teaches the step-rejection blacklist and the SWEEP/STEP disjointness checks that
+  `=None` restores a default rather than fielding a setting.
+- **`tests/test_solver_plumbing.py` pins both directions** — a default run must emit
+  `Major step limit = 0.5`, and `=None` must emit nothing — so neither can drift, and
+  `snopt_major_step_limit` has left the "no step-rejection knob is set by default" list with a
+  docstring saying it was adopted on the per-solver question rather than stage STEP's.
+
+**Nothing else is fielded.** The four valid combinations, every NLopt setting, and all ten
+`nlopt_*` fields stay plumbed and `None`, and the Drake pin stays 1.56.0.
 
 ### The grasp-containment lever is closed for the solver axis
 
@@ -939,10 +975,10 @@ refuted too, so the lever is closed on both axes.
   refuted at both scales. The 60-cell reading that it moves INFO 13 and trades between the robots
   did **not** replicate — at 480 cells x 12 rows (stage SNOPTTUNE) INFO 13 is flat, the gain comes
   from budget exits, and it is the one SNOPT setting that improves nearly every row.
-- **SNOPT settings are DONE** (stages SNOPTTUNE and SNOPTCOMBO): thirteen single settings, then
-  seven crosses of the one survivor, all at 480 cells x 12 rows. `Major step limit = 0.5` is the
-  whole of what SNOPT tuning is worth; no combination improves on it. Nothing fielded, and adoption
-  is Thomas's call. **Do not re-sweep SNOPT.**
+- **SNOPT settings are DONE and the survivor is ADOPTED** (stages SNOPTTUNE and SNOPTCOMBO):
+  thirteen single settings, then seven crosses of the one survivor, all at 480 cells x 12 rows.
+  `Major step limit = 0.5` is the whole of what SNOPT tuning is worth, no combination improves on it,
+  and it is the default as of 2026-09-19. **Do not re-sweep SNOPT.**
 - **Do not extend Drake to get better instrumentation.** Thomas: *"NLOPT might not have the robust
   logging we need btw, work with what you have, don't write new logging stuff in Drake or
   anything."*
@@ -1555,7 +1591,8 @@ Live items:
 - **The solver axis is CLOSED on all three method classes.** Step rejection refuted (stage STEP);
   SNOPT settings measured (stages SNOPTTUNE and SNOPTCOMBO) with `Major step limit = 0.5` the one
   survivor and no combination beating it; NLopt settings measured (stage NLOPTTUNE) with nothing
-  clearing its gate. All three await only Thomas's adoption call, and nothing is fielded.
+  clearing its gate. **`Major step limit = 0.5` is ADOPTED as SNOPT's default (2026-09-19)** and is
+  the only solver setting fielded anywhere in the project; nothing else is.
   What it opened instead: ~70% of the learned arm's residual failures yield to *some* filter
   setting, so **multi-start over solver configurations**, reported as "solved within k restarts", is
   the live descendant of this lever. Untested, and legitimate — it searches over solver settings,
