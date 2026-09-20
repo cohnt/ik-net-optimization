@@ -67,9 +67,15 @@ Update as steps land. `PENDING` / `DONE` / `DONE (n/480)`.
       `drake_models` cache resolves.
 - [x] **Cluster: code staged.** `.staged-commit` = `e2fe757`, matching local HEAD at the time.
       Re-stage before submitting to pick up `54bd528`.
-- [ ] Cluster: smoke check on debug-gpu (phases 1-2 passed: cu126/sm_70 kernel launch, IPOPT
-      and SNOPT available, flows and both robots load offline; phase 3 in progress)
-- [ ] Submitted
+- [x] **Cluster: smoke check PASSED** on debug-gpu at the staged commit — cu126/sm_70 kernel
+      launch, IPOPT and SNOPT available, flows and both robots load offline, one cell per
+      (robot, task) with `--compile`, and `start_q_error` **exactly 0.0** on every arm of all
+      four, which is the check that the flow inversion and conditioning-frame calibration are
+      right on this machine and under this Drake.
+- [x] **SUBMITTED 2026-09-19 ~21:47 ET.** Jobs 5681825-5681828, `lik_bench_manifest_stageSTATUS`,
+      4 x `PROCS=8` = 32 concurrent workers, 48 h wall each (`TimeLimit=2-00:00:00` confirmed via
+      `scontrol`). 32 items claimed within 90 s and the new "don't claim what the job cannot
+      finish" guard is correctly silent, as it must be on a 48 h job.
 - [ ] Items complete ( / 480)
 - [ ] Collected and merged
 - [ ] Reported, acceptance checks passed
