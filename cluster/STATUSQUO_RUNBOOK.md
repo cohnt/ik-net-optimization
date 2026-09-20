@@ -76,11 +76,13 @@ Update as steps land. `PENDING` / `DONE` / `DONE (n/480)`.
       4 x `PROCS=8` = 32 concurrent workers, 48 h wall each (`TimeLimit=2-00:00:00` confirmed via
       `scontrol`). 32 items claimed within 90 s and the new "don't claim what the job cannot
       finish" guard is correctly silent, as it must be on a 48 h job.
-- [ ] Items complete (166 / 480 at 2026-09-19 23:07 ET, 1 h 25 m in). IPOPT 93/96, SNOPT 73/96,
-      NLopt 0/288 (just starting). No errors, no stale claims. The manifest is emitted in solver
-      order rather than longest-first, so the whole NLopt block is the tail: with 32 workers and
-      288 items at ~1.8 h each the remaining wall clock is ~16 h, refinable once the first NLopt
-      item lands since no NLopt cell has been timed at 180 s under the adopted configuration.
+- [ ] Items complete (192 / 480 at 2026-09-20 00:25 ET, 2 h 40 m in). **IPOPT 96/96 DONE,
+      SNOPT 96/96 DONE**, NLopt 0/288 with all 32 workers on its first round. The manifest is
+      emitted in solver order rather than longest-first, so the entire NLopt block is the tail:
+      288 items over 32 workers is 9 rounds. The oldest NLopt claim is 79 min old with none
+      finished yet, consistent with the ~108 min/item estimate, which puts completion at
+      **~15:30 ET Sunday**. Refine once the first round lands -- no NLopt cell had ever been
+      timed at 180 s under the adopted configuration.
 - [x] **Collected and merged, incrementally, mid-run.** 18 of the 24 IPOPT/SNOPT logical runs
       merged, including **all twelve iiwa rows under both solvers**. The 6 outstanding are Panda
       shards still in flight. Collection mid-run is safe and is the designed path: a shard is
@@ -92,17 +94,30 @@ Update as steps land. `PENDING` / `DONE` / `DONE (n/480)`.
       `0.0.20260918` against the archive's 1.56.0) and the raised caps, all validated at once.
       `median_start_q_error` is 0.0 on all 8 paired rows and joint space is identical between
       protocols on all 8 solver x row pairs.
-- [ ] Reported in full (IPOPT and SNOPT read at 23:10 ET; NLopt column outstanding)
+- [x] **IPOPT and SNOPT reported in full** -- all 24 of their logical runs merged and read
+      (11,520 of the campaign's 17,280 solves). Three groups whose shards straddled two
+      collections merged into the *previous* staging directory, which is the documented
+      behaviour, not a fault.
+- [ ] NLopt column reported
 - [ ] `CLAUDE.md` tables replaced
 
-**Early reading, IPOPT and SNOPT only.** Two of the three flag criteria already have verdicts.
+**IPOPT and SNOPT, complete. Two of the three flag criteria have final verdicts.**
 Criterion 1 fires on **four rows, and both moves were named in advance**: iiwa contained grasp
 goes joint-space-win -> **tie** under both protocols (447 v 442, 453 v 442), exactly as predicted;
 and iiwa FREE grasp -- the row flagged as unmeasured above 45 s -- goes tie -> **learned win**
 under both (471 v 457, p = 0.016; 475 v 457, p = 1.2e-04). No verdict moved against us.
-**Timeouts are essentially zero at 180 s** (one cell in eleven rows), so these are formulation
-results rather than cap results, and by the same token the deferred 180 s chart-ladder
-re-measurement stays unwarranted -- heavy timeouts were its trigger and there are none.
+**Timeouts are essentially zero at 180 s** -- at most 2 cells of 480 on any of the 24 rows -- so
+these are formulation results rather than cap results, and by the same token the deferred 180 s
+chart-ladder re-measurement stays unwarranted: heavy timeouts were its trigger and there are none.
+
+**Criterion 2 has a final answer with a mechanism.** Learned arm, IPOPT minus SNOPT, median gap
+**102 cells at 45 s -> 120 cells at 180 s**, IPOPT ahead on 12 of 12 rows at both caps. The
+widening is entirely attributable: raising the cap gains IPOPT +5 to +55 cells on every *grasp*
+row and **exactly +0 on every pose row**, while SNOPT gains -1 to +7 anywhere. That is the
+predicted mechanism measured directly -- IPOPT's learned-arm failures are wall-clock, SNOPT's are
+convergence failures (3.6% time limit) -- and it doubles as the tightest reproducibility check the
+campaign has: every row that had no timeouts at 45 s reproduces its 45 s cell count **exactly**,
+with the single exception of Panda pose tip paired at +2.
 
 **Two things this campaign records that earlier ones did not**, both worth using when reading it:
 `metadata["solver_options_emitted"]` is the options Drake was actually handed, per arm — which is
