@@ -76,10 +76,33 @@ Update as steps land. `PENDING` / `DONE` / `DONE (n/480)`.
       4 x `PROCS=8` = 32 concurrent workers, 48 h wall each (`TimeLimit=2-00:00:00` confirmed via
       `scontrol`). 32 items claimed within 90 s and the new "don't claim what the job cannot
       finish" guard is correctly silent, as it must be on a 48 h job.
-- [ ] Items complete ( / 480)
-- [ ] Collected and merged
-- [ ] Reported, acceptance checks passed
+- [ ] Items complete (166 / 480 at 2026-09-19 23:07 ET, 1 h 25 m in). IPOPT 93/96, SNOPT 73/96,
+      NLopt 0/288 (just starting). No errors, no stale claims. The manifest is emitted in solver
+      order rather than longest-first, so the whole NLopt block is the tail: with 32 workers and
+      288 items at ~1.8 h each the remaining wall clock is ~16 h, refinable once the first NLopt
+      item lands since no NLopt cell has been timed at 180 s under the adopted configuration.
+- [x] **Collected and merged, incrementally, mid-run.** 18 of the 24 IPOPT/SNOPT logical runs
+      merged, including **all twelve iiwa rows under both solvers**. The 6 outstanding are Panda
+      shards still in flight. Collection mid-run is safe and is the designed path: a shard is
+      published to the collection point only on exit 0.
+- [x] **ACCEPTANCE CHECKS PASS, including the decisive one.** iiwa `n4` contained grasp under
+      IPOPT reproduces `sc_CAP_iiwa_n4_mug_180_{native,paired}` **exactly** -- learned 447 / 453,
+      joint space 442 / 442, 0 timeouts on every arm, `grid_hash fa692df81e7d-mug` on both sides,
+      delta +0 on all four numbers. That is a different stage, a different Drake (nightly
+      `0.0.20260918` against the archive's 1.56.0) and the raised caps, all validated at once.
+      `median_start_q_error` is 0.0 on all 8 paired rows and joint space is identical between
+      protocols on all 8 solver x row pairs.
+- [ ] Reported in full (IPOPT and SNOPT read at 23:10 ET; NLopt column outstanding)
 - [ ] `CLAUDE.md` tables replaced
+
+**Early reading, IPOPT and SNOPT only.** Two of the three flag criteria already have verdicts.
+Criterion 1 fires on **four rows, and both moves were named in advance**: iiwa contained grasp
+goes joint-space-win -> **tie** under both protocols (447 v 442, 453 v 442), exactly as predicted;
+and iiwa FREE grasp -- the row flagged as unmeasured above 45 s -- goes tie -> **learned win**
+under both (471 v 457, p = 0.016; 475 v 457, p = 1.2e-04). No verdict moved against us.
+**Timeouts are essentially zero at 180 s** (one cell in eleven rows), so these are formulation
+results rather than cap results, and by the same token the deferred 180 s chart-ladder
+re-measurement stays unwarranted -- heavy timeouts were its trigger and there are none.
 
 **Two things this campaign records that earlier ones did not**, both worth using when reading it:
 `metadata["solver_options_emitted"]` is the options Drake was actually handed, per arm — which is
