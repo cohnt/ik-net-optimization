@@ -55,96 +55,63 @@ running jobs keep going, and nothing here depends on this session staying alive.
 
 ## Progress
 
-Update as steps land. `PENDING` / `DONE` / `DONE (n/480)`.
+**CAMPAIGN COMPLETE, 2026-09-20 16:26 ET.** 480/480 items, 36/36 logical runs merged with zero
+failures, 17,280 solves. Ran 2026-09-19 21:47 -> 2026-09-20 16:26, ~18.7 h wall on jobs
+5681825-5681828 (4 nodes x `PROCS=8`). No stale claims, no errors, no reclaims needed, and the
+"don't claim what the job cannot finish" guard never had to fire on a 48 h job.
 
-- [x] **Local: plumbing + stage + reporter committed and pushed.** `f6685e8` (stage, caps, one
-      Drake), `e2fe757` (emitted solver options + Drake stamp in metadata), `54bd528` (smoke
-      covers SNOPT and NLopt). All four test files pass, `gen_manifest --selftest` OK,
-      `verify_sharding.sh` OK, and the claim guard is verified in both directions.
-- [x] **Cluster: one Drake install, and it is the pin.** `~/learned-ik/drake` is
-      `0.0.20260918 5a73436c...`; 1.56.0 deleted. Install is relocatable (`$ORIGIN` RPATH), so
-      this was a swap not a re-download. Both hardened scenes build offline under it, i.e. the
-      `drake_models` cache resolves.
-- [x] **Cluster: code staged.** `.staged-commit` = `e2fe757`, matching local HEAD at the time.
-      Re-stage before submitting to pick up `54bd528`.
-- [x] **Cluster: smoke check PASSED** on debug-gpu at the staged commit — cu126/sm_70 kernel
-      launch, IPOPT and SNOPT available, flows and both robots load offline, one cell per
-      (robot, task) with `--compile`, and `start_q_error` **exactly 0.0** on every arm of all
-      four, which is the check that the flow inversion and conditioning-frame calibration are
-      right on this machine and under this Drake.
-- [x] **SUBMITTED 2026-09-19 ~21:47 ET.** Jobs 5681825-5681828, `lik_bench_manifest_stageSTATUS`,
-      4 x `PROCS=8` = 32 concurrent workers, 48 h wall each (`TimeLimit=2-00:00:00` confirmed via
-      `scontrol`). 32 items claimed within 90 s and the new "don't claim what the job cannot
-      finish" guard is correctly silent, as it must be on a 48 h job.
-- [ ] Items complete (192 / 480 at 2026-09-20 00:25 ET, 2 h 40 m in). **IPOPT 96/96 DONE,
-      SNOPT 96/96 DONE**, NLopt 0/288 with all 32 workers on its first round. The manifest is
-      emitted in solver order rather than longest-first, so the entire NLopt block is the tail:
-      288 items over 32 workers is 9 rounds. The oldest NLopt claim is 79 min old with none
-      finished yet, consistent with the ~108 min/item estimate, which puts completion at
-      **~15:30 ET Sunday**. Refine once the first round lands -- no NLopt cell had ever been
-      timed at 180 s under the adopted configuration.
-- [x] **Collected and merged, incrementally, mid-run.** 18 of the 24 IPOPT/SNOPT logical runs
-      merged, including **all twelve iiwa rows under both solvers**. The 6 outstanding are Panda
-      shards still in flight. Collection mid-run is safe and is the designed path: a shard is
-      published to the collection point only on exit 0.
-- [x] **ACCEPTANCE CHECKS PASS, including the decisive one.** iiwa `n4` contained grasp under
-      IPOPT reproduces `sc_CAP_iiwa_n4_mug_180_{native,paired}` **exactly** -- learned 447 / 453,
-      joint space 442 / 442, 0 timeouts on every arm, `grid_hash fa692df81e7d-mug` on both sides,
-      delta +0 on all four numbers. That is a different stage, a different Drake (nightly
-      `0.0.20260918` against the archive's 1.56.0) and the raised caps, all validated at once.
-      `median_start_q_error` is 0.0 on all 8 paired rows and joint space is identical between
-      protocols on all 8 solver x row pairs.
-- [x] **IPOPT and SNOPT reported in full** -- all 24 of their logical runs merged and read
-      (11,520 of the campaign's 17,280 solves). Three groups whose shards straddled two
-      collections merged into the *previous* staging directory, which is the documented
-      behaviour, not a fault.
-- [ ] NLopt column reported. **11 of 12 rows in; every POSE row on both robots is a decisive learned win:
-      iiwa pose contained native is learned 298/480 against joint space 31/480, p = 5.1e-68**,
-      discordant 278 to 11, with the joint-space arm timing out on 463 of 480 cells. The learned arm
-      uses 4,025 network Jacobians per cell and 80 s mean against joint space's 9,550 and 174 s, so
-      it is converging rather than exhausting the budget -- the feasibility criterion the adopted
-      configuration was fielded on. Cost exists on only 20 common cells (6.511 against 4.988), so
-      it must be quoted with that n. Paired is 118 against the same 31, p = 2.0e-17, discordant 101
-      to 14 -- harder for the augmented Lagrangian just as it is for SNOPT. The four iiwa grasp rows
-      are 0-2 of 480 on BOTH arms. Remaining: all six Panda rows. Earlier rows: **iiwa contained grasp native is
-      0/480 on BOTH arms with 480/480 timeouts each**, and both legacy iiwa free-grasp rows are
-      learned 3 / joint space 11. So NLOPTTUNE's 60-cell finding -- nothing Drake exposes makes the
-      augmented Lagrangian solve an iiwa grasp -- replicates at 480 cells. Rows where both arms sit
-      at the floor carry no comparison and no cost column; the rows that will carry the decisive
-      NLopt result are the pose ones, still pending.
-- [x] **The new results section is DRAFTED** at
-      `scratchpad/statusquo_section.md` (IPOPT and SNOPT tables, headroom/rescue-rate table, the
-      legacy free-grasp table, and flag criteria 1 and 2 answered). Held out of `CLAUDE.md`
-      deliberately until the NLopt column lands, so the file is edited once rather than twice.
-      Note when splicing it in: it replaces the four table subsections between
-      "Grasp task, adopted default" and "Settled negative results on the knobs", and the 45 s
-      reference values in it are the MEASURED `sc_SOLVER2`/`sc_SNOPTCOMBO` pairings, not the older
-      numbers quoted elsewhere in `CLAUDE.md` (e.g. Panda contained grasp paired pairs at 437, not
-      the 444 an older table shows).
-- [ ] `CLAUDE.md` tables replaced
+- [x] Local plumbing, stage, reporter committed. Cluster: one Drake (the pin), code staged, smoke
+      passed on debug-gpu.
+- [x] All 480 items complete. Item cost split sharply by robot: iiwa NLopt items 90-144 min (the
+      bimodality is exact -- target-major sharding of 60 targets over 24 gives twelve 3-target and
+      twelve 2-target shards, so 48 or 32 solves, and 48 x 180 s = 144 min), Panda NLopt items
+      27-78 min. IPOPT and SNOPT items ran ~16 min.
+- [x] Collected, merged, promoted: 36/36.
+- [x] **ALL ACCEPTANCE CHECKS PASS.** The decisive one: iiwa `n4` contained grasp under IPOPT
+      reproduces `sc_CAP_iiwa_n4_mug_180_{native,paired}` **exactly** -- learned 447/453, joint space
+      442/442, `grid_hash fa692df81e7d-mug` both sides, delta +0 on all four numbers -- validating the
+      new stage, the raised caps and the Drake pin at once. Also: every row 480 cells on both arms;
+      `median_start_q_error` 0.0 on all 18 paired rows; joint space identical between protocols on all
+      18 solver x row pairs; provenance uniform (one Drake `0.0.20260918`, `Major step limit = 0.5` and
+      the `LD_MMA` inner configuration emitted everywhere they should be).
+- [x] Reported in full, all three flag criteria answered.
+- [x] `CLAUDE.md` results tables replaced; the 45 s / free-grasp tables and stage SOLVER2's success
+      table deleted rather than accumulated.
 
-**IPOPT and SNOPT, complete. Two of the three flag criteria have final verdicts.**
-Criterion 1 fires on **four rows, and both moves were named in advance**: iiwa contained grasp
-goes joint-space-win -> **tie** under both protocols (447 v 442, 453 v 442), exactly as predicted;
-and iiwa FREE grasp -- the row flagged as unmeasured above 45 s -- goes tie -> **learned win**
-under both (471 v 457, p = 0.016; 475 v 457, p = 1.2e-04). No verdict moved against us.
-**Timeouts are essentially zero at 180 s** -- at most 2 cells of 480 on any of the 24 rows -- so
-these are formulation results rather than cap results, and by the same token the deferred 180 s
-chart-ladder re-measurement stays unwarranted: heavy timeouts were its trigger and there are none.
+## Results, in one place
 
-**Criterion 2 has a final answer with a mechanism.** Learned arm, IPOPT minus SNOPT, median gap
-**102 cells at 45 s -> 120 cells at 180 s**, IPOPT ahead on 12 of 12 rows at both caps. The
-widening is entirely attributable: raising the cap gains IPOPT +5 to +55 cells on every *grasp*
-row and **exactly +0 on every pose row**, while SNOPT gains -1 to +7 anywhere. That is the
-predicted mechanism measured directly -- IPOPT's learned-arm failures are wall-clock, SNOPT's are
-convergence failures (3.6% time limit) -- and it doubles as the tightest reproducibility check the
-campaign has: every row that had no timeouts at 45 s reproduces its 45 s cell count **exactly**,
-with the single exception of Panda pose tip paired at +2.
+**IPOPT, status quo (8 rows): six decisive learned wins, two ties, no losses.** Every pose row on
+both robots (p 2.9e-37 to 4.6e-68); Panda contained grasp +148/+153 cells; iiwa contained grasp a tie
+at 447/453 v 442. **SNOPT: four wins, two ties, two losses** (both iiwa contained grasp) -- one
+solver-dependent verdict. **NLopt: all four pose rows decisive learned wins** (iiwa 298/118 v 31,
+Panda 289/114 v 12), Panda contained grasp native 327 v **0**, and the four iiwa grasp rows at the
+floor on both arms.
 
-**Two things this campaign records that earlier ones did not**, both worth using when reading it:
-`metadata["solver_options_emitted"]` is the options Drake was actually handed, per arm — which is
-how you tell a run at today's adopted defaults from one at Drake's, since `overrides` records only
-`--set` — and `metadata["drake_version_txt"]` is the exact build stamp and commit.
+**Three findings worth carrying forward.** The rescue rate is 82-100% on every IPOPT row, with
+157-263 joint-space failures available to rescue under containment against 23-27 free. The cap effect
+is entirely on grasp rows (+5 to +55 for IPOPT, exactly +0 on every pose row), which is both the
+IPOPT-SNOPT widening mechanism and the campaign's tightest reproducibility check. And **the augmented
+Lagrangian is extraordinarily start-sensitive** -- Panda contained grasp 327 native -> 0 paired,
+against IPOPT's largest protocol effect of 476 -> 471 -- so the NLopt column must be read per protocol
+and never pooled.
+
+## Harness defects this campaign found and fixed
+
+1. **`--reclaim`'s guard had never refused anything.** It filtered `squeue -n run_items.sh`, a name no
+   job carries (`submit_bench.sh` sets `lik_bench_<manifest>`), so `BUSY` was unconditionally 0 and a
+   mop-up during a live campaign would have cleared claims from under 32 working workers. Now scoped
+   to `lik_bench_$MANIFEST_NAME`, verified live in both directions.
+2. **The merger could only see two staging directories.** NLopt items ran 27-144 min against hourly
+   collections, so one row's shards landed across three collections and it reported 22 of 24 missing
+   from directories that existed. `--also` is `action=append`; it now gets every prior directory.
+3. **The NLopt column had no work measure.** The reporter read `jacobian_evals`, parsed from a solver
+   print file NLopt never writes, so it was `nan`. Now reads the program's own
+   `eval_counts["map_jacobian"]`.
+4. **Medians over successes misdescribe a 99%-failing column.** On iiwa free grasp the 3 solved cells
+   report 173 Jacobians and 0.98 s against the typical cell's 12,344 and 180 s -- the median would have
+   called the augmented Lagrangian cheap. The NLopt section now reports means over all 480 cells.
+5. **Cost on too few shared cells.** One NLopt row shares exactly one solved cell with joint space,
+   where the medians were 17.376 against 0.596. Cost now prints `--` below 10 shared cells.
 
 ## Acceptance checks, all free
 
