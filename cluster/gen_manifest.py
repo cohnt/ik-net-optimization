@@ -1513,8 +1513,11 @@ def stage_SNOPTCOMBO(wall, targets, guesses, shards, only=None, tag="SNOPTCOMBO"
 ## settings as future work") with a standing TODO: the AL's inner local optimizer was not
 ## selectable on the cluster's Drake at all. Drake PR 25002 (merged 2026-09-17) completes the
 ## surface at sixteen options against 1.56.0's six, and 1.57.0 was cut before it, so these
-## rows require the nightly -- hence `env="DRAKE=nightly"` on every item, which
-## cluster/run_items.sh translates into that install's PYTHONPATH.
+## rows require a Drake carrying that PR. It is now the PROJECT'S PIN (2026-09-19), so the
+## items name no Drake at all: there is one install and it is the pin. The `DRAKE=nightly`
+## per-item sentinel these rows used to carry is gone, along with stage DRAKEBUMP -- every arm
+## of every campaign runs on the current pin, and a version-induced regression is reported and
+## fixed rather than pinned around.
 ##
 ## TWO THINGS SHAPE THIS TABLE, both read out of Drake rather than assumed.
 ##
@@ -1638,9 +1641,9 @@ def stage_NLOPTTUNE(wall, targets, guesses, shards, only=None, tag="NLOPTTUNE", 
     IS A COMPLETE RESULT -- "every option Drake now exposes, measured, and the augmented
     Lagrangian is still not competitive" is what closes this axis.
 
-    Every item carries `DRAKE=nightly`: the local-optimizer and PR-25002 options do not exist
-    in the cluster's pinned 1.56.0, and ProgramOptions refuses them there rather than letting
-    Drake fail every cell with fail_reason="error".
+    Needs a Drake carrying PR 25002, which is the project's pin as of 2026-09-19, so the items
+    carry no version selector. On an older Drake ProgramOptions refuses these options up front
+    rather than letting Drake fail every cell with fail_reason="error".
     """
     wanted = set(only.split(",")) if only else None
     want_starts = [x.strip() for x in starts.split(",") if x.strip()]
@@ -1715,41 +1718,100 @@ def stage_NLOPTTUNE(wall, targets, guesses, shards, only=None, tag="NLOPTTUNE", 
                                   f"sc_{tag}_{robot}_{label}_nlopt_{token}"
                                   f"_{targets * guesses}_{int(item_wall)}_{start}_{name}",
                                   args, targets, guesses, LADDER_ARMS, item_wall,
-                                  item_shards, env="DRAKE=nightly", seed=seed)
+                                  item_shards, seed=seed)
     return items
 
 
-## ----------------------------------------------------------------------------- DRAKEBUMP --
+## ----------------------------------------------------------------------------- STATUSQUO --
 ##
-## Does the Drake bump itself move a FIELDED column? Worth answering on its own, because it is
-## the only thing that could ever justify moving the project's pin off 1.56.0, and because
-## stage NLOPTTUNE's default column runs on the nightly while the twelve archived NLopt columns
-## ran on 1.56.0 -- without this, any difference between them is unattributable.
+## THE STATUS-QUO ESTABLISHMENT BENCHMARK. Four decisions landed on 2026-09-19 and every
+## results table in CLAUDE.md predates them: grasp targets are now shelf-contained (they were
+## free), pose stays shelf-contained at the fingertips (that was the last open placement
+## question and it is now decided), the campaign cap is 180 s (it was 45 s), and SNOPT and
+## NLopt each field an adopted configuration where they used to run Drake's defaults. This
+## stage is the measurement that replaces those tables. Thomas:
 ##
-## Deliberately small: two rows per robot, both solvers that report enough to compare, one
-## protocol. The 1.56.0 halves also pair cell-for-cell against the archived sc_SOLVER2_*
-## columns on identical grid_hashes, so they are a second, free reproduction check.
-DRAKEBUMP_ROWS = (("mug", "mugshelf", ["--target-placement", "shelf"]),
-                  ("pose", "posetip", ["--target-placement", "shelf",
-                                       "--placement-point", "fingertips"]))
+##   "Why don't we set grasp fingertips in shelf as default, use the 180s timeout, run the
+##    other experiments/solvers at 180s at the new status quo benchmark, and just have a note
+##    that if the story radically changes as a result, flag it?"
+##
+## WHY THE PLACEMENT AND THE CAP ARE ONE DECISION. Containment is what creates headroom -- on
+## free targets the joint-space arm sits at 94-95% and only ~25 cells of 480 are winnable at
+## all, while contained it falls to 300-323. But at 45 s the iiwa's contained-grasp rows are
+## cap-bound (64-74 learned timeouts of 480) and score as joint-space wins; at 180 s they are
+## ties with ZERO timeouts, and a 360 s column reproduces 180 s exactly. Adopting containment
+## at 45 s would have fielded a cap artefact as a result.
+##
+## ALL THREE SOLVERS AT THE SAME SCALE, 480 cells, so the solver axis is like-for-like
+## (Thomas, 2026-09-19: "NLOPT should still get the full 480 solves for the campaign. Evaluate
+## at the same scale as IPOPT and SNOPT."). NLopt needs much heavier sharding because nearly
+## every one of its cells runs the full cap on both arms: ~44 h of solve per logical run
+## against IPOPT's ~3.8 h, which is why STATUSQUO_SHARD_SCALE exists.
+##
+## NO SETTINGS AXIS. Every solver runs its adopted configuration, which is the default now --
+## IPOPT's acceptable-point early stop, SNOPT's `Major step limit = 0.5`, NLopt's LD_AUGLAG +
+## LD_MMA inner + inner xtol_rel = ftol_rel = 1e-3. The solver-settings question is closed on
+## all three method classes (stages SWEEP, SNOPTTUNE, SNOPTCOMBO, STEP, NLOPTTUNE); this stage
+## must not reopen it, hence the guard refusing any solver knob in its argument vectors.
+##
+## NO ANALYTIC ARMS. LADDER_ARMS throughout, matching every archived solver-axis column.
+## Fielding the Panda's analytic/analytic8 baselines -- and writing an iiwa analytic program,
+## which does not exist -- is future work or possibly not done at all (Thomas, 2026-09-19).
+##
+## THE CHART LADDER IS DELIBERATELY NOT RE-MEASURED. Nothing touching the charts changed and
+## the rungs are selected by the gain ceiling rather than by cells, so a new grid cannot revise
+## the choice. Available as a low-priority future option if these tables show heavy timeouts,
+## since that is the regime where the cap-dependent half of the depth mechanism does the work.
+
+## Per-solver shard counts. The binding constraint is run_items.sh's ITEM_TIMEOUT (8 h): an
+## item must finish inside it, and the job wall must exceed it. Measured mean wall clock per
+## cell at a 180 s cap, summed over both arms: IPOPT ~29 s (iiwa contained grasp, the
+## expensive IPOPT row), SNOPT ~30 s, NLopt ~330 s -- so one 480-cell NLopt run is ~44 h and
+## needs 24 shards to sit at ~1.8 h per item, while IPOPT and SNOPT are comfortable at 8.
+## 24 is also CLAUDE.md's own "shards >= 16, 24 for comfort" figure for a 180 s campaign.
+STATUSQUO_SHARD_SCALE = {"ipopt": 1, "snopt": 1, "nlopt": 3}
+STATUSQUO_WALL = 180.0
 
 
-def stage_DRAKEBUMP(wall, targets, guesses, shards, only=None, tag="DRAKEBUMP", seed=1,
-                    solvers="ipopt,snopt", starts="paired"):
-    """The same rows under the pinned 1.56.0 and under the nightly, as a version check.
+def stage_STATUSQUO(wall, targets, guesses, shards, only=None, tag="STATUSQUO", seed=1,
+                    solvers="ipopt,snopt,nlopt", starts="paired,native"):
+    """The campaign of record at the new status quo: contained targets, 180 s, three solvers.
 
-    Reported as a version check and never as a result: if the nightly moves a fielded column,
-    every cross-Drake comparison in stage NLOPTTUNE is stated with that caveat and the pin
-    stays where it is. NLopt is excluded here -- its own stage already carries a nightly
-    default, and on 1.56.0 it would be measuring a column that is at the floor anyway.
+    Twelve rows -- both adopted rungs x SOLVER2_ROWS x both protocols -- under each of the
+    three method classes at their adopted configurations. Two of the three rows ARE the status
+    quo; `mugfree` is a legacy column included only for completeness, because iiwa free grasp
+    is unmeasured above 45 s where it has 35/27 timeouts. Report it as a legacy row, never as a
+    status-quo one.
+
+    The cap does not enter target sampling, so every row pairs cell-for-cell against its own
+    45 s counterpart on an identical grid_hash: IPOPT against sc_SOLVER2_*_ipopt_*_480_45_*,
+    SNOPT against sc_SNOPTCOMBO_*_mstep0p5. NLopt's adopted configuration was only ever
+    measured at 60 cells, so that column compares on direction and magnitude rather than cell
+    for cell -- say so rather than implying a pairing. And iiwa n4 contained grasp under IPOPT
+    must reproduce sc_CAP_iiwa_n4_mug_180_{native,paired} outright, which makes it a direct
+    check on this stage, the raised item cap and the Drake pin at once.
     """
     wanted = set(only.split(",")) if only else None
     want_solvers = [x.strip() for x in solvers.split(",") if x.strip()]
     for sv in want_solvers:
-        if sv not in ("ipopt", "snopt"):
-            raise SystemExit(f"--solvers: {sv!r} is not a solver this stage compares across "
-                             "Drake versions; expected ipopt or snopt")
+        if sv not in SOLVER_CLASSES:
+            raise SystemExit(f"--solvers: {sv!r} is not one of the three method classes "
+                             f"{sorted(SOLVER_CLASSES)}")
+    if len(set(want_solvers)) != len(want_solvers):
+        raise SystemExit("--solvers names a solver twice; each column is measured once")
     want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    for st in want_starts:
+        if st not in ("paired", "native"):
+            raise SystemExit(f"--starts: {st!r} is not a start protocol")
+    if float(wall) != STATUSQUO_WALL:
+        raise SystemExit(f"--wall-time must be {STATUSQUO_WALL:g} for the status-quo campaign; "
+                         f"got {wall}. The 180 s cap is half of the 2026-09-19 decision -- at "
+                         "45 s the iiwa's contained-grasp rows are cap-bound and score as "
+                         "joint-space wins, so a shorter cap fields a cap artefact.")
+    ## item() stringifies the cap straight into --wall-time, so an int caller would emit `180`
+    ## and argparse's float `180.0` -- two spellings of one cap, which would make the args
+    ## differ between a selftest construction and a real generation. Normalise once, here.
+    wall = float(wall)
     items = []
     for robot, label, ckpt in ADOPTED_RUNGS:
         if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
@@ -1757,17 +1819,16 @@ def stage_DRAKEBUMP(wall, targets, guesses, shards, only=None, tag="DRAKEBUMP", 
         base = (["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
                  "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET)]
                 + (["--checkpoint", ckpt] if ckpt else []))
-        for drake, env in (("pinned", "-"), ("nightly", "DRAKE=nightly")):
-            for solver in want_solvers:
-                for task, token, placement in DRAKEBUMP_ROWS:
-                    for start in want_starts:
-                        args = (["--task", task, "--start", start, "--solver", solver]
-                                + placement + base)
-                        items += item(robot,
-                                      f"sc_{tag}_{robot}_{label}_{solver}_{token}"
-                                      f"_{targets * guesses}_{int(wall)}_{start}_{drake}",
-                                      args, targets, guesses, LADDER_ARMS, wall, shards,
-                                      env=env, seed=seed)
+        for solver in want_solvers:
+            item_shards = shards * STATUSQUO_SHARD_SCALE[solver]
+            for task, token, placement in SOLVER2_ROWS:
+                for start in want_starts:
+                    items += item(robot,
+                                  f"sc_{tag}_{robot}_{label}_{solver}_{token}"
+                                  f"_{targets * guesses}_{int(wall)}_{start}",
+                                  ["--task", task, "--start", start, "--solver", solver]
+                                  + placement + base,
+                                  targets, guesses, LADDER_ARMS, wall, item_shards, seed=seed)
     return items
 
 
@@ -2060,9 +2121,11 @@ def selftest():
                          ("SNOPTCOMBO-one", stage_SNOPTCOMBO(
                              45, 60, 8, 8, settings="default,mstep0p5,mstepelastic",
                              starts="paired")),
+                         ("STATUSQUO", stage_STATUSQUO(180, 60, 8, 8)),
+                         ("STATUSQUO-ipopt", stage_STATUSQUO(180, 60, 8, 8, solvers="ipopt",
+                                                             starts="paired")),
                          ("NLOPTTUNE", stage_NLOPTTUNE(45, 15, 4, 1)),
                          ("NLOPTTUNE-nocap", stage_NLOPTTUNE(45, 15, 4, 1, cap=False)),
-                         ("DRAKEBUMP", stage_DRAKEBUMP(45, 60, 8, 8)),
                          ("STEP480", stage_STEP(45, 60, 8, 8, solvers="ipopt",
                                                 settings="default,theta1",
                                                 starts="paired,native", tag="STEP480")),
@@ -2550,15 +2613,100 @@ def selftest():
         print(f"FAIL stage SNOPTCOMBO: {msg}")
     if not sc_fails:
         print("ok   stage SNOPTCOMBO: %d items, %d settings x 12 rows each, seed 1, SNOPT "
-              "only, pinned Drake, every cross carries the survivor"
+              "only, every cross carries the survivor"
               % (want_sc, len(SNOPTCOMBO_SNOPT)))
     fails += len(sc_fails)
 
-    ## Stage NLOPTTUNE. The invariants that matter here are different in kind: this stage is
-    ## the only one that runs a DIFFERENT DRAKE, and the only one whose options are silently
-    ## inert if mis-specified. So: every item must carry the nightly sentinel, no inner option
-    ## may appear without an inner algorithm, and the cap arm must be sharded or it dies on
-    ## run_items.sh's 4 h ITEM_TIMEOUT.
+    ## Stage STATUSQUO. This is the campaign of record, so its invariants are about what must
+    ## NOT vary: one cap (180 s), one configuration per solver (no settings axis at all -- that
+    ## question is closed and reopening it here would silently make this a tuning stage), the
+    ## adopted arms, and the hardened scene. Per-solver sharding is checked because NLopt's
+    ## ~44 h logical run is the one thing here that can exceed run_items.sh's ITEM_TIMEOUT.
+    sq_fails = []
+    runs_sq = stage_STATUSQUO(180, 60, 8, 8)
+    want_sq = 2 * len(SOLVER2_ROWS) * 2 * sum(8 * STATUSQUO_SHARD_SCALE[s]
+                                              for s in ("ipopt", "snopt", "nlopt"))
+    if len(runs_sq) != want_sq:
+        sq_fails.append("expected %d items, got %d" % (want_sq, len(runs_sq)))
+    seen_sq = {}
+    for it in runs_sq:
+        a = it["args"]
+        if a[a.index("--wall-time") + 1] != "180.0":
+            sq_fails.append("%s is not at the 180 s campaign cap" % it["id"])
+        if a[a.index("--seed") + 1] != "1":
+            sq_fails.append("%s is not on the out-of-sample seed 1" % it["id"])
+        if a[a.index("--arms") + 1] != LADDER_ARMS:
+            sq_fails.append("%s does not run exactly the adopted arms" % it["id"])
+        if a[a.index("--scene") + 1] != "hardened":
+            sq_fails.append("%s is not on the hardened scene" % it["id"])
+        if a[a.index("--shelf-inset") + 1] != str(HARD_SHELF_INSET):
+            sq_fails.append("%s is not at the adopted shelf inset" % it["id"])
+        if it["env"] != "-":
+            sq_fails.append("%s names a Drake version or another per-item env; there is one "
+                            "install and it is the project's pin" % it["id"])
+        if "_480_180_" not in it["id"]:
+            sq_fails.append("%s does not name its cell count and cap, so two scales would "
+                            "collide on one summary.json" % it["id"])
+        ## NO SETTINGS AXIS. Every `--set` must be the correction penalty; a solver knob here
+        ## would make the campaign of record a tuning run, and the adopted configurations are
+        ## already the defaults, so nothing needs setting.
+        for i, tok in enumerate(a):
+            if tok == "--set" and not a[i + 1].startswith("correction_cost_weight="):
+                sq_fails.append("%s sets %r: STATUSQUO fields each solver's adopted "
+                                "configuration, which is its default, and must not carry a "
+                                "settings axis" % (it["id"], a[i + 1]))
+        task = a[a.index("--task") + 1]
+        if task == "mug" and "--placement-point" in a:
+            sq_fails.append("%s passes --placement-point on a grasp row, where both modes "
+                            "resolve to between_fingers" % it["id"])
+        if task == "pose" and a[a.index("--placement-point") + 1] != "fingertips":
+            sq_fails.append("%s is not the adopted pose containment point" % it["id"])
+        base = re.sub(r"_shard\d+of\d+$", "", it["id"])
+        seen_sq.setdefault(base, 0)
+        seen_sq[base] += 1
+    ## Every solver must reach all twelve rows, and each logical run must be sharded at its
+    ## solver's own scale -- the check that NLopt did not silently inherit IPOPT's 8.
+    for solver, scale in STATUSQUO_SHARD_SCALE.items():
+        rows = [b for b in seen_sq if f"_{solver}_" in b]
+        if len(rows) != 2 * len(SOLVER2_ROWS) * 2:
+            sq_fails.append("%s reaches %d rows, not all %d"
+                            % (solver, len(rows), 2 * len(SOLVER2_ROWS) * 2))
+        bad = [b for b in rows if seen_sq[b] != 8 * scale]
+        if bad:
+            sq_fails.append("%s: %d row(s) not sharded %d-way, e.g. %s"
+                            % (solver, len(bad), 8 * scale, bad[0]))
+    ## An item must fit inside run_items.sh's ITEM_TIMEOUT with room to spare. The estimate is
+    ## SEC_PER_CELL_ARM, which is calibrated at 45 s and so is pessimistic here; if even that
+    ## exceeds the cap the sharding is wrong.
+    ITEM_TIMEOUT = 28800
+    over = [it["id"] for it in runs_sq if it["seconds"] > ITEM_TIMEOUT]
+    if over:
+        sq_fails.append("%d item(s) estimate past run_items.sh's %d s ITEM_TIMEOUT, e.g. %s"
+                        % (len(over), ITEM_TIMEOUT, over[0]))
+    ## And the guards must fire.
+    for kwargs, why in ((dict(wall=45), "a 45 s cap, where contained grasp is a cap artefact"),
+                        (dict(solvers="ipopt,ipopt"), "a solver named twice"),
+                        (dict(solvers="ipopt,gurobi"), "a solver outside the three classes"),
+                        (dict(starts="warmstart"), "an unknown start protocol")):
+        kw = dict(wall=180, targets=60, guesses=8, shards=8)
+        kw.update(kwargs)
+        try:
+            stage_STATUSQUO(**kw)
+            sq_fails.append("%s was accepted" % why)
+        except SystemExit:
+            pass
+    for msg in sq_fails:
+        print(f"FAIL stage STATUSQUO: {msg}")
+    if not sq_fails:
+        print("ok   stage STATUSQUO: %d items, 3 solvers x 12 rows at 480 cells / 180 s, "
+              "seed 1, adopted configurations only, NLopt sharded %dx"
+              % (want_sq, STATUSQUO_SHARD_SCALE["nlopt"]))
+    fails += len(sq_fails)
+
+    ## Stage NLOPTTUNE. The invariant that matters here is that its options are silently inert
+    ## if mis-specified: no inner option may appear without an inner algorithm. Its items must
+    ## also name no Drake -- there is one install and it is the pin -- and the cap arm must be
+    ## sharded or it exceeds run_items.sh's ITEM_TIMEOUT.
     nl_fails = []
     runs_nl = stage_NLOPTTUNE(45, 15, 4, 1)
     want_nl = 2 * 3 * 2 * (len(NLOPTTUNE_NLOPT) + NLOPTTUNE_CAP_SHARDS)
@@ -2591,9 +2739,9 @@ def selftest():
             nl_fails.append("%s is not on the out-of-sample seed 1" % it["id"])
         if a[a.index("--solver") + 1] != "nlopt":
             nl_fails.append("%s is not an NLopt run" % it["id"])
-        if it["env"] != "DRAKE=nightly":
-            nl_fails.append("%s does not select the nightly Drake; the local-optimizer and "
-                            "PR-25002 options do not exist in the pinned 1.56.0" % it["id"])
+        if it["env"] != "-":
+            nl_fails.append("%s names a Drake version; there is one install and it is the "
+                            "project's pin" % it["id"])
         if a[a.index("--scene") + 1] != "hardened":
             nl_fails.append("%s is not on the hardened scene" % it["id"])
         if task == "mug" and "--placement-point" in a:
@@ -2660,53 +2808,9 @@ def selftest():
         print(f"FAIL stage NLOPTTUNE: {msg}")
     if not nl_fails:
         print("ok   stage NLOPTTUNE: %d items, %d settings + a sharded 180 s cap arm x 12 "
-              "rows each, seed 1, NLopt only, nightly Drake on every item"
+              "rows each, seed 1, NLopt only, no per-item Drake selector"
               % (want_nl, len(NLOPTTUNE_NLOPT)))
     fails += len(nl_fails)
-
-    ## Stage DRAKEBUMP. Its whole value is that the two halves differ in NOTHING but the Drake
-    ## install, so that is what the selftest checks: identical args, one `-` env and one
-    ## nightly env, paired per row.
-    db_fails = []
-    runs_db = stage_DRAKEBUMP(45, 60, 8, 8)
-    want_db = 2 * 2 * 2 * len(DRAKEBUMP_ROWS) * 8
-    if len(runs_db) != want_db:
-        db_fails.append("expected %d items, got %d" % (want_db, len(runs_db)))
-    by_args = {}
-    for it in runs_db:
-        a = it["args"]
-        drake = re.sub(r"_shard\d+of\d+$", "", it["id"]).rsplit("_", 1)[-1]
-        if drake not in ("pinned", "nightly"):
-            db_fails.append("%s does not name its Drake" % it["id"])
-        if a[a.index("--seed") + 1] != "1":
-            db_fails.append("%s is not on the out-of-sample seed 1" % it["id"])
-        if a[a.index("--solver") + 1] == "nlopt":
-            db_fails.append("%s fields NLopt; its own stage carries the nightly default and "
-                            "on 1.56.0 the column is at the floor anyway" % it["id"])
-        if (drake == "nightly") != (it["env"] == "DRAKE=nightly"):
-            db_fails.append("%s: the tag and the env disagree about which Drake" % it["id"])
-        ## Keyed on the args with `--tag` REMOVED: the tag necessarily differs between the
-        ## two halves (it is what names the Drake), so leaving it in would make every vector
-        ## unique and the pairing check vacuous in the failing direction.
-        t = a.index("--tag")
-        by_args.setdefault(tuple(a[:t] + a[t + 2:]), set()).add(drake)
-    ## Every argument vector must appear under BOTH Drakes: that pairing is the measurement.
-    unpaired = [k for k, v in by_args.items() if v != {"pinned", "nightly"}]
-    if unpaired:
-        db_fails.append("%d argument vector(s) do not appear under both Drakes"
-                        % len(unpaired))
-    try:
-        stage_DRAKEBUMP(45, 60, 8, 8, solvers="nlopt")
-        db_fails.append("NLopt was accepted as a cross-Drake comparison solver")
-    except SystemExit:
-        pass
-    for msg in db_fails:
-        print(f"FAIL stage DRAKEBUMP: {msg}")
-    if not db_fails:
-        print("ok   stage DRAKEBUMP: %d items, %d arg vectors each under both the pinned and "
-              "the nightly Drake" % (want_db, len(by_args)))
-    fails += len(db_fails)
-
 
     for msg in hard_fails:
         print(f"FAIL stage HARD: {msg}")
@@ -2751,7 +2855,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "DRAKEBUMP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -2835,14 +2939,14 @@ def main():
                                                    only=args.rungs,
                                                    settings=args.settings,
                                                    starts=args.starts),
+             "STATUSQUO": lambda: stage_STATUSQUO(args.wall_time, args.targets,
+                                                 args.guesses, args.shards,
+                                                 only=args.rungs, solvers=args.solvers,
+                                                 starts=args.starts),
              "NLOPTTUNE": lambda: stage_NLOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,
                                                  settings=args.settings,
-                                                 starts=args.starts),
-             "DRAKEBUMP": lambda: stage_DRAKEBUMP(args.wall_time, args.targets,
-                                                 args.guesses, args.shards,
-                                                 only=args.rungs, solvers=args.solvers,
                                                  starts=args.starts),
              "HARD": lambda: stage_HARD(args.wall_time, args.targets,
                                         args.guesses, args.shards, only=args.rungs),
