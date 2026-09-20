@@ -18,7 +18,12 @@ the project's reporting rules rather than to be convenient:
   - **the joint-space arm moves with a cap change too**, so its column is always shown -- a
     moving `numerical` column otherwise reads as harness drift.
   - NLopt reports no iteration count, so that column prints `--` rather than 0 or nan, and
-    carries `jacobian_evals` instead, which is its only work measure.
+    carries the program's OWN network-Jacobian counter instead (`eval_counts["map_jacobian"]`),
+    which is its only work measure. It deliberately does NOT read the per-record
+    `jacobian_evals`: that field is parsed from a solver print file and NLopt writes none, so it
+    is None on every NLopt cell and averaging it silently yields nan. Never compare this column
+    across arms -- for the learned arm each count is a reverse pass through the flow, for joint
+    space it is the identity map.
   - `mugfree` is a LEGACY row, not the status quo. It is printed in its own section so it
     cannot be read as one.
 
@@ -102,6 +107,32 @@ def load(prefix, cells=None):
     return out
 
 
+def map_jacobians(record):
+    """Network reverse passes through the flow, counted BY THE PROGRAM, not by the solver.
+
+    This is the NLopt column's only work measure -- `NloptSolverDetails` carries a single
+    `status` and no counts at all, so the per-record `jacobian_evals` (parsed from a solver
+    print file) is None on every NLopt cell and averaging it yields nan. `IKFlowProgram`
+    counts every AutoDiffXd pass itself in `QAndPose`, the one funnel every arm's solve goes
+    through, and stores it as `eval_counts["map_jacobian"]`; on the SNOPT smoke run it equalled
+    `User function calls (total)` exactly on every cell, so it is calibrated rather than merely
+    available.
+
+    It is NOT an iteration count -- a line search evaluates the map several times per accepted
+    step -- and it is not comparable ACROSS arms: for the learned arm each is a reverse pass
+    through the network, for joint space it is the identity map.
+    """
+    ec = record.get("eval_counts") or {}
+    if ec.get("map_jacobian") is not None:
+        return ec["map_jacobian"]
+    return record.get("jacobian_evals")
+
+
+def mean(xs):
+    xs = [x for x in xs if x is not None]
+    return sum(xs) / len(xs) if xs else None
+
+
 def by_cell(summary, arm):
     return {(r["target"], r["guess"]): r for r in summary["records"].get(arm, [])}
 
@@ -117,10 +148,19 @@ def arm_stats(summary, arm, other):
         to=sum(1 for r in A.values() if r.get("timed_out")),
         iters=median([r["iterations"] for r in ok]),
         wall=median([r["wall_time"] for r in ok]),
-        jac=median([r.get("jacobian_evals") for r in ok]),
+        jac=median([map_jacobians(r) for r in ok]),
         viol=median([r["max_violation"] for r in ok]),
         cost=median([A[k]["cost"] for k in both]),
         n_both=len(both),
+        ## Over ALL cells, not just the ones that succeeded. A median over successes
+        ## describes a column by the cells it got right, which is exactly backwards on a
+        ## column that fails 99% of them: the first NLopt row measured here succeeds on 3
+        ## cells of 480 and those 3 report 173 network Jacobians and 0.98 s, while the
+        ## typical cell burns ~13,000 and the full 180 s. Quoting the median there would
+        ## have described the augmented Lagrangian as cheap.
+        jac_all=mean([map_jacobians(r) for r in A.values()]),
+        wall_all=mean([r["wall_time"] for r in A.values()]),
+        viol_all=median([r["max_violation"] for r in A.values()]),
     )
 
 
@@ -148,19 +188,30 @@ def row_table(runs, solver, tokens, title):
     if not rows:
         return rows
     rows.sort(key=lambda r: (r["robot"], ROW_ORDER[r["row"]], r["start"]))
-    itcol = "jacs" if solver == "nlopt" else "iters"
+    ## For NLopt every work/time number is a mean over ALL cells and the header says so.
+    ## IPOPT and SNOPT keep the project's standing convention (medians over succeeded
+    ## cells), which is sound there because they succeed on most of them.
+    allcells = solver == "nlopt"
+    itcol = "jac/c" if allcells else "iters"
     print(f"\n  {title}")
+    if allcells:
+        print("  work, wall clock and violation are MEANS/MEDIANS OVER ALL 480 CELLS here, not over"
+              "\n  successes: this column times out most cells, so a median over successes would"
+              "\n  describe the handful it got right. 'jac/cell' is the program's own network-Jacobian"
+              "\n  counter and is NOT comparable across arms (identity map on the joint-space arm).")
     print(f"  {'row':<36}{'L':>5}{'JS':>5}{'L+':>5}{'JS+':>5}{'p':>9}{'verdict':>13}"
-          f"{'L ' + itcol:>9}{'JS it':>7}{'L s':>8}{'JS s':>7}{'Lcost':>8}{'JScost':>8}"
+          f"{'L ' + itcol:>9}{('JS jc' if allcells else 'JS it'):>7}{'L s':>8}{'JS s':>7}{'Lcost':>8}{'JScost':>8}"
           f"{'n':>5}{'LTO':>5}{'JTO':>5}")
     for r in rows:
         L, J = r["L"], r["J"]
-        lwork = L["jac"] if solver == "nlopt" else L["iters"]
-        jwork = None if solver == "nlopt" else J["iters"]
+        lwork = L["jac_all"] if allcells else L["iters"]
+        jwork = J["jac_all"] if allcells else J["iters"]
+        lwall = L["wall_all"] if allcells else L["wall"]
+        jwall = J["wall_all"] if allcells else J["wall"]
         label = f"{r['robot']} {ROW_NAME[r['row']]} {r['start']}"
         print(f"  {label:<36}{L['succ']:>5}{J['succ']:>5}{r['lonly']:>5}{r['jonly']:>5}"
               f"{r['p']:>9.3g}{verdict(L['succ'], J['succ'], r['p']):>13}"
-              f"{num(lwork, 9)}{num(jwork, 7)}{num(L['wall'], 8, 2)}{num(J['wall'], 7, 2)}"
+              f"{num(lwork, 9)}{num(jwork, 7)}{num(lwall, 8, 2)}{num(jwall, 7, 2)}"
               f"{num(L['cost'], 8, 3)}{num(J['cost'], 8, 3)}{L['n_both']:>5}"
               f"{L['to']:>5}{J['to']:>5}")
     return rows
