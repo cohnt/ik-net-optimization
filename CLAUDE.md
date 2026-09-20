@@ -17,7 +17,13 @@ of the repo is the three-way comparison of formulations for the same IK problem:
 | --- | --- | --- |
 | **learned** (`Panda/IiwaIKProgram`, `...MugProgram`) | conditioning pose `c` (xyz+rpy, 6), latent `z` (`network_width`), `correction` (7) | forward pass of the IKFlow model + `correction` |
 | **numerical** (`...ProgramNumerical`) | joint angles `q` (7) | identity |
-| **analytic** (`...ProgramAnalytic`) | end-effector pose `xyz_rpy` (6) + redundancy parameter `psi` (1) | closed-form S-R-S IK (`src/*_analytic_ik.py`) |
+| **analytic** (`PandaIKProgramAnalytic`, `PandaMugProgramAnalytic` — **Panda only**) | end-effector pose `xyz_rpy` (6) + redundancy parameter `psi` (1) | closed-form S-R-S IK (`src/*_analytic_ik.py`) |
+
+**There is no iiwa analytic *program*.** `src/iiwa_analytic_ik.py` holds the closed-form map and `src/iiwa_program.py` imports it, but no `Iiwa14IKProgramAnalytic` exists and
+`scripts/iiwa/iiwa_benchmark.py` registers only `learned` and `numerical`. So the three-way
+comparison is three-way on the Panda and two-way on the iiwa. Writing that arm is future work
+or possibly not done at all (Thomas, 2026-09-19); do not read the row above as claiming it
+exists, which an earlier wording did.
 
 All three go through the same `IKFlowProgram` machinery, so a change to constraints/costs affects
 all of them. `workshop-paper-draft.pdf` is the write-up — an early rough draft, orientation only,
@@ -606,12 +612,14 @@ requiring the value in the parameter echo — and that check earned its place th
 `acceptable_dual_inf_tol` defaults to **1e+10** and the two acceptable infeasibility tolerances to
 **1e-2**. A sweep arm labelled "IPOPT's defaults" that was not cost a resubmission.
 
-**The Drake on the laptop is not the Drake on the cluster.** The workstation is a source build; the
-cluster runs the official 1.56.0 tarball, whose `NloptSolver` exposes exactly six options
-(`algorithm`, `constraint_tol`, `xtol_rel`, `xtol_abs`, `max_eval`, `max_time`) against the source
-build's eleven. Drake validates NLopt names strictly and **raises** on an unknown one, so code
-written against the newer API passes locally and fails on every cell of a cluster run.
-`tests/test_solver_plumbing.py` pins the emitted keys to 1.56.0's six; do not relax it.
+**The Drake on the laptop is not necessarily the Drake on the cluster**, and that asymmetry is what
+the option-surface checks exist for. It bit once concretely: the cluster then ran the 1.56.0 tarball,
+whose `NloptSolver` exposes exactly six options (`algorithm`, `constraint_tol`, `xtol_rel`,
+`xtol_abs`, `max_eval`, `max_time`) against a source build's eleven and this pin's sixteen. Drake
+validates NLopt names strictly and **raises** on an unknown one — from inside `Solve`, so it lands in
+`run_grid`'s per-cell `except` and becomes a **full column of instant failures** rather than an error.
+`ProgramOptions.__post_init__` therefore refuses an unavailable option before the first cell, and
+`tests/test_solver_plumbing.py` bounds the emitted keys by the *running* Drake's surface; keep both.
 
 **`max_eval` is not "unset" by default** — Drake defaults it to 1000, a cap that binds here, so it
 must be set deliberately or the NLopt column silently measures an evaluation budget rather than the
@@ -759,8 +767,11 @@ ran on 1.56.0, this is the cross-Drake check stage DRAKEBUMP was cancelled for �
 move a fielded column** — obtained from a column that had to exist anyway. `median_start_q_error` is
 0.0 on every paired row.
 
-**Nothing is adopted**; all ten new `nlopt_*` fields stay plumbed and `None`, and the pin stays
-1.56.0.
+**Nothing was adopted ON THIS STAGE'S GATE**, but the gate asked whether to spend 480-cell compute,
+not which configuration to field — and Thomas later fielded `mmaloose`'s setting on the feasibility
+criterion while the gate stayed failed (see "The adopted NLopt configuration"). Seven of the ten
+`nlopt_*` fields remain plumbed and `None`; three are now defaults, and the pin moved to the nightly
+for them.
 
 ### Stage SWEEP: solver settings, and what IPOPT's early stop is worth
 
@@ -981,14 +992,41 @@ one-directionally and a residual four times worse — and is the honest cost of 
 **flips one learned-vs-joint-space verdict** (Panda pose paired, tie -> learned win), unlike the SNOPT
 adoption which flipped none, because the learned arm gains 8 cells there while joint space stays at 2.
 
-**`LD_AUGLAG` is kept, and the reason is checkable rather than nominal.** Drake registers every
-constraint on the **outer** opt object (`nlopt_solver.cc:286` for equalities, `295/300/306` for
-inequalities) and constructs the inner `local_opt` with only the variable count and tolerances —
-**no constraint is ever added to it**, and `set_local_optimizer` copies the outer *bounds* only. So
-the inner optimizer solves a bound-constrained subproblem and all constraint handling stays in the
-augmented Lagrangian, whatever the inner algorithm's own method class. That retires the `LD_SLSQP`
-taxonomy worry and it is why `LD_AUGLAG_EQ` is **not** used: it absorbs only equalities and passes
-inequalities to the inner solver, and this program carries both kinds.
+**`LD_AUGLAG` is kept, and the reason is checkable rather than nominal — but the mechanism is in
+NLopt, not in Drake.** Under `LD_AUGLAG` the inner optimizer solves a **bound-constrained**
+subproblem and every constraint sits in the augmented-Lagrangian penalty, whatever the inner
+algorithm's own method class. That retires the `LD_SLSQP` taxonomy worry, and it is why
+`LD_AUGLAG_EQ` is **not** used: `_EQ` absorbs only equalities and enforces inequalities on the
+subproblem directly, and this program carries both kinds.
+
+**What decides it is the algorithm name alone.** Verified in the nlopt bundled in Drake
+(`external/+internal_repositories+nlopt_internal/`): `src/api/optimize.c:934` passes `sub_has_fc`
+computed purely from the enum (`algorithm == NLOPT_AUGLAG_EQ || ... || NLOPT_LD_AUGLAG_EQ`), and
+`src/algs/auglag/auglag.c:98-101` branches on it — `if (sub_has_fc) d.m = 0; else m = 0;`, i.e.
+inequalities go either into the penalty or onto the subproblem, never both.
+
+**An earlier version of this section had the causal chain wrong and must not come back.** It argued
+from Drake's side: Drake registers every constraint on the *outer* `opt` and builds the inner
+`local_opt` with only a variable count and tolerances, so "no constraint is ever added to it". Both
+halves of that are true and **neither causes anything**, because `auglag.c:110-119` overrides the
+subproblem's objective, bounds and stopval and then calls
+`nlopt_remove_inequality_constraints(sub_opt)` / `nlopt_remove_equality_constraints(sub_opt)` before
+repopulating from the *outer* problem's own list. Whatever Drake did or did not put on `local_opt` is
+discarded. The wrong chain also predicts the wrong thing: under `LD_AUGLAG_EQ` the subproblem is
+**not** bound-constrained even though Drake adds no constraints to `local_opt` — NLopt adds them
+itself. (Found by the sibling `ik-tune` session, then re-verified here against the same sources.)
+
+**A live hypothesis this hands us, and it is not acted on.** That sibling project measured both
+parents across six robot experiments and found the plain-vs-`_EQ` difference large and
+one-directional: its two experiments whose *inequality* structure carries the problem collapse under
+plain `LD_AUGLAG` at every encoding and inner tolerance they tried (14.4-19.8% against 54-63% under
+`LD_AUGLAG_EQ`). Our four **iiwa grasp rows are 0-3 of 60 under every NLopt setting and at 180 s**,
+and the grasp task is exactly where the collision inequality binds — so penalised-rather-than-enforced
+inequalities is now a mechanism candidate for a row this project had recorded only as inexplicable.
+Their problems are not ours, so this is a thing to watch rather than a prediction. **Switching to
+`LD_AUGLAG_EQ` is a method-class decision and therefore Thomas's**, and the reason recorded above for
+preferring plain `LD_AUGLAG` (one honest augmented Lagrangian, no constraint kind treated specially)
+is unchanged by any of this.
 
 **Under NLopt the joint-space arm is dead** — 0-4 cells of 60 on every row, 56-60 timeouts, residuals
 5e-02 to 2.7e-01 — so the six learned wins say the learned formulation is the only one of the two that
@@ -1039,16 +1077,36 @@ The AL column's inner local optimizer became selectable when Drake's local-optim
 so the new surface is reachable only from a nightly, and `drake-0.0.20260918-noble.tar.gz` carries
 exactly PR 25002's merge commit as its tip.
 
-**Three NLopt option surfaces are now live at once**: the cluster's pinned 1.56.0 six, this
-workstation's source build's eleven, a nightly's sixteen. `cluster/install_drake_nightly.sh`
-installs the nightly **alongside** the pin at `$ROOT/drake-nightly`, never replacing it, because
-every archived IPOPT and SNOPT column was produced against 1.56.0; items opt in with a
-`DRAKE=nightly` sentinel that `run_items.sh` turns into that install's `PYTHONPATH`. Cluster Drake
-versions are per-project (Thomas, 2026-09-18), so both live inside this project's tree, and the
-nightly needs **its own** `drake_models` cache warm because the cache key includes the models commit
-that Drake version pins. Nightlies publish no `.sha256`, so the script verifies against a hash
-recorded in the repo — the bytes the local tests ran against. Nightly artifacts **expire after 45
-days**; move the pin to 1.58.0 when it carries PR 25002 and delete the script.
+**ONE DRAKE, AND IT IS THE PIN.** The nightly is installed at `$ROOT/drake` by
+`cluster/setup_supercloud.sh` and there is no second install, no `DRAKE=nightly` per-item sentinel
+and no `stage_DRAKEBUMP` — all three were deleted on 2026-09-19. Every arm of every campaign runs on
+the current pin. Thomas, ruling on it for the second time:
+
+> stop running IPOPT and SNOPT on the installed 1.56.0. I've said this already. The difference
+> between 1.56.0 and the current nightly is negligible. I think we've even measured this. Stop making
+> this mistake, it's getting tiresome. Run everything on the current nightly. Even if you think I'm
+> wrong, it doesn't matter, because we're not going to pin IPOPT and SNOPT back to an earlier version
+> as Drake moves ahead — that would be a regression that you report so I can fix in Drake upstream,
+> and/or further tuning to fix it.
+
+So **archive pairing is not a reason to keep an old install**: a cross-version caveat is stated once
+and a version-induced regression is reported and fixed upstream, never pinned around. The empirical
+backing was free — stage NLOPTTUNE's `default` column ran on this nightly against a 1.56.0 archive
+and reproduced it exactly on eleven of twelve rows.
+
+Two properties of the pin that still bite. Cluster Drake versions are per-project (Thomas,
+2026-09-18), so the install lives inside this project's tree; and it needs **its own**
+`drake_models` cache warm, because the cache key includes the models commit that Drake version pins.
+Nightlies publish no `.sha256`, so setup verifies against a hash recorded in the repo — the bytes the
+local tests ran against. Nightly artifacts **expire after 45 days** (~2026-11-02), so **move the pin
+to 1.58.0 the moment it carries PR 25002** and restore the published-checksum path.
+
+One caveat from the sibling `ik-tune` project, worth knowing before comparing across nightlies: it
+sees inner-local-optimizer behaviour differ between the 09-16 and 09-18 nightlies at an identical
+recorded configuration, while a control naming no inner optimizer is identical on both. It does not
+affect us — every inner-optimizer number this project has was measured on 0.0.20260918, and our older
+columns ran on 1.56.0, which exposes no local-optimizer option at all — but it means the
+inner-optimizer path is not assumed stable across nightlies.
 
 **The trap, and it is a new instance of an old one.** Drake's NLopt is built without the LGPL
 **Luksan** sources, so `LD_LBFGS`, the `LD_VAR*` family and every `LD_TNEWTON*` variant are listed
@@ -1066,18 +1124,16 @@ NLopt picks when unset, it is not that, and there is therefore **no "name what N
 control available**: `default` against any named inner algorithm unavoidably mixes "Drake called
 `set_local_optimizer` at all" with "which algorithm".
 
-**There is a `stage_DRAKEBUMP` with no results, by decision.** It pairs identical argument vectors
-under both installs to ask whether the bump moves a fielded IPOPT/SNOPT column. It was generated,
-submitted and then **cancelled before it ran** — Thomas, 2026-09-18: *"There were no significant
-changes that would affect SNOPT between 1.56.0 and the current nightly. It's fine that you're being
-cautious, but these aren't final paper numbers."* The stage stays registered and selftested because
-it is the check to run if the project's pin is ever moved off 1.56.0; it is not a gap in the record.
-**And it turned out not to be needed at all**: stage NLOPTTUNE's `default` column ran on the nightly
-against an archive produced on 1.56.0 and reproduced it exactly on eleven of twelve rows, so the
-cross-Drake check arrived for free from a column the stage already required.
-The general lesson is in the memory `ask-before-spending-compute-on-caution`: **ask before spending
-the allocation to verify an assumption he can rule out from knowledge**, and do not hold an
-exploratory sweep to a paper-numbers standard.
+**A `stage_DRAKEBUMP` existed to pair two Drake installs and is DELETED (2026-09-19), along with
+the second install itself.** It was generated, submitted and cancelled before it ran — Thomas,
+2026-09-18: *"There were no significant changes that would affect SNOPT between 1.56.0 and the
+current nightly. It's fine that you're being cautious, but these aren't final paper numbers."* — and
+it then turned out unnecessary anyway, since NLOPTTUNE's `default` column supplied the cross-Drake
+check for free. **Do not recreate it**: there is one Drake and it is the pin, and a version-induced
+regression is reported and fixed rather than measured around. Two transferable lessons, the first in
+the memory `ask-before-spending-compute-on-caution`: **ask before spending the allocation to verify an
+assumption he can rule out from knowledge**, and do not hold an exploratory sweep to a paper-numbers
+standard.
 
 Two more Drake behaviours worth not rediscovering. Every `local_optimizer_*` option is read
 unconditionally but **applied only inside `if (!parsed_options.local_optimizer_algorithm.empty())`**
@@ -1148,11 +1204,24 @@ it is a story-level change, not a table update:
 3. **NLopt.** Its 180 s arm at Drake's defaults was flat (ten of twelve rows identical to 45 s), but
    that was before the adopted `LD_MMA` configuration, whose cells finish in 5.6-35.9 s. Untested.
 
-**One operational trap.** `cluster/run_items.sh` caps an item at `ITEM_TIMEOUT=14400` (4 h), and a
-killed item loses part of a shard while the merger cannot distinguish that from a complete one. At
-180 s, 480 cells and two arms, `shards=8` -- the shape every SNOPT stage used -- estimates 3.3 h and
-worst-cases 6.0 h. **Use `shards>=16`, and 24 for comfort** (2.0 h worst case), or raise
-`ITEM_TIMEOUT`.
+**The operational trap, and a correction to how it was recorded.** This file used to say a killed
+item "loses part of a shard while the merger cannot distinguish that from a complete one". **That is
+wrong in two independent ways.** Partial writes go to `summary.json.partial` (`src/benchmark.py`),
+and `run_items.sh` publishes to the collection point only on exit 0 -- so a killed shard reads as
+*absent*, not truncated -- and `merge_shard_summaries.py` refuses both on a missing shard index and,
+separately, on any unsolved cell of the full grid. **A killed item cannot corrupt a result**; it
+costs its compute and leaves a stale claim needing `collect_results.sh --reclaim`. So shard sizing is
+a THROUGHPUT question, not a data-integrity one.
+
+**The caps were also genuinely misconfigured, and that is fixed.** `ITEM_TIMEOUT` was 4 h and
+`submit_bench.sh` requested `--time=04:00:00` -- *numerically equal*, which made the bad case normal:
+one long item consumed the whole job and Slurm's kill hit all `PROCS` workers at once, leaving
+`PROCS` stale claims. `xeon-g6-volta` allows **4-04:00:00 (100 h)**. Now: job wall **48 h**,
+`ITEM_TIMEOUT` **8 h** (a backstop for a wedged solve, not a budget -- a 102-minute stall inside one
+IPOPT iteration is on record), `timeout -k 60` so a TERM-ignoring solve is actually killed, and
+`run_items.sh` **refuses to claim an item the remaining job time cannot cover**, leaving it unclaimed
+for the next job instead. That last part is the actual fix: raising the numbers alone still lets a
+worker claim a multi-hour item minutes before its job ends. **Keep `WALL` > `ITEM_TIMEOUT`.**
 
 ### Grasp task, adopted default (hardened scene, free targets)
 
@@ -1209,9 +1278,11 @@ on three rows of four.
 **Pose containment is a genuine difficulty increase, not a free win**, and this reverses a
 pre-calibration conclusion that recommended adopting it. On the corrected program containment costs
 the learned arm 2-3.5x what it costs joint space on the Panda (margin −14 native, −40 paired) and is
-a wash on the iiwa (+27, +1). **Pose placement is STILL OPEN** (Thomas, 2026-09-19: decide grasp
-first) — note the code has defaulted pose to `shelf`/fingertips since the 2026-09-15 call, so the
-current default is containment and a decision to drop it would be a change, not a hold.
+a wash on the iiwa (+27, +1). **ADOPTED ANYWAY, and DECIDED** (Thomas, 2026-09-19: *"we're setting
+shelf/fingertips as status quo for both pose and grasp"*), which closes the last placement question.
+The difficulty increase above is the price, not an argument against: containment is what creates the
+headroom the comparison needs, and pose is now stated on the same footing as grasp. So there is no
+open placement question, and `--target-placement free` exists only to reproduce an archived column.
 
 ### What the success counts hide: headroom and rescue rate
 
@@ -1347,6 +1418,17 @@ penalty is now **~10-13x, down from ~30x**. That second mechanism is an implemen
 property, which is why ms/it must be reported beside success. A net-faster chart that needs more
 steps is a **trade-off to report, not a confound to remove** (Thomas: *"More iterations but faster
 net is a trade-off, not automatically good or bad"*) — do not redesign to a fixed iteration cap.
+
+**The second mechanism was MEASURED AT A 45 s CAP and the campaign cap is now 180 s, so it should
+shrink; the first should not.** "A cheaper chart fits more iterations inside the cap" is cap-dependent
+by construction, whereas "a smaller chart eliminates runaway configurations" is not. The ladder is
+**deliberately not re-measured** at 180 s: nothing touching the charts changed, and the rungs are
+selected by the gain ceiling rather than by cells, so a new grid cannot revise the choice — it would
+only refine this sentence, at ~350 core-hours (Thomas, 2026-09-19, declining it: the ICLR deadline
+makes shared nodes worth not spending on a confirmatory column). **Available as a low-priority future
+option**, worth reconsidering only if the status-quo tables show heavy timeouts, since that is the
+regime where the cap-dependent half does the work. Until then, quote the ladder tables as the 45 s /
+free-grasp record and do not restate this mechanism as a property of the current status quo.
 
 **Two controls land as intended.** Panda `upstream` and `n12` agree within noise on all rows, so our
 training recipe reproduces Jeremy's and no reduced-Panda result is confounded with recipe. And
@@ -1697,11 +1779,18 @@ Live items:
   setting, so **multi-start over solver configurations**, reported as "solved within k restarts", is
   the live descendant of this lever. Untested, and legitimate — it searches over solver settings,
   not over initial guesses.
-- **Whether pose containment is adopted** is the one placement decision still open (Thomas,
-  2026-09-19: grasp first, pose after). Fingertips is the better point if it is kept, and note the
-  code has defaulted pose to `shelf`/fingertips since 2026-09-15, so dropping it is a change.
-- **The new-status-quo benchmark has not been run.** Contained grasp at the fingertips and the 180 s
-  cap are set as defaults; every results table in this file still predates them.
+- **Placement is CLOSED**: shelf-contained at the fingertips for **both** tasks (Thomas,
+  2026-09-19). `--target-placement auto` resolves to `shelf` for both, and `free` survives only as
+  the reproducer for archived grasp columns and as a legacy completeness row.
+- **The new-status-quo benchmark is stage `STATUSQUO`** (`cluster/gen_manifest.py`), and
+  **`cluster/STATUSQUO_RUNBOOK.md` is its resume point** — read that, not this bullet, to pick the
+  campaign up cold. 36 logical runs = both adopted rungs x 3 rows x both protocols x all three
+  solvers, 480 cells each at 180 s, seed 1, arms `learned,numerical`, each solver at its adopted
+  configuration and **no settings axis** (the selftest refuses one). 480 items, ~600 core-hours.
+  `mugshelf` and `posetip` are the status quo; `mugfree` is a legacy completeness row and must never
+  be reported as one. Read it with `scripts/report_statusquo.py`, which prints the quartet per row
+  and evaluates the three flag criteria above mechanically. **Every results table in this file still
+  predates it.**
 - **A harder problem formulation** beyond the hardened scene, if he wants one — his idea, his call.
 
 ### Smaller open items

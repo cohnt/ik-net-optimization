@@ -48,7 +48,9 @@ cd "$ROOT"
 ## so this URL dies around 2026-11-02 and a fresh setup after that cannot fetch it.
 ##
 ## MOVE TO 1.58.0 the moment it lands carrying PR 25002 (expected mid-October), restore the
-## published-checksum path below, and delete cluster/install_drake_nightly.sh.
+## published-checksum path below. (cluster/install_drake_nightly.sh is already gone: the
+## nightly IS the pin, installed here at $ROOT/drake, so a second install has no purpose --
+## every arm of every campaign runs on the current pin.)
 DRAKE_STAMP="0.0.20260918"
 DRAKE_SHA256="a6ce34cdaeb3dd9b9d0e8c9d37eb35407d967541482455fc2a9ad31b98c746a8"
 DRAKE_URL="https://drake-packages.csail.mit.edu/drake/nightly/drake-${DRAKE_STAMP}-noble.tar.gz"
@@ -65,8 +67,7 @@ else
     if ! wget -q -O drake.tar.gz "$DRAKE_URL"; then
         Fail "drake download failed. Drake expires nightly artifacts after 45 days, so
    $DRAKE_STAMP may simply be gone -- it is unrecoverable if so. Move the pin to the first
-   RELEASE carrying PR 25002 (1.58.0 or later), restore the published-.sha256 path, and
-   delete cluster/install_drake_nightly.sh."
+   RELEASE carrying PR 25002 (1.58.0 or later) and restore the published-.sha256 path."
     fi
     ACTUAL=$(sha256sum drake.tar.gz | cut -d' ' -f1)
     ## Our OWN recorded hash: a nightly has no published checksum file, so this pins the exact

@@ -113,7 +113,8 @@ cluster/stage_code.sh                        # push the manifest up
 #   drain, or FORCE_STAGE=1 if you are certain (calibration/smoke are exempt).
 # submit one job per node; extras queue behind the 4-node cap
 ssh ... 'cd ~/learned-ik/repo && MANIFEST=cluster/manifest_stageA.txt PROCS=<K> \
-         LLsub ./cluster/run_items.sh -g volta:2 -s 40 -q xeon-g6-volta -T 12:00:00'
+         LLsub ./cluster/run_items.sh -g volta:2 -s 40 -q xeon-g6-volta -T 48:00:00'
+#   or just `cluster/submit_bench.sh manifest_stageA.txt <n_jobs>`, which asks for 48 h.
 
 # 5. mop up, then collect (cluster storage is NOT backed up)
 cluster/collect_results.sh --status
@@ -121,6 +122,34 @@ cluster/collect_results.sh --reclaim manifest_stageA   # only once the queue is 
 cluster/collect_results.sh                             # incremental since the last success
 cluster/collect_results.sh --full                      # ...or the whole results tree
 ```
+
+## Wall-clock limits: three caps, and the invariant between them
+
+| cap | where | default | what it is |
+| --- | --- | --- | --- |
+| per solve | `--wall-time` in the manifest | the campaign's cap | **the measurement** |
+| per item | `ITEM_TIMEOUT` (`run_items.sh`) | 8 h | backstop for a wedged solve |
+| per job | `WALL` (`submit_bench.sh`) → `#SBATCH --time` | 48 h | Slurm's kill |
+
+**The invariant is `WALL` > `ITEM_TIMEOUT`.** They used to be equal at 4 h, which made the bad
+case the normal one: a long item consumed the whole job, and Slurm's kill arrived at the same
+moment as `timeout`'s — hitting all `PROCS` workers on the node at once and leaving `PROCS`
+stale claims. `xeon-g6-volta` allows **4-04:00:00 (100 h)**, so there is no reason to run the
+job wall anywhere near the item cap. (`xeon-p8` is the same; `debug-*` is 2 h; a job that would
+span the monthly maintenance window is killed, not suspended.)
+
+`run_items.sh` also **refuses to claim an item the job cannot finish** — if less than
+`ITEM_TIMEOUT + 300` s of job wall remains it stops claiming and exits, leaving the remaining
+items unclaimed for the next job. That is why raising the two numbers is not by itself the fix:
+without the guard a worker will still claim a multi-hour item minutes before its job ends.
+
+Sizing shards is therefore about **throughput, not data integrity**. A killed item loses its
+compute and leaves a stale claim needing `--reclaim`, but it cannot corrupt a result: partial
+writes go to `summary.json.partial`, `run_items.sh` publishes to the collection point only on
+exit 0, and `merge_shard_summaries.py` refuses both on a missing shard index and on any
+unsolved cell of the full grid. Pick shards so the longest item sits comfortably inside
+`ITEM_TIMEOUT` and the tail parallelises; `gen_manifest.py --summary` prints the longest
+estimate.
 
 ## Order of operations: training a chart (the ladder)
 
