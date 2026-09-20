@@ -303,6 +303,16 @@ def provenance():
         import pydrake
         out["drake_version"] = getattr(pydrake, "__version__", None) or "unknown"
         out["drake_path"] = GetDrakePath()
+        ## `pydrake.__version__` is "unknown" on a source build AND reports only a stamp on a
+        ## tarball, neither of which identifies WHICH nightly. VERSION.TXT carries the stamp
+        ## and the git commit, and distinguishing two nightlies is not academic: the sibling
+        ## `ik-tune` project found Drake PR 25002 silently changing an inner NLopt tolerance
+        ## between the 09-16 and 09-18 nightlies, which quarantined a whole verdict's numbers
+        ## because nothing in the record said which build produced them.
+        stamp = os.path.join(GetDrakePath(), "..", "doc", "drake", "VERSION.TXT")
+        if os.path.exists(stamp):
+            with open(stamp) as fh:
+                out["drake_version_txt"] = fh.read().strip()
     except Exception:
         pass
     return out
@@ -720,6 +730,16 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                 finally:
                     if cell_timeout:
                         faulthandler.cancel_dump_traceback_later()
+                ## The options Drake was ACTUALLY handed, captured from the first program of
+                ## each arm that got as far as configuring a solver. A run's metadata records
+                ## `--set` overrides, which does not cover an ADOPTED DEFAULT -- those reach
+                ## the solver while leaving no trace in the record, so a later reader cannot
+                ## tell a run at today's defaults from one at Drake's. Keyed per arm because
+                ## the numerical arm carries its own ProgramOptions.
+                emitted = getattr(program, "emitted_solver_options", None)
+                if emitted and metadata is not None:
+                    metadata.setdefault("solver_options_emitted", {}).setdefault(
+                        arm.name, emitted)
                 records[arm.name].append(record)
                 _abort_on_dead_arm(arm.name, records[arm.name])
                 if progress is not None:

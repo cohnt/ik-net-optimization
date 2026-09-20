@@ -1710,6 +1710,24 @@ class IKFlowProgram:
                                   "snopt": self._SnoptOptions,
                                   "nlopt": self._NloptOptions}[which]()
 
+        ## THE OPTIONS ACTUALLY HANDED TO THE SOLVER, recorded so a run's configuration can be
+        ## read off the run rather than reconstructed from the code that produced it. A run's
+        ## metadata records `--set` overrides only, which is NOT the same thing: an ADOPTED
+        ## DEFAULT reaches the solver without appearing anywhere in the record. Three of those
+        ## exist now (`snopt_major_step_limit=0.5`, and NLopt's `LD_MMA` inner optimizer with
+        ## its two loose inner tolerances), so without this a future reader cannot tell a run
+        ## at today's defaults from one at Drake's.
+        ##
+        ## The failure this guards against is not hypothetical and not ours: the sibling
+        ## `ik-tune` project lost a fourteen-rung verdict to it. Drake PR 25002 deleted a NaN
+        ## sentinel by which an unset `local_optimizer_xtol_rel` INHERITED the outer
+        ## `xtol_rel`; after the PR it is 1e-6 unconditionally. That is invisible at Drake's
+        ## own outer default of 1e-6 and a factor of 100 for anyone who sets the outer value,
+        ## and nothing in their run configuration recorded the effective inner tolerance, so
+        ## every affected column became unpairable with anything measured after the bump.
+        ## Recording what was EMITTED rather than what was SET is what makes that detectable.
+        self.emitted_solver_options = {k: dict(v) for k, v in solver_options.options.items()}
+
         ## NLopt writes no log and ignores this key, so it is set only where a log exists.
         if which != "nlopt":
             solver_options.SetOption(CommonSolverOption.kPrintFileName, self.options.file_print_name)
