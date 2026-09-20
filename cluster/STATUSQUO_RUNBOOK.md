@@ -57,15 +57,28 @@ running jobs keep going, and nothing here depends on this session staying alive.
 
 Update as steps land. `PENDING` / `DONE` / `DONE (n/480)`.
 
-- [ ] Local: plumbing + stage + reporter committed and pushed
-- [ ] Cluster: one Drake install, and it is the pin (0.0.20260918)
-- [ ] Cluster: code staged (`.staged-commit` matches local HEAD)
-- [ ] Cluster: smoke check (import, `NloptSolver().available()`, one real cell)
+- [x] **Local: plumbing + stage + reporter committed and pushed.** `f6685e8` (stage, caps, one
+      Drake), `e2fe757` (emitted solver options + Drake stamp in metadata), `54bd528` (smoke
+      covers SNOPT and NLopt). All four test files pass, `gen_manifest --selftest` OK,
+      `verify_sharding.sh` OK, and the claim guard is verified in both directions.
+- [x] **Cluster: one Drake install, and it is the pin.** `~/learned-ik/drake` is
+      `0.0.20260918 5a73436c...`; 1.56.0 deleted. Install is relocatable (`$ORIGIN` RPATH), so
+      this was a swap not a re-download. Both hardened scenes build offline under it, i.e. the
+      `drake_models` cache resolves.
+- [x] **Cluster: code staged.** `.staged-commit` = `e2fe757`, matching local HEAD at the time.
+      Re-stage before submitting to pick up `54bd528`.
+- [ ] Cluster: smoke check on debug-gpu (phases 1-2 passed: cu126/sm_70 kernel launch, IPOPT
+      and SNOPT available, flows and both robots load offline; phase 3 in progress)
 - [ ] Submitted
 - [ ] Items complete ( / 480)
 - [ ] Collected and merged
 - [ ] Reported, acceptance checks passed
 - [ ] `CLAUDE.md` tables replaced
+
+**Two things this campaign records that earlier ones did not**, both worth using when reading it:
+`metadata["solver_options_emitted"]` is the options Drake was actually handed, per arm — which is
+how you tell a run at today's adopted defaults from one at Drake's, since `overrides` records only
+`--set` — and `metadata["drake_version_txt"]` is the exact build stamp and commit.
 
 ## Acceptance checks, all free
 
