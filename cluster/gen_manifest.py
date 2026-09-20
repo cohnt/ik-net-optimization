@@ -1560,35 +1560,59 @@ NLOPT_LUKSAN_DISABLED = frozenset({
 })
 
 NLOPTTUNE_NLOPT = [
-    ("default", []),
-    ("innermma", ["nlopt_local_optimizer_algorithm=LD_MMA"]),
-    ("innerccsaq", ["nlopt_local_optimizer_algorithm=LD_CCSAQ"]),
+    ## EVERY ENTRY NOW RESTORES THE INNER TOLERANCES EXPLICITLY. Three of these fields became
+    ## the ADOPTED NLopt defaults on 2026-09-19 (LD_MMA, local xtol_rel = ftol_rel = 1e-3), so
+    ## "set only the algorithm" no longer means "the algorithm at Drake's inner defaults" --
+    ## re-generating `innermma` without the resets below would measure `mmaloose` instead. The
+    ## `=None` form emits the option not at all, which is what Drake's own default is.
+    ("default", ["nlopt_local_optimizer_algorithm=None",
+                 "nlopt_local_optimizer_xtol_rel=None",
+                 "nlopt_local_optimizer_ftol_rel=None"]),
+    ("innermma", ["nlopt_local_optimizer_algorithm=LD_MMA",
+                "nlopt_local_optimizer_xtol_rel=None",
+                "nlopt_local_optimizer_ftol_rel=None"]),
+    ("innerccsaq", ["nlopt_local_optimizer_algorithm=LD_CCSAQ",
+                  "nlopt_local_optimizer_xtol_rel=None",
+                  "nlopt_local_optimizer_ftol_rel=None"]),
     ## FLAGGED FOR THOMAS, not decided here: this puts an SQP method inside the augmented
     ## Lagrangian. The outer method is still AL and the inner subproblem is bound-constrained
     ## only, so it reads as an AL column rather than a duplicate of SNOPT's -- but the
     ## three-method-classes rule is his, so the reporter carries the caveat and this row is
     ## excluded from any adoption recommendation if he disagrees.
-    ("innerslsqp", ["nlopt_local_optimizer_algorithm=LD_SLSQP"]),
+    ("innerslsqp", ["nlopt_local_optimizer_algorithm=LD_SLSQP",
+                  "nlopt_local_optimizer_xtol_rel=None",
+                  "nlopt_local_optimizer_ftol_rel=None"]),
     ## The one inner knob with a mechanism rather than a tolerance behind it. A positive cap
     ## TRUNCATES each subproblem, so the outer AL updates its multipliers far more often
     ## instead of driving the first subproblem to convergence -- the classic AL tuning, and the
     ## most plausible answer to burning 4,900-6,100 network Jacobians in a single cell.
     ("mma50", ["nlopt_local_optimizer_algorithm=LD_MMA",
-               "nlopt_local_optimizer_max_eval=50"]),
+             "nlopt_local_optimizer_max_eval=50",
+             "nlopt_local_optimizer_xtol_rel=None",
+             "nlopt_local_optimizer_ftol_rel=None"]),
     ("mma200", ["nlopt_local_optimizer_algorithm=LD_MMA",
-                "nlopt_local_optimizer_max_eval=200"]),
+              "nlopt_local_optimizer_max_eval=200",
+              "nlopt_local_optimizer_xtol_rel=None",
+              "nlopt_local_optimizer_ftol_rel=None"]),
     ("slsqp50", ["nlopt_local_optimizer_algorithm=LD_SLSQP",
-                 "nlopt_local_optimizer_max_eval=50"]),
+               "nlopt_local_optimizer_max_eval=50",
+               "nlopt_local_optimizer_xtol_rel=None",
+               "nlopt_local_optimizer_ftol_rel=None"]),
     ## Loose early inner solves, standard AL practice. Uses a PR-25002 option
     ## (local_optimizer_ftol_rel), so this row also proves the newest half of the surface
     ## reaches the solver on the cluster.
     ("mmaloose", ["nlopt_local_optimizer_algorithm=LD_MMA",
-                  "nlopt_local_optimizer_xtol_rel=1e-3",
-                  "nlopt_local_optimizer_ftol_rel=1e-3"]),
+                "nlopt_local_optimizer_xtol_rel=1e-3",
+                "nlopt_local_optimizer_ftol_rel=1e-3"]),
     ## Rung-2 tolerance, never swept on this column. It cannot be gamed: the task gate stays
     ## at task_tol=1e-3 and success is re-verified from the returned point, so a looser AL
     ## constraint tolerance that returns worse points simply fails the gate.
-    ("ctol1em04", ["nlopt_constraint_tol=1e-4"]),
+    ## Names no inner option, so it needs the resets too: it measured Drake's own inner
+    ## solver, which is no longer what an unset field gives.
+    ("ctol1em04", ["nlopt_constraint_tol=1e-4",
+                   "nlopt_local_optimizer_algorithm=None",
+                   "nlopt_local_optimizer_xtol_rel=None",
+                   "nlopt_local_optimizer_ftol_rel=None"]),
 ]
 ## The cap arm is a WALL-TIME change rather than an option, so it cannot live in the table
 ## above -- and it needs its own sharding, because 60 cells x 2 arms x 180 s is ~6 h against
@@ -1676,7 +1700,10 @@ def stage_NLOPTTUNE(wall, targets, guesses, shards, only=None, tag="NLOPTTUNE", 
         arms = [(n, sets, wall, shards) for n, sets in NLOPTTUNE_NLOPT
                 if keep is None or n in keep]
         if cap and (keep is None or "cap180" in keep):
-            arms.append(("cap180", [], NLOPTTUNE_CAP_WALL, NLOPTTUNE_CAP_SHARDS))
+            ## Drake's NLopt defaults at a longer wall clock -- so it carries the same
+            ## resets as the `default` column, for the same reason.
+            arms.append(("cap180", ["nlopt_local_optimizer_algorithm=None", "nlopt_local_optimizer_xtol_rel=None", "nlopt_local_optimizer_ftol_rel=None"],
+                         NLOPTTUNE_CAP_WALL, NLOPTTUNE_CAP_SHARDS))
         for name, sets, item_wall, item_shards in arms:
             for task, token, placement in SOLVER2_ROWS:
                 for start in want_starts:
