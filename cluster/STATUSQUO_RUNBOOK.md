@@ -98,7 +98,13 @@ Update as steps land. `PENDING` / `DONE` / `DONE (n/480)`.
       (11,520 of the campaign's 17,280 solves). Three groups whose shards straddled two
       collections merged into the *previous* staging directory, which is the documented
       behaviour, not a fault.
-- [ ] NLopt column reported. Three of its twelve rows are in: **iiwa contained grasp native is
+- [ ] NLopt column reported. **Six of its twelve rows are in, and the decisive one has landed:
+      iiwa pose contained native is learned 298/480 against joint space 31/480, p = 5.1e-68**,
+      discordant 278 to 11, with the joint-space arm timing out on 463 of 480 cells. The learned arm
+      uses 4,025 network Jacobians per cell and 80 s mean against joint space's 9,550 and 174 s, so
+      it is converging rather than exhausting the budget -- the feasibility criterion the adopted
+      configuration was fielded on. Cost exists on only 20 common cells (6.511 against 4.988), so
+      it must be quoted with that n. Earlier rows: **iiwa contained grasp native is
       0/480 on BOTH arms with 480/480 timeouts each**, and both legacy iiwa free-grasp rows are
       learned 3 / joint space 11. So NLOPTTUNE's 60-cell finding -- nothing Drake exposes makes the
       augmented Lagrangian solve an iiwa grasp -- replicates at 480 cells. Rows where both arms sit
