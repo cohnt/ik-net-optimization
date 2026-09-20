@@ -701,7 +701,7 @@ The standing TODO Thomas reopened on 2026-09-18 once PR 25002 made the inner opt
 Nine settings + a 180 s budget arm x 12 rows x 60 cells (stage SOLVER2's triage grid, so every cell
 pairs against the fielded column *and* the archive), seed 1, `--compile`, adopted rungs, hardened
 scene, `learned,numerical`, both protocols, three placements, `LD_AUGLAG` throughout, **on the Drake
-nightly** (`DRAKE=nightly`; the project's pin stays 1.56.0). `stage_NLOPTTUNE` owns the table and
+nightly**, which became the project's Drake pin on 2026-09-19. `stage_NLOPTTUNE` owns the table and
 `scripts/report_nlopttune.py` implements the gate inline.
 
 **Pre-registered promotion gate, fixed before any result was read:** on the learned arm, >= +8 cells
@@ -951,8 +951,56 @@ Three consequences, all load-bearing:
   `snopt_major_step_limit` has left the "no step-rejection knob is set by default" list with a
   docstring saying it was adopted on the per-solver question rather than stage STEP's.
 
-**Nothing else is fielded.** The four valid combinations, every NLopt setting, and all ten
-`nlopt_*` fields stay plumbed and `None`, and the Drake pin stays 1.56.0.
+**What else is fielded, all decided 2026-09-19.** The four valid SNOPT combinations are NOT (see
+SNOPTCOMBO). The NLopt column IS tuned: `nlopt_local_optimizer_algorithm = "LD_MMA"` with
+`nlopt_local_optimizer_xtol_rel = nlopt_local_optimizer_ftol_rel = 1e-3` are now defaults — see "The
+adopted NLopt configuration". The remaining seven `nlopt_*` fields stay plumbed and `None`. **The
+Drake pin moved off 1.56.0 to the 0.0.20260918 nightly**, because the adopted NLopt configuration
+needs PR 25002; bump to 1.58.0 when it lands.
+
+### The adopted NLopt configuration: `LD_AUGLAG` + `LD_MMA` inner + loose inner tolerances
+
+Fielded 2026-09-19 on Thomas's criterion — *"Feasibility is the name of the game, objective cost is
+secondary."* Against Drake's NLopt defaults on the learned arm it is **better on 5 of 12 rows, worse
+on 1, unchanged on 6** (all six being rows where nothing solves), and it collapses the residual and
+the work per cell:
+
+| row | successes | timeouts | network Jacobians/cell | median violation |
+| --- | --- | --- | --- | --- |
+| panda grasp contained native | 12 -> **42** (p = 1.9e-09) | 58 -> 18 | 3532 -> **66** | 3.7e-04 -> 6.8e-07 |
+| panda grasp free native | 27 -> **53** (p = 2.2e-07) | 52 -> 7 | 3528 -> **41** | 1.4e-04 -> 4.4e-07 |
+| iiwa pose paired | 9 -> **21** (p = 0.012) | 52 -> 40 | 3299 -> 740 | 3.9e-01 -> 1.0e-01 |
+| panda pose paired | 8 -> 16 (p = 0.077) | 53 -> 44 | 2882 -> 847 | 3.8e-01 -> 1.5e-01 |
+| **panda pose native** | **38 -> 33** (+0/-5) | 23 -> 30 | 1374 -> 656 | 9.3e-07 -> **3.6e-06** |
+
+**Three things must be reported with it.** It **failed** stage NLOPTTUNE's pre-registered gate, which
+asked whether to spend 480-cell compute on it and not whether it is the best configuration — state
+the gate failure alongside the setting so it does not read as a configuration chosen where it helps.
+The **Panda pose native row is a genuine regression on the adoption's own criterion** — five cells
+one-directionally and a residual four times worse — and is the honest cost of the setting. And it
+**flips one learned-vs-joint-space verdict** (Panda pose paired, tie -> learned win), unlike the SNOPT
+adoption which flipped none, because the learned arm gains 8 cells there while joint space stays at 2.
+
+**`LD_AUGLAG` is kept, and the reason is checkable rather than nominal.** Drake registers every
+constraint on the **outer** opt object (`nlopt_solver.cc:286` for equalities, `295/300/306` for
+inequalities) and constructs the inner `local_opt` with only the variable count and tolerances —
+**no constraint is ever added to it**, and `set_local_optimizer` copies the outer *bounds* only. So
+the inner optimizer solves a bound-constrained subproblem and all constraint handling stays in the
+augmented Lagrangian, whatever the inner algorithm's own method class. That retires the `LD_SLSQP`
+taxonomy worry and it is why `LD_AUGLAG_EQ` is **not** used: it absorbs only equalities and passes
+inequalities to the inner solver, and this program carries both kinds.
+
+**Under NLopt the joint-space arm is dead** — 0-4 cells of 60 on every row, 56-60 timeouts, residuals
+5e-02 to 2.7e-01 — so the six learned wins say the learned formulation is the only one of the two that
+extracts anything from this method class, not that it beats a working baseline. Cells both arms solve
+number 0-3 per row, so **there is no learned-vs-joint-space cost comparison on this column**; print a
+dash. And do not compare `map_jacobians` across arms here: for the learned arm each is a network
+reverse pass, for joint space the identity map.
+
+**Requires a Drake carrying PR 25002.** `local_optimizer_ftol_rel` is absent from 1.56.0 and from a
+pre-PR source build, so `CheckNloptOptions`'s availability refusal is now scoped to
+`which_solver == "nlopt"` — unconditional, it would refuse `ProgramOptions()` itself and kill every
+IPOPT and SNOPT cell over options they never emit.
 
 ### The grasp-containment lever is closed for the solver axis
 

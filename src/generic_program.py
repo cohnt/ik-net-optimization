@@ -191,6 +191,15 @@ def CheckNloptOptions(options):
             f"gradient-based choices Drake's build can actually run) or drop the inner "
             f"options.")
 
+    ## Availability is checked only for a run that will actually EMIT these options. It used
+    ## to be unconditional, which was right while every post-1.56.0 field defaulted to None:
+    ## a non-None value was then always deliberate. Since 2026-09-19 three of them are the
+    ## ADOPTED NLopt defaults, so an unconditional check would refuse `ProgramOptions()`
+    ## itself -- and therefore every IPOPT and SNOPT cell -- on the cluster's pinned 1.56.0,
+    ## for options those solvers never touch. The other two refusals above stay unconditional
+    ## because they are logic errors on every Drake.
+    if getattr(options, "which_solver", None) != "nlopt":
+        return requested
     surface = NloptOptionSurface()
     missing = [(n, NLOPT_POST_1_56_OPTIONS[n].accessor) for n in sorted(requested)
                if NLOPT_POST_1_56_OPTIONS[n].accessor not in surface]
@@ -495,10 +504,25 @@ class ProgramOptions:
     ## defaults applied. So "the same inner algorithm, said out loud" is a DIFFERENT
     ## configuration from leaving it unset, and a sweep wanting an unset baseline must field
     ## one explicitly rather than assume a named algorithm reproduces it.
-    nlopt_local_optimizer_algorithm: str = field(default=None, metadata={"help": "NLopt 'local_optimizer_algorithm': the AUGLAG inner solver. Drake's build can run LD_MMA, LD_CCSAQ, LD_SLSQP; the LD_LBFGS/LD_VAR*/LD_TNEWTON* family is compiled out (Luksan, LGPL) and is refused. None or '' leaves NLopt's own choice, as every archived cell ran; required before any nlopt_local_optimizer_* below. Post-1.56.0"})
-    nlopt_local_optimizer_xtol_rel: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_xtol_rel' (Drake's inner default 1e-6). Inert unless the inner algorithm is named -- refused, not ignored. Post-1.56.0"})
+    ## ADOPTED 2026-09-19 by Thomas: the NLopt column's fielded configuration is
+    ## LD_AUGLAG with an LD_MMA inner optimizer truncated by loose inner tolerances. On the
+    ## criterion that decides this column -- feasibility, cost secondary -- it is better on
+    ## 5 of 12 rows, worse on 1 (Panda pose native, -5 cells one-directionally) and unchanged
+    ## on 6 rows where nothing works at all, and it collapses the median residual (Panda
+    ## contained grasp 3.7e-04 -> 6.8e-07) and the network work per cell (3532 -> 66).
+    ## It FAILED stage NLOPTTUNE's pre-registered gate, which asked whether to spend 480-cell
+    ## compute on it, NOT whether it is the best configuration; those are different questions
+    ## and only the second is what adoption answers. Report the gate failure alongside it.
+    ##
+    ## REQUIRES a Drake carrying PR 25002: `local_optimizer_ftol_rel` is absent from 1.56.0
+    ## (6 options) and from this workstation's source build (11), and present only on the
+    ## nightly (16). An NLopt run on an older Drake now raises from CheckNloptOptions naming
+    ## the missing option; IPOPT and SNOPT runs are unaffected, because the availability
+    ## check fires only for `which_solver == "nlopt"`.
+    nlopt_local_optimizer_algorithm: str = field(default="LD_MMA", metadata={"help": "NLopt 'local_optimizer_algorithm': the AUGLAG inner solver. Drake's build can run LD_MMA, LD_CCSAQ, LD_SLSQP; the LD_LBFGS/LD_VAR*/LD_TNEWTON* family is compiled out (Luksan, LGPL) and is refused. None or '' leaves NLopt's own choice, as every archived cell ran; required before any nlopt_local_optimizer_* below. Post-1.56.0"})
+    nlopt_local_optimizer_xtol_rel: float = field(default=1e-3, metadata={"help": "NLopt 'local_optimizer_xtol_rel' (Drake's inner default 1e-6). Inert unless the inner algorithm is named -- refused, not ignored. Post-1.56.0"})
     nlopt_local_optimizer_xtol_abs: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_xtol_abs' (Drake's inner default 1e-6). Inert unless the inner algorithm is named. Post-1.56.0"})
-    nlopt_local_optimizer_ftol_rel: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_ftol_rel' (Drake's inner default 0, disabled). Inert unless the inner algorithm is named. Post-1.56.0, and absent from this workstation's source build too"})
+    nlopt_local_optimizer_ftol_rel: float = field(default=1e-3, metadata={"help": "NLopt 'local_optimizer_ftol_rel' (Drake's inner default 0, disabled). Inert unless the inner algorithm is named. Post-1.56.0, and absent from this workstation's source build too"})
     nlopt_local_optimizer_ftol_abs: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_ftol_abs' (Drake's inner default 0, disabled). Inert unless the inner algorithm is named. Post-1.56.0, and absent from this workstation's source build too"})
     ## The one inner knob with a mechanism rather than a tolerance behind it: a positive cap
     ## TRUNCATES each subproblem, so the outer augmented Lagrangian updates its multipliers
