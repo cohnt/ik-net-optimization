@@ -98,7 +98,7 @@ Update as steps land. `PENDING` / `DONE` / `DONE (n/480)`.
       (11,520 of the campaign's 17,280 solves). Three groups whose shards straddled two
       collections merged into the *previous* staging directory, which is the documented
       behaviour, not a fault.
-- [ ] NLopt column reported. **The whole iiwa half is in (6 of 12 rows) and both pose rows are decisive learned wins:
+- [ ] NLopt column reported. **11 of 12 rows in; every POSE row on both robots is a decisive learned win:
       iiwa pose contained native is learned 298/480 against joint space 31/480, p = 5.1e-68**,
       discordant 278 to 11, with the joint-space arm timing out on 463 of 480 cells. The learned arm
       uses 4,025 network Jacobians per cell and 80 s mean against joint space's 9,550 and 174 s, so
