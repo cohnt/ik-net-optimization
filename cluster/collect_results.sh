@@ -173,22 +173,36 @@ fi
 # promoting anything into results/ proper -- staging does not match collate.py's glob, so
 # a half-collected campaign cannot silently enter a table.
 sc_run "rm -f ~/$ARCHIVE"
-## Search the PREVIOUS staging directory too. Collection is incremental, so a collection
-## that runs while a stage is still in flight splits that stage in two, and any run whose
-## shards straddle the split is unmergeable from either directory alone -- it looks exactly
-## like data loss while the shards sit on disk. `--also` adds it to the SEARCH; the merged
-## run is written beside the shard that anchors it, so read the merger's own path when
-## promoting rather than assuming this collection's staging directory.
-## Restricted to TIMESTAMP-shaped directory names. `tail -1` wants the most recent
-## collection, and it gets it only because the names sort chronologically -- so any
-## hand-made directory placed in the staging tree wins the sort and silently becomes
-## "the previous collection". That happened on 2026-09-17: a manual merge directory
-## named `manualmerge-row12` sorted after every `20260917-*`, so two straddled rows of
-## stage SNOPTTUNE went unmerged with all sixteen shards on disk.
-PREV_STAGING="$(ls -1d "$REPO_ROOT"/results/_cluster_staging/[0-9]*-[0-9]*/ 2>/dev/null \
-                | grep -v "^$STAGING/\?$" | tail -1)"
+## Search EVERY earlier staging directory, not just the most recent one. Collection is
+## incremental, so a collection that runs while a stage is in flight splits that stage, and
+## any run whose shards straddle a split is unmergeable from either directory alone -- it
+## looks exactly like data loss while the shards sit on disk. `--also` adds a directory to
+## the SEARCH and is `action="append"`, so it takes as many as we give it; the merged run is
+## written beside the shard that anchors it, so read the merger's own path when promoting
+## rather than assuming this collection's staging directory.
+##
+## It used to pass only the single most recent prior directory, which covers a two-way split
+## and nothing more. Stage STATUSQUO broke that on 2026-09-20: NLopt items ran 27-144 min
+## while collections ran hourly, so one row's 24 shards landed across THREE collections and
+## the merger reported 22 of 24 "missing" -- from shard directories that existed, because
+## incremental rsync creates the directory and skips a `summary.json` it already shipped.
+## Passing every prior directory removes the failure mode rather than widening it by one.
+## Verified when the fix landed: re-merging the seven rows that had already merged normally
+## reproduced all seven exactly, so a wider search changes nothing but what it can find.
+##
+## Restricted to TIMESTAMP-shaped directory names, which also keeps a hand-made directory in
+## the staging tree from being treated as a collection. That bit once, on 2026-09-17: a
+## manual merge directory named `manualmerge-row12` sorted after every `20260917-*` and
+## became "the previous collection", so two straddled rows of stage SNOPTTUNE went unmerged
+## with all sixteen shards on disk.
 ALSO=()
-[ -n "${PREV_STAGING:-}" ] && ALSO=(--also "$PREV_STAGING")
+while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    ALSO+=(--also "$d")
+done < <(ls -1d "$REPO_ROOT"/results/_cluster_staging/[0-9]*-[0-9]*/ 2>/dev/null \
+         | grep -v "^$STAGING/\?$")
+## ALSO holds two elements per directory (the flag and the path), hence the halving.
+echo "merging: searching $STAGING plus $(( ${#ALSO[@]} / 2 )) prior staging directory/ies"
 "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/cluster/merge_shard_summaries.py" "$STAGING" "${ALSO[@]}"
 
 # Only now is it safe to advance the incremental watermark: everything above has to
