@@ -1751,6 +1751,19 @@ scripts used to refuse while *any* job was running (`LLstat | grep -c RUNNI`), w
 unrelated campaign's job since SuperCloud accounts are shared across Thomas's projects. Both guards
 now filter by this project's job name and count `PENDING` as well as `RUNNING`.
 
+**But `--reclaim`'s scoped guard then named the wrong job, and matched nothing for its whole
+life.** It filtered `squeue -n run_items.sh` — the payload script's filename — where
+`submit_bench.sh` sets `--job-name=lik_bench_${MANIFEST%.txt}`. A job's name is a property of the
+submitter, not of the script it runs, so `BUSY` was unconditionally 0 and the guard never refused:
+`--reclaim` would have stolen items from 32 live workers and every one of them would have written
+its shard to a claim someone else then re-ran. Fixed 2026-09-20 mid-campaign to
+`lik_bench_$MANIFEST_NAME`, which is also *tighter* than the original intent — a worker only touches
+the manifest it was handed, so an unrelated `learned-ik` campaign is no reason to refuse. **The
+transferable lesson: a guard nobody has observed refusing has not been tested.** This one was found
+by accident, running its own filter by hand against a queue known to hold four running jobs and
+getting nothing back; both directions are now verified live (4 with the campaign running, 0 for a
+manifest with no jobs).
+
 **The laptop suspends when idle.** Every multi-hour stall this repo recorded — the archived 6106 s
 cell and four overnight "wedges" — was the machine going to sleep (GNOME suspends after 900 s idle
 *even on AC*; `journalctl` matches every stall to the minute). Three wrong solver-level theories each
