@@ -47,6 +47,12 @@ import sys
 from math import comb
 
 CELLS = 480
+## Below this many cells solved by BOTH arms, the cost column prints `--` rather than a
+## median over a handful of samples. Any threshold is a judgement call; this one is set just
+## high enough to kill the n=1 and n=2 cases the NLopt column produces, and every surviving
+## row still prints its own n so the reader can discount it further.
+MIN_COST_CELLS = 10
+
 SOLVERS = ("ipopt", "snopt", "nlopt")
 SOLVER_NAME = {"ipopt": "IPOPT (interior point)",
                "snopt": "SNOPT (SQP)",
@@ -150,7 +156,12 @@ def arm_stats(summary, arm, other):
         wall=median([r["wall_time"] for r in ok]),
         jac=median([map_jacobians(r) for r in ok]),
         viol=median([r["max_violation"] for r in ok]),
-        cost=median([A[k]["cost"] for k in both]),
+        ## Cost needs cells BOTH arms solved -- and enough of them. On the NLopt Panda
+        ## free-grasp paired row the arms share exactly ONE cell, where the medians are
+        ## 17.376 against 0.596: a 29x "difference" that is one sample of each and would be
+        ## quoted as a finding. The count is printed beside it, but a number a reader has to
+        ## defend themselves against is the reporter's bug, not theirs.
+        cost=median([A[k]["cost"] for k in both]) if len(both) >= MIN_COST_CELLS else None,
         n_both=len(both),
         ## Over ALL cells, not just the ones that succeeded. A median over successes
         ## describes a column by the cells it got right, which is exactly backwards on a

@@ -1738,6 +1738,18 @@ takes the iterations it takes**; only its wall time moves.
   on the shared filesystem (copying to node-local `$TMPDIR` costs 231 s and buys nothing).
   `torch.compile` costs ~35 s cold, ~17 s warm per process.
 
+**A shard set spanning THREE collections cannot be merged by `collect_results.sh` alone.** It
+searches this staging directory plus the **previous** one, which covers the normal straddle, but a
+row whose 24 shards finish across three hourly collections leaves the merger reporting 22 of 24
+missing — from shard *directories* that exist, because incremental rsync creates the directory and
+skips a `summary.json` it already shipped. Nothing is lost: every shard summary is on local disk,
+just split across staging directories. The remedy is to build the union locally — copy each shard's
+`summary.json` into the newest staging directory wherever it is absent, then run
+`merge_shard_summaries.py` there — and it is verifiable rather than trusted: re-merging the rows that
+had already merged normally reproduced all seven of them exactly. `--full` also fixes it by
+re-shipping everything into one directory, at the cost of a whole-tree transfer. **Collect less
+often than an item takes, or expect to build the union.**
+
 **Solver logs are node-local, one archive per run.** `src/benchmark.py` once wrote one ~20 KB IPOPT
 log per (cell x arm) onto the shared filesystem — **35,596 of them, 87% of every collection's file
 count**, exactly the many-small-files pattern SuperCloud warns against; Lustre is metadata-op bound
