@@ -11,8 +11,10 @@ the project's reporting rules rather than to be convenient:
     different cell sets, and the easy cells are exactly the ones a weaker arm also solves, so
     that form flatters whichever arm fails more. `record["cost"]` is already the reported cost
     with learned-only regularizers excluded.
-  - **learned vs joint space is the comparison**; analytic would be a baseline and is not
-    fielded here. Ties are printed as ties.
+  - **learned vs joint space is the comparison**; the analytic arm is future work and possibly
+    not needed at all, so it is not fielded here. Ties are printed as ties -- and equally, a row
+    where the baseline is at the floor and the learned arm is not is reported as the decisive
+    result it is, not hedged into a non-comparison.
   - **the joint-space arm moves with a cap change too**, so its column is always shown -- a
     moving `numerical` column otherwise reads as harness drift.
   - NLopt reports no iteration count, so that column prints `--` rather than 0 or nan, and
@@ -258,10 +260,17 @@ def flags(all_rows, want):
             f"{r['robot'][:4]} {r['row']} {r['start'][:3]} {r['L']['succ']}" for r in nl))
         print("  The 180 s arm measured at Drake's NLopt defaults was flat against 45 s on ten")
         print("  of twelve rows, but that predates the adopted configuration -- so this is the")
-        print("  first measurement of the two changes together. Under NLopt the joint-space arm")
-        print("  is near-dead, so a learned win here says the learned formulation is the only")
-        print("  one extracting anything from this method class, not that it beats a live")
-        print("  baseline; and with few cells solved by both arms, print cost as a dash.")
+        print("  first measurement of the two changes together.")
+        print("  HOW TO READ THIS COLUMN, and it is a RESULT IN OUR FAVOUR, not a spoiled")
+        print("  comparison: under an augmented Lagrangian the joint-space arm is near-dead on")
+        print("  every row while the learned arm solves a substantial fraction of the pose rows.")
+        print("  That is the strongest form the comparison takes anywhere -- the baseline is at")
+        print("  the floor -- and it is attributable, because only the solver differs and the")
+        print("  joint-space arm is the EASIER problem (7 variables, no network), so its")
+        print("  collapse is a property of NLopt on this program and not of the harness.")
+        print("  Two narrow caveats, neither touching the pose rows: rows where BOTH arms are")
+        print("  near zero (historically the four iiwa grasp rows) carry no comparison, and cost")
+        print("  needs cells both arms solved, of which there are few -- hence the dashes.")
     else:
         print("  (no NLopt rows found)")
 

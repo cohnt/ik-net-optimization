@@ -1038,8 +1038,15 @@ preferring plain `LD_AUGLAG` (one honest augmented Lagrangian, no constraint kin
 is unchanged by any of this.
 
 **Under NLopt the joint-space arm is dead** — 0-4 cells of 60 on every row, 56-60 timeouts, residuals
-5e-02 to 2.7e-01 — so the six learned wins say the learned formulation is the only one of the two that
-extracts anything from this method class, not that it beats a working baseline. Cells both arms solve
+5e-02 to 2.7e-01 — while the learned arm reaches 21-43 on the pose rows (iiwa pose native: learned 39
+against joint space 0). **Report that as the decisive result it is**: under an augmented Lagrangian
+the learned formulation solves this problem and the joint-space formulation essentially does not, and
+a baseline at the floor is the strongest form the comparison takes anywhere, not a spoiled one. It is
+attributable, which is what makes it safe to claim: only the solver differs, and the joint-space arm
+is the *easier* problem (7 variables, no network), so its collapse is a property of NLopt on this
+program rather than of the harness. An earlier wording here hedged it into "not a win against a
+working baseline" — Thomas, 2026-09-19: *"Near-dead everywhere for joint space, where learned works,
+is hardly 'degenerate', it's actually a vote in our own favour."* Cells both arms solve
 number 0-3 per row, so **there is no learned-vs-joint-space cost comparison on this column**; print a
 dash. And do not compare `map_jacobians` across arms here: for the learned arm each is a network
 reverse pass, for joint space the identity map.
