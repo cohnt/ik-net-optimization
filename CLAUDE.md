@@ -1097,12 +1097,62 @@ All numbers below are on the **hardened scene** with the corrected program (true
 **superseded and their tables removed**; git history holds the originals, and every conclusion of
 theirs that still stands is restated here on corrected numbers.
 
-Adopted defaults: **grasp targets free** (containment available behind `--target-placement shelf`),
-**pose containment at the fingertips** where containment is used at all. Adopted rungs: Panda `n6`,
-iiwa `n4`.
+Adopted rungs: Panda `n6`, iiwa `n4`.
+
+**THE STATUS QUO CHANGED ON 2026-09-19 AND EVERY TABLE BELOW PREDATES IT.** See "The new status
+quo" immediately below: grasp targets are now shelf-contained at the fingertips and the campaign cap
+is 180 s, against the free targets and 45 s that every number in this section was measured at. The
+tables stand as the 45 s / free-grasp record until the new run replaces them.
 
 Harness self-check, which passes everywhere below: joint space is identical across every chart rung
 of a robot within an experiment, and `median_start_q_error` is 0.0 exactly under `paired`.
+
+### The new status quo (2026-09-19): contained grasp at the fingertips, 180 s cap
+
+Thomas's call, replacing both the free-grasp default and the 45 s campaign cap:
+
+> Why don't we set grasp fingertips in shelf as default, use the 180s timeout, run the other
+> experiments/solvers at 180s at the new status quo benchmark, and just have a note that if the
+> story radically changes as a result, flag it?
+
+**What changed.** `--target-placement auto` now resolves to `shelf` for **both** tasks (it was
+`shelf` for pose and `free` for grasp), at `--placement-point fingertips`. The campaign cap is
+**180 s**. `--target-placement free` still reproduces any earlier grasp column, and containment
+changes which draws are accepted, so a contained grid has a different `grid_hash` from a free one
+and the two cannot be paired. The **cap** does not enter target sampling, so 45 s and 180 s columns
+on the same placement DO pair cell for cell.
+
+**Why the two changes are one decision.** Containment is what creates headroom — on free targets the
+joint-space arm sits at 94-95% and only ~25 cells of 480 are winnable at all, while contained it
+falls to 300-323 and needs 965-970 median iterations against 125-176. But at 45 s the iiwa's
+contained-grasp rows are cap-bound (64-74 learned timeouts of 480) and score as joint-space wins;
+at 180 s they are ties with **zero** timeouts, and the 360 s column reproduces 180 s exactly, so
+180 s is saturated in the tail as well as the median. Adopting containment at 45 s would have
+fielded a cap artefact as a result.
+
+**The cost of parity, which must be reported.** iiwa contained grasp at 180 s is 447 v 442 native and
+453 v 442 paired, at **26.8 s against 1.9 s** and 629 iterations against 448 — roughly a 14x
+wall-clock premium for a tie, and the learned arm's grasp solutions still cost ~1.7x (4.8-5.1 against
+2.8-2.9). Joint space is flat across the whole cap ladder (442-443, 1.7-1.9 s), so the entire effect
+is the learned arm's per-iteration price.
+
+**WHAT TO FLAG, named in advance so the flag is checkable.** Three things could move, and if any does
+it is a story-level change, not a table update:
+1. **Any learned-vs-joint-space verdict moving.** At 45 s the expectation is: iiwa contained grasp
+   goes from a joint-space win to a tie; Panda contained grasp stays a decisive learned win and its
+   margin grows (it has 12/43 learned timeouts at 45 s). iiwa FREE grasp is unmeasured above 45 s and
+   has 35/27 timeouts, so it may move too.
+2. **The IPOPT-vs-SNOPT gap widening.** IPOPT's learned-arm failures are mostly wall-clock while only
+   3.6% of SNOPT's are the time limit, so a 4x cap should help IPOPT much more than SNOPT. The
+   ordering is predicted, but its SIZE is a reported quantity.
+3. **NLopt.** Its 180 s arm at Drake's defaults was flat (ten of twelve rows identical to 45 s), but
+   that was before the adopted `LD_MMA` configuration, whose cells finish in 5.6-35.9 s. Untested.
+
+**One operational trap.** `cluster/run_items.sh` caps an item at `ITEM_TIMEOUT=14400` (4 h), and a
+killed item loses part of a shard while the merger cannot distinguish that from a complete one. At
+180 s, 480 cells and two arms, `shards=8` -- the shape every SNOPT stage used -- estimates 3.3 h and
+worst-cases 6.0 h. **Use `shards>=16`, and 24 for comfort** (2.0 h worst case), or raise
+`ITEM_TIMEOUT`.
 
 ### Grasp task, adopted default (hardened scene, free targets)
 
@@ -1159,7 +1209,9 @@ on three rows of four.
 **Pose containment is a genuine difficulty increase, not a free win**, and this reverses a
 pre-calibration conclusion that recommended adopting it. On the corrected program containment costs
 the learned arm 2-3.5x what it costs joint space on the Panda (margin −14 native, −40 paired) and is
-a wash on the iiwa (+27, +1). **Whether to keep it is Thomas's call.**
+a wash on the iiwa (+27, +1). **Pose placement is STILL OPEN** (Thomas, 2026-09-19: decide grasp
+first) — note the code has defaulted pose to `shelf`/fingertips since the 2026-09-15 call, so the
+current default is containment and a decision to drop it would be a change, not a hold.
 
 ### What the success counts hide: headroom and rescue rate
 
@@ -1645,7 +1697,11 @@ Live items:
   setting, so **multi-start over solver configurations**, reported as "solved within k restarts", is
   the live descendant of this lever. Untested, and legitimate — it searches over solver settings,
   not over initial guesses.
-- **Whether pose containment is adopted** is Thomas's call; fingertip is the better point if it is.
+- **Whether pose containment is adopted** is the one placement decision still open (Thomas,
+  2026-09-19: grasp first, pose after). Fingertips is the better point if it is kept, and note the
+  code has defaulted pose to `shelf`/fingertips since 2026-09-15, so dropping it is a change.
+- **The new-status-quo benchmark has not been run.** Contained grasp at the fingertips and the 180 s
+  cap are set as defaults; every results table in this file still predates them.
 - **A harder problem formulation** beyond the hardened scene, if he wants one — his idea, his call.
 
 ### Smaller open items
