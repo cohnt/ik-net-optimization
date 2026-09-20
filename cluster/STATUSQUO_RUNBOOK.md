@@ -98,7 +98,21 @@ Update as steps land. `PENDING` / `DONE` / `DONE (n/480)`.
       (11,520 of the campaign's 17,280 solves). Three groups whose shards straddled two
       collections merged into the *previous* staging directory, which is the documented
       behaviour, not a fault.
-- [ ] NLopt column reported
+- [ ] NLopt column reported. Three of its twelve rows are in: **iiwa contained grasp native is
+      0/480 on BOTH arms with 480/480 timeouts each**, and both legacy iiwa free-grasp rows are
+      learned 3 / joint space 11. So NLOPTTUNE's 60-cell finding -- nothing Drake exposes makes the
+      augmented Lagrangian solve an iiwa grasp -- replicates at 480 cells. Rows where both arms sit
+      at the floor carry no comparison and no cost column; the rows that will carry the decisive
+      NLopt result are the pose ones, still pending.
+- [x] **The new results section is DRAFTED** at
+      `scratchpad/statusquo_section.md` (IPOPT and SNOPT tables, headroom/rescue-rate table, the
+      legacy free-grasp table, and flag criteria 1 and 2 answered). Held out of `CLAUDE.md`
+      deliberately until the NLopt column lands, so the file is edited once rather than twice.
+      Note when splicing it in: it replaces the four table subsections between
+      "Grasp task, adopted default" and "Settled negative results on the knobs", and the 45 s
+      reference values in it are the MEASURED `sc_SOLVER2`/`sc_SNOPTCOMBO` pairings, not the older
+      numbers quoted elsewhere in `CLAUDE.md` (e.g. Panda contained grasp paired pairs at 437, not
+      the 444 an older table shows).
 - [ ] `CLAUDE.md` tables replaced
 
 **IPOPT and SNOPT, complete. Two of the three flag criteria have final verdicts.**
