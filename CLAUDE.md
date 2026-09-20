@@ -984,6 +984,15 @@ the work per cell:
 | panda pose paired | 8 -> 16 (p = 0.077) | 53 -> 44 | 2882 -> 847 | 3.8e-01 -> 1.5e-01 |
 | **panda pose native** | **38 -> 33** (+0/-5) | 23 -> 30 | 1374 -> 656 | 9.3e-07 -> **3.6e-06** |
 
+**External evidence that 1e-3 may be slightly loose, and we are not re-sweeping.** The sibling
+`ik-tune` project, sweeping the same inner tolerance on its own problems, puts the optimum near
+**1e-4** and finds loosening past it costs — and it reached that only after discovering its control
+had been running at an *implicit* 1e-4 (pre-PR-25002, an unset `local_optimizer_xtol_rel` inherited
+the outer `xtol_rel`; the PR replaced that with an unconditional 1e-6). So our adopted 1e-3 is in a
+sensible region but is **not** an optimum this project established — it is the value NLOPTTUNE
+happened to field. NLopt settings are closed by decision, so this stands as a caveat beside the
+column rather than a sweep, and revisiting it is Thomas's call.
+
 **Three things must be reported with it.** It **failed** stage NLOPTTUNE's pre-registered gate, which
 asked whether to spend 480-cell compute on it and not whether it is the best configuration — state
 the gate failure alongside the setting so it does not read as a configuration chosen where it helps.
