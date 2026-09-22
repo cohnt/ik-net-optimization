@@ -697,74 +697,62 @@ Exactly **two** solver settings are fielded anywhere in this project, both adopt
 Everything else — all 16 `ipopt_*` fields, 15 of 19 `snopt_*`, 10 of 15 `nlopt_*`, and the four
 remaining step-rejection knobs — stays plumbed and `None`.
 
-**SNOPT: `snopt_major_step_limit` defaults to 0.5** (Drake/SNOPT's own default is 2.0). **It was
-adopted for FAIRNESS, not for the comparison, and that distinction must survive into the write-up.**
-On the learned-vs-joint-space question it changes nothing: five learned wins, four joint-space wins
-and three ties before and after, with **zero verdict flips** and the same rows in each bucket. It
-gives the learned arm +161 cells of 5,760 and joint space +164 — the same size — and the per-row
-margins (L - JS) move between -32 and +15 and sum to **-3**. What justifies it is that IPOPT's column
-runs a tuned configuration while SNOPT's ran bare Drake defaults. **Do not present it as helping the
-learned formulation.** It is also a property of SNOPT rather than of the chart: the joint-space arm
-improves on all twelve rows.
+**SNOPT: `snopt_major_step_limit` defaults to 0.5** (Drake/SNOPT's own default is 2.0). **It was adopted
+for FAIRNESS, not for the comparison, and that distinction must survive into the write-up.** On the
+learned-vs-joint-space question it changes nothing: five learned wins, four joint-space wins and three
+ties before and after, with **zero verdict flips**; it gives the learned arm +161 cells of 5,760 and
+joint space +164 — the same size — and the per-row margins sum to **-3**. What justifies it is that
+IPOPT's column runs a tuned configuration while SNOPT's ran bare Drake defaults. **Do not present it as
+helping the learned formulation.** It is a property of SNOPT rather than of the chart: the joint-space
+arm improves on all twelve rows.
 
 Two consequences. **The SNOPT numbers of record are stage SNOPTCOMBO's `mstep0p5` column**, not
 `sc_SOLVER2_*_snopt_*`, which was measured at Drake's defaults. And **"set nothing" no longer means
 Drake's SNOPT defaults** — a stage whose column means that must say `--set
-snopt_major_step_limit=None`, which emits the option not at all. `tests/test_solver_plumbing.py`
-pins both directions.
+snopt_major_step_limit=None`, which emits the option not at all. `tests/test_solver_plumbing.py` pins
+both directions.
 
 **NLopt: `LD_AUGLAG` + `LD_MMA` inner + inner `xtol_rel = ftol_rel = 1e-3`.** Fielded on Thomas's
 criterion — *"Feasibility is the name of the game, objective cost is secondary."* Against Drake's NLopt
-defaults on the learned arm it is better on 5 of 12 rows, worse on 1, unchanged on 6 (all six rows
-where nothing solves), and it collapses both the residual and the work per cell — Panda grasp contained
-native 12 -> 42 of 60 (p = 1.9e-09) at 3532 -> 66 network Jacobians is the clearest instance.
+defaults on the learned arm it is better on 5 of 12 rows, worse on 1, unchanged on 6 (all six rows where
+nothing solves), and it collapses both the residual and the work per cell — Panda grasp contained native
+12 -> 42 of 60 (p = 1.9e-09) at 3532 -> 66 network Jacobians is the clearest instance.
 
 **Three things must be reported with it.** It **failed** stage NLOPTTUNE's pre-registered gate, which
-asked whether to spend 480-cell compute and not whether the setting is the best configuration —
-state the gate failure alongside the setting so it does not read as a configuration chosen where it
-helps. The **Panda pose native row is a genuine regression on the adoption's own criterion**: five
-cells one-directionally and a residual four times worse (9.3e-07 -> 3.6e-06), and that is the honest
-cost. And it **flips one learned-vs-joint-space verdict** (Panda pose paired, tie -> learned win),
-unlike the SNOPT adoption which flipped none.
+asked whether to spend 480-cell compute and not whether the setting is the best configuration — state
+the gate failure alongside the setting so it does not read as a configuration chosen where it helps. The
+**Panda pose native row is a genuine regression on the adoption's own criterion**: five cells
+one-directionally and a residual four times worse (9.3e-07 -> 3.6e-06), and that is the honest cost. And
+it **flips one learned-vs-joint-space verdict** (Panda pose paired, tie -> learned win), unlike the
+SNOPT adoption which flipped none.
 
-**A caveat we are not re-sweeping.** The sibling `ik-tune` project, sweeping the same inner tolerance
-on its own problems, puts the optimum near **1e-4** and finds loosening past it costs — and reached
-that only after discovering its control had been running at an *implicit* 1e-4. So our adopted 1e-3
+**A caveat we are not re-sweeping.** The sibling `ik-tune` project, sweeping the same inner tolerance on
+its own problems, puts the optimum near **1e-4** and finds loosening past it costs. So our adopted 1e-3
 is in a sensible region but is **not** an optimum this project established; it is the value NLOPTTUNE
 happened to field. Revisiting it is Thomas's call.
 
-**`LD_AUGLAG` is kept, and the reason is checkable — but the mechanism is in NLopt, not in Drake.**
-Under `LD_AUGLAG` the inner optimizer solves a **bound-constrained** subproblem and every constraint
-sits in the augmented-Lagrangian penalty, whatever the inner algorithm's own method class. That
-retires the `LD_SLSQP` taxonomy worry, and it is why `LD_AUGLAG_EQ` is **not** used: `_EQ` absorbs
-only equalities and enforces inequalities on the subproblem directly, and this program carries both
-kinds. What decides it is the algorithm name alone, verified in the nlopt bundled in Drake:
-`src/api/optimize.c:934` passes `sub_has_fc` computed purely from the enum, and
-`src/algs/auglag/auglag.c:98-101` branches on it (`if (sub_has_fc) d.m = 0; else m = 0;`), i.e.
-inequalities go either into the penalty or onto the subproblem, never both.
+**`LD_AUGLAG` is kept, and the reason is in NLopt, not in Drake.** Under `LD_AUGLAG` the inner optimizer
+solves a **bound-constrained** subproblem and every constraint sits in the augmented-Lagrangian penalty,
+whatever the inner algorithm's own method class — which retires the `LD_SLSQP` taxonomy worry, and is why
+`LD_AUGLAG_EQ` is **not** used: `_EQ` absorbs only equalities and enforces inequalities on the subproblem
+directly, and this program carries both kinds. What decides it is the algorithm name alone, verified in
+the nlopt bundled in Drake (`src/api/optimize.c:934`, `src/algs/auglag/auglag.c:98-101`). **An earlier
+version of this argued from Drake's side — that Drake never adds a constraint to the inner `local_opt` —
+and that reasoning must not come back**: it is true, causes nothing, and predicts the wrong thing under
+`LD_AUGLAG_EQ`.
 
-**An earlier version of this argued from Drake's side — that Drake never adds a constraint to the
-inner `local_opt` — and that reasoning must not come back.** It is true and causes nothing:
-`auglag.c:110-119` overrides the subproblem's objective, bounds and stopval, removes its constraints
-and repopulates from the *outer* problem's list, so whatever Drake put on `local_opt` is discarded.
-The wrong chain also predicts the wrong thing, since under `LD_AUGLAG_EQ` the subproblem is *not*
-bound-constrained even though Drake adds nothing to `local_opt`.
-
-**A live hypothesis this hands us, not acted on.** `ik-tune` measured both parents across six robot
-experiments and found the plain-vs-`_EQ` difference large and one-directional: its two experiments
-whose *inequality* structure carries the problem collapse under plain `LD_AUGLAG` at every encoding
-and inner tolerance tried (14.4-19.8% against 54-63% under `_EQ`). Our iiwa grasp rows are 0-3 of 60
-under every NLopt setting and at 180 s, and the grasp task is exactly where the collision inequality
-binds — so penalised-rather-than-enforced inequalities is now a mechanism candidate for a row this
-project had recorded only as inexplicable. Their problems are not ours, so this is a thing to watch
-rather than a prediction. **Switching to `LD_AUGLAG_EQ` is a method-class decision and therefore
-Thomas's**, and the reason recorded above for preferring one honest augmented Lagrangian is unchanged
-by any of it.
+**A live hypothesis this hands us, not acted on.** `ik-tune` finds the plain-vs-`_EQ` difference large
+and one-directional, with its two experiments whose *inequality* structure carries the problem collapsing
+under plain `LD_AUGLAG`. Our iiwa grasp rows are 0-3 of 60 under every NLopt setting, and the grasp task
+is exactly where the collision inequality binds — so penalised-rather-than-enforced inequalities is now a
+mechanism candidate for a row this project had recorded only as inexplicable. Their problems are not ours,
+so this is a thing to watch rather than a prediction. **Switching to `LD_AUGLAG_EQ` is a method-class
+decision and therefore Thomas's.**
 
 **Requires a Drake carrying PR 25002.** `local_optimizer_ftol_rel` is absent from 1.56.0 and from a
 pre-PR source build, so `CheckNloptOptions`'s availability refusal is scoped to
-`which_solver == "nlopt"`; unconditional, it would refuse `ProgramOptions()` itself and kill every
-IPOPT and SNOPT cell over options they never emit.
+`which_solver == "nlopt"`; unconditional, it would refuse `ProgramOptions()` itself and kill every IPOPT
+and SNOPT cell over options they never emit.
 
 ### The grasp-containment lever is closed on both axes
 
@@ -854,273 +842,119 @@ on both arms.
 
 ### The status quo, ESTABLISHED 2026-09-21
 
-Decided 2026-09-19, measured 2026-09-19/20, **accepted by Thomas on 2026-09-21**. This is the
-project's baseline now: two experiments per robot (grasp and pose, both shelf-contained at the
-fingertips), 180 s, both start protocols, three solvers at their adopted configurations, adopted
-chart rungs. **Any future result is stated against it**, and a change to any of those choices is a
-new decision rather than a variation.
-
-Thomas's call, replacing both the free-grasp default and the 45 s campaign cap:
+Decided 2026-09-19, measured 2026-09-19/20, **accepted by Thomas on 2026-09-21**. This is the project's
+baseline now, **any future result is stated against it**, and a change to any of its choices is a new
+decision rather than a variation. Thomas's call, replacing both the free-grasp default and the 45 s cap:
 
 > Why don't we set grasp fingertips in shelf as default, use the 180s timeout, run the other
 > experiments/solvers at 180s at the new status quo benchmark, and just have a note that if the
 > story radically changes as a result, flag it?
 
-**What changed.** `--target-placement auto` now resolves to `shelf` for **both** tasks (it was
-`shelf` for pose and `free` for grasp), at `--placement-point fingertips`. The campaign cap is
-**180 s**. `--target-placement free` still reproduces any earlier grasp column, and containment
-changes which draws are accepted, so a contained grid has a different `grid_hash` from a free one
-and the two cannot be paired. The **cap** does not enter target sampling, so 45 s and 180 s columns
-on the same placement DO pair cell for cell.
+**What changed.** `--target-placement auto` now resolves to `shelf` for **both** tasks (it was `shelf`
+for pose and `free` for grasp), at `--placement-point fingertips`, and the campaign cap is **180 s**.
+`--target-placement free` still reproduces any earlier grasp column, and because containment changes
+which draws are accepted, a contained grid has a different `grid_hash` from a free one and the two
+cannot be paired. The **cap** does not enter target sampling, so 45 s and 180 s columns on the same
+placement DO pair cell for cell.
 
 **Why the two changes are one decision.** Containment is what creates headroom — on free targets the
-joint-space arm sits at 94-95% and only ~25 cells of 480 are winnable at all, while contained it
-falls to 300-323 and needs 965-970 median iterations against 125-176. But at 45 s the iiwa's
-contained-grasp rows are cap-bound (64-74 learned timeouts of 480) and score as joint-space wins;
-at 180 s they are ties with **zero** timeouts, and the 360 s column reproduces 180 s exactly, so
-180 s is saturated in the tail as well as the median. Adopting containment at 45 s would have
-fielded a cap artefact as a result.
-
-**The cost of parity must be reported, and the status-quo IPOPT table below carries it**: the iiwa
-contained-grasp tie is bought at a **14x** wall-clock premium (Table 3: 27.29 s against 1.90 s
-native, 25.25 against 1.90 paired), and joint space is flat across the whole cap ladder (442-443,
-1.7-1.9 s), so the entire effect is the learned arm's per-iteration price.
+joint-space arm sits at 94-95% and only ~25 cells of 480 are winnable at all, while contained it falls
+to 300-323 and needs 965-970 median iterations against 125-176. But at 45 s the iiwa's contained-grasp
+rows are cap-bound (64-74 learned timeouts of 480) and score as joint-space wins; at 180 s they are ties
+with **zero** timeouts, and the 360 s column reproduces 180 s exactly, so 180 s is saturated in the tail
+as well as the median. **Adopting containment at 45 s would have fielded a cap artefact as a result.**
+The cost of parity must be reported: the iiwa contained-grasp tie is bought at a **14x** wall-clock
+premium, and joint space is flat across the whole cap ladder (442-443 cells, 1.7-1.9 s), so the entire
+effect is the learned arm's
+per-iteration price.
 
 **WHAT WAS FLAGGED, and the ANSWERS.** Three criteria were named in advance so "did the story change"
 would be a printed verdict rather than a judgement call; `scripts/report_statusquo.py` evaluates them
-inline. All three are answered and **nothing moved against the learned arm**:
-
-1. **Verdict moves: four, every one predicted.** iiwa contained grasp went joint-space-win -> **tie**
-   under both protocols, as expected. Panda contained grasp stayed a decisive learned win with a
-   growing margin (paired 437 -> 471), also as predicted. The other six status-quo rows hold their
-   45 s verdict. (Two further moves were measured on the retired free-grasp placement, tie ->
-   learned win under both protocols; they are not part of the record -- see below.)
-2. **The IPOPT-SNOPT gap widened, and the mechanism is measured rather than inferred.** Median
-   learned-arm gap 102 cells at 45 s -> **120 at 180 s**, IPOPT ahead on every row at both caps.
-   See "The cap effect, per row" below for where it comes from.
-3. **NLopt under the adopted configuration: ten of twelve rows solve something, all four pose rows are
-   decisive learned wins, and the solver ordering is untouched.** The one story-level surprise is not
-   on this list: **the augmented Lagrangian is extraordinarily start-sensitive** (Panda contained
-   grasp 327 native -> 0 paired), which nobody predicted and which means that column must be read per
-   protocol and never pooled.
-
-**A killed item cannot corrupt a result.** Partial writes go to `summary.json.partial`
-(`src/benchmark.py`) and `run_items.sh` publishes to the collection point only on exit 0, so a killed
-shard reads as *absent* rather than truncated; `merge_shard_summaries.py` then refuses both on a
-missing shard index and, separately, on any unsolved cell of the full grid. What a killed item costs
-is its compute plus a stale claim needing `collect_results.sh --reclaim`. **So shard sizing is a
-THROUGHPUT question, not a data-integrity one.**
-
-**The caps were also genuinely misconfigured, and that is fixed.** `ITEM_TIMEOUT` was 4 h and
-`submit_bench.sh` requested `--time=04:00:00` -- *numerically equal*, which made the bad case normal:
-one long item consumed the whole job and Slurm's kill hit all `PROCS` workers at once, leaving
-`PROCS` stale claims. `xeon-g6-volta` allows **4-04:00:00 (100 h)**. Now: job wall **48 h**,
-`ITEM_TIMEOUT` **8 h** (a backstop for a wedged solve, not a budget -- a 102-minute stall inside one
-IPOPT iteration is on record), `timeout -k 60` so a TERM-ignoring solve is actually killed, and
-`run_items.sh` **refuses to claim an item the remaining job time cannot cover**, leaving it unclaimed
-for the next job instead. That last part is the actual fix: raising the numbers alone still lets a
-worker claim a multi-hour item minutes before its job ends. **Keep `WALL` > `ITEM_TIMEOUT`.**
+inline. All three are answered and **nothing moved against the learned arm**: four verdicts moved, every
+one predicted (iiwa contained grasp joint-space-win -> **tie** under both protocols; Panda contained
+grasp stayed a decisive learned win with a growing margin, paired 437 -> 471), and the other six rows
+hold their 45 s verdict; the IPOPT-SNOPT gap widened from a median 102 cells to **120**, with IPOPT ahead
+on every row at both caps; and NLopt under the adopted configuration solves something on ten of twelve
+rows with all four pose rows decisive learned wins and the solver ordering untouched. The one story-level
+surprise was on nobody's list: **the augmented Lagrangian is extraordinarily start-sensitive**, so that
+column must be read per protocol and never pooled.
 
 ### The status quo measured: stage STATUSQUO
 
-480 cells = 60 targets x 8 guesses, seed 1, **180 s**, `--compile`, adopted rungs (Panda `n6`,
-iiwa `n4`), hardened scene, shelf-contained targets at the fingertips, `learned,numerical`, both
-protocols, all three solvers at their adopted configurations, Drake nightly `0.0.20260918`. **Two
-experiments per robot, eight rows per solver, 24 logical runs, 11,520 solves.**
-`scripts/report_statusquo.py` owns these tables and evaluates the three pre-registered flag criteria
-inline.
+Conditions, the four tables, the acceptance checks and the three pre-registered flag criteria are in
+**`docs/status-quo-tables.md`**, regenerated by `scripts/report_statusquo.py`. **Two experiments per
+robot, eight rows per solver, 24 logical runs, 11,520 solves**, and every acceptance check passes.
+
+**Timeouts are essentially gone at 180 s** — at most 2 cells of 480 on any IPOPT or SNOPT row. So these
+are formulation results, not cap results, and this is also what closes the 180 s chart-ladder
+re-measurement: heavy timeouts were its trigger and there are none.
+
+#### What the four tables say
+
+The tables themselves are in **`docs/status-quo-tables.md`** — success rate, optimal cost, mean runtime
+and median major iterations, one metric per table, plus the headroom/rescue-rate, cap-effect and NLopt
+per-row tables. **`scripts/report_statusquo.py` regenerates all of them** along with the 24-cell tally
+and the three pre-registered flag criteria, so neither that file nor this section is hand-maintained.
+Layout follows `writing/tro-paper/tables/*_alternate_organization.tex`: rows are experiments, each
+solver is a block with the learned and joint-space arms **adjacent**, **bold** is the better of each
+pair, (star) the best in the row, and **every row prints, zeros included** — an omitted row reads as
+missing data rather than as a measurement of zero.
+
+**Success (Table 1). The learned arm wins 15 of the 24 solver x experiment cells, ties 7 and loses 2** —
+interior point 6/2/0, augmented Lagrangian 5/3/0, SQP 4/2/2 — and interior point is the best entry in
+every row. **Both losses are iiwa contained grasp under SQP**; there is no other losing cell anywhere in
+the table. Verdicts are by exact McNemar, which is also what decides a tie: a numeric reading of the
+same table put two rows down as losses that the text called ties, so the reporter prints the tally
+beside the table and the two cannot drift apart.
+
+**Cost (Table 2) splits by TASK, not by solver**: learned is cheaper on pose and ~1.4-1.8x more
+expensive on grasp, under every solver that produces a comparison. `N/A` means fewer than 10 shared
+solved cells, so no comparison exists — and on Panda contained grasp under NLopt the dash means the
+baseline solved nothing, not that data is missing.
+
+**Runtime (Table 3) is the per-iteration price stated as a number**: joint space wins every interior-point
+and SQP cell, and the iiwa contained-grasp tie is bought at a **14x** premium (27.29 s against 1.90 s
+native, 25.25 against 1.90 paired) while joint space is flat across the whole cap ladder. **Under the
+augmented Lagrangian the ordering inverts on five rows** — the learned arm is genuinely faster there,
+because it converges while joint space burns the whole 180 s.
+
+**Iterations (Table 4) is where hardening shows**: on Panda grasp joint space needs 744 median iterations
+against the learned arm's 169, so the learned formulation wins on *iterations* there under interior point
+despite costing ~10x per iteration. Containment costs the joint-space arm its cheapness. **The augmented
+Lagrangian column is `N/A` BY CONSTRUCTION** — `NloptSolverDetails` carries a single `status` and NLopt
+has no major iteration to count; its work proxy `eval_counts["map_jacobian"]` is **not comparable across
+arms**, being the identity map on the joint-space side, so it does not belong in that table.
+
+**Timeouts are essentially gone at 180 s** — at most 2 cells of 480 on any IPOPT or SNOPT row — so these
+are formulation results, not cap results. The cap effect is one-directional and diagnostic: going from
+the 45 s pairing reference to 180 s, IPOPT's learned arm gains +5 to +55 cells on every grasp row and
+**exactly +0 on every pose row**, because its failures are wall-clock, where only 3.6% of SNOPT's are.
+Every row with no timeouts at 45 s reproduces its 45 s cell count **exactly** (sole exception: Panda pose
+tip paired, +2), which is the campaign's tightest reproducibility statement.
+
+**The rescue rate is the quantity the success counts hide: 82-99% of the joint-space arm's failures are
+solved by the learned arm, on every row of both robots and both protocols**, and containment is what
+makes it matter — there are 157-263 joint-space failures available to rescue. The iiwa grasp ties are not
+the same cells either (31-35 each way), so the arms are complementary even where the totals agree.
+
+**Under NLopt all four pose rows are decisive learned wins**, every p between 5.4e-26 and 5.1e-68, and
+**the joint-space arm never exceeds 31 of 480 anywhere in that column** — 96% of its cells hit the wall
+clock. **Panda contained grasp is the cleanest statement the project contains: learned 327 of 480 against
+joint space ZERO of 480**, p = 7.3e-99. Report it as the result it is, not as a spoiled column: only the
+solver differs and the joint-space arm is the *easier* problem (7 variables, no network), so its collapse
+is a property of NLopt on this program rather than of a harness that favours us. Two caveats travel with
+it. **Both iiwa grasp rows are 0-2 of 480 on BOTH arms**, and rows where both arms sit at the floor carry
+no comparison and no cost column. And **the augmented Lagrangian is extraordinarily start-sensitive** —
+Panda contained grasp 327 native against **zero** paired, against IPOPT's largest protocol effect of
+476 -> 471 on the same row — so that column must be read per protocol and never pooled. It is the
+sharpest demonstration in the project that the two start protocols answer different questions.
 
 **Acceptance checks all pass.** iiwa `n4` contained grasp under IPOPT reproduces
 `sc_CAP_iiwa_n4_mug_180_{native,paired}` **exactly** — learned 447/453, joint space 442/442, zero
-timeouts on every arm, same `grid_hash` — which validates the new stage, the raised cluster caps
-and the Drake pin move in one row. `median_start_q_error` is 0.0 on every paired row and joint
-space is bit-identical between protocols on all twelve solver x row pairs. Every row that had no
-timeouts at 45 s reproduces its 45 s cell count **exactly** (sole exception: Panda pose tip paired,
-+2), which is a tighter reproducibility statement than the +/-2-cell band.
-
-**Timeouts are essentially gone at 180 s** — at most 2 cells of 480 on any IPOPT or SNOPT row. So
-these are formulation results, not cap results, and this is also what closes the 180 s chart-ladder
-re-measurement: heavy timeouts were its trigger and there are none.
-
-#### The four tables
-
-Laid out as in `writing/tro-paper/tables/*_alternate_organization.tex` so the two papers read side by
-side: rows are experiments, each solver is a block with the learned and joint-space arms **adjacent**,
-and there is **one metric per table**. `IP` = interior point (IPOPT), `AL` = augmented Lagrangian
-(NLOPT), `SQP` = sequential quadratic programming (SNOPT). **Bold** is the better of each pair (both
-bold when tied); (star) marks the best in the row. **Every row prints, zeros included** -- an omitted
-row reads as missing data rather than as a measurement of zero.
-`scripts/report_statusquo.py` regenerates all four, so do not hand-maintain them.
-
-**Table 1 -- success rate of 480 cells.** Higher is better.
-
-| experiment | IP L | IP JS | AL L | AL JS | SQP L | SQP JS |
-| --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp native | **0.931** (star) | 0.921 | **0.000** | **0.000** | 0.419 | **0.633** |
-| iiwa grasp paired | **0.944** (star) | 0.921 | **0.004** | 0.000 | 0.500 | **0.633** |
-| iiwa pose native | **0.979** (star) | 0.623 | **0.621** | 0.065 | **0.925** | 0.562 |
-| iiwa pose paired | **0.879** (star) | 0.623 | **0.246** | 0.065 | 0.515 | **0.562** |
-| panda grasp native | **0.992** (star) | 0.673 | **0.681** | 0.000 | **0.919** | 0.635 |
-| panda grasp paired | **0.981** (star) | 0.673 | **0.000** | **0.000** | 0.627 | **0.635** |
-| panda pose native | **0.960** (star) | 0.452 | **0.602** | 0.025 | **0.917** | 0.371 |
-| panda pose paired | **0.848** (star) | 0.452 | **0.237** | 0.025 | **0.573** | 0.371 |
-
-**The learned arm wins 15 of the 24 solver x experiment cells, ties 7 and loses 2** — interior point
-6/2/0, augmented Lagrangian 5/3/0, SQP 4/2/2 — and interior point is the best entry in every row.
-**Both losses are iiwa contained grasp under SQP**; there is no other losing cell anywhere in the
-table. Verdicts are by exact McNemar on the cells the table shows, which is also what decides a tie:
-a numeric reading of the same table put two rows down as losses that the text called ties.
-`scripts/report_statusquo.py` prints this tally beside the table so the two cannot drift apart.
-
-**Table 2 -- optimal cost**, on cells **both** arms solved, learned-only regularizers excluded. Lower
-is better; `N/A` means fewer than 10 shared solved cells, so no comparison exists.
-
-| experiment | IP L | IP JS | AL L | AL JS | SQP L | SQP JS |
-| --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp native | 4.985 | **2.839** (star) | N/A | N/A | 5.409 | **5.393** |
-| iiwa grasp paired | 4.998 | **2.826** (star) | N/A | N/A | 5.607 | **4.515** |
-| iiwa pose native | **6.242** | 6.757 | 6.511 | **4.988** (star) | **5.975** | 6.858 |
-| iiwa pose paired | **6.011** | 6.704 | 7.062 | **5.807** (star) | 6.863 | **6.757** |
-| panda grasp native | 7.504 | **5.305** (star) | N/A | N/A | **7.040** | 7.458 |
-| panda grasp paired | 6.846 | **5.358** (star) | N/A | N/A | **7.370** | 7.567 |
-| panda pose native | **11.136** | 11.861 | 9.346 | **9.088** (star) | **10.366** | 10.774 |
-| panda pose paired | **10.654** (star) | 11.762 | N/A | N/A | 10.807 | **10.749** |
-
-**The cost split is by TASK, not by solver**: learned is cheaper on pose and ~1.4-1.8x more expensive
-on grasp, under every solver that produces a comparison.
-
-**Table 3 -- mean runtime in seconds over all cells.** Lower is better. **This machine only** --
-never compared across machines.
-
-| experiment | IP L | IP JS | AL L | AL JS | SQP L | SQP JS |
-| --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp native | 27.29 | **1.90** (star) | 180.06 | **180.06** | 17.72 | **4.29** |
-| iiwa grasp paired | 25.25 | **1.90** (star) | **179.33** | 180.06 | 20.06 | **4.30** |
-| iiwa pose native | 2.19 | **0.09** (star) | **80.01** | 174.26 | 2.61 | **0.25** |
-| iiwa pose paired | 4.51 | **0.09** (star) | **140.98** | 174.27 | 11.84 | **0.25** |
-| panda grasp native | 11.79 | **5.91** | **57.81** | 180.06 | 5.55 | **3.80** (star) |
-| panda grasp paired | 20.93 | **5.91** | 180.07 | **180.06** | 17.59 | **3.80** (star) |
-| panda pose native | 2.20 | **0.29** | **81.87** | 177.15 | 3.18 | **0.26** (star) |
-| panda pose paired | 7.04 | **0.29** | **143.48** | 177.16 | 10.82 | **0.26** (star) |
-
-Joint space wins every IP and SQP cell, which is the per-iteration price stated as a number.
-**Under AL the ordering inverts on five rows** -- the learned arm is genuinely faster there, because
-it converges while joint space burns the whole 180 s.
-
-**Table 4 -- median major iterations over solved cells.** Lower is better. **The AL column is `N/A`
-BY CONSTRUCTION**: `NloptSolverDetails` carries a single `status`, and NLopt has no major iteration to
-count. Its work proxy is `eval_counts["map_jacobian"]` (3,881-12,923 per learned cell against
-9,550-13,417 for joint space), which is **not comparable across arms** -- identity map on the
-joint-space side -- so it does not belong in this table.
-
-| experiment | IP L | IP JS | AL L | AL JS | SQP L | SQP JS |
-| --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp native | 381 | **212** | N/A | N/A | 798 | **168** (star) |
-| iiwa grasp paired | 348 | **212** | N/A | N/A | 644 | **168** (star) |
-| iiwa pose native | 44 | **28** | N/A | N/A | 73 | **22** (star) |
-| iiwa pose paired | 102 | **28** | N/A | N/A | 316 | **22** (star) |
-| panda grasp native | **169** | 744 | N/A | N/A | 165 | **164** (star) |
-| panda grasp paired | **261** | 744 | N/A | N/A | 443 | **164** (star) |
-| panda pose native | 36 | **33** | N/A | N/A | 47 | **21** (star) |
-| panda pose paired | 100 | **33** | N/A | N/A | 238 | **21** (star) |
-
-**The Panda grasp rows are where hardening shows**: joint space needs 744 median iterations against
-the learned arm's 169, so the learned formulation wins on *iterations* there under interior point
-despite costing ~10x per iteration. Containment costs the joint-space arm its cheapness.
-
-#### Headroom and the rescue rate: what the success counts hide
-
-Containment is what creates the headroom the comparison needs. Under IPOPT, cells joint space
-fails, and how many of them the learned arm solves:
-
-| config | L | JS | L only | JS only | both | neither | of JS's failures, rescued |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp contained native | 447 | 442 | 31 | 26 | 416 | 7 | 31/38 = 82% |
-| iiwa grasp contained paired | 453 | 442 | 35 | 24 | 418 | 3 | 35/38 = **92%** |
-| iiwa pose tip native | 470 | 299 | 175 | 4 | 295 | 6 | 175/181 = **97%** |
-| iiwa pose tip paired | 422 | 299 | 158 | 35 | 264 | 23 | 158/181 = 87% |
-| panda grasp contained native | 476 | 323 | 156 | 3 | 320 | 1 | 156/157 = **99%** |
-| panda grasp contained paired | 471 | 323 | 155 | 7 | 316 | 2 | 155/157 = **99%** |
-| panda pose tip native | 461 | 217 | 248 | 4 | 213 | 15 | 248/263 = 94% |
-| panda pose tip paired | 407 | 217 | 219 | 29 | 188 | 44 | 219/263 = 83% |
-
-**The rescue rate is 82-99% on every row of both robots and both protocols**, and containment is what
-makes it matter: there are 157-263 joint-space failures available to rescue. The iiwa grasp ties are
-not the same cells either -- 31-35 each way -- so the arms are complementary even where the totals
-agree.
-
-#### The cap effect, per row: where the IPOPT-SNOPT gap comes from
-
-The verdict is under "WHAT WAS FLAGGED" above; this is the measurement behind it. Learned arm, cells
-gained going from the 45 s pairing reference to 180 s on the same grid:
-
-| | IPOPT gains 45 s -> 180 s | SNOPT gains |
-| --- | --- | --- |
-| every grasp row | +5 to +55 | -1 to +7 |
-| every pose row | **exactly +0** | +0 to +2 |
-
-IPOPT's learned-arm failures are wall-clock, so a 4x cap recovers them; only 3.6% of SNOPT's are the
-time limit, so it has nothing to recover. **The pose rows being exactly +0 is also the campaign's
-tightest reproducibility statement** -- every row with no timeouts at 45 s reproduces its 45 s cell
-count exactly, the sole exception being Panda pose tip paired at +2.
-
-#### The status quo under NLopt (augmented Lagrangian), `LD_MMA` inner + loose inner tolerances
-
-Work, wall clock and violation are over **all 480 cells**, not over successes: this column times out
-most cells, so a median over successes would describe the handful it got right. `jac/cell` is the
-program's own network-Jacobian counter and is **not** comparable across arms — for the learned arm
-each is a reverse pass through the flow, for joint space the identity map.
-
-| row | L | JS | p | L jac/cell | JS jac/cell | L s | JS s | L timeouts | JS timeouts |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp contained native | 0 | 0 | 1 tie | 12923 | 12407 | 180.06 | 180.06 | 480 | 480 |
-| iiwa grasp contained paired | 2 | 0 | 0.50 tie | 12709 | 12407 | 179.33 | 180.06 | 478 | 480 |
-| iiwa pose tip native | **298** | 31 | **5.1e-68** | 4025 | 9550 | 80.01 | 174.26 | 199 | 463 |
-| iiwa pose tip paired | **118** | 31 | **2.0e-17** | 7066 | 9550 | 140.98 | 174.27 | 369 | 463 |
-| panda grasp contained native | **327** | 0 | **7.3e-99** | 3881 | 13417 | 57.81 | 180.06 | 153 | **480** |
-| panda grasp contained paired | 0 | 0 | 1 tie | 11916 | 13416 | 180.07 | 180.06 | 480 | 480 |
-| panda pose tip native | **289** | 12 | **5.8e-82** | 3988 | 10455 | 81.87 | 177.15 | 203 | 469 |
-| panda pose tip paired | **114** | 12 | **5.4e-26** | 6864 | 10469 | 143.48 | 177.16 | 371 | 469 |
-
-**ALL FOUR pose rows are decisive learned wins** — iiwa 298 v 31 native (discordant 278 to 11) and
-118 v 31 paired (101 to 14); Panda 289 v 12 native (278 to 1) and 114 v 12 paired (107 to 5), every
-p between 5.4e-26 and 5.1e-68. **The joint-space arm never exceeds 31 of 480 anywhere in this
-column.** Under an augmented Lagrangian the learned formulation solves this problem
-and the joint-space formulation essentially does not — 96% of its cells hit the wall clock. Report
-it as the result it is, not as a spoiled column: it is **attributable**, because only the solver
-differs and the joint-space arm is the *easier* problem (7 variables, no network), so its collapse
-is a property of NLopt on this program rather than of a harness that favours us. Cost exists here
-but on only 20 and 17 common cells (learned 6.511 / 7.062 against 4.988 / 5.807), so quote it with
-that n. The paired protocol is much harder for the augmented Lagrangian, as it is for SNOPT: 298 ->
-118 cells and 80 s -> 141 s mean, while the joint-space arm is unchanged at 31 by construction.
-
-**Panda contained grasp is the cleanest statement the project contains: learned 327 of 480 against
-joint space ZERO of 480**, p = 7.3e-99, discordant 327 to 0, with the joint-space arm timing out on
-every single cell while the learned arm converges in 58 s mean on 3,881 network Jacobians against
-joint space's 13,417. There is no cost comparison because the arms share no solved cell -- print a
-dash, and note that the dash here means the baseline solved nothing, not that the data is missing.
-
-**Both iiwa grasp rows are 0-2 of 480 on BOTH arms**, replicating at 480 cells what stage
-NLOPTTUNE found at 60: nothing Drake exposes makes the augmented Lagrangian solve an iiwa grasp.
-Rows where both arms sit at the floor carry **no comparison and no cost column** — that is the one
-narrow caveat, and it does not touch the pose rows where the result is.
-
-**The augmented Lagrangian is extraordinarily sensitive to the starting point, far more than either
-other solver, and that is a finding in its own right.** On Panda contained grasp the `native`
-protocol gives 327 of 480 and the `paired` protocol gives **zero**, with every cell timing out; on
-iiwa pose it is 298 -> 118 and on Panda pose 289 -> 114. IPOPT's largest protocol effect on the same rows
-is 476 -> 471, and SNOPT's is 441 -> 301. So an AL started at a shared infeasible `q_init` cannot get
-its multipliers moving before the clock runs out, where an interior-point method barely notices. This
-is why the NLopt column must be read per protocol and never pooled, and it is the sharpest
-demonstration in the project that **the two start protocols answer different questions**.
-
-**The adopted configuration is doing exactly what it was adopted for.** On the pose row the learned
-arm uses 4,025 network Jacobians per cell against the joint-space arm's 9,550 and finishes in 80 s
-mean against 174 s (paired: 7,066 and 141 s against the same 9,550 and 174 s) — i.e. it converges rather than exhausting the budget, which is the feasibility
-criterion the configuration was fielded on.
-
-That answers flag criterion 3, untested before this campaign because the flat 180 s arm predated the
-adopted configuration: six of the eight rows solve something and the solver ordering is untouched.
+timeouts on every arm, same `grid_hash` — which validates the stage, the raised cluster caps and the
+Drake pin move in one row. `median_start_q_error` is 0.0 on every paired row, joint space is
+bit-identical between protocols on all twelve solver x row pairs, and every row has 480 cells on both
+arms.
 
 ### Settled negative results on the knobs — do not re-sweep
 
@@ -1430,53 +1264,18 @@ optional (`BuildEnv(meshcat=None)`), mug scenes are built only for the shard's t
 `hit_iteration_cap` is the counterpart to `timed_out` (`is_timeout` does not match IPOPT's "Maximum
 Number of Iterations Exceeded").
 
-**The calibration.** Four arms, one per node, each a full job on a real partition, on the **Panda
-grasp** task — that task specifically, because it is the one that binds against the cap. A first
-attempt ran the *pose* task and measured nothing: a pose cell converges in ~74 iterations here, so
-its iteration count is identical at every cap and however contended the node is. **A converged solve
-takes the iterations it takes**; only its wall time moves.
-- *Workers per node*, median iterations inside a fixed 20 s cap: 202 / 196 / 194 / 186 / 114 / 70 at
-  P = 1 / 2 / 4 / 8 / 20 / 40. `PROCS=4` is conservative, `PROCS=8` is what exploratory stages ran at
-  (Thomas ruled the 8% acceptable for sweeps, reserving uncontended runs for hard comparisons and
-  paper numbers). A worker that gets less done inside a wall-clock cap is a **different
-  measurement**, so the count is held fixed across everything compared.
-- *CPU-only is not competitive*: at one worker the GPU reaches 202 median iterations against 62,
-  solving 4 of 8 cells against 1 of 8. Not a contradiction of the CPU-bound profiling result — that
-  says the GPU is never the bottleneck *while a GPU is present*.
-- *The cap*: median iterations 142 / 203 / **338** / 338 / 338 at 10 / 20 / 45 / 90 / 180 s, i.e.
-  medians saturate by 45 s. That is why 45 s was the cap for the exploratory campaigns; **the
-  campaign cap is now 180 s**, adopted with containment because beyond the median only the *tail*
-  gains and the contained-grasp rows live in the tail.
-- *Startup*: 40 concurrent `import torch, pydrake, ikflow, jrl` take 10 s total, so the venv can stay
-  on the shared filesystem (copying to node-local `$TMPDIR` costs 231 s and buys nothing).
-  `torch.compile` costs ~35 s cold, ~17 s warm per process.
+The measured calibration — workers per node, GPU-vs-CPU, the cap ladder and process startup — is in
+`cluster/README.md`; it is a property of that hardware, not of the project.
 
-**A shard set spanning THREE collections cannot be merged by `collect_results.sh` alone**, which
-searches every prior staging directory as of 2026-09-20 but originally searched only the previous
-one. The symptom is the merger reporting 22 of 24 shards missing from directories that *exist*,
-because incremental rsync creates the directory and skips a `summary.json` it already shipped.
-Nothing is lost — the shard summaries are all on local disk, split across staging directories — and
-the remedy is to build the union locally, which is verifiable rather than trusted: re-merging rows
-that had merged normally reproduced all seven exactly. **Collect less often than an item takes, or
-expect to build the union.**
-
-**Solver logs are node-local, one archive per run.** Writing one ~20 KB log per (cell x arm) onto
-Lustre put 35,596 small files — 87% of a collection's file count — on a filesystem that is metadata-op
-bound at that size, and a routine collection had drifted from three minutes to thirty. Per-cell logs
-now go to node-local `$TMPDIR` (keyed on run tag *and* pid, since a node runs eight workers) and roll
-into one `solver_logs.tar.gz` at the end of `run_grid`: 40,733 files → 2,964, 950 MB → 316 MB,
-~30 min → **43 s**. `collect_results.sh` is incremental by default and never ships `state/`.
-
-**Any cluster-wide check on a shared account must be scoped to this project's own jobs, by JOB
-name.** The account is shared across Thomas's projects, so `LLstat | grep -c RUNNI` refuses whenever
-anything at all is running. But the scoped fix then filtered `squeue -n run_items.sh` — the payload
-script's *filename* — and a job's name comes from the submitter
-(`--job-name=lik_bench_${MANIFEST%.txt}`), so `--reclaim`'s guard was unconditionally 0 and never
-refused for its whole life: it would have stolen items from 32 live workers, each of which would then
-have written its shard to a claim someone else re-ran. Now `lik_bench_$MANIFEST_NAME`, counting
-`PENDING` as well as `RUNNING`, and verified live in both directions. **The transferable lesson: a
-guard nobody has observed refusing has not been tested.** `cluster/README.md` carries the filter
-itself.
+Three operational post-mortems live in `cluster/README.md` in more detail than a project record needs,
+and the transferable lesson of each is stated there: a shard set spanning **three** collections cannot be
+merged by `collect_results.sh` alone, so **collect less often than an item takes, or expect to build the
+union** (nothing is lost — the shard summaries are all on local disk); per-cell solver logs go to
+node-local `$TMPDIR` and roll into one archive, because 35,596 small files on Lustre took a routine
+collection from three minutes to thirty; and **any cluster-wide check on a shared account must be scoped
+to this project's own jobs, by JOB name** — the fix that filtered the payload script's filename instead
+meant `--reclaim`'s guard was unconditionally 0 and never refused for its whole life, so **a guard nobody
+has observed refusing has not been tested.**
 
 **The laptop suspends when idle**, which accounted for every multi-hour stall this repo ever
 recorded (GNOME suspends after 900 s idle *even on AC*). Three plausible solver-level theories each

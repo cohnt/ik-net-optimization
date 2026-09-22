@@ -312,3 +312,78 @@ steps, worth **zero cells** — while `n6` buys the same accuracy and *pays* 137
 between 240k and 400k. **The sharpest statement the campaign has that accuracy is not the quantity
 that matters.** It is **not** a licence to pick early checkpoints: that is selecting on the test set
 and confounds architecture with selection.
+
+## What is fielded, and what each adoption is and is not
+
+Exactly **two** solver settings are fielded anywhere in this project, both adopted 2026-09-19.
+Everything else — all 16 `ipopt_*` fields, 15 of 19 `snopt_*`, 10 of 15 `nlopt_*`, and the four
+remaining step-rejection knobs — stays plumbed and `None`.
+
+**SNOPT: `snopt_major_step_limit` defaults to 0.5** (Drake/SNOPT's own default is 2.0). **It was
+adopted for FAIRNESS, not for the comparison, and that distinction must survive into the write-up.**
+On the learned-vs-joint-space question it changes nothing: five learned wins, four joint-space wins
+and three ties before and after, with **zero verdict flips** and the same rows in each bucket. It
+gives the learned arm +161 cells of 5,760 and joint space +164 — the same size — and the per-row
+margins (L - JS) move between -32 and +15 and sum to **-3**. What justifies it is that IPOPT's column
+runs a tuned configuration while SNOPT's ran bare Drake defaults. **Do not present it as helping the
+learned formulation.** It is also a property of SNOPT rather than of the chart: the joint-space arm
+improves on all twelve rows.
+
+Two consequences. **The SNOPT numbers of record are stage SNOPTCOMBO's `mstep0p5` column**, not
+`sc_SOLVER2_*_snopt_*`, which was measured at Drake's defaults. And **"set nothing" no longer means
+Drake's SNOPT defaults** — a stage whose column means that must say `--set
+snopt_major_step_limit=None`, which emits the option not at all. `tests/test_solver_plumbing.py`
+pins both directions.
+
+**NLopt: `LD_AUGLAG` + `LD_MMA` inner + inner `xtol_rel = ftol_rel = 1e-3`.** Fielded on Thomas's
+criterion — *"Feasibility is the name of the game, objective cost is secondary."* Against Drake's NLopt
+defaults on the learned arm it is better on 5 of 12 rows, worse on 1, unchanged on 6 (all six rows
+where nothing solves), and it collapses both the residual and the work per cell — Panda grasp contained
+native 12 -> 42 of 60 (p = 1.9e-09) at 3532 -> 66 network Jacobians is the clearest instance.
+
+**Three things must be reported with it.** It **failed** stage NLOPTTUNE's pre-registered gate, which
+asked whether to spend 480-cell compute and not whether the setting is the best configuration —
+state the gate failure alongside the setting so it does not read as a configuration chosen where it
+helps. The **Panda pose native row is a genuine regression on the adoption's own criterion**: five
+cells one-directionally and a residual four times worse (9.3e-07 -> 3.6e-06), and that is the honest
+cost. And it **flips one learned-vs-joint-space verdict** (Panda pose paired, tie -> learned win),
+unlike the SNOPT adoption which flipped none.
+
+**A caveat we are not re-sweeping.** The sibling `ik-tune` project, sweeping the same inner tolerance
+on its own problems, puts the optimum near **1e-4** and finds loosening past it costs — and reached
+that only after discovering its control had been running at an *implicit* 1e-4. So our adopted 1e-3
+is in a sensible region but is **not** an optimum this project established; it is the value NLOPTTUNE
+happened to field. Revisiting it is Thomas's call.
+
+**`LD_AUGLAG` is kept, and the reason is checkable — but the mechanism is in NLopt, not in Drake.**
+Under `LD_AUGLAG` the inner optimizer solves a **bound-constrained** subproblem and every constraint
+sits in the augmented-Lagrangian penalty, whatever the inner algorithm's own method class. That
+retires the `LD_SLSQP` taxonomy worry, and it is why `LD_AUGLAG_EQ` is **not** used: `_EQ` absorbs
+only equalities and enforces inequalities on the subproblem directly, and this program carries both
+kinds. What decides it is the algorithm name alone, verified in the nlopt bundled in Drake:
+`src/api/optimize.c:934` passes `sub_has_fc` computed purely from the enum, and
+`src/algs/auglag/auglag.c:98-101` branches on it (`if (sub_has_fc) d.m = 0; else m = 0;`), i.e.
+inequalities go either into the penalty or onto the subproblem, never both.
+
+**An earlier version of this argued from Drake's side — that Drake never adds a constraint to the
+inner `local_opt` — and that reasoning must not come back.** It is true and causes nothing:
+`auglag.c:110-119` overrides the subproblem's objective, bounds and stopval, removes its constraints
+and repopulates from the *outer* problem's list, so whatever Drake put on `local_opt` is discarded.
+The wrong chain also predicts the wrong thing, since under `LD_AUGLAG_EQ` the subproblem is *not*
+bound-constrained even though Drake adds nothing to `local_opt`.
+
+**A live hypothesis this hands us, not acted on.** `ik-tune` measured both parents across six robot
+experiments and found the plain-vs-`_EQ` difference large and one-directional: its two experiments
+whose *inequality* structure carries the problem collapse under plain `LD_AUGLAG` at every encoding
+and inner tolerance tried (14.4-19.8% against 54-63% under `_EQ`). Our iiwa grasp rows are 0-3 of 60
+under every NLopt setting and at 180 s, and the grasp task is exactly where the collision inequality
+binds — so penalised-rather-than-enforced inequalities is now a mechanism candidate for a row this
+project had recorded only as inexplicable. Their problems are not ours, so this is a thing to watch
+rather than a prediction. **Switching to `LD_AUGLAG_EQ` is a method-class decision and therefore
+Thomas's**, and the reason recorded above for preferring one honest augmented Lagrangian is unchanged
+by any of it.
+
+**Requires a Drake carrying PR 25002.** `local_optimizer_ftol_rel` is absent from 1.56.0 and from a
+pre-PR source build, so `CheckNloptOptions`'s availability refusal is scoped to
+`which_solver == "nlopt"`; unconditional, it would refuse `ProgramOptions()` itself and kill every
+IPOPT and SNOPT cell over options they never emit.
