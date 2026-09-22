@@ -247,18 +247,23 @@ METRIC_BLOCKS = (("ipopt", "IP"), ("nlopt", "AL"), ("snopt", "SQP"))
 
 def metric_tables(runs):
     """The four headline tables: success rate, cost, runtime, iterations."""
-    cells = {}
+    cells, pvals = {}, {}
     for tag, s in runs.items():
         p = tag.split("_")
         if p[5] not in STATUS_QUO_ROWS:
             continue
         L = arm_stats(s, "learned", "numerical")
         J = arm_stats(s, "numerical", "learned")
+        A, B = by_cell(s, "learned"), by_cell(s, "numerical")
+        shared = [k for k in A if k in B]
+        b = sum(1 for k in shared if A[k]["feasible"] and not B[k]["feasible"])
+        w = sum(1 for k in shared if B[k]["feasible"] and not A[k]["feasible"])
         cells[(p[2], p[5], p[8], p[4])] = (L, J)
+        pvals[(p[2], p[5], p[8], p[4])] = mcnemar(b, w)
     exps = sorted({(r, row, st) for (r, row, st, _) in cells},
                   key=lambda k: (k[0], ROW_ORDER[k[1]], k[2]))
 
-    def emit(title, note, pick, fmt, better):
+    def emit(title, note, pick, fmt, better, tied=None):
         print(f"\n  {title}")
         print(f"  {note}")
         head = "".join(f"{b + ' L':>13}{b + ' JS':>13}" for _, b in METRIC_BLOCKS)
@@ -281,7 +286,15 @@ def metric_tables(runs):
                 l, j = vals[solver]
                 fl, fj = fmt(l), fmt(j)
                 if l is not None and j is not None:
-                    if l == j:
+                    ## A tie on the SUCCESS table is whatever the exact McNemar test cannot
+                    ## separate, not whatever happens to be numerically equal. Reading it
+                    ## the numeric way put two rows in the table as losses that the prose
+                    ## called ties (iiwa pose paired 0.515 v 0.562, panda grasp paired
+                    ## 0.627 v 0.635), so the table and the text disagreed about the same
+                    ## measurement. Cost, runtime and iterations carry no such test, so
+                    ## they keep numeric equality and pass `tied=None`.
+                    key = (e[0], e[1], e[2], solver)
+                    if tied(key) if tied else (l == j):
                         fl, fj = f"*{fl}*", f"*{fj}*"
                     elif better(l, j):
                         fl = f"*{fl}*"
@@ -305,8 +318,34 @@ def metric_tables(runs):
     print("  IP = interior point (IPOPT), AL = augmented Lagrangian (NLOPT),")
     print("  SQP = sequential quadratic programming (SNOPT). *better* of each pair is starred;")
     print("  a trailing * marks the best in the row. Every row prints, zeros included.")
-    emit("Table 1 -- success rate of 480 cells", "higher is better",
-         lambda L, J: (L["succ"] / L["n"], J["succ"] / J["n"]), f3, lambda a, b: a > b)
+    emit("Table 1 -- success rate of 480 cells",
+         "higher is better; ties are by exact McNemar (p >= 0.05), not numeric equality",
+         lambda L, J: (L["succ"] / L["n"], J["succ"] / J["n"]), f3, lambda a, b: a > b,
+         tied=lambda key: pvals.get(key, 0.0) >= 0.05)
+    ## The 24-cell tally, computed from the SAME verdicts the table prints. Kept here rather
+    ## than written into prose because the two disagreed once: the table read ties as numeric
+    ## equality and the text read them by McNemar, so one said 18 wins / 2 ties / 4 losses
+    ## and the other 4/2/2 on the SNOPT block alone, and a reader could not reconcile them.
+    tally = {"learned": 0, "tie": 0, "joint space": 0}
+    per_solver = {s: dict(tally) for s, _ in METRIC_BLOCKS}
+    for e in exps:
+        for solver, _ in METRIC_BLOCKS:
+            key = (e[0], e[1], e[2], solver)
+            got = cells.get(key)
+            if not got:
+                continue
+            v = verdict(got[0]["succ"], got[1]["succ"], pvals.get(key, 0.0))
+            tally[v] += 1
+            per_solver[solver][v] += 1
+    n = sum(tally.values())
+    print(f"\n  Of the {n} solver x experiment cells, learned wins {tally['learned']}, "
+          f"ties {tally['tie']}, loses {tally['joint space']}"
+          f"  (verdicts by exact McNemar on the same cells the table shows)")
+    for solver, b in METRIC_BLOCKS:
+        d = per_solver[solver]
+        print(f"    {b:<4} learned {d['learned']}, ties {d['tie']}, "
+              f"joint space {d['joint space']}")
+
     emit("Table 2 -- optimal cost, cells BOTH arms solved, learned-only regularizers excluded",
          "lower is better; N/A means fewer than %d shared solved cells, so no comparison exists"
          % MIN_COST_CELLS,
@@ -323,7 +362,20 @@ def metric_tables(runs):
 
 def main(only):
     want = [s for s in SOLVERS if not only or s in only]
+    ## Filtered at LOAD time, not per table. The campaign also produced 12 runs on
+    ## --target-placement free, which is a retired SETTING of the grasp experiment and not a
+    ## third experiment (Thomas, 2026-09-21: "preserving old settings and old experimental
+    ## setups is contrary to that mission"). Those summaries may still be on disk, and this
+    ## used to read them in and drop them one layer later inside each table -- so a single
+    ## line in one table function was all that kept a retired row out of the campaign of
+    ## record. Refusing them here means no table CAN show one.
     runs = load("sc_STATUSQUO_", cells=CELLS)
+    retired = [tag for tag in runs if tag.split("_")[5] not in STATUS_QUO_ROWS]
+    for tag in retired:
+        del runs[tag]
+    if retired:
+        print(f"  ({len(retired)} run(s) on a retired placement ignored: "
+              f"{sorted({t.split('_')[5] for t in retired})})")
     if not runs:
         print("no merged 480-cell sc_STATUSQUO_ runs found (staged or promoted). "
               "Merge shards first: cluster/merge_shard_summaries.py")

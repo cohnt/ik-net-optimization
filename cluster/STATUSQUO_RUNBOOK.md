@@ -8,11 +8,6 @@ Read it for: what was measured and with what invariants, the acceptance checks a
 the five harness defects the campaign found, and the manifest-regeneration command (whose CLI
 defaults are narrower than this stage and fail silently).
 
-**Read this first if you are picking the campaign up cold** — after a pause, a session
-restart, or a context compaction. It is the state of record; conversation context is not.
-Keep the "Progress" section below current as steps complete, and commit it, so the next
-reader needs nothing else.
-
 ## What this campaign is
 
 The measurement that replaces every results table in `CLAUDE.md`, all of which predate the
@@ -20,13 +15,19 @@ The measurement that replaces every results table in `CLAUDE.md`, all of which p
 fingertips (the last open placement question, now decided), a **180 s** cap (was 45 s), and
 adopted SNOPT and NLopt configurations (were Drake's defaults).
 
-- 36 logical runs = 2 robots (Panda `n6`, iiwa `n4`) x 3 rows x 2 protocols x 3 solvers.
+- **24 logical runs** = 2 robots (Panda `n6`, iiwa `n4`) x 2 experiments x 2 protocols x 3
+  solvers, 11,520 solves. The run ALSO produced 12 runs on `--target-placement free`, which
+  are not part of the record -- see below.
 - 480 cells each (60 targets x 8 guesses), seed 1, `--compile`, hardened scene, inset 0.10,
   `correction_cost_weight=10`, arms `learned,numerical`.
 - **480 manifest items**: IPOPT and SNOPT 8 shards per run, NLopt **24** (its cells nearly all
   run the full cap on both arms, ~44 h per logical run).
-- Rows: `mugshelf` and `posetip` **are** the status quo; `mugfree` is a **legacy** column,
-  included only because iiwa free grasp is unmeasured above 45 s. Never report it as status quo.
+- Rows: `mugshelf` and `posetip` are the two experiments, and there are no others. `mugfree`
+  was fielded as a third row and that was the campaign's one substantive error: it is a
+  vestigial SETTING of the grasp experiment, not an experiment (Thomas, 2026-09-21:
+  *"preserving old settings and old experimental setups is contrary to that mission"*).
+  Dropped from the stage in `0f293d6`; `stage_STATUSQUO`'s selftest now refuses a
+  non-contained placement and `report_statusquo.py` refuses one at load time.
 - No settings axis: each solver runs its adopted configuration, which is now its default. The
   selftest refuses any `--set` other than the correction penalty.
 
@@ -116,7 +117,7 @@ solver-dependent verdict. **NLopt: all four pose rows decisive learned wins** (i
 Panda 289/114 v 12), Panda contained grasp native 327 v **0**, and the four iiwa grasp rows at the
 floor on both arms.
 
-**Three findings worth carrying forward.** The rescue rate is 82-100% on every IPOPT row, with
+**Three findings worth carrying forward.** The rescue rate is 82-99% on every IPOPT row, with
 157-263 joint-space failures available to rescue under containment against 23-27 free. The cap effect
 is entirely on grasp rows (+5 to +55 for IPOPT, exactly +0 on every pose row), which is both the
 IPOPT-SNOPT widening mechanism and the campaign's tightest reproducibility check. And **the augmented
@@ -162,8 +163,7 @@ and never pooled.
 
 1. **Any learned-vs-joint-space verdict moving** between 45 s and 180 s. Expected: iiwa
    contained grasp joint-space-win -> tie; Panda contained grasp stays a decisive learned win
-   with a growing margin (12/43 learned timeouts at 45 s); iiwa free grasp unmeasured above
-   45 s and may move.
+   with a growing margin (12/43 learned timeouts at 45 s).
 2. **The IPOPT-vs-SNOPT gap widening.** IPOPT's learned-arm failures are mostly wall-clock
    while only 3.6% of SNOPT's are the time limit, so a 4x cap should help IPOPT much more. The
    ordering is predicted; its SIZE is the reported quantity.
