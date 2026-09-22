@@ -15,7 +15,6 @@ from pydrake.all import (
     RollPitchYaw_,
     RigidTransform,
     RigidTransform_,
-    Quaternion_,
 )
 from src.panda_analytic_ik import Analytic_IK_Panda
 from src.flow_loading import LoadFlowSolver
@@ -91,7 +90,6 @@ class PandaIKProgram(IKFlowProgram):
             self.q_lift = self.prog.NewContinuousVariables(self.num_arm_dof, "q_lift")
             self.lumped_vars = np.hstack([self.lumped_vars, self.q_lift])
 
-        ## TODO: Change the initial guess to something smarter
 
         self.target_pose = target_pose
         if q_nominal is None:
@@ -145,14 +143,6 @@ class PandaIKProgram(IKFlowProgram):
                               torch.zeros(self.num_arm_dof, dtype=vars.dtype, device=DEVICE)])
         q, _ = self.FlowInference()(vars)
         return q
-
-    def ik_inference_with_value(self, vars):
-        '''jacrev(..., has_aux=True) target: returns q twice so one reverse pass yields
-        both dq/dvars and q.'''
-        q = self.ik_inference(vars)
-        return q, q
-
-
 
     def TaskVarsToPose7(self, task_vars, t):
         '''Task variables -> the (xyz, wxyz) the flow is conditioned on.

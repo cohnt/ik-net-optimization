@@ -7,7 +7,10 @@
 #
 # Submit (from ~/learned-ik/repo on the login node), one job per node:
 #   MANIFEST=cluster/manifest_stageA.txt PROCS=1 \
-#     LLsub ./cluster/run_items.sh -g volta:2 -s 40 -q xeon-g6-volta -T 12:00:00
+#     LLsub ./cluster/run_items.sh -g volta:2 -s 40 -q xeon-g6-volta -T 48:00:00
+#
+# Keep the job wall ABOVE ITEM_TIMEOUT (below), or Slurm kills a long item and every other
+# worker on the node with it.  `xeon-g6-volta` allows 4-04:00:00 (100 h), so there is room.
 #
 # Submit as many of these as there are items worth running: the account's
 # `xeon-g6-volta` cap is a Slurm GrpTRES *group* limit (node=4), not a per-job
@@ -56,12 +59,45 @@ PinGpu() {   ## $1 = worker index; empty $SLURM_GPUS means "no GPU was allocated
     export CUDA_VISIBLE_DEVICES="$(echo "$SLURM_GPUS" | cut -d, -f$(( $1 % n + 1 )))"
 }
 
+## Seconds of wall clock this Slurm job has left, or "" when that cannot be known (no
+## SLURM_JOB_ID, squeue absent, unparseable output) -- in which case the caller treats the
+## budget as unlimited, so a laptop or login-node run behaves exactly as it did before.
+## squeue's %L is D-HH:MM:SS / HH:MM:SS / MM:SS, and "UNLIMITED" for a job without a limit.
+JobSecondsLeft() {
+    [ -n "${SLURM_JOB_ID:-}" ] || return 0
+    command -v squeue >/dev/null 2>&1 || return 0
+    local L; L="$(squeue -h -j "$SLURM_JOB_ID" -o %L 2>/dev/null | tr -d '[:space:]')"
+    case "$L" in
+        ""|UNLIMITED|NOT_SET|INVALID) return 0 ;;
+    esac
+    local D=0
+    case "$L" in *-*) D="${L%%-*}"; L="${L#*-}" ;; esac
+    local A B C
+    IFS=: read -r A B C <<< "$L"
+    case "$L" in
+        *:*:*) : ;;
+        *:*)   C="$B"; B="$A"; A=0 ;;
+        *)     C="$A"; B=0; A=0 ;;
+    esac
+    ## Strip leading zeros so 08 is not read as octal, then emit seconds.
+    printf '%d' $(( 10#${D:-0} * 86400 + 10#${A:-0} * 3600 + 10#${B:-0} * 60 + 10#${C:-0} )) \
+        2>/dev/null || return 0
+}
+
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="${TEST_REPO:-$ROOT/repo}"
 STATE_ROOT="${TEST_STATE_DIR:-$ROOT/state}"
 RESULTS_ROOT="${LEARNED_IK_RESULTS:-$ROOT/results}"
 PROCS="${PROCS:-1}"
-ITEM_TIMEOUT="${ITEM_TIMEOUT:-14400}"
+## A BACKSTOP FOR A WEDGED SOLVE, NOT A BUDGET.  It was 4 h, exactly equal to what
+## submit_bench.sh requested as the Slurm wall, which meant one long item could consume the
+## whole job and Slurm's kill would land on all PROCS workers at once, leaving PROCS stale
+## claims.  The `xeon-g6-volta` ceiling is 4-04:00:00 (100 h), so there is no reason to sit
+## anywhere near the job wall; submit_bench.sh now asks for 48 h and the invariant to keep is
+## JOB WALL > ITEM_TIMEOUT, with the ClaimBudget guard below refusing an item the remaining
+## job time cannot cover.  A real wedge does exist: generic_program.py records a 102-minute
+## stall inside a single IPOPT iteration during which no Python ran, so a hard cap is needed.
+ITEM_TIMEOUT="${ITEM_TIMEOUT:-28800}"
 export TMPDIR="${TMPDIR:-/tmp}"
 
 if [ -z "${MANIFEST:-}" ]; then
@@ -131,7 +167,7 @@ Worker() {
     local OK=0 FAIL=0 SKIP=0
     ## Comments and blanks dropped first, so every worker numbers items alike.
     mapfile -t LINES < <(grep -vE '^[[:space:]]*(#|$)' "$MANIFEST")
-    local k LINE ID ENVS SCRIPT ARGS REST MARKER CLAIM T0 STATUS
+    local k LINE ID ENVS ITEM_ENVS SCRIPT ARGS REST MARKER CLAIM T0 STATUS LEFT
     for ((k = 0; k < ${#LINES[@]}; k++)); do
         LINE="${LINES[$k]}"
         ID="${LINE%%|*}";      REST="${LINE#*|}"
@@ -143,16 +179,42 @@ Worker() {
 
         ## Cheap check first (one `test -f`, never a glob), then the atomic claim.
         [ -f "$MARKER" ] && { SKIP=$((SKIP + 1)); continue; }
+
+        ## NEVER CLAIM AN ITEM THIS JOB CANNOT FINISH.  Without this a worker will happily
+        ## claim an item 20 minutes before its job ends; Slurm then kills it mid-solve and the
+        ## claim survives with no `.done`, so the work is lost AND the item is invisible to a
+        ## resubmission until `collect_results.sh --reclaim` runs.  Stopping instead leaves the
+        ## item UNCLAIMED for the next job, which is the idempotent behaviour the claim design
+        ## already wants.  Raising ITEM_TIMEOUT alone does not fix this -- it widens the window.
+        ## Budget is the item cap plus a margin for startup (torch/Drake/ikflow imports and, on
+        ## a compiled run, ~35 s of dynamo) and for publishing results afterwards.
+        LEFT="$(JobSecondsLeft)"
+        if [ -n "$LEFT" ] && [ "$LEFT" -lt $(( ITEM_TIMEOUT + 300 )) ]; then
+            echo "--- [$k] stopping: $LEFT s of job wall left, need $(( ITEM_TIMEOUT + 300 ));" \
+                 "$((${#LINES[@]} - k)) item(s) left unclaimed for the next job" >> "$LOG" 2>&1
+            break
+        fi
+
         mkdir "$CLAIM" 2>/dev/null || { SKIP=$((SKIP + 1)); continue; }
         echo "$TAGID $(date -Is)" > "$CLAIM/owner"
 
-        { echo "--- [$k] $ID START $(date -Is)"; echo "    env $ENVS -- $SCRIPT $ARGS"; } \
+        ## There is ONE Drake here and it is this project's pin, exported as PYTHONPATH
+        ## above.  A per-item `DRAKE=nightly` sentinel used to select a second install so a
+        ## stage could pair two Drake versions; that is gone by decision (2026-09-19, Thomas:
+        ## every arm runs on the current pin, and a version-induced regression is reported and
+        ## fixed upstream rather than pinned around).  Do not reintroduce a version switch.
+        ITEM_ENVS="$ENVS"
+
+        { echo "--- [$k] $ID START $(date -Is)"; echo "    env $ITEM_ENVS -- $SCRIPT $ARGS"; } \
             >> "$LOG" 2>&1
         T0=$SECONDS
         ## $ENVS and $ARGS are intentionally word-split; gen_manifest.py asserts
         ## that no token in either contains whitespace.
         # shellcheck disable=SC2086
-        env $ENVS timeout "$ITEM_TIMEOUT" "$PY" -u $SCRIPT $ARGS >> "$LOG" 2>&1
+        ## -k: SIGTERM first so Python can unwind, then SIGKILL 60 s later.  Without it a
+        ## solve wedged inside a C++ solver ignores the TERM and holds the worker until
+        ## Slurm arrives, which is the failure the item cap exists to prevent.
+        env $ITEM_ENVS timeout -k 60 "$ITEM_TIMEOUT" "$PY" -u $SCRIPT $ARGS >> "$LOG" 2>&1
         STATUS=$?
         if [ $STATUS -eq 0 ]; then
             touch "$MARKER"; OK=$((OK + 1))

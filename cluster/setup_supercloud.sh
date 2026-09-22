@@ -32,7 +32,30 @@ exec > >(tee "$LOG") 2>&1
 echo "===== learned-ik setup on $(hostname) at $(date -Is) ====="
 cd "$ROOT"
 
-DRAKE_URL="https://github.com/RobotLocomotion/drake/releases/download/v1.56.0/drake-1.56.0-noble.tar.gz"
+## THE PROJECT'S DRAKE PIN, moved off release 1.56.0 to this nightly on 2026-09-19 by
+## Thomas's decision, because the adopted NLopt configuration needs PR 25002
+## (`local_optimizer_ftol_rel` and four siblings), which no release carries yet -- 1.57.0 was
+## cut before it and still declares six NLopt options against this nightly's sixteen.
+##
+## Justified empirically rather than assumed: stage NLOPTTUNE's `default` column ran on this
+## nightly against an archive produced on 1.56.0 and reproduced it EXACTLY on eleven of twelve
+## rows, one cell on the twelfth, on matching grid_hashes. So the bump does not move a fielded
+## column.
+##
+## TWO THINGS THAT MAKE THIS PIN TEMPORARY.  Nightlies publish no `.sha256`, so this verifies
+## against a hash recorded here -- the exact bytes the local tests ran against, which is
+## strictly stronger than trusting the URL.  And Drake EXPIRES nightly artifacts after 45 days,
+## so this URL dies around 2026-11-02 and a fresh setup after that cannot fetch it.
+##
+## MOVE TO 1.58.0 the moment it lands carrying PR 25002 (expected mid-October), restore the
+## published-checksum path below. (cluster/install_drake_nightly.sh is already gone: the
+## nightly IS the pin, installed here at $ROOT/drake, so a second install has no purpose --
+## every arm of every campaign runs on the current pin.)
+DRAKE_STAMP="0.0.20260918"
+DRAKE_SHA256="a6ce34cdaeb3dd9b9d0e8c9d37eb35407d967541482455fc2a9ad31b98c746a8"
+DRAKE_URL="https://drake-packages.csail.mit.edu/drake/nightly/drake-${DRAKE_STAMP}-noble.tar.gz"
+## PR 25002's merge commit, which this nightly carries as its tip; check share/doc/drake/VERSION.TXT.
+DRAKE_COMMIT="5a73436cd6941519684786d409c67ce25ce16305"
 
 Fail() { echo "SETUP FAILED: $*"; echo "FAIL $*" > "$DONE"; exit 1; }
 
@@ -41,14 +64,21 @@ echo "===== [1/6] Drake tarball ====="
 if [ -d "$ROOT/drake" ] && [ -f "$ROOT/.drake-ok" ]; then
     echo "drake/ already present and verified -- skipping"
 else
-    wget -q -O drake.tar.gz "$DRAKE_URL" || Fail "drake download"
-    wget -q -O drake.tar.gz.sha256 "$DRAKE_URL.sha256" || Fail "drake sha download"
-    EXPECTED=$(cut -d' ' -f1 drake.tar.gz.sha256)
+    if ! wget -q -O drake.tar.gz "$DRAKE_URL"; then
+        Fail "drake download failed. Drake expires nightly artifacts after 45 days, so
+   $DRAKE_STAMP may simply be gone -- it is unrecoverable if so. Move the pin to the first
+   RELEASE carrying PR 25002 (1.58.0 or later) and restore the published-.sha256 path."
+    fi
     ACTUAL=$(sha256sum drake.tar.gz | cut -d' ' -f1)
-    [ "$EXPECTED" = "$ACTUAL" ] || Fail "drake checksum: $EXPECTED vs $ACTUAL"
-    tar xzf drake.tar.gz && rm -f drake.tar.gz drake.tar.gz.sha256
+    ## Our OWN recorded hash: a nightly has no published checksum file, so this pins the exact
+    ## bytes the tests ran against rather than whatever the URL serves today.
+    [ "$DRAKE_SHA256" = "$ACTUAL" ] || Fail "drake checksum: $DRAKE_SHA256 vs $ACTUAL"
+    ## The nightly tarball's top-level directory is `drake/`, same as a release tarball's.
+    tar xzf drake.tar.gz && rm -f drake.tar.gz
+    GOT=$(cut -d' ' -f2 < "$ROOT/drake/share/doc/drake/VERSION.TXT" 2>/dev/null)
+    [ "$GOT" = "$DRAKE_COMMIT" ] || Fail "drake is not PR 25002's commit: got '$GOT'"
     touch "$ROOT/.drake-ok"
-    echo "drake extracted to $ROOT/drake"
+    echo "drake $DRAKE_STAMP ($DRAKE_COMMIT) extracted to $ROOT/drake"
 fi
 
 ## ------------------------------------------------------------- 2. sysdeps --

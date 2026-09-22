@@ -72,9 +72,25 @@ PYEOF
 
 ## --- 2. Drake, the flows, and the robots, all with no network --------------
 "$PY" - <<'PYEOF' || Fail "phase 2: drake / ikflow / jrl"
-from pydrake.solvers import IpoptSolver, SnoptSolver
+from pydrake.solvers import IpoptSolver, SnoptSolver, NloptSolver
 assert IpoptSolver().available(), "IPOPT unavailable"
-print("IPOPT", IpoptSolver().available(), "| SNOPT", SnoptSolver().available())
+print("IPOPT", IpoptSolver().available(), "| SNOPT", SnoptSolver().available(),
+      "| NLopt", NloptSolver().available())
+assert NloptSolver().available(), "NLopt unavailable"
+## The adopted NLopt configuration needs Drake PR 25002. Drake accepts an unknown NLopt
+## option name at SetOption and raises from inside Solve, which lands in run_grid's per-cell
+## except and becomes a FULL COLUMN OF INSTANT FAILURES rather than an error -- so check the
+## accessors exist here, where it is one line, instead of discovering it 480 cells in.
+for accessor in ("LocalOptimizerAlgorithmName", "LocalOptimizerXRelativeToleranceName",
+                 "LocalOptimizerFRelativeToleranceName"):
+    assert hasattr(NloptSolver, accessor), (
+        f"this Drake lacks NloptSolver.{accessor}: the adopted NLopt configuration needs "
+        "PR 25002 (nightly 0.0.20260918 or a release carrying it)")
+print("NLopt local-optimizer surface present (PR 25002)")
+import os
+from pydrake.common import GetDrakePath
+stamp = os.path.join(GetDrakePath(), "..", "doc", "drake", "VERSION.TXT")
+print("drake:", open(stamp).read().strip() if os.path.exists(stamp) else "source build")
 from ikflow.model_loading import get_ik_solver
 get_ik_solver("panda__full__lp191_5.25m")
 print("panda flow loaded from cache")
@@ -99,6 +115,16 @@ PYEOF
 "$PY" -u scripts/iiwa/iiwa_benchmark.py --task mug --targets 1 --guesses 1 \
     --wall-time 20 --arms learned,numerical --config latent \
     --compile --tag smoke_iiwa_mug || Fail "iiwa mug"
+## One cell under each of the other two method classes. Phase 2 proves the option NAMES
+## exist; only a solve proves they are accepted and that the column is not a wall of
+## fail_reason="error". Cheap, and it is the check that was missing when NLopt became a
+## fielded column with an adopted configuration.
+"$PY" -u scripts/panda/panda_benchmark.py --task pose --targets 1 --guesses 1 \
+    --wall-time 20 --arms learned,numerical --config latent --solver snopt \
+    --compile --tag smoke_panda_snopt || Fail "panda snopt"
+"$PY" -u scripts/panda/panda_benchmark.py --task pose --targets 1 --guesses 1 \
+    --wall-time 20 --arms learned,numerical --config latent --solver nlopt \
+    --compile --tag smoke_panda_nlopt || Fail "panda nlopt"
 
 ## --- 4. the harness's own invariant ---------------------------------------
 # Under the paired protocol the learned and joint-space arms must start EXACTLY

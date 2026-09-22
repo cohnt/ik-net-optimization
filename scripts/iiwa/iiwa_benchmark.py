@@ -1,11 +1,12 @@
 """Paired-grid benchmark on the iiwa14, learned against joint space.
 
 The same harness as `scripts/panda/panda_benchmark.py`; only the robot, the scene and the
-program classes differ. There is no analytic arm here yet: `src/iiwa_analytic_ik.py`
-exposes a different signature from the Panda one (`IK(pose, GC, psi)` with the gripper
-offset baked into `gripper_ik` rather than passed as a `pose_offset`), so wiring it up is
-a frame-conventions job in its own right and is deliberately left out rather than done
-carelessly -- a mis-specified offset would silently measure the wrong frame, which is
+program classes differ. There is no analytic arm here: no `Iiwa14IKProgramAnalytic`
+exists, and writing one is future work or possibly not done at all (Thomas, 2026-09-19).
+It was never a small job -- the iiwa closed-form map took `IK(pose, GC, psi)` with the
+gripper offset baked in rather than passed as a `pose_offset`, so wiring it up is a
+frame-conventions job in its own right, and a mis-specified offset would silently
+measure the wrong frame, which is
 exactly the failure this overhaul just found in the Panda grasp scene.
 
 Usage:
@@ -126,13 +127,17 @@ def parse_args():
                         "there does not penetrate the scene). `free` is the old sampler, "
                         "which accepted any collision-free draw. This is what makes the "
                         "obstacles part of the problem rather than scenery. `auto` (the "
-                        "default) resolves to `shelf` for the pose task and `free` for the "
-                        "grasp task -- Thomas's 2026-09-15 call: pose containment is adopted "
-                        "(it costs the baseline 53-64 cells against the learned arm's 30-46 "
-                        "on both robots), grasp containment is deferred because its sign is "
-                        "opposite on the two robots and too many other knobs are in flight. "
-                        "Grasp containment stays available and is worth re-trying alongside "
-                        "other tuning, notably a solver change.")
+                        "default) resolves to `shelf` for BOTH tasks -- Thomas's 2026-09-19 "
+                        "call, which supersedes the 2026-09-15 one that left grasp free. "
+                        "Grasp containment is what creates headroom: on free targets the "
+                        "joint-space arm sits at 94-95%% and only ~25 cells of 480 are "
+                        "winnable at all, while contained it drops to 300-323 and needs "
+                        "965-970 median iterations against 125-176. It is adopted TOGETHER "
+                        "with the 180 s cap, because at 45 s the iiwa's contained-grasp rows "
+                        "are cap-bound (64-74 learned timeouts) and score as joint-space "
+                        "wins, whereas at 180 s they are ties with zero timeouts and the "
+                        "360 s column reproduces 180 s exactly. Use `free` to reproduce any "
+                        "grasp column measured before this.")
     p.add_argument("--placement-point", choices=("wrist", "fingertips"), default="fingertips",
                    help="which point on the GRIPPER must lie inside a compartment. `wrist` "
                         "is the gripper base link, `fingertips` is between_fingers; they are "
@@ -253,7 +258,8 @@ def main():
     # acceptance rates this buys, and src/target_screening.py for the rest.
     placement = args.target_placement
     if placement == "auto":
-        placement = "shelf" if args.task == "pose" else "free"
+        ## Both tasks, since 2026-09-19. See --target-placement's help.
+        placement = "shelf"
     regions = (ShelfCompartmentRegions(args.shelf_inset) if placement == "shelf" else None)
     target_pose_of, placement_point = ContainmentPose(
         sampler.plant, sampler.plant_context, spec, args.placement_point)

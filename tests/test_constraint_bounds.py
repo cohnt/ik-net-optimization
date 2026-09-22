@@ -207,8 +207,8 @@ def main():
 
     # ------------------------------------------------------------------ iiwa
     # The iiwa shares the base CreateIKConstraint, so the pose rows must move with it.
-    # It has no analytic arm (src/iiwa_analytic_ik.py exposes a different signature and
-    # is deliberately outside the harness), so only the learned and numerical arms exist.
+    # It has no analytic arm -- no Iiwa14IKProgramAnalytic exists -- so only the learned
+    # and numerical arms do.
     print("\n--- iiwa: the same base pose rows ---")
     try:
         from src.iiwa_program import Iiwa14IKProgram, Iiwa14IKProgramNumerical
