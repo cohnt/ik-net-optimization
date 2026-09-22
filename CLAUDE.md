@@ -1180,7 +1180,13 @@ Harness self-check, which passes on all 36 rows: joint space is identical betwee
 solver x row pair, `median_start_q_error` is 0.0 exactly under `paired`, and every row has 480 cells
 on both arms.
 
-### The new status quo (2026-09-19): contained grasp at the fingertips, 180 s cap
+### The status quo, ESTABLISHED 2026-09-21
+
+Decided 2026-09-19, measured 2026-09-19/20, **accepted by Thomas on 2026-09-21**. This is the
+project's baseline now: two experiments per robot (grasp and pose, both shelf-contained at the
+fingertips), 180 s, both start protocols, three solvers at their adopted configurations, adopted
+chart rungs. **Any future result is stated against it**, and a change to any of those choices is a
+new decision rather than a variation.
 
 Thomas's call, replacing both the free-grasp default and the 45 s campaign cap:
 
@@ -1265,55 +1271,87 @@ timeouts at 45 s reproduces its 45 s cell count **exactly** (sole exception: Pan
 these are formulation results, not cap results, and the deferred 180 s chart-ladder re-measurement
 stays unwarranted: heavy timeouts were its trigger and there are none.
 
-#### The status quo under IPOPT (interior point)
+#### The four tables
 
-Medians over succeeded cells; cost on cells **both** arms solved, learned-only regularizers
-excluded.
+Laid out as in `writing/tro-paper/tables/*_alternate_organization.tex` so the two papers read side by
+side: rows are experiments, each solver is a block with the learned and joint-space arms **adjacent**,
+and there is **one metric per table**. `IP` = interior point (IPOPT), `AL` = augmented Lagrangian
+(NLOPT), `SQP` = sequential quadratic programming (SNOPT). **Bold** is the better of each pair (both
+bold when tied); (star) marks the best in the row. **Every row prints, zeros included** -- an omitted
+row reads as missing data rather than as a measurement of zero.
+`scripts/report_statusquo.py` regenerates all four, so do not hand-maintain them.
 
-| row | L | JS | p | L iters | JS iters | L s | JS s | n both | L cost | JS cost |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp contained native | 447 | 442 | 0.60 tie | 381 | 212 | 13.97 | 0.63 | 416 | 4.990 | **2.839** |
-| iiwa grasp contained paired | 453 | 442 | 0.19 tie | 348 | 212 | 11.40 | 0.63 | 418 | 5.007 | **2.827** |
-| iiwa pose tip native | **470** | 299 | 1.1e-46 | 44 | 28 | 1.14 | 0.06 | 295 | **6.242** | 6.757 |
-| iiwa pose tip paired | **422** | 299 | 7.3e-20 | 102 | 28 | 2.72 | 0.06 | 264 | **6.012** | 6.707 |
-| panda grasp contained native | **476** | 323 | 1.8e-42 | 169 | 744 | 6.66 | 3.25 | 320 | 7.505 | **5.324** |
-| panda grasp contained paired | **471** | 323 | 1.8e-37 | 261 | 744 | 11.16 | 3.26 | 316 | 6.851 | **5.392** |
-| panda pose tip native | **461** | 217 | 4.6e-68 | 36 | 33 | 1.12 | 0.09 | 213 | **11.136** | 11.861 |
-| panda pose tip paired | **407** | 217 | 2.9e-37 | 100 | 33 | 4.11 | 0.09 | 188 | **10.740** | 11.770 |
+**Table 1 -- success rate of 480 cells.** Higher is better.
 
-**Six decisive learned wins of eight, two ties, no losses.** The learned arm wins every pose row on
-both robots and both protocols, wins the Panda grasp task by 148-153 cells, and ties the iiwa grasp
-task. Solved cells return `max_violation` 5e-09 to 3.4e-08 throughout.
+| experiment | IP L | IP JS | AL L | AL JS | SQP L | SQP JS |
+| --- | --- | --- | --- | --- | --- | --- |
+| iiwa grasp native | **0.931** (star) | 0.921 | **0.000** | **0.000** | 0.419 | **0.633** |
+| iiwa grasp paired | **0.944** (star) | 0.921 | **0.004** | 0.000 | 0.500 | **0.633** |
+| iiwa pose native | **0.979** (star) | 0.623 | **0.621** | 0.065 | **0.925** | 0.562 |
+| iiwa pose paired | **0.879** (star) | 0.623 | **0.246** | 0.065 | 0.515 | **0.562** |
+| panda grasp native | **0.992** (star) | 0.673 | **0.681** | 0.000 | **0.919** | 0.635 |
+| panda grasp paired | **0.981** (star) | 0.673 | **0.000** | **0.000** | 0.627 | **0.635** |
+| panda pose native | **0.960** (star) | 0.452 | **0.602** | 0.025 | **0.917** | 0.371 |
+| panda pose paired | **0.848** (star) | 0.452 | **0.237** | 0.025 | **0.573** | 0.371 |
 
-**The cost split by task survives at the new status quo, on both robots**: the learned arm's
-solutions are cheaper on the pose task (all four rows) and ~1.3-1.8x more expensive on the grasp
-task. That is the draft's central claim holding on one of its two axes and honestly losing on the
-other.
+**The learned arm wins 18 of the 24 solver x experiment cells, ties 2 and loses 4**, and interior
+point is the best entry in every row. The four losses are all iiwa grasp or a `paired` SQP row.
 
-**The per-iteration price is the standing caveat and it is unchanged.** iiwa contained grasp is
-13.97 s against 0.63 s for a tie — a ~22x wall-clock premium. The Panda contained grasp row is the
-exception that shows the premium is not a constant: joint space needs **744** median iterations
-there against the learned arm's 169, so the wall-clock ratio is only ~2-3.4x. Hardening the task
-costs the joint-space arm its cheapness.
+**Table 2 -- optimal cost**, on cells **both** arms solved, learned-only regularizers excluded. Lower
+is better; `N/A` means fewer than 10 shared solved cells, so no comparison exists.
 
-#### The status quo under SNOPT (SQP), `Major step limit = 0.5`
+| experiment | IP L | IP JS | AL L | AL JS | SQP L | SQP JS |
+| --- | --- | --- | --- | --- | --- | --- |
+| iiwa grasp native | 4.985 | **2.839** (star) | N/A | N/A | 5.409 | **5.393** |
+| iiwa grasp paired | 4.998 | **2.826** (star) | N/A | N/A | 5.607 | **4.515** |
+| iiwa pose native | **6.242** | 6.757 | 6.511 | **4.988** (star) | **5.975** | 6.858 |
+| iiwa pose paired | **6.011** | 6.704 | 7.062 | **5.807** (star) | 6.863 | **6.757** |
+| panda grasp native | 7.504 | **5.305** (star) | N/A | N/A | **7.040** | 7.458 |
+| panda grasp paired | 6.846 | **5.358** (star) | N/A | N/A | **7.370** | 7.567 |
+| panda pose native | **11.136** | 11.861 | 9.346 | **9.088** (star) | **10.366** | 10.774 |
+| panda pose paired | **10.654** (star) | 11.762 | N/A | N/A | 10.807 | **10.749** |
 
-| row | L | JS | p | L iters | JS iters | L s | JS s | n both | L cost | JS cost |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp contained native | 201 | **304** | 1.7e-11 | 798 | 170 | 14.30 | 0.44 | 134 | 5.421 | 5.398 |
-| iiwa grasp contained paired | 240 | **304** | 3.7e-05 | 651 | 170 | 10.95 | 0.44 | 154 | 5.609 | **4.521** |
-| iiwa pose tip native | **444** | 270 | 2.9e-41 | 73 | 22 | 1.00 | 0.04 | 258 | **5.978** | 6.867 |
-| iiwa pose tip paired | 247 | 270 | 0.14 tie | 316 | 22 | 6.35 | 0.04 | 148 | 6.877 | 6.757 |
-| panda grasp contained native | **441** | 305 | 1.5e-26 | 165 | 164 | 3.01 | 0.53 | 283 | **7.040** | 7.458 |
-| panda grasp contained paired | 301 | 305 | 0.84 tie | 443 | 164 | 10.04 | 0.52 | 194 | **7.387** | 7.567 |
-| panda pose tip native | **440** | 178 | 1.4e-63 | 47 | 21 | 0.64 | 0.04 | 163 | **10.366** | 10.774 |
-| panda pose tip paired | **275** | 178 | 4.2e-11 | 238 | 21 | 5.06 | 0.04 | 117 | 10.807 | 10.749 |
+**The cost split is by TASK, not by solver**: learned is cheaper on pose and ~1.4-1.8x more expensive
+on grasp, under every solver that produces a comparison.
 
-**Four learned wins, two ties, two joint-space losses** — and the two losses are the iiwa contained
-grasp rows that IPOPT ties. **So one verdict is solver-dependent, which is exactly what the solver
-axis exists to expose**: report it as a property of SQP on this problem, not as a weakness of the
-formulation, since the joint-space arm degrades under SNOPT too (442 -> 304 on that row) and never
-evaluates the network.
+**Table 3 -- mean runtime in seconds over all cells.** Lower is better. **This machine only** --
+never compared across machines.
+
+| experiment | IP L | IP JS | AL L | AL JS | SQP L | SQP JS |
+| --- | --- | --- | --- | --- | --- | --- |
+| iiwa grasp native | 27.29 | **1.90** (star) | 180.06 | **180.06** | 17.72 | **4.29** |
+| iiwa grasp paired | 25.25 | **1.90** (star) | **179.33** | 180.06 | 20.06 | **4.30** |
+| iiwa pose native | 2.19 | **0.09** (star) | **80.01** | 174.26 | 2.61 | **0.25** |
+| iiwa pose paired | 4.51 | **0.09** (star) | **140.98** | 174.27 | 11.84 | **0.25** |
+| panda grasp native | 11.79 | **5.91** | **57.81** | 180.06 | 5.55 | **3.80** (star) |
+| panda grasp paired | 20.93 | **5.91** | 180.07 | **180.06** | 17.59 | **3.80** (star) |
+| panda pose native | 2.20 | **0.29** | **81.87** | 177.15 | 3.18 | **0.26** (star) |
+| panda pose paired | 7.04 | **0.29** | **143.48** | 177.16 | 10.82 | **0.26** (star) |
+
+Joint space wins every IP and SQP cell, which is the per-iteration price stated as a number.
+**Under AL the ordering inverts on five rows** -- the learned arm is genuinely faster there, because
+it converges while joint space burns the whole 180 s.
+
+**Table 4 -- median major iterations over solved cells.** Lower is better. **The AL column is `N/A`
+BY CONSTRUCTION**: `NloptSolverDetails` carries a single `status`, and NLopt has no major iteration to
+count. Its work proxy is `eval_counts["map_jacobian"]` (3,881-12,923 per learned cell against
+9,550-13,417 for joint space), which is **not comparable across arms** -- identity map on the
+joint-space side -- so it does not belong in this table.
+
+| experiment | IP L | IP JS | AL L | AL JS | SQP L | SQP JS |
+| --- | --- | --- | --- | --- | --- | --- |
+| iiwa grasp native | 381 | **212** | N/A | N/A | 798 | **168** (star) |
+| iiwa grasp paired | 348 | **212** | N/A | N/A | 644 | **168** (star) |
+| iiwa pose native | 44 | **28** | N/A | N/A | 73 | **22** (star) |
+| iiwa pose paired | 102 | **28** | N/A | N/A | 316 | **22** (star) |
+| panda grasp native | **169** | 744 | N/A | N/A | 165 | **164** (star) |
+| panda grasp paired | **261** | 744 | N/A | N/A | 443 | **164** (star) |
+| panda pose native | 36 | **33** | N/A | N/A | 47 | **21** (star) |
+| panda pose paired | 100 | **33** | N/A | N/A | 238 | **21** (star) |
+
+**The Panda grasp rows are where hardening shows**: joint space needs 744 median iterations against
+the learned arm's 169, so the learned formulation wins on *iterations* there under interior point
+despite costing ~10x per iteration. Containment costs the joint-space arm its cheapness.
 
 #### Headroom and the rescue rate: what the success counts hide
 
@@ -1854,7 +1892,7 @@ Live items:
   2026-09-19). `--target-placement auto` resolves to `shelf` for both, and `free` survives only as
   the reproducer for archived grasp columns. It is a retired SETTING, not an experiment, and must
   never be fielded as a row again (`stage_STATUSQUO`'s selftest refuses a non-contained placement).
-- **Stage `STATUSQUO` is COMPLETE and is the campaign of record** (ran 2026-09-19/20, jobs
+- **The status quo is ESTABLISHED (2026-09-21) and stage `STATUSQUO` is the campaign of record** (ran 2026-09-19/20, jobs
   5681825-5681828, 480 items, ~19 h wall on 4 nodes x 8 workers). 36 logical runs = both adopted
   rungs x 3 rows x both protocols x all three solvers, 480 cells each at 180 s, seed 1, arms
   `learned,numerical`, each solver at its adopted configuration and **no settings axis** (the
