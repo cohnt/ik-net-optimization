@@ -33,7 +33,15 @@ def pair(arm, paths):
     if len(runs) < 2:
         print(f"need at least two runs carrying an arm named {arm!r}")
         return
-    ref_name, ref = runs[0]
+    # The reference is the first path in argument order, which makes it depend on
+    # lexicographic luck whenever a glob expands a settings table: `accoff` and `crash0` both
+    # sort before `default`, so a sweep glob would silently baseline every setting against a
+    # non-default column. Prefer a run whose tag ends in `_default` when one is present, and
+    # say which rule picked it.
+    _pick = [i for i, (n, _) in enumerate(runs) if n.endswith("_default")]
+    ref_name, ref = runs[_pick[0]] if _pick else runs[0]
+    if _pick:
+        runs = [runs[_pick[0]]] + [r for i, r in enumerate(runs) if i != _pick[0]]
     ref_cells = {(r["target"], r["guess"]): bool(r.get("feasible"))
                  for r in ref["records"][arm]}
     print(f"paired against {ref_name} "
@@ -51,13 +59,39 @@ def pair(arm, paths):
         elif mine != theirs:
             note = "DIFFERENT GRID -- not comparable"
         else:
-            # A matching grid_hash is necessary but not sufficient. The hardened-scene axis
-            # changes which targets were admissible and which obstacles exist, and two runs
-            # differing only there would otherwise print a clean McNemar row.
-            differs = [k for k in ("scene", "target_placement", "shelf_inset")
+            # A matching grid_hash is necessary but not sufficient, in two separate ways.
+            #
+            # The hardened-scene axis changes which targets were admissible and which
+            # obstacles exist, and two runs differing only there would otherwise print a
+            # clean McNemar row.
+            #
+            # And the grid_hash does NOT depend on the start protocol, the solver or the
+            # checkpoint -- it hashes the targets and guesses, nothing else. Measured:
+            # sc_SOLVER2_iiwa_n4_ipopt_mugshelf_480_45_native, its _paired twin, the snopt
+            # version of both, and sc_CAP_iiwa_n4_mug_180_paired all carry the SAME
+            # fa692df81e7d-mug. Since a stage writes those columns into one
+            # results/<robot>/benchmark/ directory with tags differing only in a middle
+            # token, a glob like '..._mugshelf_480_45_*' sorts native before paired and
+            # would pair a native column against a paired one with no warning at all. That
+            # is the same class of collision that --shard, --checkpoint and the iiwa tag's
+            # missing solver token were each fixed for; here it corrupts an ANALYSIS rather
+            # than a filename, which is harder to notice afterwards.
+            #
+            # And `task` is in the list because the PANDA's grasp and pose grids collide
+            # outright. The iiwa's script appends the task to its hash (see its own comment
+            # there, added because its mug and pose grids hashed identically); the Panda's
+            # never did, and measured on the archive
+            # sc_SOLVER2_panda_n6_*_mugshelf_* and sc_SOLVER2_panda_n6_*_posetip_* both
+            # carry grid_hash d7a4ef1609b9. So a Panda glob spanning tasks would pair a
+            # GRASP column against a POSE one with no warning. Deliberately fixed here
+            # rather than by suffixing the Panda hash: changing that hash would make every
+            # new Panda run incomparable to every archived one, which is a far larger loss
+            # than the trap, and `task` has always been in the metadata.
+            differs = [k for k in ("scene", "target_placement", "shelf_inset",
+                                   "start", "solver", "checkpoint", "task")
                        if data["metadata"].get(k) != ref["metadata"].get(k)]
             if differs:
-                note = ("DIFFERENT SCENE/PLACEMENT (%s) -- not comparable"
+                note = ("DIFFERENT SCENE/PLACEMENT/PROTOCOL (%s) -- not comparable"
                         % ", ".join(differs))
         shared = sorted(set(cells) & set(ref_cells))
         m = mcnemar_exact([cells[c] for c in shared], [ref_cells[c] for c in shared])

@@ -34,7 +34,7 @@ import re
 import shutil
 import tarfile
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -303,6 +303,16 @@ def provenance():
         import pydrake
         out["drake_version"] = getattr(pydrake, "__version__", None) or "unknown"
         out["drake_path"] = GetDrakePath()
+        ## `pydrake.__version__` is "unknown" on a source build AND reports only a stamp on a
+        ## tarball, neither of which identifies WHICH nightly. VERSION.TXT carries the stamp
+        ## and the git commit, and distinguishing two nightlies is not academic: the sibling
+        ## `ik-tune` project found Drake PR 25002 silently changing an inner NLopt tolerance
+        ## between the 09-16 and 09-18 nightlies, which quarantined a whole verdict's numbers
+        ## because nothing in the record said which build produced them.
+        stamp = os.path.join(GetDrakePath(), "..", "doc", "drake", "VERSION.TXT")
+        if os.path.exists(stamp):
+            with open(stamp) as fh:
+                out["drake_version_txt"] = fh.read().strip()
     except Exception:
         pass
     return out
@@ -335,16 +345,6 @@ def binding_worst(prog, x):
         name = evaluator.get_description() or type(evaluator).__name__
         worst[name] = max(w, worst.get(name, -np.inf))
     return worst
-
-
-def binding_violations(prog, x, tol):
-    """Bindings of `prog` violated by more than `tol` at `x`, keyed by description.
-
-    Mirrors ../codebase's `CheckConstraints`: the point is not only whether the returned
-    point is feasible but *which* constraint it misses, since "timed out" and "converged
-    to something infeasible" call for different fixes.
-    """
-    return {k: v for k, v in binding_worst(prog, x).items() if v > tol}
 
 
 @dataclass
@@ -700,6 +700,14 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     record["detail"] = detail
                     if verdict.feasible:
                         record["cost"] = reported_cost(program, result, arm.weight)
+                    ## The solver returned, but with nothing usable: `verify` scores an absent
+                    ## or non-finite solution as fail_reason="nan" and q is None. That is not
+                    ## an error path -- Drake reports kSolverSpecificError and returns normally
+                    ## -- so the `except` below never sees it, and until 2026-09-18 the iterate
+                    ## the solve had reached was silently dropped. Score it the same way.
+                    elif record["fail_reason"] == "nan" and record.get("q") is None:
+                        _recover_from_last_iterate(program, record, task_gate, tol,
+                                                   relaxed_tol)
                 except Exception as exc:            # never let one cell kill a sweep
                     record["error"] = f"{type(exc).__name__}: {exc}"
                     record["feasible"] = False
@@ -708,22 +716,20 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     # The solve is lost, but the point it had need not be: score the last
                     # iterate the solver reached exactly as a returned solution would be.
                     # A cell that died on a feasible point is then still visible as one.
-                    last = getattr(program, "last_iterate", None) if program is not None else None
-                    if last is not None:
-                        try:
-                            verdict = verify(program, None, task_gate, tol,
-                                             x_lumped=last, relaxed_tol=relaxed_tol)
-                            record["recovered_feasible"] = verdict.feasible
-                            record["recovered_fail_reason"] = verdict.fail_reason
-                            record["recovered_feasible_relaxed"] = verdict.feasible_relaxed
-                            detail = dict(verdict.detail)
-                            record["recovered_q"] = detail.pop("q", None)
-                            record["recovered_detail"] = detail
-                        except Exception as exc2:
-                            record["recovered_error"] = f"{type(exc2).__name__}: {exc2}"
+                    _recover_from_last_iterate(program, record, task_gate, tol, relaxed_tol)
                 finally:
                     if cell_timeout:
                         faulthandler.cancel_dump_traceback_later()
+                ## The options Drake was ACTUALLY handed, captured from the first program of
+                ## each arm that got as far as configuring a solver. A run's metadata records
+                ## `--set` overrides, which does not cover an ADOPTED DEFAULT -- those reach
+                ## the solver while leaving no trace in the record, so a later reader cannot
+                ## tell a run at today's defaults from one at Drake's. Keyed per arm because
+                ## the numerical arm carries its own ProgramOptions.
+                emitted = getattr(program, "emitted_solver_options", None)
+                if emitted and metadata is not None:
+                    metadata.setdefault("solver_options_emitted", {}).setdefault(
+                        arm.name, emitted)
                 records[arm.name].append(record)
                 _abort_on_dead_arm(arm.name, records[arm.name])
                 if progress is not None:
@@ -741,6 +747,47 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
 ## How many identical, instantaneous errors at the head of an arm's records are taken as
 ## proof that the arm is misconfigured rather than merely failing.
 _DEAD_ARM_STREAK = 3
+
+
+def _recover_from_last_iterate(program, record, task_gate, tol, relaxed_tol):
+    """Score `program.last_iterate` into `record` under the `recovered_*` keys.
+
+    Two callers, and they are different failures with the same remedy. One is a cell that
+    raised: the solve is lost but the point it had reached need not be. The other is a cell
+    where the SOLVER RETURNED NORMALLY AND GAVE NOTHING -- Drake hands back
+    `kSolverSpecificError` with an empty solution, `verify` scores that as `fail_reason="nan"`,
+    and `q` is None. NLopt does this whenever its augmented Lagrangian's inner solve ends in a
+    state AUGLAG treats as a failure, which on this problem means LD_SLSQP as the inner
+    optimizer or any truncated inner solve (`local_optimizer_max_eval`). Measured 2026-09-18:
+    such a cell had already run 1,390-3,184 network Jacobians, so there is a real iterate
+    there, and without this it was discarded -- leaving the cell uninformative about whether
+    the setting moved the solve TOWARDS feasibility, which is the only signal a column sitting
+    at the floor has.
+
+    Thomas's standing rule is that an abnormal exit keeps its iterate ("I don't like the idea
+    of messing with QAndPose to force kill it, since then we don't get an intermediate
+    solution?"), and a solve that returns nothing is an abnormal exit by any reading.
+
+    The `recovered_*` keys are deliberately separate from the verdict keys: the cell still
+    FAILED, and success is only ever scored from the point the solver actually returned.
+    """
+    last = getattr(program, "last_iterate", None) if program is not None else None
+    if last is None:
+        return
+    try:
+        verdict = verify(program, None, task_gate, tol, x_lumped=last,
+                         relaxed_tol=relaxed_tol)
+        record["recovered_feasible"] = verdict.feasible
+        record["recovered_fail_reason"] = verdict.fail_reason
+        record["recovered_feasible_relaxed"] = verdict.feasible_relaxed
+        detail = dict(verdict.detail)
+        record["recovered_q"] = detail.pop("q", None)
+        ## Promoted out of the nested detail for the same reason max_violation is on the
+        ## returned point: it is the quantity a floor-level column is read by.
+        record["recovered_max_violation"] = detail.get("max_violation")
+        record["recovered_detail"] = detail
+    except Exception as exc:
+        record["recovered_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def _abort_on_dead_arm(name, recs):

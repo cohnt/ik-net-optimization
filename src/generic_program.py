@@ -5,9 +5,9 @@ import pydrake.math
 import torch
 from ikflow.config import DEVICE
 import numpy as np
+from collections import namedtuple
 from dataclasses import dataclass, field
-from functools import partial
-import numpy as np
+from functools import lru_cache, partial
 from pydrake.all import (
     AutoDiffXd,
     IpoptSolver,
@@ -27,6 +27,193 @@ from pydrake.all import (
 )
 
 
+# ------------------------- the NLopt option surface, per machine -------------------------
+#
+# THREE NLopt option surfaces are live in this project at once. The cluster runs the official
+# Drake 1.56.0 tarball, whose NloptSolver declares exactly six option names (`algorithm`,
+# `constraint_tol`, `xtol_rel`, `xtol_abs`, `max_eval`, `max_time`). This workstation's source
+# build declares eleven -- those six plus five `local_optimizer_*`. A 2026-09-18 nightly
+# declares sixteen, adding `ftol_rel`, `ftol_abs`, `stopval` and two `local_optimizer_ftol_*`.
+# So "it ran locally" proves nothing about the other two, in either direction.
+#
+# And the failure is NOT a crash. Drake accepts an unknown NLopt name at SetOption time and
+# raises only from inside Solve --
+#
+#     RuntimeError: NLopt: the following solver option names were not recognized: ftol_rel
+#
+# -- which lands in benchmark.run_grid's per-cell `except Exception` and is recorded as
+# fail_reason="error". One post-1.56 key emitted against the cluster's Drake therefore does
+# not stop a run; it returns a FULL COLUMN of instant failures, which is exactly the shape
+# `--set correction_cost_weight=10.0` on a numerical arm already cost this repo (0 of 480 at
+# ~10 ms a cell). `_abort_on_dead_arm` catches it on the third cell, but that is a backstop,
+# not a gate: the configuration has to be refused before the first cell.
+#
+# Detection is by ACCESSOR, never by a hardcoded string. Drake is the authority both on
+# whether an option exists and on how it is spelled, and the static accessor answers both at
+# once. The list is explicit rather than scraped from dir(NloptSolver) because `SolverName` is
+# an INSTANCE method on SolverInterface and calling it unbound raises TypeError.
+NLOPT_ACCESSORS = (
+    # Drake 1.56.0's six -- the cluster's whole surface, emitted unconditionally.
+    "AlgorithmName", "ConstraintToleranceName", "XRelativeToleranceName",
+    "XAbsoluteToleranceName", "MaxEvalName", "MaxTimeName",
+    # Everything after 1.56.0, emitted only when the matching field is set.
+    "FRelativeToleranceName", "FAbsoluteToleranceName", "StopValName",
+    "LocalOptimizerAlgorithmName", "LocalOptimizerXRelativeToleranceName",
+    "LocalOptimizerXAbsoluteToleranceName", "LocalOptimizerFRelativeToleranceName",
+    "LocalOptimizerFAbsoluteToleranceName", "LocalOptimizerMaxEvalName",
+    "LocalOptimizerMaxTimeName",
+)
+
+
+@lru_cache(maxsize=1)
+def NloptOptionSurface():
+    """{accessor name: option string} for the NLopt options THIS Drake accepts.
+
+    A property of the installed Drake rather than of a call site, so it is computed once. It
+    reads class attributes only -- no solver is constructed and no program is touched.
+    """
+    return {name: getattr(NloptSolver, name)()
+            for name in NLOPT_ACCESSORS if hasattr(NloptSolver, name)}
+
+
+# Each post-1.56.0 option: the accessor naming it, the type Drake demands (it routes by type,
+# so an int handed to a double-valued option reaches the wrong setter and raises -- the same
+# trap the SNOPT casts exist for), and whether it is an INNER-solver option, meaning one Drake
+# reads unconditionally but applies only inside
+# `if (!parsed_options.local_optimizer_algorithm.empty())` (nlopt_solver.cc:546-564).
+# `local_optimizer_algorithm` is the gate itself, so it is not marked inner.
+NloptOption = namedtuple("NloptOption", "accessor cast inner")
+NLOPT_POST_1_56_OPTIONS = {
+    "nlopt_ftol_rel": NloptOption("FRelativeToleranceName", float, False),
+    "nlopt_ftol_abs": NloptOption("FAbsoluteToleranceName", float, False),
+    "nlopt_stopval": NloptOption("StopValName", float, False),
+    "nlopt_local_optimizer_algorithm": NloptOption(
+        "LocalOptimizerAlgorithmName", str, False),
+    "nlopt_local_optimizer_xtol_rel": NloptOption(
+        "LocalOptimizerXRelativeToleranceName", float, True),
+    "nlopt_local_optimizer_xtol_abs": NloptOption(
+        "LocalOptimizerXAbsoluteToleranceName", float, True),
+    "nlopt_local_optimizer_ftol_rel": NloptOption(
+        "LocalOptimizerFRelativeToleranceName", float, True),
+    "nlopt_local_optimizer_ftol_abs": NloptOption(
+        "LocalOptimizerFAbsoluteToleranceName", float, True),
+    "nlopt_local_optimizer_max_eval": NloptOption("LocalOptimizerMaxEvalName", int, True),
+    "nlopt_local_optimizer_max_time": NloptOption("LocalOptimizerMaxTimeName", float, True),
+}
+# Drake deliberately exposes no INNER stopval: AUGLAG and MLSL reset the inner stopval from
+# the outer one just before running, so any value set there would be accepted and silently
+# discarded (nlopt_solver.cc:557-563). Ten is the complete set; do not invent an eleventh.
+
+
+## Algorithms Drake LISTS as valid and then cannot run. Drake's bundled NLopt is built
+## WITHOUT the Luksan sources (they are LGPL), which compiles out L-BFGS, the variable-metric
+## family and every truncated-Newton variant. `ParseNloptAlgorithm` still accepts the names --
+## they appear in the "valid choices are:" message it prints for a typo -- and the failure
+## arrives from inside the solve as
+##
+##     ERROR - attempting to use NLOPT_LD_LBFGS, but Luksan code disabled
+##
+## on stderr, with Drake returning SolutionResult.kInvalidInput and NloptSolverDetails.status
+## 0. Measured 2026-09-18 on the 0.0.20260918 nightly with a three-variable bound- and
+## nonlinear-constrained program: exactly these eight are refused, while LD_MMA, LD_CCSAQ,
+## LD_SLSQP, LN_COBYLA and LN_BOBYQA all solve it. So the usable GRADIENT-BASED inner
+## optimizers for an augmented Lagrangian here are LD_MMA, LD_CCSAQ and LD_SLSQP, and nothing
+## else.
+##
+## Refused here rather than discovered on the cluster, because the symptom is a quiet one: a
+## 0.5 s cell with q=None, max_violation=None and fail_reason unset, which reads like a harness
+## bug rather than an unavailable algorithm.
+NLOPT_LUKSAN_DISABLED = frozenset({
+    "LD_LBFGS", "NLOPT_LD_LBFGS_NOCEDAL",
+    "LD_VAR1", "LD_VAR2",
+    "LD_TNEWTON", "LD_TNEWTON_RESTART", "LD_TNEWTON_PRECOND",
+    "LD_TNEWTON_PRECOND_RESTART",
+})
+
+
+def CheckNloptAlgorithms(options):
+    """Refuse an algorithm Drake's NLopt accepts by name and then cannot run.
+
+    Checked for the OUTER algorithm as well as the inner one: `--set nlopt_algorithm=LD_LBFGS`
+    fails in exactly the same way, and this column's whole value is that it is a third method
+    class, so a silent kInvalidInput on every cell is the worst failure available here.
+    """
+    for field_name in ("nlopt_algorithm", "nlopt_local_optimizer_algorithm"):
+        value = getattr(options, field_name, None)
+        if value in NLOPT_LUKSAN_DISABLED:
+            raise ValueError(
+                f"NLopt: {field_name}={value!r} is compiled OUT of Drake's NLopt. Drake's "
+                f"ParseNloptAlgorithm lists it as a valid choice, but the solve then prints "
+                f"'attempting to use NLOPT_{value}, but Luksan code disabled' and returns "
+                f"kInvalidInput with status 0 -- a 0.5 s cell with no q and no violation, on "
+                f"every cell of the run. The Luksan sources are LGPL and Drake does not "
+                f"bundle them, so all of {sorted(NLOPT_LUKSAN_DISABLED)} are unavailable. The "
+                f"usable gradient-based choices are LD_MMA, LD_CCSAQ and LD_SLSQP.")
+
+
+def CheckNloptOptions(options):
+    """Validate the post-1.56.0 NLopt fields, returning the ones to emit.
+
+    Two refusals, and their order is deliberate:
+
+      1. An INNER option set while `nlopt_local_optimizer_algorithm` is unset. Drake reads it
+         and then throws it away, so the cell measures the DEFAULT inner solver while the
+         record claims a tuned one -- a swept column that reports a real-looking null. This
+         is a property of the options, true on every Drake, so it is checked first. That also
+         makes the refusal reproducible on the cluster's 1.56.0, where the availability check
+         below would otherwise fire first and give a different (also true, less useful)
+         reason.
+      2. An option this Drake does not have, reported with the surface actually found, so the
+         message says WHICH MACHINE is wrong rather than merely that something is.
+
+    An empty string counts as unset for the inner algorithm, because that is precisely what
+    Drake means by it (`local_optimizer_algorithm.empty()`).
+    """
+    ## Unconditional: the OUTER algorithm is a pre-1.56 option and can be wrong on its own.
+    CheckNloptAlgorithms(options)
+    requested = {name: getattr(options, name) for name in NLOPT_POST_1_56_OPTIONS
+                 if getattr(options, name) is not None and getattr(options, name) != ""}
+    ## The common path -- nothing post-1.56 set -- costs one comprehension and touches Drake
+    ## not at all, so nothing about a default run changes.
+    if not requested:
+        return requested
+
+    inner = sorted(n for n in requested if NLOPT_POST_1_56_OPTIONS[n].inner)
+    if inner and not requested.get("nlopt_local_optimizer_algorithm"):
+        raise ValueError(
+            f"NLopt: {', '.join(inner)} set with nlopt_local_optimizer_algorithm unset. "
+            f"Drake reads every local_optimizer_* option but applies them only inside "
+            f"`if (!parsed_options.local_optimizer_algorithm.empty())` "
+            f"(nlopt_solver.cc:546-564), so this combination is ACCEPTED AND INERT -- the "
+            f"solve would run NLopt's own inner optimizer while the record claims a tuned "
+            f"one. Name the inner algorithm (LD_MMA, LD_CCSAQ and LD_SLSQP are the "
+            f"gradient-based choices Drake's build can actually run) or drop the inner "
+            f"options.")
+
+    ## Availability is checked only for a run that will actually EMIT these options. It used
+    ## to be unconditional, which was right while every post-1.56.0 field defaulted to None:
+    ## a non-None value was then always deliberate. Since 2026-09-19 three of them are the
+    ## ADOPTED NLopt defaults, so an unconditional check would refuse `ProgramOptions()`
+    ## itself -- and therefore every IPOPT and SNOPT cell -- on the cluster's pinned 1.56.0,
+    ## for options those solvers never touch. The other two refusals above stay unconditional
+    ## because they are logic errors on every Drake.
+    if getattr(options, "which_solver", None) != "nlopt":
+        return requested
+    surface = NloptOptionSurface()
+    missing = [(n, NLOPT_POST_1_56_OPTIONS[n].accessor) for n in sorted(requested)
+               if NLOPT_POST_1_56_OPTIONS[n].accessor not in surface]
+    if missing:
+        raise ValueError(
+            "NLopt: this Drake has no option for "
+            + ", ".join(f"{n} (NloptSolver.{a}())" for n, a in missing)
+            + f". The NLopt options it accepts are {sorted(surface.values())}. Drake raises "
+            f"on a name it does not know, and benchmark.run_grid records each such cell as "
+            f"fail_reason='error' rather than stopping -- so emitting it anyway returns a "
+            f"full column of instant failures, not an error. The cluster runs Drake 1.56.0, "
+            f"whose surface is the six algorithm, constraint_tol, xtol_rel, xtol_abs, "
+            f"max_eval, max_time; the local_optimizer_* options and ftol_rel/ftol_abs/"
+            f"stopval each arrived later, and in different releases.")
+    return requested
 
 
 @dataclass
@@ -219,7 +406,26 @@ class ProgramOptions:
     ## the trust region the learned formulation wants -- the runaway is ONE accepted
     ## catastrophic step out of a well-behaved trajectory. `Violation limit` is SNOPT's
     ## counterpart to ipopt_theta_max_fact, which gained 3 cells and lost none on a probe.
-    snopt_major_step_limit: float = field(default=None, metadata={"help": "SNOPT 'Major step limit' (default 2.0): bounds ||dx|| <= limit*(1+||x||) per major iteration"})
+    ## ADOPTED 2026-09-19 by Thomas, and the ONE solver setting this project fields.
+    ## Drake/SNOPT's own default is 2.0; 0.5 is the single survivor of stages SNOPTTUNE
+    ## (13 settings) and SNOPTCOMBO (7 crosses of it), each at 480 cells x 12 rows. On the
+    ## learned arm it is better on 11 of 12 rows, significantly on 3, significantly worse on
+    ## none, and the joint-space arm rises on all 12 -- so it is a property of SNOPT on this
+    ## problem, not of the chart. It moves NO learned-vs-joint-space verdict (learned +161
+    ## cells of 5760, joint space +164; per-row margins sum to -3), so it is adopted for
+    ## FAIRNESS, not for the comparison: IPOPT's column already runs a tuned configuration
+    ## (the acceptable-point early stop) and SNOPT's ran bare defaults.
+    ##
+    ## Consequences for anything reading archived numbers:
+    ##   * The SNOPT numbers of record are now SNOPTCOMBO's `mstep0p5` column, NOT the
+    ##     `sc_SOLVER2_*_snopt_*` columns, which were measured at Drake's defaults.
+    ##   * A stage whose column means "Drake's SNOPT defaults" must now say so explicitly
+    ##     with `--set snopt_major_step_limit=None`; the four historical SNOPT tables in
+    ##     cluster/gen_manifest.py were updated so re-generating them reproduces what ran.
+    ## It is still a member of STEP_REJECTION_KNOBS, but stage STEP is not why it is here:
+    ## that stage refuted the family at 480 cells and this value was adopted on the separate
+    ## per-solver-tuning question.
+    snopt_major_step_limit: float = field(default=0.5, metadata={"help": "SNOPT 'Major step limit' (Drake/SNOPT default 2.0; ADOPTED at 0.5): bounds ||dx|| <= limit*(1+||x||) per major iteration"})
     snopt_violation_limit: float = field(default=None, metadata={"help": "SNOPT 'Violation limit' (default 10): the largest constraint violation allowed beyond the initial point; SNOPT's theta ceiling"})
     ## Print verbosity. SNOPT's end-of-run summary block -- 'No. of major iterations' and
     ## the funobj/funcon call counts -- is the ONLY place its iteration count exists, so
@@ -240,18 +446,11 @@ class ProgramOptions:
     ## inequalities to the inner solver, and this program carries both kinds (pose or
     ## mug-axis equalities alongside collision, joint-limit and trust-region inequalities).
     ##
-    ## ONLY the six options Drake 1.56.0 exposes may be set here. The cluster runs the
-    ## official 1.56.0 tarball; this workstation is a later source build that ALSO offers
-    ## five `local_optimizer_*` options for choosing the AL's inner solver. Drake validates
-    ## NLopt option names strictly and raises on an unrecognised one, so code written
-    ## against the workstation's API would pass locally and raise on every cell of a
-    ## cluster run.
-    ##
-    ## TODO: once the cluster's Drake carries the local-optimizer PRs, expose
-    ## `local_optimizer_algorithm` and sweep the inner solver. Leaving it unset is a
-    ## supported state -- Drake does not call `set_local_optimizer` at all, so NLopt
-    ## supplies its own inner optimizer (LD_LBFGS for the gradient-based AUGLAG families),
-    ## which is the right shape since the inner problem is bound-constrained only.
+    ## The four fields immediately below, plus `max_time`, are Drake 1.56.0's ENTIRE NLopt
+    ## surface, which is what the cluster runs; they are safe to emit anywhere. Everything
+    ## newer lives in the block after `nlopt_max_eval`, defaults to None, and is emitted only
+    ## when set -- see NLOPT_POST_1_56_OPTIONS and CheckNloptOptions above for why that
+    ## asymmetry exists and what it protects.
     nlopt_algorithm: str = field(default="LD_AUGLAG", metadata={"help": "NLopt 'algorithm'. An augmented-Lagrangian variant by design; LD_SLSQP would duplicate SNOPT's method class"})
     nlopt_constraint_tol: float = field(default=None, metadata={"help": "NLopt 'constraint_tol' (Drake default 1e-6)"})
     nlopt_xtol_rel: float = field(default=None, metadata={"help": "NLopt 'xtol_rel' (Drake default 1e-6)"})
@@ -262,11 +461,76 @@ class ProgramOptions:
     ## of the wall-clock cap every other column is measured under. 0 disables it.
     nlopt_max_eval: int = field(default=0, metadata={"help": "NLopt 'max_eval'; 0 disables. Drake's own default is 1000, which would bind and make this column an evaluation-budget measurement"})
 
-    ## Starting point ##
-    # A benchmark that starts each formulation somewhere different cannot attribute a
-    # success-rate gap to the formulation. `SetStartFromQ` puts every arm at the same
-    # configuration; this switch only exists so the old protocol stays reproducible.
-    seed_from_q_init: bool = field(default=False, metadata={"help": "Start from a shared q_init instead of the per-formulation default"})
+    ## ---- the post-1.56.0 surface: opt-in, never emitted unless set ----------------------
+    ## Every field below names an option absent from the cluster's Drake 1.56.0, so every one
+    ## defaults to None and _NloptOptions emits nothing for an unset field. That is not
+    ## tidiness: it is what keeps a default NLopt cell byte-identical to every archived NLopt
+    ## result, and it is what keeps a cluster run alive. Setting one on a Drake that lacks it
+    ## is refused at CONFIGURATION time, with the surface actually found -- not left to raise
+    ## from inside Drake on every cell, where run_grid would swallow it.
+    nlopt_ftol_rel: float = field(default=None, metadata={"help": "NLopt 'ftol_rel': relative cost-change stopping criterion (Drake default 0, disabled). Post-1.56.0"})
+    nlopt_ftol_abs: float = field(default=None, metadata={"help": "NLopt 'ftol_abs': absolute cost-change stopping criterion (Drake default 0, disabled). Post-1.56.0"})
+    ## Plumbed for completeness and DELIBERATELY NOT SWEPT. `stopval` stops the solve the
+    ## moment the cost falls to a target, and this program minimises a cost whose optimum is
+    ## unknown -- a weighted sum whose scale moves with the target, the formulation and the
+    ## weights, so no threshold we could name means the same thing in two cells. Worse,
+    ## stopping on cost returns an iterate never driven to feasibility, and feasibility is
+    ## what the shared task gate scores: the cells it "won" would come back gate failures.
+    nlopt_stopval: float = field(default=None, metadata={"help": "NLopt 'stopval': stop once cost <= this (Drake default -inf, never fires). Post-1.56.0. Plumbed but NOT swept -- this cost has no known optimum and stopping on it returns points that fail the task gate"})
+    ## The AUGMENTED LAGRANGIAN's INNER SOLVER. AUGLAG solves nothing itself: it hands a
+    ## sequence of bound-constrained subproblems to a second NLopt algorithm. Left unnamed,
+    ## Drake never calls set_local_optimizer and NLopt picks its own -- a supported state, and
+    ## the one every archived NLopt cell ran in. Naming it is the only knob on this column that
+    ## changes the METHOD rather than a tolerance, which is what makes it worth the traps below.
+    ##
+    ## NOTE, measured rather than assumed: whatever NLopt picks when this is unset, it is NOT
+    ## LD_LBFGS. Drake's NLopt is built without the LGPL Luksan sources, so LD_LBFGS and the
+    ## whole variable-metric and truncated-Newton family are compiled out (see
+    ## NLOPT_LUKSAN_DISABLED). An earlier comment here and in CLAUDE.md asserted LD_LBFGS was
+    ## the default; it cannot be, because naming it FAILS while leaving this unset solves.
+    ##
+    ## TRAP ONE, and why the six fields after it are REFUSED rather than ignored when this one
+    ## is unset: Drake reads every local_optimizer_* option unconditionally but applies them
+    ## only inside `if (!parsed_options.local_optimizer_algorithm.empty())`. Set
+    ## nlopt_local_optimizer_max_eval alone and Drake accepts it, never calls
+    ## set_local_optimizer, and discards the number -- the "accepted and did nothing" failure
+    ## that `Timing Level`, `Hessian updates` and `linear_solver=mumps` have each already cost
+    ## this repo a measurement.
+    ##
+    ## TRAP TWO: naming the algorithm is NOT neutral even with every tolerance left alone.
+    ## Drake then pushes its OWN inner defaults (xtol_rel 1e-6, xtol_abs 1e-6, ftol_rel 0,
+    ## ftol_abs 0, max_eval 0, max_time 0) into the local optimizer, where before NLopt's own
+    ## defaults applied. So "the same inner algorithm, said out loud" is a DIFFERENT
+    ## configuration from leaving it unset, and a sweep wanting an unset baseline must field
+    ## one explicitly rather than assume a named algorithm reproduces it.
+    ## ADOPTED 2026-09-19 by Thomas: the NLopt column's fielded configuration is
+    ## LD_AUGLAG with an LD_MMA inner optimizer truncated by loose inner tolerances. On the
+    ## criterion that decides this column -- feasibility, cost secondary -- it is better on
+    ## 5 of 12 rows, worse on 1 (Panda pose native, -5 cells one-directionally) and unchanged
+    ## on 6 rows where nothing works at all, and it collapses the median residual (Panda
+    ## contained grasp 3.7e-04 -> 6.8e-07) and the network work per cell (3532 -> 66).
+    ## It FAILED stage NLOPTTUNE's pre-registered gate, which asked whether to spend 480-cell
+    ## compute on it, NOT whether it is the best configuration; those are different questions
+    ## and only the second is what adoption answers. Report the gate failure alongside it.
+    ##
+    ## REQUIRES a Drake carrying PR 25002: `local_optimizer_ftol_rel` is absent from 1.56.0
+    ## (6 options) and from this workstation's source build (11), and present only on the
+    ## nightly (16). An NLopt run on an older Drake now raises from CheckNloptOptions naming
+    ## the missing option; IPOPT and SNOPT runs are unaffected, because the availability
+    ## check fires only for `which_solver == "nlopt"`.
+    nlopt_local_optimizer_algorithm: str = field(default="LD_MMA", metadata={"help": "NLopt 'local_optimizer_algorithm': the AUGLAG inner solver. Drake's build can run LD_MMA, LD_CCSAQ, LD_SLSQP; the LD_LBFGS/LD_VAR*/LD_TNEWTON* family is compiled out (Luksan, LGPL) and is refused. None or '' leaves NLopt's own choice, as every archived cell ran; required before any nlopt_local_optimizer_* below. Post-1.56.0"})
+    nlopt_local_optimizer_xtol_rel: float = field(default=1e-3, metadata={"help": "NLopt 'local_optimizer_xtol_rel' (Drake's inner default 1e-6). Inert unless the inner algorithm is named -- refused, not ignored. Post-1.56.0"})
+    nlopt_local_optimizer_xtol_abs: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_xtol_abs' (Drake's inner default 1e-6). Inert unless the inner algorithm is named. Post-1.56.0"})
+    nlopt_local_optimizer_ftol_rel: float = field(default=1e-3, metadata={"help": "NLopt 'local_optimizer_ftol_rel' (Drake's inner default 0, disabled). Inert unless the inner algorithm is named. Post-1.56.0, and absent from this workstation's source build too"})
+    nlopt_local_optimizer_ftol_abs: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_ftol_abs' (Drake's inner default 0, disabled). Inert unless the inner algorithm is named. Post-1.56.0, and absent from this workstation's source build too"})
+    ## The one inner knob with a mechanism rather than a tolerance behind it: a positive cap
+    ## TRUNCATES each subproblem, so the outer augmented Lagrangian updates its multipliers
+    ## more often instead of solving the first subproblem to convergence. 0 means no cap and
+    ## is a REAL value here, not "unset" -- which is why CheckNloptOptions tests `is None`
+    ## rather than truthiness.
+    nlopt_local_optimizer_max_eval: int = field(default=None, metadata={"help": "NLopt 'local_optimizer_max_eval' (Drake's inner default 0 = unlimited); a positive value truncates each subproblem so the outer AL updates multipliers more often. Inert unless the inner algorithm is named. Post-1.56.0"})
+    nlopt_local_optimizer_max_time: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_max_time' in seconds (Drake's inner default 0 = no cap). Inert unless the inner algorithm is named. Post-1.56.0"})
+
 
     ## Solver options ##
     which_solver: str = field(default="ipopt", metadata={"help": "Which IKFlow solver to use"})
@@ -306,6 +570,20 @@ class ProgramOptions:
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
     visualize: bool = field(default=False, metadata={"help": "If true, visualizes the IK solving process in Meshcat"})
+
+    def __post_init__(self):
+        ## The NLopt surface is checked HERE, at options construction, and not only where the
+        ## options are emitted. _NloptOptions runs inside Solve(), and Solve() runs inside
+        ## run_grid's per-cell `except Exception` -- so a raise from there is caught, written
+        ## into the record as fail_reason="error", and the sweep proceeds into a full column
+        ## of instant failures. A raise from here happens in `ProgramOptions(...)` and in the
+        ## `replace()` that apply_overrides performs for `--set`, both before the first cell
+        ## and outside any try. It is free: options are constructed a handful of times per
+        ## run, never per cell.
+        ##
+        ## Deliberately NOT gated on `which_solver == "nlopt"`. A manifest that sets an NLopt
+        ## field on an IPOPT arm is a broken sweep and should say so rather than run.
+        CheckNloptOptions(self)
 
 
 
@@ -579,7 +857,6 @@ class IKFlowProgram:
         which holds the same network every later program is handed, so the grid never sees
         the compile.
         """
-        import time
         width = self.ik_solver.network_width
         vars = np.zeros(7 + width + self.num_arm_dof)
         vars[3] = 1.0                                  # a unit quaternion, w first
@@ -1355,16 +1632,19 @@ class IKFlowProgram:
 
         Two things to know before editing this.
 
-        **Only the six options Drake 1.56.0 exposes may be set.** The cluster runs the
-        official 1.56.0 tarball, whose `nlopt_solver.h` declares exactly `algorithm`,
-        `constraint_tol`, `xtol_rel`, `xtol_abs`, `max_eval` and `max_time`. A newer source
-        build additionally offers five `local_optimizer_*` options, and Drake validates
-        NLopt names strictly and RAISES on an unrecognised one -- so setting one of those
-        would pass on a workstation and fail on every cell of a cluster run. Leaving the
-        local optimizer unset is a supported state: Drake does not call
-        `set_local_optimizer`, and NLopt supplies its own (LD_LBFGS for the gradient-based
-        AUGLAG families), which is the right shape because an augmented Lagrangian's inner
-        problem is bound-constrained only.
+        **The six options emitted unconditionally are the cluster's whole NLopt surface.**
+        Drake 1.56.0 declares exactly `algorithm`, `constraint_tol`, `xtol_rel`, `xtol_abs`,
+        `max_eval` and `max_time`; this workstation's source build declares eleven and a
+        nightly sixteen, and Drake RAISES on a name it does not know. So the six are emitted
+        unconditionally and everything newer only when its `ProgramOptions` field is set,
+        after `CheckNloptOptions` has confirmed this Drake carries it and that no
+        inner-solver option was set without an inner algorithm to apply it to. A run setting
+        none of the new fields emits exactly these keys with exactly these values, which is
+        what keeps archived NLopt results comparable. Leaving the local optimizer unset
+        remains a supported state -- Drake does not call `set_local_optimizer`, and NLopt
+        supplies its own, which is the right shape because an augmented Lagrangian's inner
+        problem is bound-constrained only. It is NOT LD_LBFGS: Drake's NLopt is built without
+        the LGPL Luksan sources, so that family is compiled out (NLOPT_LUKSAN_DISABLED).
 
         **NLopt reports nothing.** No print file, no console output, and a details struct
         with a single `status` field -- no iteration count, no evaluation count, not even a
@@ -1391,6 +1671,19 @@ class IKFlowProgram:
                 (NloptSolver.XAbsoluteToleranceName(), self.options.nlopt_xtol_abs)):
             if value is not None:
                 solver_options.SetOption(NloptSolver.id(), name, float(value))
+        ## The post-1.56.0 surface. `CheckNloptOptions` returns only the fields actually set,
+        ## so this loop is empty -- and this method's output byte-identical to what it produced
+        ## before these fields existed -- unless a run asks for one. It is called again here
+        ## rather than trusted from __post_init__ because options objects are mutated in place
+        ## elsewhere (benchmark.py assigns `file_print_name` on a live one), which bypasses
+        ## __post_init__ entirely; this is the last place a wrong name can be stopped before
+        ## Drake sees it. The per-option cast is load-bearing: Drake routes NLopt options by
+        ## Python type exactly as it does SNOPT's, so a mismatch reaches the wrong setter.
+        surface = NloptOptionSurface()
+        for name, value in CheckNloptOptions(self.options).items():
+            spec = NLOPT_POST_1_56_OPTIONS[name]
+            solver_options.SetOption(NloptSolver.id(), surface[spec.accessor],
+                                     spec.cast(value))
         return solver, solver_options
 
     def Solve(self):
@@ -1409,6 +1702,24 @@ class IKFlowProgram:
         solver, solver_options = {"ipopt": self._IpoptOptions,
                                   "snopt": self._SnoptOptions,
                                   "nlopt": self._NloptOptions}[which]()
+
+        ## THE OPTIONS ACTUALLY HANDED TO THE SOLVER, recorded so a run's configuration can be
+        ## read off the run rather than reconstructed from the code that produced it. A run's
+        ## metadata records `--set` overrides only, which is NOT the same thing: an ADOPTED
+        ## DEFAULT reaches the solver without appearing anywhere in the record. Three of those
+        ## exist now (`snopt_major_step_limit=0.5`, and NLopt's `LD_MMA` inner optimizer with
+        ## its two loose inner tolerances), so without this a future reader cannot tell a run
+        ## at today's defaults from one at Drake's.
+        ##
+        ## The failure this guards against is not hypothetical and not ours: the sibling
+        ## `ik-tune` project lost a fourteen-rung verdict to it. Drake PR 25002 deleted a NaN
+        ## sentinel by which an unset `local_optimizer_xtol_rel` INHERITED the outer
+        ## `xtol_rel`; after the PR it is 1e-6 unconditionally. That is invisible at Drake's
+        ## own outer default of 1e-6 and a factor of 100 for anyone who sets the outer value,
+        ## and nothing in their run configuration recorded the effective inner tolerance, so
+        ## every affected column became unpairable with anything measured after the bump.
+        ## Recording what was EMITTED rather than what was SET is what makes that detectable.
+        self.emitted_solver_options = {k: dict(v) for k, v in solver_options.options.items()}
 
         ## NLopt writes no log and ignores this key, so it is set only where a log exists.
         if which != "nlopt":

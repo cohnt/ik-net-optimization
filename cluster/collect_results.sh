@@ -52,13 +52,25 @@ if [ "${1:-}" = "--reclaim" ]; then
 # Only this project's workers can be writing into ~/learned-ik/results, and the
 # SuperCloud account is shared with Thomas's other projects -- a broad any-job-running
 # check refuses whenever an unrelated campaign is on the cluster, which is most of the
-# time (it fired on a run_matrix.sh job belonging to another project). Filter by the
-# worker script's job name, and count PENDING too: a queued run_items.sh could start
-# part way through and write into a directory already archived.
+# time (it fired on a run_matrix.sh job belonging to another project). So filter by job
+# name, and count PENDING too: a queued worker could start part way through and write
+# into a directory already archived.
+#
+# THE NAME MUST BE THE ONE SLURM ACTUALLY SEES, which is submit_bench.sh's
+# `--job-name=lik_bench_${MANIFEST%.txt}` -- NOT the payload script's filename. This
+# guard spent its whole life matching `run_items.sh`, a name no job has ever carried, so
+# BUSY was unconditionally 0 and the guard never refused anything: --reclaim would have
+# happily stolen items from 32 live workers. Found 2026-09-20 mid-campaign, by running the
+# same filter by hand against a queue known to hold four running jobs and getting nothing
+# back. Scoping to THIS manifest is also tighter than the original intent -- a worker only
+# ever touches the manifest it was handed, so an unrelated learned-ik campaign is no
+# reason to refuse. Two lessons: a guard that cannot be observed refusing has not been
+# tested, and a job's name is a property of the submitter, not of the script it runs.
     sc_run "cd ~/$SC_ROOT/state/$MANIFEST_NAME 2>/dev/null || { echo 'no such manifest state'; exit 1; }
-BUSY=\$(squeue -u \$USER -h -n run_items.sh -t RUNNING,PENDING 2>/dev/null | wc -l)
+JOB_NAME=lik_bench_\${MANIFEST_NAME%.txt}
+BUSY=\$(squeue -u \$USER -h -n \"\$JOB_NAME\" -t RUNNING,PENDING 2>/dev/null | wc -l)
 if [ \"\$BUSY\" -gt 0 ]; then
-    echo \"REFUSING: \$BUSY run_items.sh job(s) queued or running -- a live item must not be stolen.\"
+    echo \"REFUSING: \$BUSY \$JOB_NAME job(s) queued or running -- a live item must not be stolen.\"
     echo 'Wait for the queue to drain (collect_results.sh --status), then retry.'
     exit 1
 fi
@@ -161,16 +173,36 @@ fi
 # promoting anything into results/ proper -- staging does not match collate.py's glob, so
 # a half-collected campaign cannot silently enter a table.
 sc_run "rm -f ~/$ARCHIVE"
-## Search the PREVIOUS staging directory too. Collection is incremental, so a collection
-## that runs while a stage is still in flight splits that stage in two, and any run whose
-## shards straddle the split is unmergeable from either directory alone -- it looks exactly
-## like data loss while the shards sit on disk. `--also` adds it to the SEARCH; the merged
-## run is written beside the shard that anchors it, so read the merger's own path when
-## promoting rather than assuming this collection's staging directory.
-PREV_STAGING="$(ls -1d "$REPO_ROOT"/results/_cluster_staging/*/ 2>/dev/null \
-                | grep -v "^$STAGING/\?$" | tail -1)"
+## Search EVERY earlier staging directory, not just the most recent one. Collection is
+## incremental, so a collection that runs while a stage is in flight splits that stage, and
+## any run whose shards straddle a split is unmergeable from either directory alone -- it
+## looks exactly like data loss while the shards sit on disk. `--also` adds a directory to
+## the SEARCH and is `action="append"`, so it takes as many as we give it; the merged run is
+## written beside the shard that anchors it, so read the merger's own path when promoting
+## rather than assuming this collection's staging directory.
+##
+## It used to pass only the single most recent prior directory, which covers a two-way split
+## and nothing more. Stage STATUSQUO broke that on 2026-09-20: NLopt items ran 27-144 min
+## while collections ran hourly, so one row's 24 shards landed across THREE collections and
+## the merger reported 22 of 24 "missing" -- from shard directories that existed, because
+## incremental rsync creates the directory and skips a `summary.json` it already shipped.
+## Passing every prior directory removes the failure mode rather than widening it by one.
+## Verified when the fix landed: re-merging the seven rows that had already merged normally
+## reproduced all seven exactly, so a wider search changes nothing but what it can find.
+##
+## Restricted to TIMESTAMP-shaped directory names, which also keeps a hand-made directory in
+## the staging tree from being treated as a collection. That bit once, on 2026-09-17: a
+## manual merge directory named `manualmerge-row12` sorted after every `20260917-*` and
+## became "the previous collection", so two straddled rows of stage SNOPTTUNE went unmerged
+## with all sixteen shards on disk.
 ALSO=()
-[ -n "${PREV_STAGING:-}" ] && ALSO=(--also "$PREV_STAGING")
+while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    ALSO+=(--also "$d")
+done < <(ls -1d "$REPO_ROOT"/results/_cluster_staging/[0-9]*-[0-9]*/ 2>/dev/null \
+         | grep -v "^$STAGING/\?$")
+## ALSO holds two elements per directory (the flag and the path), hence the halving.
+echo "merging: searching $STAGING plus $(( ${#ALSO[@]} / 2 )) prior staging directory/ies"
 "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/cluster/merge_shard_summaries.py" "$STAGING" "${ALSO[@]}"
 
 # Only now is it safe to advance the incremental watermark: everything above has to

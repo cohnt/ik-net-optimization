@@ -64,7 +64,11 @@ running in the partition, not a per-job cap — so:
 
 ```
 ~/learned-ik/
-    drake/       own Drake v1.56.0 noble tarball (sha256-verified)
+    drake/       own Drake nightly 0.0.20260918 tarball, the project's PIN (needs
+                 PR 25002 for the adopted NLopt inner-optimizer options). Nightlies
+                 publish no .sha256, so setup verifies against a hash recorded in the
+                 repo -- the bytes the local tests ran against. Artifacts expire after
+                 45 days (~2026-11-02): move to 1.58.0 once it carries PR 25002.
     sysdeps/     own dpkg-deb -x of libfmt9 + libspdlog1.12 (runtime only)
     venv/        own cp312 venv: torch cu126, ikflow, jrl, ...
     home/        a fake HOME holding the pre-warmed ikflow + jrl caches
@@ -113,7 +117,8 @@ cluster/stage_code.sh                        # push the manifest up
 #   drain, or FORCE_STAGE=1 if you are certain (calibration/smoke are exempt).
 # submit one job per node; extras queue behind the 4-node cap
 ssh ... 'cd ~/learned-ik/repo && MANIFEST=cluster/manifest_stageA.txt PROCS=<K> \
-         LLsub ./cluster/run_items.sh -g volta:2 -s 40 -q xeon-g6-volta -T 12:00:00'
+         LLsub ./cluster/run_items.sh -g volta:2 -s 40 -q xeon-g6-volta -T 48:00:00'
+#   or just `cluster/submit_bench.sh manifest_stageA.txt <n_jobs>`, which asks for 48 h.
 
 # 5. mop up, then collect (cluster storage is NOT backed up)
 cluster/collect_results.sh --status
@@ -121,6 +126,34 @@ cluster/collect_results.sh --reclaim manifest_stageA   # only once the queue is 
 cluster/collect_results.sh                             # incremental since the last success
 cluster/collect_results.sh --full                      # ...or the whole results tree
 ```
+
+## Wall-clock limits: three caps, and the invariant between them
+
+| cap | where | default | what it is |
+| --- | --- | --- | --- |
+| per solve | `--wall-time` in the manifest | the campaign's cap | **the measurement** |
+| per item | `ITEM_TIMEOUT` (`run_items.sh`) | 8 h | backstop for a wedged solve |
+| per job | `WALL` (`submit_bench.sh`) → `#SBATCH --time` | 48 h | Slurm's kill |
+
+**The invariant is `WALL` > `ITEM_TIMEOUT`.** They used to be equal at 4 h, which made the bad
+case the normal one: a long item consumed the whole job, and Slurm's kill arrived at the same
+moment as `timeout`'s — hitting all `PROCS` workers on the node at once and leaving `PROCS`
+stale claims. `xeon-g6-volta` allows **4-04:00:00 (100 h)**, so there is no reason to run the
+job wall anywhere near the item cap. (`xeon-p8` is the same; `debug-*` is 2 h; a job that would
+span the monthly maintenance window is killed, not suspended.)
+
+`run_items.sh` also **refuses to claim an item the job cannot finish** — if less than
+`ITEM_TIMEOUT + 300` s of job wall remains it stops claiming and exits, leaving the remaining
+items unclaimed for the next job. That is why raising the two numbers is not by itself the fix:
+without the guard a worker will still claim a multi-hour item minutes before its job ends.
+
+Sizing shards is therefore about **throughput, not data integrity**. A killed item loses its
+compute and leaves a stale claim needing `--reclaim`, but it cannot corrupt a result: partial
+writes go to `summary.json.partial`, `run_items.sh` publishes to the collection point only on
+exit 0, and `merge_shard_summaries.py` refuses both on a missing shard index and on any
+unsolved cell of the full grid. Pick shards so the longest item sits comfortably inside
+`ITEM_TIMEOUT` and the tail parallelises; `gen_manifest.py --summary` prints the longest
+estimate.
 
 ## Order of operations: training a chart (the ladder)
 
@@ -275,10 +308,35 @@ before the logs behind it are dropped.
 First application, 2026-09-03: local `results/` went from **845 MB to 95 MB** (370
 summaries), and the Stage G aggregate still reproduces exactly from what remains.
 
+**NEVER run a git command on the cluster.** `/home/gridsan/tcohn/.git` exists — the
+SuperCloud home directory is itself a git repository, a clone of
+`real-stanford/diffusion_policy` — so git walks up from anywhere under `~` and resolves
+to it. `cd ~/learned-ik/repo && git log` reports that project's history and its
+`rev-parse --show-toplevel` is `/home/gridsan/tcohn`, which reads as "the staged code is
+the wrong commit" when the staged files are in fact correct. Worse, a write command
+(`git add`, `git checkout`, `git clean`) issued from inside `~/learned-ik` would operate
+on **Thomas's home repository**. The staged tree has no `.git` of its own by design:
+`stage_code.sh` excludes `.git`, which also means rsync will never delete one, so this
+cannot be fixed from our side and must not be — that repo is not ours. Determine what is
+staged from the local checkout and `stage_code.sh`, never by asking the cluster.
+
 **Any check that asks the cluster whether it is busy must be scoped to this project.**
 The account is shared with Thomas's other campaigns, so `LLstat | grep -c RUNNI` refuses
 whenever anything at all is running — it fired on an unrelated `run_matrix.sh`. Filter by
-`squeue -u $USER -n run_items.sh`, and count `PENDING` as well as `RUNNING`.
+**`squeue -u $USER -n "lik_bench_$MANIFEST_NAME"`**, and count `PENDING` as well as
+`RUNNING`.
+
+**Filter on the JOB name, not the script's filename.** `--reclaim`'s guard filtered
+`squeue -n run_items.sh` for its whole life and therefore matched nothing: a job's name is
+set by the submitter (`submit_bench.sh` passes
+`--job-name=lik_bench_${MANIFEST%.txt}`), not by the payload script it runs. `BUSY` was
+unconditionally 0, so the guard never refused — it would have stolen items from live
+workers, and every one of them would have written its shard to a claim someone else then
+re-ran. Fixed 2026-09-20, and verified in both directions (4 with a campaign running, 0
+for a manifest with no jobs). **A guard nobody has observed refusing has not been
+tested.** Scoping per manifest is also tighter than the original intent: a worker only
+touches the manifest it was handed, so an unrelated `learned-ik` campaign is no reason to
+refuse.
 
 ## How work is claimed, and how to recover
 

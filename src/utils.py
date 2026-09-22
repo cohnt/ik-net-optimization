@@ -100,13 +100,6 @@ def BuildEnv(meshcat, directives_file=None, extra_directives=None):
     return diagram
 
 
-def DrawSphere(target, meshcat, name="/sphere", radius = 0.03, sphere_color = Rgba(1.0, 0.2, 0.2, 0.7)):
-    sphere_position = target.translation()
-    sphere_radius = radius
-    meshcat.Delete(name)
-    meshcat.SetObject(name, Sphere(sphere_radius), sphere_color)
-    meshcat.SetTransform(name, RigidTransform(sphere_position))
-
 def DrawAxes(pose, meshcat, name="/axes", length=0.1, radius=0.005, alpha=0.8):
     """
     Draw the xyz axes given a RigidTransform.
@@ -144,45 +137,6 @@ def DrawAxes(pose, meshcat, name="/axes", length=0.1, radius=0.005, alpha=0.8):
         cyl_pose = RigidTransform(R=RotationMatrix(rot), p=origin + axis * length / 2)
         meshcat.SetObject(f"{name}/{axis_name}", Cylinder(radius, length), color)
         meshcat.SetTransform(f"{name}/{axis_name}", cyl_pose)
-
-def DrawCylinder(A, B, meshcat, name="/cylinder", radius=0.03, color=Rgba(0.2, 0.2, 1.0, 0.7)):
-    """
-    Draw a cylinder from point A to point B in meshcat using Drake geometry.
-    A, B: 3D numpy arrays or lists
-    meshcat: MeshcatVisualizer instance
-    name: path in meshcat
-    radius: cylinder radius
-    color: Rgba color
-    """
-    A = np.asarray(A).reshape(3)
-    B = np.asarray(B).reshape(3)
-    axis = B - A
-    length = np.linalg.norm(axis)
-    if length < 1e-8:
-        # Degenerate case: don't draw
-        return
-    # Cylinder in Drake is aligned with z-axis by default
-    z_axis = np.array([0, 0, 1])
-    axis_dir = axis / length
-
-    # Compute rotation matrix that aligns z_axis to axis_dir
-    v = np.cross(z_axis, axis_dir)
-    c = np.dot(z_axis, axis_dir)
-    if np.allclose(v, 0) and c > 0.999:
-        R = np.eye(3)
-    elif np.allclose(v, 0) and c < -0.999:
-        R = np.diag([1, -1, -1])
-    else:
-        vx = np.array([[0, -v[2], v[1]],
-                       [v[2], 0, -v[0]],
-                       [-v[1], v[0], 0]])
-        R = np.eye(3) + vx + vx @ vx * ((1 - c) / (np.linalg.norm(v) ** 2))
-    # The cylinder's center is at the midpoint between A and B
-    center = (A + B) / 2
-    pose = RigidTransform(RotationMatrix(R), center)
-    meshcat.Delete(name)
-    meshcat.SetObject(name, Cylinder(radius, length), color)
-    meshcat.SetTransform(name, pose)
 
 def extract_xyzrpy(pose):
     """pose is numpy array 4x4"""

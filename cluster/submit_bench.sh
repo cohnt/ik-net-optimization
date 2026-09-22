@@ -31,7 +31,13 @@ source "$(dirname "$0")/ssh_common.sh"
 MANIFEST="${1:?usage: submit_bench.sh <manifest-basename> [n_jobs]}"
 NJOBS="${2:-4}"
 PROCS="${PROCS:-8}"
-WALL="${WALL:-04:00:00}"
+## The job wall MUST stay above run_items.sh's ITEM_TIMEOUT (8 h), or Slurm's kill lands on a
+## long item and takes every other worker on the node with it, leaving PROCS stale claims.  It
+## was 04:00:00, numerically EQUAL to the item cap, which made that the normal case rather than
+## an edge case.  `xeon-g6-volta` allows 4-04:00:00 (100 h), so 48 h is well inside the ceiling
+## and well above any item this project generates (the longest, an NLopt shard at a 180 s cap,
+## estimates ~1.8 h).  Raising it costs nothing: a job exits when its manifest is drained.
+WALL="${WALL:-48:00:00}"
 PARTITION="${PARTITION:-xeon-g6-volta}"
 DEPENDENCY="${DEPENDENCY:-}"
 DEP_DIRECTIVE="${DEPENDENCY:+1}"
