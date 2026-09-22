@@ -64,7 +64,11 @@ running in the partition, not a per-job cap — so:
 
 ```
 ~/learned-ik/
-    drake/       own Drake v1.56.0 noble tarball (sha256-verified)
+    drake/       own Drake nightly 0.0.20260918 tarball, the project's PIN (needs
+                 PR 25002 for the adopted NLopt inner-optimizer options). Nightlies
+                 publish no .sha256, so setup verifies against a hash recorded in the
+                 repo -- the bytes the local tests ran against. Artifacts expire after
+                 45 days (~2026-11-02): move to 1.58.0 once it carries PR 25002.
     sysdeps/     own dpkg-deb -x of libfmt9 + libspdlog1.12 (runtime only)
     venv/        own cp312 venv: torch cu126, ikflow, jrl, ...
     home/        a fake HOME holding the pre-warmed ikflow + jrl caches
@@ -307,7 +311,20 @@ summaries), and the Stage G aggregate still reproduces exactly from what remains
 **Any check that asks the cluster whether it is busy must be scoped to this project.**
 The account is shared with Thomas's other campaigns, so `LLstat | grep -c RUNNI` refuses
 whenever anything at all is running — it fired on an unrelated `run_matrix.sh`. Filter by
-`squeue -u $USER -n run_items.sh`, and count `PENDING` as well as `RUNNING`.
+**`squeue -u $USER -n "lik_bench_$MANIFEST_NAME"`**, and count `PENDING` as well as
+`RUNNING`.
+
+**Filter on the JOB name, not the script's filename.** `--reclaim`'s guard filtered
+`squeue -n run_items.sh` for its whole life and therefore matched nothing: a job's name is
+set by the submitter (`submit_bench.sh` passes
+`--job-name=lik_bench_${MANIFEST%.txt}`), not by the payload script it runs. `BUSY` was
+unconditionally 0, so the guard never refused — it would have stolen items from live
+workers, and every one of them would have written its shard to a claim someone else then
+re-ran. Fixed 2026-09-20, and verified in both directions (4 with a campaign running, 0
+for a manifest with no jobs). **A guard nobody has observed refusing has not been
+tested.** Scoping per manifest is also tighter than the original intent: a worker only
+touches the manifest it was handed, so an unrelated `learned-ik` campaign is no reason to
+refuse.
 
 ## How work is claimed, and how to recover
 

@@ -20,9 +20,9 @@ What this file protects, each learned by the thing being possible:
     left `solver` unbound and died with `UnboundLocalError` several lines later --
     reachable from `--set which_solver=`, which bypasses argparse's `choices`.
   * **A default NLopt configuration emits Drake 1.56.0's option names and nothing else.**
-    The cluster runs the official 1.56.0 tarball (six NLopt options); this workstation's
-    source build has eleven and a 2026-09-18 nightly has sixteen, and Drake RAISES on a
-    name it does not know. Worse, that raise lands in `run_grid`'s per-cell
+    Surfaces differ: the 1.56.0 tarball declares six NLopt options, a pre-PR-25002 source
+    build eleven, and the project's pin (the 0.0.20260918 nightly, which is also what this
+    workstation's build carries) sixteen. Drake RAISES on a name it does not know. Worse, that raise lands in `run_grid`'s per-cell
     `except Exception` and is recorded as `fail_reason="error"`, so a wrong name does not
     stop a run -- it returns a full COLUMN of instant failures. The post-1.56 fields
     therefore default to unset and are refused at configuration time on a Drake lacking
@@ -623,8 +623,9 @@ def test_post_1_56_options_are_checked_against_the_running_drake():
 
     Written to pass on all three surfaces without being relaxed on any: the assertion is not
     "stopval works", it is "stopval works iff NloptSolver declares StopValName, and says so by
-    name when it does not". On the cluster's 1.56.0 all ten take the refusal branch; on a
-    nightly all ten take the emit branch; this workstation's build splits five and five.
+    name when it does not". On a 1.56.0 tarball all ten take the refusal branch; on the
+    project's pin all ten take the emit branch; a pre-PR-25002 source build splits them. The
+    surface is read at runtime, so this test does not need to know which it is on.
     """
     print("\n--- post-1.56 NLopt options are gated on the running Drake ---")
     surface = NloptOptionSurface()
@@ -669,8 +670,8 @@ def test_post_1_56_options_are_checked_against_the_running_drake():
             check("constructing ProgramOptions with an unavailable NLopt option raises",
                   missing[0] in str(exc), str(exc))
     else:
-        print("  skip  every post-1.56 option exists on this Drake; the refusal path is "
-              "exercised on the cluster's 1.56.0 and on this workstation's source build")
+        print("  skip  every post-1.56 option exists on this Drake (the project's pin); the "
+              "refusal path is exercised only on a build older than PR 25002")
 
 
 def test_algorithms_drake_lists_but_cannot_run_are_refused():
