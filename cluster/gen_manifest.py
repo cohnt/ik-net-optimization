@@ -1768,7 +1768,9 @@ def stage_NLOPTTUNE(wall, targets, guesses, shards, only=None, tag="NLOPTTUNE", 
 ## cell at a 180 s cap, summed over both arms: IPOPT ~29 s (iiwa contained grasp, the
 ## expensive IPOPT row), SNOPT ~30 s, NLopt ~330 s -- so one 480-cell NLopt run is ~44 h and
 ## needs 24 shards to sit at ~1.8 h per item, while IPOPT and SNOPT are comfortable at 8.
-## 24 is also CLAUDE.md's own "shards >= 16, 24 for comfort" figure for a 180 s campaign.
+## Sizing shards is a THROUGHPUT question, not a data-integrity one: a killed item reads as
+## absent rather than truncated (partial writes go to summary.json.partial, and run_items.sh
+## publishes only on exit 0), and merge_shard_summaries.py refuses a missing shard index.
 STATUSQUO_SHARD_SCALE = {"ipopt": 1, "snopt": 1, "nlopt": 3}
 STATUSQUO_WALL = 180.0
 
