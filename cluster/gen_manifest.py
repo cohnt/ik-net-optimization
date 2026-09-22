@@ -1772,12 +1772,26 @@ def stage_NLOPTTUNE(wall, targets, guesses, shards, only=None, tag="NLOPTTUNE", 
 STATUSQUO_SHARD_SCALE = {"ipopt": 1, "snopt": 1, "nlopt": 3}
 STATUSQUO_WALL = 180.0
 
+## THE STATUS QUO HAS EXACTLY TWO EXPERIMENTS PER ROBOT: grasp and pose, both shelf-contained at
+## the fingertips. `--target-placement free` is a VESTIGIAL SETTING of the grasp experiment, not a
+## third experiment, and it must never appear in this stage.
+##
+## The first run of this stage (2026-09-19/20) fielded `mugfree` as a third row on the reasoning
+## that it "answered a legacy question for completeness". Thomas, 2026-09-21: *"free grasp and free
+## pose ... are not separate experiments! Those are vestigial settings for the grasp and pose
+## experiments. The intent of status quo was in part to select the experiments we care about --
+## preserving old settings and old experimental setups is contrary to that mission."* It cost a
+## third of a ~600 core-hour campaign, and it made the results table look as though there were
+## three tasks. The flag itself stays in the benchmark scripts so an archived column can still be
+## reproduced, but reachable is not the same as fielded.
+STATUSQUO_ROWS = tuple(r for r in SOLVER2_ROWS if "free" not in r[2])
+
 
 def stage_STATUSQUO(wall, targets, guesses, shards, only=None, tag="STATUSQUO", seed=1,
                     solvers="ipopt,snopt,nlopt", starts="paired,native"):
     """The campaign of record at the new status quo: contained targets, 180 s, three solvers.
 
-    Twelve rows -- both adopted rungs x SOLVER2_ROWS x both protocols -- under each of the
+    Eight rows -- both adopted rungs x STATUSQUO_ROWS x both protocols -- under each of the
     three method classes at their adopted configurations. Two of the three rows ARE the status
     quo; `mugfree` is a legacy column included only for completeness, because iiwa free grasp
     is unmeasured above 45 s where it has 35/27 timeouts. Report it as a legacy row, never as a
@@ -1821,7 +1835,7 @@ def stage_STATUSQUO(wall, targets, guesses, shards, only=None, tag="STATUSQUO", 
                 + (["--checkpoint", ckpt] if ckpt else []))
         for solver in want_solvers:
             item_shards = shards * STATUSQUO_SHARD_SCALE[solver]
-            for task, token, placement in SOLVER2_ROWS:
+            for task, token, placement in STATUSQUO_ROWS:
                 for start in want_starts:
                     items += item(robot,
                                   f"sc_{tag}_{robot}_{label}_{solver}_{token}"
@@ -2624,8 +2638,8 @@ def selftest():
     ## ~44 h logical run is the one thing here that can exceed run_items.sh's ITEM_TIMEOUT.
     sq_fails = []
     runs_sq = stage_STATUSQUO(180, 60, 8, 8)
-    want_sq = 2 * len(SOLVER2_ROWS) * 2 * sum(8 * STATUSQUO_SHARD_SCALE[s]
-                                              for s in ("ipopt", "snopt", "nlopt"))
+    want_sq = 2 * len(STATUSQUO_ROWS) * 2 * sum(8 * STATUSQUO_SHARD_SCALE[s]
+                                                for s in ("ipopt", "snopt", "nlopt"))
     if len(runs_sq) != want_sq:
         sq_fails.append("expected %d items, got %d" % (want_sq, len(runs_sq)))
     seen_sq = {}
@@ -2655,6 +2669,15 @@ def selftest():
                 sq_fails.append("%s sets %r: STATUSQUO fields each solver's adopted "
                                 "configuration, which is its default, and must not carry a "
                                 "settings axis" % (it["id"], a[i + 1]))
+        ## TWO EXPERIMENTS, BOTH CONTAINED. `--target-placement free` is a vestigial setting of
+        ## the grasp experiment, not a third experiment, and the first run of this stage fielded
+        ## it as one -- a third of the campaign spent preserving exactly what selecting a status
+        ## quo is meant to retire. This is the guard that keeps it out.
+        if a[a.index("--target-placement") + 1] != "shelf":
+            sq_fails.append("%s is not on a contained placement: the status quo is two "
+                            "experiments per robot, both shelf-contained, and `free` is a "
+                            "retired SETTING of the grasp experiment rather than a row"
+                            % it["id"])
         task = a[a.index("--task") + 1]
         if task == "mug" and "--placement-point" in a:
             sq_fails.append("%s passes --placement-point on a grasp row, where both modes "
@@ -2668,9 +2691,9 @@ def selftest():
     ## solver's own scale -- the check that NLopt did not silently inherit IPOPT's 8.
     for solver, scale in STATUSQUO_SHARD_SCALE.items():
         rows = [b for b in seen_sq if f"_{solver}_" in b]
-        if len(rows) != 2 * len(SOLVER2_ROWS) * 2:
+        if len(rows) != 2 * len(STATUSQUO_ROWS) * 2:
             sq_fails.append("%s reaches %d rows, not all %d"
-                            % (solver, len(rows), 2 * len(SOLVER2_ROWS) * 2))
+                            % (solver, len(rows), 2 * len(STATUSQUO_ROWS) * 2))
         bad = [b for b in rows if seen_sq[b] != 8 * scale]
         if bad:
             sq_fails.append("%s: %d row(s) not sharded %d-way, e.g. %s"
@@ -2698,7 +2721,7 @@ def selftest():
     for msg in sq_fails:
         print(f"FAIL stage STATUSQUO: {msg}")
     if not sq_fails:
-        print("ok   stage STATUSQUO: %d items, 3 solvers x 12 rows at 480 cells / 180 s, "
+        print("ok   stage STATUSQUO: %d items, 3 solvers x 8 rows at 480 cells / 180 s, "
               "seed 1, adopted configurations only, NLopt sharded %dx"
               % (want_sq, STATUSQUO_SHARD_SCALE["nlopt"]))
     fails += len(sq_fails)

@@ -56,7 +56,13 @@ running jobs keep going, and nothing here depends on this session staying alive.
 ## Progress
 
 **CAMPAIGN COMPLETE, 2026-09-20 16:26 ET.** 480/480 items, 36/36 logical runs merged with zero
-failures, 17,280 solves. Ran 2026-09-19 21:47 -> 2026-09-20 16:26, ~18.7 h wall on jobs
+failures, 17,280 solves -- of which **the RECORD is 24 runs / 11,520 solves: two robots x TWO
+experiments (grasp and pose, both shelf-contained at the fingertips) x two protocols x three
+solvers.** The other 12 runs were `--target-placement free`, a vestigial SETTING of the grasp
+experiment rather than a third experiment; the data is on disk and is not reported, the stage no
+longer fields it, and the selftest refuses a non-contained placement. Thomas, 2026-09-21: gathering
+it was fine on an idle cluster, but *"the intent of status quo was in part to select the experiments
+we care about"*. Ran 2026-09-19 21:47 -> 2026-09-20 16:26, ~18.7 h wall on jobs
 5681825-5681828 (4 nodes x `PROCS=8`). No stale claims, no errors, no reclaims needed, and the
 "don't claim what the job cannot finish" guard never had to fire on a 48 h job.
 
@@ -80,7 +86,7 @@ failures, 17,280 solves. Ran 2026-09-19 21:47 -> 2026-09-20 16:26, ~18.7 h wall 
 
 ## Results, in one place
 
-**IPOPT, status quo (8 rows): six decisive learned wins, two ties, no losses.** Every pose row on
+**IPOPT, the status quo's 8 rows: six decisive learned wins, two ties, no losses.** Every pose row on
 both robots (p 2.9e-37 to 4.6e-68); Panda contained grasp +148/+153 cells; iiwa contained grasp a tie
 at 447/453 v 442. **SNOPT: four wins, two ties, two losses** (both iiwa contained grasp) -- one
 solver-dependent verdict. **NLopt: all four pose rows decisive learned wins** (iiwa 298/118 v 31,
