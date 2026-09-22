@@ -20,9 +20,9 @@ of the repo is the three-way comparison of formulations for the same IK problem:
 | **analytic** (`PandaIKProgramAnalytic`, `PandaMugProgramAnalytic` — **Panda only**) | end-effector pose `xyz_rpy` (6) + redundancy parameter `psi` (1) | closed-form S-R-S IK (`src/*_analytic_ik.py`) |
 
 **There is no iiwa analytic *program*.** `src/iiwa_analytic_ik.py` holds the closed-form map and `src/iiwa_program.py` imports it, but no `Iiwa14IKProgramAnalytic` exists and
-`scripts/iiwa/iiwa_benchmark.py` registers only `learned` and `numerical`. So the three-way
-comparison is three-way on the Panda and two-way on the iiwa. Writing that arm is future work or
-possibly not done at all (Thomas, 2026-09-19), and the closed-form map that would have served it was
+`scripts/iiwa/iiwa_benchmark.py` registers only `learned` and `numerical`. The comparison is
+therefore three-way on the Panda and two-way on the iiwa. Writing that arm is future work or
+possibly not done at all (Thomas, 2026-09-19); the closed-form map that would have served it was
 deleted rather than maintained unreached, so only the joint limits remain in that file.
 
 All three go through the same `IKFlowProgram` machinery, so a change to constraints/costs affects
@@ -100,8 +100,7 @@ Each checkpoint has a sidecar `<name>.arch.json`, written by
 against the weights: `nb_nodes` (module-list length / 2), `coeff_fn_config`,
 `coeff_fn_internal_size` and the network width are all recoverable from state-dict shapes and are
 verified; a contradicting sidecar **raises**. **`rnvp_clamp` is the one field no check can
-catch**, which is why the sidecar is mandatory. The resolved architecture is attached as
-`solver.arch`. No sidecar → legacy architecture with a `RuntimeWarning`; all on-disk checkpoints
+catch**, hence the mandatory sidecar. The resolved architecture is attached as `solver.arch`. No sidecar → legacy architecture with a `RuntimeWarning`; all on-disk checkpoints
 are backfilled (`scripts/training/backfill_arch_sidecars.py`).
 
 **Hold `dim_latent_space` at each robot's baseline** — iiwa14 8, Panda 7. The latent width *is* the
@@ -113,39 +112,35 @@ check instead of loading silently.
 
 `VarsToQ` is dual-path: under `float` a plain forward pass; under `AutoDiffXd` it calls
 `self.jacobian_gen` (one reverse pass yields both `dq/dvars` and `q`) and chain-rules
-`jacobian @ vars_gradients` into fresh `AutoDiffXd` objects. Both go through
-`MakeFlowInference(nn_model, ...)`, a free function of the lumped variables closing over the
-network and nothing else — which is what lets `FlowJacobianGen` memoise `torch.compile(jacrev(...))`
-per process rather than per program. Analytic formulations instead evaluate `pydrake.math` trig on
-templated types so Drake's own autodiff propagates.
+`jacobian @ vars_gradients` into fresh `AutoDiffXd`. Both go through `MakeFlowInference(nn_model,
+...)`, a free function closing over the network and nothing else, letting `FlowJacobianGen`
+memoise `torch.compile(jacrev(...))` per process rather than per program. Analytic formulations
+instead evaluate `pydrake.math` trig on templated types, so Drake's own autodiff propagates.
 
-Numerical facts worth not rediscovering, several encoded in `ProgramOptions` defaults:
+Numerical facts, several encoded in `ProgramOptions` defaults:
 
-- Evaluate the flow in **float64** (`use_float64=True`). Gradients are analytic, so this is not
-  about differencing: a float32 network produces *values* with a ~1e-7 noise floor, which corrupts
-  every quantity computed as a difference over a small step — line-search actual-vs-predicted
-  reduction, convergence tests, SNOPT's derivative verification. `snopt_function_precision` tells
-  SNOPT that noise floor when running in float32.
-- **`ik_constraint_tol` forms no constraint bound.** The pose rows are a hard equality
-  (`lb = ub = 0`); what survives of the option is the benchmark's gate (see the tolerance ladder).
-- The IK pose constraint is six rows: per-axis position error, then the **roll-pitch-yaw residual**
+- **float64** (`use_float64=True`). Not about differencing — gradients are analytic. A float32
+  network produces *values* with a ~1e-7 noise floor, corrupting everything computed as a difference
+  over a small step: line-search actual-vs-predicted, convergence tests, SNOPT's derivative
+  verification. `snopt_function_precision` declares that floor when running float32.
+- **`ik_constraint_tol` forms no constraint bound.** Pose rows are a hard equality (`lb = ub = 0`);
+  what survives of the option is the benchmark's gate (tolerance ladder).
+- The IK pose constraint is six rows: per-axis position error, then the **rpy residual**
   `rpy(FK(q)) - rpy(target)` wrapped to (-pi, pi] (`orientation_error_rpy`).
-  `orientation_error_form` picks the bounds — `rpy` (default) pins the residual to zero,
-  `rpy_boxed` allows `±ori_tol` per row. **Three signed rows are deliberate**: earlier revisions
-  used a scalar angle `2*arccos(|q.q_target|)`, and taking a norm of a three-component error puts a
-  branch point at zero error — infinite derivative, plus an `eps` clamp returning an `AutoDiffXd`
-  with an *empty* derivative vector. Commit `0be5342` holds the retired forms.
-- Constraint rows with an identically-zero gradient (e.g. the homogeneous row of a transformed
-  point) break LICQ — the mug constraints deliberately drop it.
-- The conditioning variable `c` is boxed near the target (`c_position_slack=0.25`) to keep the flow
-  inside its trained workspace — a heuristic, not a correctness requirement, since the IK
-  constraint is on `FK(q)` and an out-of-distribution `c` cannot produce a false solution. Note the
-  exposure cliff at 0.5 below: the default sits just under it, by luck rather than design.
-- **There is no seeding search, deliberately.** A previous revision drew 256 `(c, z)` candidates,
-  scored them against the problem's own constraints and started from the best — solving part of the
-  problem outside the solver, which only the learned formulation can afford. The machinery is
-  removed, not disabled. `SetStartFromQ(q_init)` is the only way to set an initial guess, and every
-  formulation in a comparison gets the same `q_init`.
+  `orientation_error_form` picks the bounds — `rpy` (default) pins it to zero, `rpy_boxed` allows
+  `±ori_tol` per row. **Three signed rows are deliberate**: a scalar angle
+  `2*arccos(|q.q_target|)` puts a branch point at zero error (infinite derivative), and its `eps`
+  clamp returned an `AutoDiffXd` with an *empty* derivative vector. Retired forms: `0be5342`.
+- Rows with an identically-zero gradient (e.g. the homogeneous row of a transformed point) break
+  LICQ — the mug constraints drop it.
+- `c` is boxed near the target (`c_position_slack=0.25`) to keep the flow in its trained workspace.
+  A heuristic, not a correctness requirement: the IK constraint is on `FK(q)`, so an
+  out-of-distribution `c` cannot produce a false solution. The default sits just under the exposure
+  cliff at 0.5, by luck rather than design.
+- **No seeding search, deliberately.** A previous revision drew 256 `(c, z)` candidates, scored them
+  against the problem's own constraints and started from the best — solving part of the problem
+  outside the solver, which only the learned arm can afford. Machinery removed, not disabled.
+  `SetStartFromQ(q_init)` is the only way to set a guess, and every formulation gets the same one.
 
 ### Why the Jacobian is a `jacrev`, not a JVP
 
@@ -159,10 +154,10 @@ the objective-gradient path, is already covered by sharing the constraint's Jaco
 
 **`torch.compile` on the `jacrev` is worth taking**: **1.48x** on a whole AutoDiffXd `VarsToQ`,
 agreeing with eager to 3.5e-15, one dynamo graph, for a one-off 8-14 s local / ~35 s cluster cold
-cost. An old comment saying otherwise was measuring a *bound method* — `torch.compile` guards on
-everything the callable closes over, so each of thirty programs re-triggered dynamo. It is off by
-default, on with `--compile`, because more iterations inside a fixed cap **moves the learned arm's
-success rate** and only that arm benefits — so **every run being compared must set it the same way**.
+cost. It must be applied to the free function: `torch.compile` guards on everything the callable
+closes over, so compiling a *bound method* re-triggers dynamo per program. It is off by default, on
+with `--compile`, because more iterations inside a fixed cap **moves the learned arm's success
+rate** and only that arm benefits, so **every run being compared must set it the same way**.
 
 ### Profiling
 
@@ -172,8 +167,8 @@ float64 and float32 cost the same wall time despite a 3.4x difference in GPU ker
 70% of a `jacrev` is CPU-side dispatch (PyTorch eager + FrEIA Python; `cudaLaunchKernel` only ~17%),
 so runtime is bounded by how fast the CPU can describe 2853 operations and **even zero-overhead
 execution leaves only a ~3x ceiling**. **Reducing that dispatch cost is out of scope** (Thomas: infra
-fixes for the CPU bottleneck are "future work/possibly not in scope at all") — a number to report,
-not a project.
+fixes for the CPU bottleneck are "future work/possibly not in scope at all") — report the number,
+do not make it a project.
 
 ### The conditioning frame (read this before touching the learned formulation)
 
@@ -184,7 +179,7 @@ the model IKFlow was trained against — puts `panda_hand` at `[0, 0, 0.107]`, r
 `GetBodyByName("panda_hand")` returns the finray one, **27 mm and 120 degrees** away. The iiwa's
 `iiwa_link_7` is 45 mm short of the flow's frame.
 
-The symptom is unmistakable. Running the flow *forwards* on a random configuration (`rev=False`,
+The symptom is unmistakable: running the flow *forwards* on a random configuration (`rev=False`,
 which inverts it exactly) returns the latent that would have produced it:
 
 | robot | at the scene frame | at the calibrated frame | typical `\|z\|` under the prior |
@@ -195,20 +190,20 @@ which inverts it exactly) returns the latent that would have produced it:
 A latent of 67 is the network reporting that the configuration is astronomically unlikely for that
 conditioning pose. `IKFlowProgram.CalibrateFlowFrame` measures the offset against
 `ik_solver.robot.forward_kinematics` at several configurations, checks it is constant (both frames
-are welded to the same link, so it must be) and caches it as `self.X_ee_flow`; `FlowPoseInWorld()`
-is what should be used wherever a conditioning pose is formed.
+are welded to the same link, so it must be) and caches it as `self.X_ee_flow`. Use
+`FlowPoseInWorld()` wherever a conditioning pose is formed;
 `ProgramOptions.calibrate_flow_frame=False` restores the old behaviour for ablations.
 
-**It was called only by the grasp subclasses until 2026-09-16**, and the omission was invisible
-because the Panda pose scene used `panda_jrl.urdf` (whose `panda_hand` really is the trained frame)
-and the iiwa's 45 mm offset is a pure translation. Welding the finray into the pose scene destroyed
-that coincidence and the Panda pose task collapsed to **10/60 with median `max_violation` 0.4**,
-against 58/60 and 1.8e-08 for the grasp task in the *same* scene with the *same* chart. Both base
-pose programs now calibrate; it is a no-op where the frames agree and draws from its own fixed-seed
-generator so it cannot shift the grid. **Every pose column measured before this is superseded.**
-The general lesson: **a calibration that is skipped is indistinguishable from one that is correct,
-until the geometry it silently relied on changes** — and a miscalibration and an architectural
-weakness produce the same symptom, each masking the size of the other.
+**It was called only by the grasp subclasses until 2026-09-16**, invisibly, because the Panda pose
+scene used `panda_jrl.urdf` (whose `panda_hand` really is the trained frame) and the iiwa's 45 mm
+offset is a pure translation. Welding the finray into the pose scene destroyed that coincidence and
+the Panda pose task collapsed to **10/60 with median `max_violation` 0.4**, against 58/60 and
+1.8e-08 for the grasp task in the *same* scene with the *same* chart. Both base pose programs now
+calibrate; it is a no-op where the frames agree and draws from its own fixed-seed generator so it
+cannot shift the grid. **Every pose column measured before this is superseded.** The lesson:
+**a calibration that is skipped is indistinguishable from one that is correct, until the geometry it
+silently relied on changes** — and a miscalibration and an architectural weakness produce the same
+symptom, each masking the size of the other.
 
 ### The latent trust region, and what the ablation ladder attributed
 
@@ -231,9 +226,9 @@ forward pass and `jacrev` exactly where `EvalAllConstraints` had just evaluated 
 log shows 1276 objective evaluations against 1276 constraint evaluations — about half the network
 work redundant). `IKFlowProgram.QAndPose` memoises `(q, pose)` on the iterate, keyed on the values
 **and** the AutoDiffXd derivative block (keying on the value alone would hand back a Jacobian
-computed against the wrong seed matrix), behind `share_flow_evaluations`, which **defaults on** —
-the memoised path is bit-identical, so there is no reason to run without it except to reproduce a
-pre-overhaul measurement.
+computed against the wrong seed matrix), behind `share_flow_evaluations`, which **defaults on**:
+the memoised path is bit-identical, so run without it only to reproduce a pre-overhaul
+measurement.
 
 ### Scenes and utilities (`src/utils.py`, `models/`)
 
@@ -243,8 +238,7 @@ model-directives YAML, registering `package.xml` so `package://combining_kinemat
 writing to the tracked YAML. `GenerateDiagramWithMug(q, program, yaml_file, meshcat)` uses exactly
 that: an `add_model`/`add_weld` pair for a mug at the gripper pose of `q` (the weld pose passed as a
 `pydrake.common.schema.Transform`, not formatted into text). The YAML on disk is never modified, so
-a crash cannot leave a stray mug in a tracked scene — it used to append-then-truncate, which could.
-`BuildEnv(meshcat=None)` skips visualization outright, which is *not* the same as passing `None`
+a crash cannot leave a stray mug in a tracked scene. `BuildEnv(meshcat=None)` skips visualization outright, which is *not* the same as passing `None`
 through to `ApplyVisualizationConfig` (Drake would start its own).
 
 Targets in the mug experiments are generated by sampling collision-free `q` and welding a mug at
@@ -337,7 +331,7 @@ question and IPOPT handles it directly rather than through barrier terms on two 
 first place)."* On 480 iiwa pose cells the joint-space arm's median `pos_error` was 1.0001e-04
 against a 1e-4 bound, with 64% a rounding error above it and none above 1.01e-4. A gate at exactly
 1e-4 scores which side the last ulp fell on, and it *appeared to reverse* a row: 296-vs-332
-(p = 0.016 against) became 199-vs-120 (p = 2.5e-08 in favour). A coin toss dressed as a result.
+(p = 0.016 against) became 199-vs-120 (p = 2.5e-08 in favour).
 
 **Never set an acceptance gate equal to a bound the solver is optimising against**, and before
 proposing to tighten one, check the distribution of the gated quantity: if solutions are pinned to
@@ -349,7 +343,7 @@ on the pose task**, moving no ordering.
 ### A region an initial guess may violate must be a general constraint, never a variable bound
 
 IPOPT's `bound_push` projects the initial guess into every *bounding box* before evaluating
-anything, so a box silently reshapes the start protocol. This bit twice.
+anything, so a box silently reshapes the start protocol. Two instances:
 
 **The conditioning-pose box.** Pre-clipping `c` teleported it to the box face while the latent
 stayed tuned to the unprojected pose, making the "exact" and old "pre-clipped" protocols land on
@@ -366,10 +360,10 @@ configuration it represents exactly. Measured on iiwa pose paired, 20 s, same gr
 `|z| ~ 2.9` on its own — the whole point of the region being a constraint. **Every archived paired
 learned column predating this is void.**
 
-Two structural notes. The box lives in **one** method, `LatentBoxConstraint()`, because the first
-repair fixed `generic_program.py` while the mug subclasses overrode `BoundingBoxConstraint` and
-carried their own copies — the pose arms were fixed and the grasp arms silently were not. And
-nothing may project a guess without recording that it did (`clip_distance`). Variable bounds remain
+Two structural notes. The box lives in **one** method, `LatentBoxConstraint()`: the first repair
+fixed `generic_program.py` while the mug subclasses overrode `BoundingBoxConstraint` with their own
+copies, so the pose arms were fixed and the grasp arms silently were not. And nothing may project a
+guess without recording that it did (`clip_distance`). Variable bounds remain
 fine for regions a start always respects (the correction's ±0.1), and infeasible initial guesses
 are acceptable by policy — Thomas: *"we're not assuming feasible initial guesses."*
 
@@ -391,20 +385,20 @@ Improvements must come from the formulation or the solver, never from making the
 ### The correction penalty is a stated part of the learned formulation
 
 `correction_cost_weight = 10`, approved by Thomas on 2026-09-02 (*"A penalty on the correction term
-is acceptable"*). The draft says `q_c ~ 0` without specifying how that is imposed; this is what
-imposes it. So the weight is a **stated** part of the formulation and must appear wherever the
-learned arm is described, and every table must still show what the penalty buys and costs.
+is acceptable"*). The draft says `q_c ~ 0` without specifying how; this imposes it. The weight is
+therefore a **stated** part of the formulation and must appear wherever the learned arm is
+described, and every table must still show what the penalty buys and costs.
 
 **Options naming learned-only decision variables must be guarded.** `add_costs` applied
 `correction_cost_weight` unconditionally, but `correction` exists only on the learned arm and all
-three formulations share one `ProgramOptions`. So `--set correction_cost_weight=10` raised
+three formulations share one `ProgramOptions`. `--set correction_cost_weight=10` therefore raised
 `AttributeError` inside every numerical/analytic program's construction and each of those columns
-scored **0 of 480 in about 10 ms per cell**. The failure mode is worth remembering: a whole column
+scored **0 of 480 in about 10 ms per cell**. The failure mode: a whole column
 of zeroes with `median_max_violation = nan`, three orders of magnitude below the cap, with
 `fail_reason = "error"` rather than a named task gate. **Any arm reporting a per-cell wall time
 three orders below the cap is not solving badly, it is not solving at all.** `_abort_on_dead_arm`
 in `src/benchmark.py` now aborts when an arm fails identically, in under a second, on its first
-three cells — this pattern cost two whole columns of cluster campaigns.
+three cells; the pattern cost two whole columns of cluster campaigns.
 
 ### Every result is told in success, iterations, cost and wall clock
 
@@ -415,8 +409,7 @@ arbitrary; only iterations hides that the learned arm's iteration is ten to thir
 expensive; only success hides that on the grasp task its solutions cost roughly twice the
 baseline's.
 
-Two musts, both learned by getting them wrong: **cost is compared only on cells *both* arms
-solved** (a median over each arm's own successes compares different cell sets, and the easy cells
+Two musts: **cost is compared only on cells *both* arms solved** (a median over each arm's own successes compares different cell sets, and the easy cells
 are exactly the ones a weaker arm also solves, so that form flatters whichever arm fails more); and
 **learned-only regularizers are excluded from the reported objective** (`reported_cost`), so the
 column measures the objective every formulation shares.
@@ -429,13 +422,13 @@ things to make it better"*).
 
 **A cap check before reporting any loss**: does the losing arm have meaningful timeouts? Timeouts
 ~0 → the cap is innocent and the result is a formulation result. Timeouts significant → the cap is
-measuring throughput, not formulation; raise it and re-measure. The case that established this:
-iiwa `n4` contained grasp scored 391 v 442 (p = 1.4e-06, a clear loss) at 45 s with 88 timeouts; at
-180 s with 0 timeouts it is 447 v 442, a tie. The arms were tied all along. Relatedly, **the cap is a
-budget for the arm that evaluates a network, not a shared budget**: across 5/10/20/45/90/180 s every
-baseline is flat, with one exception — on iiwa grasp paired the joint-space arm is itself cap-bound
-below 20 s, with cells running 1300-1430 iterations against that arm's median of 70. So the
-joint-space arm is not uniformly cheap; it has a tail.
+measuring throughput, not formulation; raise it and re-measure. Established by iiwa `n4` contained
+grasp: 391 v 442 (p = 1.4e-06, a clear loss) at 45 s with 88 timeouts; at 180 s with 0 timeouts it is
+447 v 442, a tie — the arms were tied all along. **The cap is a budget for the arm that evaluates a
+network, not a shared budget**: across 5/10/20/45/90/180 s every baseline is flat, with one
+exception — on iiwa grasp paired the joint-space arm is itself cap-bound below 20 s, with cells
+running 1300-1430 iterations against that arm's median of 70. That arm is not uniformly cheap; it
+has a tail.
 
 ## Benchmarking (`src/benchmark.py`, `scripts/*/[a-z]*_benchmark.py`)
 
@@ -450,7 +443,7 @@ joint-space arm is not uniformly cheap; it has a tail.
   analytic at `FK(q_init)` with `psi`/`GC` recovered by inversion, learned at `c = FK(q_init)` with
   `z` from running the flow forwards. Order matters — invert **first**, then clip; clipping first
   and inverting at the projected pose returns `|z| ~ 1e7`, because a random configuration is not a
-  grasp of this mug and the flow is right to say so. `native` gives each formulation the
+  grasp of this mug. `native` gives each formulation the
   initialisation it would have outside a comparison. The joint-space arm's two protocols coincide
   (its native start *is* a random configuration), so any difference between the tables is
   attributable to the others. Neither protocol searches, and the paired start is *measured* rather
@@ -458,7 +451,7 @@ joint-space arm is not uniformly cheap; it has a tail.
 - **Success verified from the returned point**, not from `result.is_success()`: every binding is
   re-evaluated at the solution and the task re-measured from `q`, with a named `fail_reason`. Every
   learned failure in the archived runs was a wall-clock timeout, and a timeout that landed on a
-  valid grasp is a success. Two gates that are easy to get wrong: an interior-point method parks
+  valid grasp is a success. Two gates to get right: an interior-point method parks
   *on* the collision constraint (value 1 + 1e-7) so that gate needs the binding's own slack; and
   `PandaMugProgramAnalytic` inherits from the *pose* analytic class, so the grasp must be measured
   by asking for `between_fingers` by name.
@@ -471,7 +464,7 @@ joint-space arm is not uniformly cheap; it has a tail.
 
 **Abnormal exits keep the iterate.** Thomas rejected a watchdog that raised from inside the
 flow-evaluation callback: *"I don't like the idea of messing with QAndPose to force kill it, since
-then we don't get an intermediate solution?"* So `Solve()` keeps `program.last_iterate`; any
+then we don't get an intermediate solution?"* `Solve()` therefore keeps `program.last_iterate`; any
 abnormal exit is verified from that point and recorded as `recovered_feasible`/`recovered_cost`
 alongside the failure reason; and the *process* is bounded from outside (OS-level `timeout`), never
 the solve from inside a hot-path callback. `SolveTimeout`, `CheckDeadline` and `hard_time_factor`
@@ -482,7 +475,7 @@ Beyond the verdict a record carries `max_violation` and `detail["violations_all"
 `median_correction_inf` and `correction_binding` (how much of the ±0.1 box solutions use — the
 check that the learned arm is not quietly becoming a reparameterised joint-space arm); and `q`,
 plus `q_lift` and `q_flow` separately under `lift_q`. `median_max_violation` separates the arms by
-six orders of magnitude and is worth reading next to any success count.
+six orders of magnitude and should be read next to any success count.
 
 Three switches. `--compile` turns on the compiled flow Jacobian (see above: set it identically
 everywhere being compared). `--set NAME=VALUE` overrides any `ProgramOptions` field, so a sweep
@@ -508,8 +501,8 @@ Two projections that were once necessary have been removed — the learned arm's
 and the pose analytic arm's clipping into its `xyz_rpy` box (which had it always beginning at the
 target pose, a median 2.7 rad from the shared `q_init`). `legacy_paired_start=True` restores the old
 behaviour. `start_q_error` measures the *initial guess*; where a guess sits outside a variable's
-bounds IPOPT projects it at iterate 0 and `clip_distance` records that. The two numbers together
-describe honestly how much survives the solver's own bound projection.
+bounds IPOPT projects it at iterate 0 and `clip_distance` records that, so the two numbers together
+describe how much survives the solver's own bound projection.
 
 ### `collision_value` is a penalty, not a clearance
 
@@ -532,7 +525,7 @@ point is that we test interior point, augmented lagrangian, and SQP."* So `--sol
 *equality* constraints into the AL and leaves inequalities to the inner solver, and this program
 carries both). Any solver added later must be justified by the class it contributes. **The solver
 is a reporting axis, never a choice**: Thomas, *"we would not pick one solver or the other, but
-rather report the performance for both solvers."* It is shared across arms within a run and varied
+rather report the performance for both solvers."* It is shared across arms within a run, varied
 across runs.
 
 All three take `kGenericConstraint`/`kGenericCost`/`kCallback`, and all three call
@@ -545,13 +538,13 @@ The SNOPT branch used to read IPOPT's `acceptable_tol`/`acceptable_constr_viol_t
 optimality`/`Major feasibility tolerance`. That is rung 2 of the tolerance ladder done wrong:
 IPOPT's `acceptable_*` family is its **relaxed early-stop** criterion, not what it converges to (its
 real `tol` is 1e-8). **Do not transplant one solver's option values onto another.** Unset
-`snopt_*`/`nlopt_*` fields are simply not passed, so each solver sits at its own defaults and the
-shared, deliberately looser task gate decides success.
+`snopt_*`/`nlopt_*` fields are not passed, so each solver sits at its own defaults and the shared,
+deliberately looser task gate decides success.
 
 **But "each at its own defaults" is a CHOICE, and not a symmetric one.** `tol`, `constr_viol_tol`,
 `dual_inf_tol` and `compl_inf_tol` were never `ProgramOptions` fields at all, so every archived run
 took IPOPT's own defaults — `constr_viol_tol` **1e-4** against SNOPT's Major feasibility **1e-6**,
-`dual_inf_tol` **1** against Major optimality **2e-6**. So the interior-point column was allowed
+`dual_inf_tol` **1** against Major optimality **2e-6** — the interior-point column was allowed
 100x the constraint violation and six orders more dual infeasibility than the SQP column, on top of
 an early stop (`acceptable_tol=1e-3`, `acceptable_iter=1`) SNOPT has no counterpart for. That is a
 property of the HARNESS, not of interior-point methods. The four fields are now plumbed. **The task
@@ -576,7 +569,7 @@ the column is only comparable if it means the same thing. SNOPT's minors are kep
 has one user function, so IPOPT's four eval counts have no SNOPT counterpart and stay `None` rather
 than being filled with a different quantity.
 
-**So the program counts evaluations itself** (`IKFlowProgram.ResetEvalCounts`, counted in
+**The program counts evaluations itself** (`IKFlowProgram.ResetEvalCounts`, counted in
 `QAndPose`, the one funnel every arm's solve passes through). `map_jacobian` is the AutoDiffXd
 count — one `jacrev` through the network each for the learned arm. It is the only cost measure the
 NLopt column has, and it cross-validates: on the SNOPT smoke run it equalled `User function calls
@@ -596,14 +589,14 @@ the two apart. `"Timing Level"` was set for the life of this repo and silently w
 block, because SNOPT's parser is case-sensitive on the second word while Drake raises only on
 keywords SNOPT does not know at all. Every option this branch exposes was verified reaching the
 solver — for IPOPT by requiring `used = yes` in the `print_user_options` block, for SNOPT by
-requiring the value in the parameter echo — and that check earned its place three times:
+requiring the value in the parameter echo. It caught three:
 
 - **`Hessian updates` is inert** at these sizes: SNOPT picks full-memory mode below 75 variables and
   the programs have 20-21, so the echo keeps reporting 99999999 however it is set. `Hessian
   frequency` is the one that bites.
 - **`Nonderivative linesearch` is a VALUELESS keyword** — passing 0 turns it ON exactly as 1 does,
-  so it is a bool emitted only when True. The echo abbreviates it `Nonderiv.  linesearch`, which is
-  why a first probe grepping its full name wrongly called it inert.
+  so it is a bool emitted only when True. The echo abbreviates it `Nonderiv.  linesearch`, so a
+  probe grepping its full name wrongly calls it inert.
 - **`linear_solver=mumps` does not exist.** Drake's IPOPT is built against SPRAL and offers only
   `spral` and `custom`, so there is no linear-solver axis on this problem.
 
@@ -612,9 +605,9 @@ requiring the value in the parameter echo — and that check earned its place th
 `acceptable_dual_inf_tol` defaults to **1e+10** and the two acceptable infeasibility tolerances to
 **1e-2**. A sweep arm labelled "IPOPT's defaults" that was not cost a resubmission.
 
-**The Drake on the laptop is not necessarily the Drake on the cluster**, and that asymmetry is what
-the option-surface checks exist for. It bit once concretely: the cluster then ran the 1.56.0 tarball,
-whose `NloptSolver` exposes exactly six options (`algorithm`, `constraint_tol`, `xtol_rel`,
+**The Drake on the laptop is not necessarily the Drake on the cluster** — the reason for the
+option-surface checks. The cluster once ran the 1.56.0 tarball, whose `NloptSolver` exposes exactly
+six options (`algorithm`, `constraint_tol`, `xtol_rel`,
 `xtol_abs`, `max_eval`, `max_time`) against a source build's eleven and this pin's sixteen. Drake
 validates NLopt names strictly and **raises** on an unknown one — from inside `Solve`, so it lands in
 `run_grid`'s per-cell `except` and becomes a **full column of instant failures** rather than an error.
@@ -622,8 +615,8 @@ validates NLopt names strictly and **raises** on an unknown one — from inside 
 `tests/test_solver_plumbing.py` bounds the emitted keys by the *running* Drake's surface; keep both.
 
 **`max_eval` is not "unset" by default** — Drake defaults it to 1000, a cap that binds here, so it
-must be set deliberately or the NLopt column silently measures an evaluation budget rather than the
-wall clock.
+must be set explicitly or the NLopt column silently measures an evaluation budget, not the wall
+clock.
 
 ### The result: IPOPT > SNOPT >>> NLopt, and the whole axis is CLOSED
 
@@ -664,11 +657,11 @@ protocol conclusion from 60 cells.**
 tightly than SNOPT's `Time limit` (20.0-20.1 s against 24-28 s in a local probe), because SNOPT only
 checks at major-iteration boundaries.
 
-**One cap-rule lesson, and it is the unusual case.** At its defaults NLopt timed out on 60 of 60
-grasp cells, which looks exactly like the throughput case the cap rule is written for — but at 180 s
-ten of twelve rows are identical to 45 s. The default configuration never terminates its *inner*
-solve, so more wall clock buys no outer progress. The cap rule still holds; it just needed the cap
-arm to be **run rather than assumed**.
+**One cap-rule lesson, the unusual case.** At its defaults NLopt timed out on 60 of 60 grasp cells,
+which looks exactly like the throughput case the cap rule is written for — but at 180 s ten of twelve
+rows are identical to 45 s. The default configuration never terminates its *inner* solve, so more
+wall clock buys no outer progress. The cap rule still holds; it just needed the cap arm to be **run
+rather than assumed**.
 
 ### What solver tuning is worth: IPOPT's early stop, and one SNOPT setting
 
@@ -688,7 +681,7 @@ IPOPT's solutions also cost less. **The fairness question is answered: the order
 **The early stop is worth 39 cells and a 9x speedup, and that has to be stated** — and it is **NOT
 returning sloppy points.** Fielded successes sit at 1.29e-08, five orders inside the gate and the same
 quality as SNOPT's. Turning it off drives the violation to 2.22e-15 and success *down* to 62 of 240:
-IPOPT without it keeps polishing a solution it already has until the clock kills it. So
+IPOPT without it keeps polishing a solution it already has until the clock kills it.
 `acceptable_iter = 1` does not let IPOPT scrape past the gate, it lets IPOPT **recognise it is already
 done and stop**, a real capability under a wall-clock cap. SNOPT has no counterpart and would not
 benefit. Nothing was adopted: the alternatives move success by at most +2 cells of 240, and changing
