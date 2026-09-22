@@ -235,6 +235,92 @@ def row_table(runs, solver, tokens, title):
     return rows
 
 
+## The headline layout, copied from writing/tro-paper/tables/*_alternate_organization.tex so the two
+## papers' tables can be read side by side. Rows are EXPERIMENTS; each solver is a column block with
+## the learned and joint-space arms ADJACENT, because the comparison of interest is learned-vs-joint
+## space per solver and putting them next to each other makes it a glance rather than a lookup. One
+## METRIC PER TABLE -- packing the quartet into one wide table per solver is what this replaced.
+## Thomas, 2026-09-21, also: "please include zero rows in tables, otherwise it superficially looks
+## like something is missing", hence every row prints and a genuinely absent comparison says N/A.
+METRIC_BLOCKS = (("ipopt", "IP"), ("nlopt", "AL"), ("snopt", "SQP"))
+
+
+def metric_tables(runs):
+    """The four headline tables: success rate, cost, runtime, iterations."""
+    cells = {}
+    for tag, s in runs.items():
+        p = tag.split("_")
+        if p[5] not in STATUS_QUO_ROWS:
+            continue
+        L = arm_stats(s, "learned", "numerical")
+        J = arm_stats(s, "numerical", "learned")
+        cells[(p[2], p[5], p[8], p[4])] = (L, J)
+    exps = sorted({(r, row, st) for (r, row, st, _) in cells},
+                  key=lambda k: (k[0], ROW_ORDER[k[1]], k[2]))
+
+    def emit(title, note, pick, fmt, better):
+        print(f"\n  {title}")
+        print(f"  {note}")
+        head = "".join(f"{b + ' L':>13}{b + ' JS':>13}" for _, b in METRIC_BLOCKS)
+        print(f"  {'experiment':<30}{head}")
+        for e in exps:
+            vals = {}
+            for solver, _ in METRIC_BLOCKS:
+                got = cells.get((e[0], e[1], e[2], solver))
+                vals[solver] = pick(*got) if got else (None, None)
+            ## The row marker goes on the best value anywhere in the row, so it has to be
+            ## chosen across solvers before any cell is formatted.
+            flat = [(v, (s, i)) for s, pair in vals.items()
+                    for i, v in enumerate(pair) if v is not None]
+            mark = None
+            if flat:
+                mark = min(flat, key=lambda x: x[0])[1] if better(0, 1) else \
+                       max(flat, key=lambda x: x[0])[1]
+            out = []
+            for solver, _ in METRIC_BLOCKS:
+                l, j = vals[solver]
+                fl, fj = fmt(l), fmt(j)
+                if l is not None and j is not None:
+                    if l == j:
+                        fl, fj = f"*{fl}*", f"*{fj}*"
+                    elif better(l, j):
+                        fl = f"*{fl}*"
+                    else:
+                        fj = f"*{fj}*"
+                elif l is not None:
+                    fl = f"*{fl}*"
+                elif j is not None:
+                    fj = f"*{fj}*"
+                if mark == (solver, 0):
+                    fl += "*"
+                if mark == (solver, 1):
+                    fj += "*"
+                out += [fl, fj]
+            label = f"{e[0]} {ROW_NAME[e[1]].split(' (')[0]} {e[2]}"
+            print(f"  {label:<30}" + "".join(f"{c:>13}" for c in out))
+
+    f3 = lambda v: "N/A" if v is None else f"{v:.3f}"
+    fi = lambda v: "N/A" if v is None else f"{v:.0f}"
+    print("\n=== HEADLINE TABLES (learned vs joint space, per solver)")
+    print("  IP = interior point (IPOPT), AL = augmented Lagrangian (NLOPT),")
+    print("  SQP = sequential quadratic programming (SNOPT). *better* of each pair is starred;")
+    print("  a trailing * marks the best in the row. Every row prints, zeros included.")
+    emit("Table 1 -- success rate of 480 cells", "higher is better",
+         lambda L, J: (L["succ"] / L["n"], J["succ"] / J["n"]), f3, lambda a, b: a > b)
+    emit("Table 2 -- optimal cost, cells BOTH arms solved, learned-only regularizers excluded",
+         "lower is better; N/A means fewer than %d shared solved cells, so no comparison exists"
+         % MIN_COST_CELLS,
+         lambda L, J: (L["cost"], J["cost"]), f3, lambda a, b: a < b)
+    emit("Table 3 -- mean runtime, s, over ALL cells", "lower is better; this machine only, never "
+         "compared across machines",
+         lambda L, J: (L["wall_all"], J["wall_all"]), lambda v: "N/A" if v is None else f"{v:.2f}",
+         lambda a, b: a < b)
+    emit("Table 4 -- median major iterations over solved cells",
+         "lower is better; AL is N/A BY CONSTRUCTION -- NloptSolverDetails carries a single status "
+         "and NLopt has no major iteration to count",
+         lambda L, J: (L["iters"], J["iters"]), fi, lambda a, b: a < b)
+
+
 def main(only):
     want = [s for s in SOLVERS if not only or s in only]
     runs = load("sc_STATUSQUO_", cells=CELLS)
@@ -248,6 +334,9 @@ def main(only):
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")
 
+    metric_tables(runs)
+
+    print("\n=== PER-SOLVER DETAIL (discordant counts, McNemar p, timeouts)")
     all_rows = {}
     for solver in want:
         print(f"\n=== {SOLVER_NAME[solver]}   [{CONFIG[solver]}]")

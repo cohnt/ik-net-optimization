@@ -1,4 +1,12 @@
-# Stage STATUSQUO: the campaign's own resume point
+# Stage STATUSQUO -- CLOSED
+
+**The status quo is ESTABLISHED (Thomas, 2026-09-21).** This file is now history, not a runbook:
+the campaign ran, the tables are in `CLAUDE.md` under "The status quo measured", and
+`scripts/report_statusquo.py` regenerates them. Nothing here needs doing.
+
+Read it for: what was measured and with what invariants, the acceptance checks and their results,
+the five harness defects the campaign found, and the manifest-regeneration command (whose CLI
+defaults are narrower than this stage and fail silently).
 
 **Read this first if you are picking the campaign up cold** — after a pause, a session
 restart, or a context compaction. It is the state of record; conversation context is not.
