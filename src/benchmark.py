@@ -34,7 +34,7 @@ import re
 import shutil
 import tarfile
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -345,16 +345,6 @@ def binding_worst(prog, x):
         name = evaluator.get_description() or type(evaluator).__name__
         worst[name] = max(w, worst.get(name, -np.inf))
     return worst
-
-
-def binding_violations(prog, x, tol):
-    """Bindings of `prog` violated by more than `tol` at `x`, keyed by description.
-
-    Mirrors ../codebase's `CheckConstraints`: the point is not only whether the returned
-    point is feasible but *which* constraint it misses, since "timed out" and "converged
-    to something infeasible" call for different fixes.
-    """
-    return {k: v for k, v in binding_worst(prog, x).items() if v > tol}
 
 
 @dataclass

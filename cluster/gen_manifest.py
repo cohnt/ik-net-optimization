@@ -35,8 +35,8 @@ import sys
 SCRIPTS = {"panda": "scripts/panda/panda_benchmark.py",
            "iiwa": "scripts/iiwa/iiwa_benchmark.py"}
 
-# Arms per robot. The iiwa has no analytic arm (src/iiwa_analytic_ik.py exposes a
-# different signature and is deliberately left out of the harness).
+# Arms per robot. The iiwa has no analytic arm: no Iiwa14IKProgramAnalytic exists, and
+# writing one is future work or possibly not done at all (Thomas, 2026-09-19).
 ALL_ARMS = {"panda": "learned,numerical,analytic,analytic8", "iiwa": "learned,numerical"}
 
 # Seconds per (cell x arm), used only for the LPT ordering and the --summary

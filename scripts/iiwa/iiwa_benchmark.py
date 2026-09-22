@@ -1,11 +1,12 @@
 """Paired-grid benchmark on the iiwa14, learned against joint space.
 
 The same harness as `scripts/panda/panda_benchmark.py`; only the robot, the scene and the
-program classes differ. There is no analytic arm here yet: `src/iiwa_analytic_ik.py`
-exposes a different signature from the Panda one (`IK(pose, GC, psi)` with the gripper
-offset baked into `gripper_ik` rather than passed as a `pose_offset`), so wiring it up is
-a frame-conventions job in its own right and is deliberately left out rather than done
-carelessly -- a mis-specified offset would silently measure the wrong frame, which is
+program classes differ. There is no analytic arm here: no `Iiwa14IKProgramAnalytic`
+exists, and writing one is future work or possibly not done at all (Thomas, 2026-09-19).
+It was never a small job -- the iiwa closed-form map took `IK(pose, GC, psi)` with the
+gripper offset baked in rather than passed as a `pose_offset`, so wiring it up is a
+frame-conventions job in its own right, and a mis-specified offset would silently
+measure the wrong frame, which is
 exactly the failure this overhaul just found in the Panda grasp scene.
 
 Usage:

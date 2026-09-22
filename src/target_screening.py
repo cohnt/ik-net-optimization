@@ -20,10 +20,8 @@ check: that one runs on the solve scene with no target mug present at all, and c
 import os
 from dataclasses import dataclass
 
-import numpy as np
 from pydrake.geometry import SceneGraph  # noqa: F401  (documents what BuildEnv returns)
 from pydrake.multibody.parsing import ModelDirective, AddModel
-from pydrake.multibody.tree import ModelInstanceIndex
 
 from src.shelf_regions import PointInShelfCompartments
 from src.utils import BuildEnv, RepoDir
