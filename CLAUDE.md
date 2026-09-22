@@ -679,23 +679,20 @@ below was pre-registered before any result was read, and every one is **counted 
 pooled**.
 
 **IPOPT: the convergence tolerances are INERT and the acceptable-point machinery is everything**
-(stage SWEEP, 23 settings, 240 cells). Holding IPOPT to SNOPT's convergence numbers scores 212
-against the fielded 211, and every single-factor convergence row is within noise — IPOPT already
-converges far tighter than either default, so the 1e-4-against-1e-6 asymmetry documented above was
-real on paper and worth **zero cells**. At each solver's own defaults — what rung 2 of the tolerance
-ladder asks for — **IPOPT 200, SNOPT 141, p = 4.1e-09**, and on the 119 cells both solve IPOPT's
-solutions also cost less (5.574 against 6.841). **The fairness question is answered: the ordering
-survives it.**
+(stage SWEEP, 23 settings, 240 cells). Holding IPOPT to SNOPT's convergence numbers is within noise —
+IPOPT already converges far tighter than either default, so the 1e-4-against-1e-6 asymmetry documented
+above was real on paper and worth **zero cells**. At each solver's own defaults, which is what rung 2
+of the tolerance ladder asks for, **IPOPT 200, SNOPT 141, p = 4.1e-09**, and on the cells both solve
+IPOPT's solutions also cost less. **The fairness question is answered: the ordering survives it.**
 
 **The early stop is worth 39 cells and a 9x speedup, and that has to be stated** — and it is **NOT
-returning sloppy points.** Fielded successes sit at 1.29e-08, five orders inside the gate and the
-same quality as SNOPT's. Turning the early stop off drives the violation to 2.22e-15 and success
-*down* to 62 of 240: IPOPT without it keeps polishing a solution it already has until the clock
-kills it. So `acceptable_iter = 1` does not let IPOPT scrape past the gate, it lets IPOPT
-**recognise it is already done and stop**, which under a wall-clock cap is a real capability. SNOPT
-has no counterpart and would not benefit, only 3.6% of its failures being time limits. Nothing was
-adopted: the alternatives move success by at most +2 cells of 240, and changing the default would
-break comparability with every archived run.
+returning sloppy points.** Fielded successes sit at 1.29e-08, five orders inside the gate and the same
+quality as SNOPT's. Turning it off drives the violation to 2.22e-15 and success *down* to 62 of 240:
+IPOPT without it keeps polishing a solution it already has until the clock kills it. So
+`acceptable_iter = 1` does not let IPOPT scrape past the gate, it lets IPOPT **recognise it is already
+done and stop**, a real capability under a wall-clock cap. SNOPT has no counterpart and would not
+benefit. Nothing was adopted: the alternatives move success by at most +2 cells of 240, and changing
+the default would break comparability with every archived run.
 
 **SNOPT: one setting of thirteen survives 480 cells x 12 rows, and no combination beats it.** The
 motivation was fairness, not rescue — IPOPT's column ran a tuned configuration while SNOPT's ran bare
@@ -771,11 +768,10 @@ snopt_major_step_limit=None`, which emits the option not at all. `tests/test_sol
 pins both directions.
 
 **NLopt: `LD_AUGLAG` + `LD_MMA` inner + inner `xtol_rel = ftol_rel = 1e-3`.** Fielded on Thomas's
-criterion — *"Feasibility is the name of the game, objective cost is secondary."* Against Drake's
-NLopt defaults on the learned arm it is better on 5 of 12 rows, worse on 1, unchanged on 6 (all six
-being rows where nothing solves), and it collapses both the residual and the work per cell: Panda
-grasp contained native 12 -> 42 of 60 (p = 1.9e-09) at 3532 -> 66 Jacobians, Panda grasp free native
-27 -> 53 (p = 2.2e-07) at 3528 -> 41, iiwa pose paired 9 -> 21 (p = 0.012).
+criterion — *"Feasibility is the name of the game, objective cost is secondary."* Against Drake's NLopt
+defaults on the learned arm it is better on 5 of 12 rows, worse on 1, unchanged on 6 (all six rows
+where nothing solves), and it collapses both the residual and the work per cell — Panda grasp contained
+native 12 -> 42 of 60 (p = 1.9e-09) at 3532 -> 66 network Jacobians is the clearest instance.
 
 **Three things must be reported with it.** It **failed** stage NLOPTTUNE's pre-registered gate, which
 asked whether to spend 480-cell compute and not whether the setting is the best configuration —
