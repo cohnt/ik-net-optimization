@@ -308,6 +308,18 @@ before the logs behind it are dropped.
 First application, 2026-09-03: local `results/` went from **845 MB to 95 MB** (370
 summaries), and the Stage G aggregate still reproduces exactly from what remains.
 
+**NEVER run a git command on the cluster.** `/home/gridsan/tcohn/.git` exists — the
+SuperCloud home directory is itself a git repository, a clone of
+`real-stanford/diffusion_policy` — so git walks up from anywhere under `~` and resolves
+to it. `cd ~/learned-ik/repo && git log` reports that project's history and its
+`rev-parse --show-toplevel` is `/home/gridsan/tcohn`, which reads as "the staged code is
+the wrong commit" when the staged files are in fact correct. Worse, a write command
+(`git add`, `git checkout`, `git clean`) issued from inside `~/learned-ik` would operate
+on **Thomas's home repository**. The staged tree has no `.git` of its own by design:
+`stage_code.sh` excludes `.git`, which also means rsync will never delete one, so this
+cannot be fixed from our side and must not be — that repo is not ours. Determine what is
+staged from the local checkout and `stage_code.sh`, never by asking the cluster.
+
 **Any check that asks the cluster whether it is busy must be scoped to this project.**
 The account is shared with Thomas's other campaigns, so `LLstat | grep -c RUNNI` refuses
 whenever anything at all is running — it fired on an unrelated `run_matrix.sh`. Filter by
