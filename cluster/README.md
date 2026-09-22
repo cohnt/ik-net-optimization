@@ -105,7 +105,7 @@ for ARM in gpu-procs cpu-procs caps parity; do
   ssh ... "cd ~/learned-ik/repo && CALIB_ARM=$ARM LLsub ./cluster/calibrate.sh \
            -g volta:2 -s 40 -q xeon-g6-volta -T 3:00:00 -J lik_cal_$ARM"
 done
-# -> gives (workers-per-node, device, cap). Record the table in CLAUDE.md.
+# -> gives (workers-per-node, device, cap). The measured table is at the end of this file.
 
 # 4. a stage of the campaign
 python cluster/gen_manifest.py --stage A --wall-time <cap> --shards <N> \
@@ -135,7 +135,8 @@ cluster/collect_results.sh --full                      # ...or the whole results
 | per item | `ITEM_TIMEOUT` (`run_items.sh`) | 8 h | backstop for a wedged solve |
 | per job | `WALL` (`submit_bench.sh`) → `#SBATCH --time` | 48 h | Slurm's kill |
 
-**The invariant is `WALL` > `ITEM_TIMEOUT`.** They used to be equal at 4 h, which made the bad
+**The invariant is `WALL` > `ITEM_TIMEOUT`.** They used to be *numerically equal* at 4 h —
+`ITEM_TIMEOUT` 4 h against `submit_bench.sh` requesting `--time=04:00:00` — which made the bad
 case the normal one: a long item consumed the whole job, and Slurm's kill arrived at the same
 moment as `timeout`'s — hitting all `PROCS` workers on the node at once and leaving `PROCS`
 stale claims. `xeon-g6-volta` allows **4-04:00:00 (100 h)**, so there is no reason to run the
@@ -144,7 +145,8 @@ span the monthly maintenance window is killed, not suspended.)
 
 `run_items.sh` also **refuses to claim an item the job cannot finish** — if less than
 `ITEM_TIMEOUT + 300` s of job wall remains it stops claiming and exits, leaving the remaining
-items unclaimed for the next job. That is why raising the two numbers is not by itself the fix:
+items unclaimed for the next job, and the item runs under `timeout -k 60` so a solve that ignores
+TERM is actually killed. That is why raising the two numbers is not by itself the fix:
 without the guard a worker will still claim a multi-hour item minutes before its job ends.
 
 Sizing shards is therefore about **throughput, not data integrity**. A killed item loses its
@@ -440,3 +442,27 @@ measured, not just how long it takes. `PROCS=1` is always safe.
   `sacct -j <jobid> --batch-script`.
 - **`LLstat` shows placeholder resources (1 CPU / 4 G) for PENDING jobs.** That
   is not evidence of a bad submission; verify after it starts before killing it.
+
+
+## The calibration, measured (moved from CLAUDE.md)
+
+**The calibration.** Four arms, one per node, each a full job on a real partition, on the **Panda
+grasp** task — that task specifically, because it is the one that binds against the cap. A first
+attempt ran the *pose* task and measured nothing: a pose cell converges in ~74 iterations here, so
+its iteration count is identical at every cap and however contended the node is. **A converged solve
+takes the iterations it takes**; only its wall time moves.
+- *Workers per node*, median iterations inside a fixed 20 s cap: 202 / 196 / 194 / 186 / 114 / 70 at
+  P = 1 / 2 / 4 / 8 / 20 / 40. `PROCS=4` is conservative, `PROCS=8` is what exploratory stages ran at
+  (Thomas ruled the 8% acceptable for sweeps, reserving uncontended runs for hard comparisons and
+  paper numbers). A worker that gets less done inside a wall-clock cap is a **different
+  measurement**, so the count is held fixed across everything compared.
+- *CPU-only is not competitive*: at one worker the GPU reaches 202 median iterations against 62,
+  solving 4 of 8 cells against 1 of 8. Not a contradiction of the CPU-bound profiling result — that
+  says the GPU is never the bottleneck *while a GPU is present*.
+- *The cap*: median iterations 142 / 203 / **338** / 338 / 338 at 10 / 20 / 45 / 90 / 180 s, i.e.
+  medians saturate by 45 s. That is why 45 s was the cap for the exploratory campaigns; **the
+  campaign cap is now 180 s**, adopted with containment because beyond the median only the *tail*
+  gains and the contained-grasp rows live in the tail.
+- *Startup*: 40 concurrent `import torch, pydrake, ikflow, jrl` take 10 s total, so the venv can stay
+  on the shared filesystem (copying to node-local `$TMPDIR` costs 231 s and buys nothing).
+  `torch.compile` costs ~35 s cold, ~17 s warm per process.
