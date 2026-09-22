@@ -2,9 +2,6 @@ import pydrake.math
 from pydrake.all import (
     AutoDiffXd,
     RigidTransform,
-    RotationMatrix,
-    RigidTransform_, 
-    RotationMatrix_,
     cos, 
     sin, 
     sqrt,

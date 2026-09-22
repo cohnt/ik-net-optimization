@@ -1,20 +1,14 @@
-from ikflow.model import IkflowModelParameters
-from ikflow.ikflow_solver import IKFlowSolver
-from jrl.robots import get_robot
 from ikflow.config import DEVICE
 import torch
 import numpy as np
 from src.utils import Mug, RepoDir
 from src.flow_loading import LEGACY_IIWA_ARCH, LoadFlowSolver
 from src.generic_program import *
-import numpy as np
 from pydrake.all import (
     MathematicalProgram,
     AutoDiffXd,
     RigidTransform,
-    RigidTransform_,
     Quaternion,
-    RotationMatrix,
     RotationMatrix_,
     RollPitchYaw_,
 )
@@ -132,7 +126,6 @@ class Iiwa14IKProgram(IKFlowProgram):
         # One reverse pass yields both dq/dvars and q, from the shared factory: with
         # compile_flow_jacobian on, one compiled graph serves every program in a grid.
         self.jacobian_gen = self.MakeJacobianGen()
-        # self.rev_jac_gen = torch.func.jacrev(self.reverse_inference)
 
         self.add_constraints()
         self.add_costs()
@@ -150,28 +143,6 @@ class Iiwa14IKProgram(IKFlowProgram):
                               torch.zeros(self.num_arm_dof, dtype=vars.dtype, device=DEVICE)])
         q, _ = self.FlowInference()(vars)
         return q
-
-    def ik_inference_with_value(self, vars):
-        '''jacrev(..., has_aux=True) target: one reverse pass gives dq/dvars and q.'''
-        q = self.ik_inference(vars)
-        return q, q
-
-    def reverse_inference(self, vars, pad = 0.0):
-        '''vars := [q + pose]
-        run reverse inference to find associated z value'''
-
-        if not isinstance(vars, torch.Tensor):
-            vars = torch.tensor(vars, device=DEVICE, dtype=torch.float32)
-        
-        q = vars[:7]
-        pose = vars[7:]
-        c_torch = torch.cat([pose, torch.tensor([0.0], dtype=torch.float32, device=DEVICE)]).unsqueeze(0)
-
-        q_pad = torch.cat([q, torch.tensor([pad], dtype=torch.float32, device=DEVICE)]).unsqueeze(0)  # [1, 8]
-        z_out, _ = self.ik_solver.nn_model(q_pad, c=c_torch, rev=False)
-        return z_out
-
-
 
     def TaskVarsToPose7(self, task_vars, t):
         '''Task variables -> the (xyz, wxyz) the flow is conditioned on. Default: they are

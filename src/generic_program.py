@@ -8,7 +8,6 @@ import numpy as np
 from collections import namedtuple
 from dataclasses import dataclass, field
 from functools import lru_cache, partial
-import numpy as np
 from pydrake.all import (
     AutoDiffXd,
     IpoptSolver,
@@ -532,11 +531,6 @@ class ProgramOptions:
     nlopt_local_optimizer_max_eval: int = field(default=None, metadata={"help": "NLopt 'local_optimizer_max_eval' (Drake's inner default 0 = unlimited); a positive value truncates each subproblem so the outer AL updates multipliers more often. Inert unless the inner algorithm is named. Post-1.56.0"})
     nlopt_local_optimizer_max_time: float = field(default=None, metadata={"help": "NLopt 'local_optimizer_max_time' in seconds (Drake's inner default 0 = no cap). Inert unless the inner algorithm is named. Post-1.56.0"})
 
-    ## Starting point ##
-    # A benchmark that starts each formulation somewhere different cannot attribute a
-    # success-rate gap to the formulation. `SetStartFromQ` puts every arm at the same
-    # configuration; this switch only exists so the old protocol stays reproducible.
-    seed_from_q_init: bool = field(default=False, metadata={"help": "Start from a shared q_init instead of the per-formulation default"})
 
     ## Solver options ##
     which_solver: str = field(default="ipopt", metadata={"help": "Which IKFlow solver to use"})
@@ -863,7 +857,6 @@ class IKFlowProgram:
         which holds the same network every later program is handed, so the grid never sees
         the compile.
         """
-        import time
         width = self.ik_solver.network_width
         vars = np.zeros(7 + width + self.num_arm_dof)
         vars[3] = 1.0                                  # a unit quaternion, w first
