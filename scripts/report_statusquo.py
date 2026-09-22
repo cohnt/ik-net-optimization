@@ -24,8 +24,15 @@ the project's reporting rules rather than to be convenient:
     is None on every NLopt cell and averaging it silently yields nan. Never compare this column
     across arms -- for the learned arm each count is a reverse pass through the flow, for joint
     space it is the identity map.
-  - `mugfree` is a LEGACY row, not the status quo. It is printed in its own section so it
-    cannot be read as one.
+  - **`mugfree` is NOT REPORTED AT ALL.** `--target-placement free` is a vestigial setting of the
+    grasp experiment, not a third experiment, so there are two experiments per robot and this
+    reporter prints two. The first run of stage STATUSQUO fielded `mugfree` as a third row and this
+    script printed it under a "legacy, for completeness" heading -- which still put a retired
+    setting in the table of record and made it read as though there were three tasks. Thomas,
+    2026-09-21: *"those are vestigial settings for the grasp and pose experiments. The intent of
+    status quo was in part to select the experiments we care about -- preserving old settings and
+    old experimental setups is contrary to that mission."* Those 12 logical runs are still on disk;
+    they are simply not part of the record. To look at one deliberately, read its `summary.json`.
 
 Then it evaluates the three flag criteria that were pre-registered in CLAUDE.md before the
 campaign ran, by pairing each row against its own 45 s counterpart. The cap does not enter
@@ -61,9 +68,9 @@ SOLVER_NAME = {"ipopt": "IPOPT (interior point)",
 CONFIG = {"ipopt": "acceptable-point early stop (acceptable_tol 1e-3, acceptable_iter 1)",
           "snopt": "Major step limit = 0.5",
           "nlopt": "LD_AUGLAG + LD_MMA inner + inner xtol_rel = ftol_rel = 1e-3"}
-ROW_ORDER = {"mugshelf": 0, "posetip": 1, "mugfree": 2}
-ROW_NAME = {"mugshelf": "grasp contained", "posetip": "pose contained (tip)",
-            "mugfree": "grasp FREE (legacy)"}
+## Two experiments per robot. `mugfree` is deliberately absent -- see the module docstring.
+ROW_ORDER = {"mugshelf": 0, "posetip": 1}
+ROW_NAME = {"mugshelf": "grasp contained", "posetip": "pose contained (tip)"}
 STATUS_QUO_ROWS = ("mugshelf", "posetip")
 
 ## The 45 s counterpart of each column, at the SAME adopted setting. Used only for the flag
@@ -245,11 +252,9 @@ def main(only):
     for solver in want:
         print(f"\n=== {SOLVER_NAME[solver]}   [{CONFIG[solver]}]")
         sq = row_table(runs, solver, STATUS_QUO_ROWS, "THE STATUS QUO (contained targets)")
-        lg = row_table(runs, solver, ("mugfree",),
-                       "LEGACY, not the status quo -- free grasp targets, for completeness only")
-        if not sq and not lg:
+        if not sq:
             print("  (no rows found)")
-        all_rows[solver] = sq + lg
+        all_rows[solver] = sq
 
     flags(all_rows, want)
     return 0

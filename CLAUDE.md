@@ -1155,7 +1155,17 @@ first cell.
 shelf-contained targets at the **fingertips for both tasks**, **180 s**, 480 cells = 60 targets x 8
 guesses, seed 1 (out of sample), `--compile`, adopted rungs (Panda `n6`, iiwa `n4`), arms
 `learned,numerical`, both start protocols, all three solvers at their adopted configurations, Drake
-nightly `0.0.20260918`. 36 logical runs, 17,280 solves, zero failed merges.
+nightly `0.0.20260918`.
+
+**THE RECORD IS 24 LOGICAL RUNS: two robots x TWO experiments x two protocols x three solvers,
+11,520 solves.** The experiments are grasp and pose, both shelf-contained at the fingertips, and
+there are no others. The run also produced 12 further logical runs on `--target-placement free`,
+which **is a vestigial setting of the grasp experiment and not a third experiment** (Thomas,
+2026-09-21: *"preserving old settings and old experimental setups is contrary to that mission"*).
+Gathering that data was not the error -- the cluster was idle -- but it is **not part of the record
+and is not reported**: `scripts/report_statusquo.py` no longer prints it and `stage_STATUSQUO`'s
+selftest now refuses any non-contained placement. Those summaries remain on disk for anyone who
+deliberately wants to look.
 
 Earlier campaigns (final3-5, Stages A-D, the legacy-scene headline tables, the pre-calibration pose
 tables, and the 45 s / free-grasp tables this section used to hold) are **superseded and their tables
@@ -1202,10 +1212,10 @@ would be a printed verdict rather than a judgement call; `scripts/report_statusq
 inline. All three are answered and **nothing moved against the learned arm**:
 
 1. **Verdict moves: four, every one predicted.** iiwa contained grasp went joint-space-win -> **tie**
-   under both protocols, as expected. iiwa FREE grasp -- flagged as unmeasured above 45 s with 35/27
-   timeouts -- went tie -> **learned win** under both. Panda contained grasp stayed a decisive learned
-   win with a growing margin (paired 437 -> 471), also as predicted. The other twenty rows hold their
-   45 s verdict.
+   under both protocols, as expected. Panda contained grasp stayed a decisive learned win with a
+   growing margin (paired 437 -> 471), also as predicted. The other six status-quo rows hold their
+   45 s verdict. (Two further moves were measured on the retired free-grasp placement, tie ->
+   learned win under both protocols; they are not part of the record -- see below.)
 2. **The IPOPT-SNOPT gap widened, and the mechanism is measured rather than inferred.** Median
    learned-arm gap 102 cells at 45 s -> **120 at 180 s**, IPOPT ahead on 12 of 12 rows at both caps.
    See "The cap effect, per row" below for where it comes from.
@@ -1238,9 +1248,10 @@ worker claim a multi-hour item minutes before its job ends. **Keep `WALL` > `ITE
 
 480 cells = 60 targets x 8 guesses, seed 1, **180 s**, `--compile`, adopted rungs (Panda `n6`,
 iiwa `n4`), hardened scene, shelf-contained targets at the fingertips, `learned,numerical`, both
-protocols, all three solvers at their adopted configurations, Drake nightly `0.0.20260918`.
-36 logical runs, 17,280 solves. `scripts/report_statusquo.py` owns these tables and evaluates the
-three pre-registered flag criteria inline.
+protocols, all three solvers at their adopted configurations, Drake nightly `0.0.20260918`. **Two
+experiments per robot, eight rows per solver, 24 logical runs, 11,520 solves.**
+`scripts/report_statusquo.py` owns these tables and evaluates the three pre-registered flag criteria
+inline.
 
 **Acceptance checks all pass.** iiwa `n4` contained grasp under IPOPT reproduces
 `sc_CAP_iiwa_n4_mug_180_{native,paired}` **exactly** — learned 447/453, joint space 442/442, zero
@@ -1319,28 +1330,11 @@ fails, and how many of them the learned arm solves:
 | panda grasp contained paired | 471 | 323 | 155 | 7 | 316 | 2 | 155/157 = **99%** |
 | panda pose tip native | 461 | 217 | 248 | 4 | 213 | 15 | 248/263 = 94% |
 | panda pose tip paired | 407 | 217 | 219 | 29 | 188 | 44 | 219/263 = 83% |
-| iiwa grasp FREE (legacy) native | 471 | 457 | 22 | 8 | 449 | 1 | 22/23 = 96% |
-| panda grasp FREE (legacy) native | 480 | 453 | 27 | 0 | 453 | 0 | 27/27 = **100%** |
 
-**The rescue rate is 82-100% on every row of both robots and both protocols**, and on the contained
-tasks there are 157-263 cells available to rescue rather than the free task's 23-27. On Panda free
-grasp native the learned arm scores **480 of 480** with `neither` = 0. The iiwa grasp ties are not
-the same cells either — 31-35 each way — so the arms are complementary even where the totals agree.
-
-#### The legacy free-grasp rows
-
-`--target-placement free` is **not** the status quo; these rows exist only to answer the legacy
-question of what the free task does above 45 s, and must never be reported as status-quo rows.
-
-| row | IPOPT L | IPOPT JS | p | SNOPT L | SNOPT JS | p |
-| --- | --- | --- | --- | --- | --- | --- |
-| iiwa grasp FREE native | **471** | 457 | 0.016 | 364 | **406** | 0.00036 |
-| iiwa grasp FREE paired | **475** | 457 | 0.00012 | 343 | **406** | 2.5e-07 |
-| panda grasp FREE native | **480** | 453 | 1.5e-08 | **444** | 416 | 0.0061 |
-| panda grasp FREE paired | **479** | 453 | 2.2e-07 | 404 | 416 | 0.31 tie |
-
-Both iiwa free-grasp rows were ties at 45 s under IPOPT and are now **learned wins**, which was
-named in advance as a row that might move (it was unmeasured above 45 s and had 35/27 timeouts).
+**The rescue rate is 82-99% on every row of both robots and both protocols**, and containment is what
+makes it matter: there are 157-263 joint-space failures available to rescue. The iiwa grasp ties are
+not the same cells either -- 31-35 each way -- so the arms are complementary even where the totals
+agree.
 
 #### The cap effect, per row: where the IPOPT-SNOPT gap comes from
 
@@ -1411,9 +1405,6 @@ demonstration in the project that **the two start protocols answer different que
 arm uses 4,025 network Jacobians per cell against the joint-space arm's 9,550 and finishes in 80 s
 mean against 174 s (paired: 7,066 and 141 s against the same 9,550 and 174 s) — i.e. it converges rather than exhausting the budget, which is the feasibility
 criterion the configuration was fielded on.
-
-The legacy free-grasp rows under NLopt: iiwa 3 v 11 both protocols (both at the floor, tie), Panda
-**404 v 24 native** (p = 3.8e-111, the largest margin in the campaign) and 16 v 24 paired (tie).
 
 All of which answers flag criterion 3, untested before this campaign because the flat 180 s arm
 predated the adopted configuration: ten of twelve rows solve something, all four pose rows are
@@ -1861,13 +1852,13 @@ Live items:
   not over initial guesses.
 - **Placement is CLOSED**: shelf-contained at the fingertips for **both** tasks (Thomas,
   2026-09-19). `--target-placement auto` resolves to `shelf` for both, and `free` survives only as
-  the reproducer for archived grasp columns and as a legacy completeness row.
+  the reproducer for archived grasp columns. It is a retired SETTING, not an experiment, and must
+  never be fielded as a row again (`stage_STATUSQUO`'s selftest refuses a non-contained placement).
 - **Stage `STATUSQUO` is COMPLETE and is the campaign of record** (ran 2026-09-19/20, jobs
   5681825-5681828, 480 items, ~19 h wall on 4 nodes x 8 workers). 36 logical runs = both adopted
   rungs x 3 rows x both protocols x all three solvers, 480 cells each at 180 s, seed 1, arms
   `learned,numerical`, each solver at its adopted configuration and **no settings axis** (the
-  selftest refuses one). `mugshelf` and `posetip` are the status quo; `mugfree` is a legacy
-  completeness row and must never be reported as one. Read it with `scripts/report_statusquo.py`,
+  selftest refuses one). **The status quo is TWO experiments per robot, `mugshelf` and `posetip`.** Read it with `scripts/report_statusquo.py`,
   which prints the quartet per row and evaluates the three flag criteria mechanically;
   `cluster/STATUSQUO_RUNBOOK.md` holds the run's own record. All acceptance checks passed, including
   the decisive one: iiwa `n4` contained grasp under IPOPT reproduces `sc_CAP_iiwa_n4_mug_180_*`
