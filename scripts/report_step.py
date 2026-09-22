@@ -14,6 +14,7 @@ Why this exists rather than `collate.py`:
     "does the knob close the row" is the actual question and is already computed.
 
 Usage:
+    scripts/report_step.py                                    # every persisted sc_STEP_* run
     scripts/report_step.py 'results/*/benchmark/sc_STEP_iiwa_n4_ipopt_mugshelf_60_*'
     scripts/report_step.py --arm numerical '<glob>'
     scripts/report_step.py --ref accdefault '<glob>'          # any baseline, by name
@@ -28,6 +29,35 @@ import sys
 import tarfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+## Stage STEP's persisted runs, promoted tree and staging drops alike.
+DEFAULT_GLOBS = ("results/_cluster_staging/*/results/*/benchmark/sc_STEP_*/summary.json",
+                 "results/*/benchmark/sc_STEP_*/summary.json")
+
+
+def discover_rows():
+    """row key -> run directories, for every merged sc_STEP_* run on disk.
+
+    A row is everything in the tag except the trailing setting token, which is what
+    `report()` compares WITHIN. Per-shard directories are skipped, as in every other
+    report_* reader.
+    """
+    ## Keyed by TAG first, because a run promoted to results/ is usually ALSO still present
+    ## in the staging drop it arrived in, and two paths to one run would look like two runs
+    ## carrying the same setting token -- which is exactly the condition report() refuses.
+    ## DEFAULT_GLOBS lists staging first so the promoted copy wins the overwrite.
+    by_tag = {}
+    for pat in DEFAULT_GLOBS:
+        for f in sorted(glob.glob(pat)):
+            tag = os.path.basename(os.path.dirname(f))
+            if "_shard" in tag:
+                continue
+            by_tag[tag] = os.path.dirname(f)
+    rows = {}
+    for tag, d in sorted(by_tag.items()):
+        key = tag[:len(tag) - len(token(tag))].rstrip("_") or tag
+        rows.setdefault(key, []).append(d)
+    return {k: v for k, v in rows.items() if len(v) >= 2}
 from src.benchmark import mcnemar_exact  # noqa: E402
 
 
@@ -250,5 +280,17 @@ if __name__ == "__main__":
     else:
         paths = [q for p in argv for q in (sorted(glob.glob(p)) or [p])]
         if not paths:
-            sys.exit(__doc__)
+            ## No glob given: report every row stage STEP persisted, one table each.
+            ## `report()` deliberately REFUSES a glob spanning rows -- two rows both carry a
+            ## `default` run, so a pooled reference would silently pair across rows -- hence
+            ## grouping here rather than handing it one wide glob. CLAUDE.md cites this
+            ## script as the regenerator for stage STEP's tables, so it has to produce them
+            ## with no arguments.
+            for row, row_paths in sorted(discover_rows().items()):
+                print(f"\n{'=' * 78}\n{row}\n{'=' * 78}")
+                try:
+                    report(row_paths, arm, ref)
+                except SystemExit as exc:
+                    print(f"  skipped: {exc}")
+            sys.exit(0)
         report(paths, arm, ref)
