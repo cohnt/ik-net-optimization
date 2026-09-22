@@ -53,6 +53,21 @@ python scripts/report_statusquo.py '<staging>/results/*/benchmark/sc_STATUSQUO_*
 whatever is left, from any number of jobs started at any time. A pause needs no action at all —
 running jobs keep going, and nothing here depends on this session staying alive.
 
+## Regenerating the manifest
+
+```bash
+python cluster/gen_manifest.py --stage STATUSQUO --wall-time 180 --targets 60 --guesses 8 \
+    --shards 8 --solvers ipopt,snopt,nlopt --starts paired,native > cluster/manifest_stageSTATUSQUO.txt
+```
+
+**Every one of those flags is load-bearing, because the CLI defaults are narrower than this stage
+and fail silently.** `--solvers` defaults to `"snopt"`, `--starts` to `"paired"`, `--shards` to `1`,
+and `--wall` is not an option at all (it is `--wall-time`, and an unknown flag makes argparse take
+every default). Omitting them regenerates a *different, smaller* campaign that still looks like a
+valid manifest: I wrote a 32-item file over the real one that way on 2026-09-21. Check the count --
+**320 items** (8 rows x [8 + 8 + 24] shards x 2 robots... precisely: ipopt 64, snopt 64, nlopt 192)
+-- and check `grep -c free` is 0, before trusting a regenerated manifest.
+
 ## Progress
 
 **CAMPAIGN COMPLETE, 2026-09-20 16:26 ET.** 480/480 items, 36/36 logical runs merged with zero
