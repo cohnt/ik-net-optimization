@@ -38,6 +38,39 @@ from ikflow.training.pole_callback import pole_metrics, sample_conditioning_and_
 DEFAULT_IIWA_CKPT = os.path.join(REPO_ROOT, "models/iiwa14/iiwa14__ddp-r1__step620000.pkl")
 
 
+## THE SCREENS' DOMAIN AND THRESHOLD ARE ROBOT-SHAPED, and were iiwa-shaped for their whole
+## life: a conditioning box around [0.4, 0, 0.5], a radius-4.3 latent ball, and "runaway"
+## defined as |q|_inf > 1000 RADIANS.  None of those three transfers to a robot whose
+## coordinates are normalized strain in [-1, 1] and whose latent is 12 wide, so they are
+## resolved per robot here.  The rigid arms keep their exact previous values, so archived
+## screens stay comparable; the soft rungs get the same quantities in their own units --
+## the threshold as the same MULTIPLE of the coordinate limit (1000 rad against an iiwa
+## limit of ~2.9 rad is ~345x, so 345 against a normalized limit of 1), and the latent ball
+## as sqrt(width) + 1.5, the convention the trust region already uses.
+##
+## CLAUDE.md is explicit that these screens are a SMOKE TEST and not a selection criterion.
+## That is the reason to put them in the right units rather than to make them decisive: a
+## screen reported in the wrong units is not a weak signal, it is a number that reads 0.000
+## forever.
+def ScreenDomain(robot):
+    """`(position_base, position_slack, latent_radius, runaway_threshold)` for a robot."""
+    import math
+
+    from src.soft_arm.params import RUNGS
+
+    if robot in RUNGS:
+        spec = RUNGS[robot]
+        return ((0.0, 0.0, 0.45), 0.25, round(math.sqrt(spec.ndof) + 1.5, 2), 345.0)
+    return ((0.4, 0.0, 0.5), 0.25, 4.3, 1000.0)
+
+
+def SoftRungNames():
+    """The soft arm's rungs, imported lazily so this module stays cheap to import."""
+    from src.soft_arm.params import RUNGS
+
+    return sorted(RUNGS)
+
+
 def load_solver(robot: str, checkpoint: str, nb_nodes: int = None, dim_latent_space: int = None):
     """Build a solver for `checkpoint`, taking its architecture from the `.arch.json`
     sidecar and cross-checking it against the weights (src/flow_loading.py).
@@ -100,7 +133,7 @@ def crosscheck(nn_model, width: int, ndof: int, n: int = 100, seed: int = 0) -> 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--robot", type=str, default="iiwa14", choices=["iiwa14", "panda", "iiwa7"])
+    parser.add_argument("--robot", type=str, default="iiwa14", choices=["iiwa14", "panda", "iiwa7"] + SoftRungNames())
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a .pkl state dict (iiwa default: the shipped lemon-haze-7)")
     parser.add_argument("--nb_nodes", type=int, default=12)
     parser.add_argument("--dim_latent_space", type=int, default=8)
@@ -113,6 +146,33 @@ if __name__ == "__main__":
     checkpoint = args.checkpoint
     if checkpoint is None and args.robot == "iiwa14":
         checkpoint = DEFAULT_IIWA_CKPT
+
+    ## THIS SCREEN'S DOMAIN LIVES IN THE VENDORED FORK and is deliberately frozen by
+    ## tests/test_pole_metric_and_export.py::test_sampler_stream_frozen: a conditioning box
+    ## around [0.4, 0, 0.5] and a radius-4.3 latent ball, both iiwa-shaped. Run against a
+    ## robot whose coordinates are normalized strain, it would report a runaway fraction of
+    ## 0.000 forever -- not a weak signal but a meaningless one, and the project has paid
+    ## for a screen that could not distinguish "nothing wrong" from "measuring nothing".
+    ##
+    ## So it declines, rather than editing the fork to take a domain it has never needed.
+    ## The other two screens sample over the ROBOT'S OWN task poses and its own FK, so they
+    ## are robot-agnostic and do run: pole_at_task_poses.py is the pole screen for this
+    ## robot, and chart_accuracy.py the accuracy one. Exits 0 and writes the reason, so an
+    ## export job that screens every robot does not fail on this one.
+    if args.robot in SoftRungNames():
+        payload = {"robot": args.robot, "skipped": True,
+                   "reason": ("box-domain screen is iiwa-shaped (frozen sampler in the "
+                              "vendored ikflow fork); use pole_at_task_poses.py, whose "
+                              "domain is this robot's own task poses")}
+        print(json.dumps(payload, indent=2))
+        if args.json_out:
+            os.makedirs(os.path.dirname(os.path.abspath(args.json_out)), exist_ok=True)
+            with open(args.json_out, "w") as handle:
+                json.dump(payload, handle, indent=2)
+        ## The script body runs directly under `__main__`, so this is an exit, not a
+        ## return. Exit 0: an export job screens every robot and must not fail on the one
+        ## whose domain this screen cannot express.
+        raise SystemExit(0)
 
     solver, width, ndof = load_solver(args.robot, checkpoint, args.nb_nodes, args.dim_latent_space)
 
