@@ -42,6 +42,14 @@ from ikflow.model import IkflowModelParameters
 from ikflow.ikflow_solver import IKFlowSolver
 from jrl.robots import get_robot
 
+## Registering the soft arm's rungs HERE, because `LoadFlowSolver` is the single funnel
+## every robot-by-name lookup in this project passes through -- the programs, the three
+## screening scripts, the export round-trip. Registering it only where the programs import
+## it left `get_robot("soft12")` raising inside the screens, which is the sort of gap that
+## surfaces during an export job at the end of a 620k-step training run rather than now.
+## Idempotent, and a no-op for every other robot.
+import src.soft_arm.register  # noqa: E402,F401
+
 # The architecture every pre-sidecar checkpoint in this repo was trained at
 # (iiwa14__lemon-haze-7, iiwa14__ddp-r1). Used only as the fallback for a checkpoint with
 # no sidecar, and still shape-verified afterwards.
