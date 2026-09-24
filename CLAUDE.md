@@ -1378,6 +1378,19 @@ naming why. Every tensor is built explicitly on the CPU: `jrl.config` calls
 `set_default_device` AT IMPORT, so a bare `torch.as_tensor` allocates on cuda and the failure
 surfaces somewhere unrelated.
 
+**TWO POLE SCREENS, TWO DOMAINS, and they must not be quoted interchangeably.** The
+IN-TRAINING callback lives in the vendored fork with the iiwa's constants -- a conditioning box
+around `[0.4, 0, 0.5] +- 0.25`, a radius-4.3 latent ball, threshold 1000. For this robot that
+box IS inside the reachable workspace and the ball is slightly tighter than our 4.96, but the
+threshold is 1000 times the COORDINATE LIMIT rather than 1000 radians, because the
+configuration is normalized strain. The STANDALONE screens resolve the domain per robot
+(`ScreenDomain` in `scripts/training/pole_metric.py`: radius `sqrt(width) + 1.5`, threshold
+345, which is the same multiple of the limit that 1000 rad is of an iiwa joint). So the same
+checkpoint gets two different numbers. Closing the gap means passing the domain into the
+fork's callback; it cannot be done mid-campaign, since staging is refused while jobs are
+queued. Both are smoke tests and neither predicts cells, so this is a labelling hazard rather
+than a measurement one -- but the labels have to be right.
+
 **Learned forward kinematics is a planned axis, not a fallback.** The same
 configuration-to-plant-positions map is what a network would replace, so swapping it replaces
 the forward model for the IK constraint and the collision geometry at once. It is the general
