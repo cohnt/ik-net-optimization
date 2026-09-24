@@ -83,7 +83,7 @@ cmd_next() {
         bash "$(dirname "$0")/submit_train.sh" "$name" "$NNODES" "$WALL" -- $COMMON_ARGS $args
 }
 
-cmd_## dim_latent_space for a smoke run, per robot. The iiwa's 8 is train_ddp.py's default
+## dim_latent_space for a smoke run, per robot. The iiwa's 8 is train_ddp.py's default
 ## and needs no flag; every other robot does. A wrong value here trains happily and only
 ## fails much later, when a checkpoint is loaded against the real robot and the shape check
 ## finally fires.
@@ -97,7 +97,7 @@ smoke_latent_arg() {
     esac
 }
 
-smoke() {
+cmd_smoke() {
     local robot="${1:?usage: --smoke <robot>}"
     echo "200-step validation run for $robot at nb_nodes=4 on ${PARTITION:-xeon-g6-volta} (ONE node)."
     ## A REAL PARTITION, not debug-gpu. This trains -- 200 optimizer steps of multi-node DDP

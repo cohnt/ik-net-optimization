@@ -1890,6 +1890,53 @@ def stage_SOFTCHART(wall, targets, guesses, shards, only=None, tag="SOFTCHART", 
     return items
 
 
+def stage_SOFTFK(wall, targets, guesses, shards, only=None, tag="SOFTFK", seed=1,
+                 starts="paired,native"):
+    """Analytic against learned forward model, on the SAME grid, IPOPT only.
+
+    The one axis on this robot that is not about the formulation at all. The surrogate
+    replaces the forward model for the IK constraint and the collision geometry at once,
+    because both read the same configuration-to-plant map -- and BOTH ARMS carry it, which
+    is what makes it a control rather than an advantage. Read it the way the solver axis is
+    read: an effect here is a property of the forward model, not of the change of
+    variables.
+
+    Same seed and same rung as stage_SOFT12, so the grid is identical -- drawn on the
+    EXACT kinematics whatever the program optimises against, precisely so the two forward
+    models pair cell for cell. The analytic half is RE-RUN rather than read out of SOFT12,
+    which costs four logical runs and buys two things: the comparison is self-contained, and
+    the duplicate rows are a free same-configuration reproducibility check on SOFT12's IPOPT
+    column -- the control the record already uses to tell a real effect from the cap-bound
+    band.
+
+    Success is verified against exact kinematics through `VerificationQ`, so neither column
+    is graded by its own model of the robot. `verify()` records the per-cell
+    `forward_model_error` beside the returned configuration, so how much the surrogate
+    moved the solution is recoverable without re-solving.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    wall = float(wall)
+    rung = "soft12"
+    label, ckpt = SOFT_ADOPTED[rung]
+    items = []
+    for fk in ("analytic", "learned"):
+        if wanted is not None and fk not in wanted:
+            continue
+        base = ["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
+                "--rung", rung, "--checkpoint", ckpt, "--fk", fk]
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(rung,
+                              f"sc_{tag}_{rung}_{label}_ipopt_{token}_fk{fk}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", "ipopt"]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[rung], wall, shards, seed=seed)
+    return items
+
+
 def stage_SOFTDOF(wall, targets, guesses, shards, only=None, tag="SOFTDOF", seed=1,
                   starts="paired,native"):
     """How much redundancy is worth: 9 vs 12 vs 16 DoF, same envelope, IPOPT only.
@@ -3023,14 +3070,20 @@ def selftest():
     soft_fails = []
     soft_stages = {"SOFT12": stage_SOFT12(180, 60, 8, 8),
                    "SOFTDOF": stage_SOFTDOF(180, 60, 8, 8),
-                   "SOFTCHART": stage_SOFTCHART(180, 60, 8, 8)}
+                   "SOFTCHART": stage_SOFTCHART(180, 60, 8, 8),
+                   "SOFTFK": stage_SOFTFK(180, 60, 8, 8)}
     for name, runs in soft_stages.items():
         ids = [r["id"] for r in runs]
         if len(set(ids)) != len(ids):
             soft_fails.append(f"stage {name}: duplicate item ids")
+        ## Per stage, because they are not the same shape: SOFT12 is 3 solvers x 2
+        ## experiments x 2 protocols, the two ladders are 3 rungs x 2 x 2 at one solver,
+        ## and SOFTFK is 2 forward models x 2 x 2.
+        expected_runs = {"SOFT12": 12, "SOFTDOF": 12, "SOFTCHART": 12, "SOFTFK": 8}[name]
         logical = len({i.rsplit("_shard", 1)[0] for i in ids})
-        if logical != 12:
-            soft_fails.append(f"stage {name}: {logical} logical runs, expected 12")
+        if logical != expected_runs:
+            soft_fails.append(f"stage {name}: {logical} logical runs, "
+                              f"expected {expected_runs}")
         for r in runs:
             args = r["args"]
             if r["script"] != "scripts/soft_arm/soft_arm_benchmark.py":
@@ -3043,6 +3096,8 @@ def selftest():
                 soft_fails.append(f"stage {name}: {r['id']} is not at the status-quo cap")
             if args[args.index("--arms") + 1] != "learned,numerical":
                 soft_fails.append(f"stage {name}: {r['id']} does not field exactly two arms")
+            if name == "SOFTFK" and "--fk" not in args:
+                soft_fails.append(f"stage SOFTFK: {r['id']} does not name a forward model")
             if name != "SOFT12" and args[args.index("--solver") + 1] != "ipopt":
                 soft_fails.append(f"stage {name}: {r['id']} is not IPOPT-only")
         if name == "SOFT12":
@@ -3073,7 +3128,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTFK",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -3171,6 +3226,9 @@ def main():
              "SOFTCHART": lambda: stage_SOFTCHART(args.wall_time, args.targets,
                                                   args.guesses, args.shards,
                                                   only=args.rungs, starts=args.starts),
+             "SOFTFK": lambda: stage_SOFTFK(args.wall_time, args.targets,
+                                            args.guesses, args.shards,
+                                            only=args.rungs, starts=args.starts),
              "NLOPTTUNE": lambda: stage_NLOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,

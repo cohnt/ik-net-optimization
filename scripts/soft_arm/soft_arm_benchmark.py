@@ -85,6 +85,17 @@ def parse_args():
                         "the iiwa there is no shipped one. The architecture comes from the "
                         "checkpoint's own .arch.json sidecar, so there is no --nb-nodes: a "
                         "sidecar is written at export and a contradicting one raises.")
+    p.add_argument("--fk", choices=("analytic", "learned"), default="analytic",
+                   help="the FORWARD MODEL. `analytic` is the exact constant-strain "
+                        "exponential. `learned` swaps in a surrogate over the same backbone "
+                        "frames, which replaces the forward model for the IK constraint and "
+                        "the collision geometry at once, because both read the same map. It "
+                        "is the general mechanism -- SoRoMoX's variable-strain models "
+                        "integrate numerically and a real actuation-space arm has no closed "
+                        "form -- and it is a CONTROL rather than an advantage, because the "
+                        "joint-space arm uses the same surrogate. Success is always verified "
+                        "against the EXACT kinematics, so an arm is never graded by its own "
+                        "model of the robot.")
     p.add_argument("--tag", default=None)
     p.add_argument("--cells", default=None, metavar="TI:GI[,TI:GI...]")
     p.add_argument("--shard", default=None, metavar="K/N")
@@ -134,7 +145,8 @@ def main():
 
     ckpt_tok = [os.path.basename(args.checkpoint).replace(".pkl", "")]
     tag = args.tag or "_".join(
-        [args.rung, args.task, args.config, args.solver, args.start] + ckpt_tok
+        [args.rung, args.task, args.config, args.solver, args.start]
+        + ([] if args.fk == "analytic" else [f"fk{args.fk}"]) + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
         + (["compiled"] if args.compile else []))
     if shard is not None:
@@ -163,7 +175,7 @@ def main():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
         sampler_cls = SoftArmMugProgram if args.task == "mug" else SoftArmIKProgram
         sampler = sampler_cls(diagram, options=base_options, rung=args.rung,
-                              checkpoint=args.checkpoint)
+                              checkpoint=args.checkpoint, fk=args.fk)
         sampler.create_prog()
     ik_solver = sampler.ik_solver
 
@@ -171,7 +183,10 @@ def main():
     ## wants a plant vector maps it. On the rigid arms these two are the same object and
     ## the wrapping is invisible; here it is the difference between a draw and `nan`.
     def to_plant(cfg):
-        return sampler.ConfigToPlantQ(cfg)
+        ## EXACT, always. The grid is a property of the robot, not of whichever forward
+        ## model the program carries -- drawing targets through a surrogate would make the
+        ## analytic and learned columns un-pairable, which is the one thing this axis needs.
+        return sampler.ExactConfigToPlantQ(cfg)
 
     def sample_collision_free():
         while True:
@@ -273,11 +288,13 @@ def main():
             diagram_with_mug, target_mug = target
             with HiddenPrints():
                 program = cls(diagram_with_mug, options=options, rung=args.rung,
-                              model=ik_solver)
+                              model=ik_solver, fk=args.fk,
+                              surrogate=sampler.fk_surrogate)
                 program.create_prog(target_mug=target_mug)
         else:
             with HiddenPrints():
-                program = cls(diagram, options=options, rung=args.rung, model=ik_solver)
+                program = cls(diagram, options=options, rung=args.rung, model=ik_solver,
+                              fk=args.fk, surrogate=sampler.fk_surrogate)
                 program.create_prog(target)
         with HiddenPrints():
             if args.start == "paired":
@@ -309,6 +326,10 @@ def main():
         unrepresentable_tol=(1e-3 if args.start == "paired" else None),
         progress=lambda *a: bar.update(1),
         metadata=dict(robot=args.rung, rung=args.rung, ndof=spec.ndof, task=args.task,
+                      fk=args.fk,
+                      fk_surrogate_metrics=getattr(sampler, "fk_surrogate_metrics", None),
+                      flow_frame_spread=getattr(sampler, "flow_frame_spread", None),
+                      flow_frame_tol=getattr(sampler, "flow_frame_tol", 1e-6),
                       solver=args.solver, config=args.config,
                       wall_time=args.wall_time, seed=args.seed,
                       grid_hash=grid_hash, compiled=args.compile,
