@@ -1399,8 +1399,28 @@ set. The DOF rungs are **not paired cell-for-cell** -- each draws its own grid, 
 compared by target-level success rate with a bootstrap CI over targets, and McNemar does not
 apply across them.
 
-**Still open:** the 25M-sample datasets, the chart training itself, a cap ladder before any
-verdict is reported, and the learned-FK axis.
+**The learned-FK axis is plumbed; the surrogate is a CLUSTER job.** `--fk
+{analytic,learned}`, the surrogate module, `verify()`'s `VerificationQ` hook (so an arm is
+never graded by its own model of the robot) and `stage_SOFTFK` are in the tree. What is not
+done is the fit: a 4k-step laptop run reached **11 mm median and 45 mm p99 tip error against a
+1 mm task gate**, which would have measured "the model is wrong" rather than what
+forward-model error costs the optimization, and those weights were deleted rather than left
+looking ready.
+
+**It is not fitted locally.** Thomas, 2026-09-24: *"we shouldn't train models locally"* --
+every model fit in this project is a SuperCloud job, charts and surrogates alike. The laptop
+run was the mistake, not the surrogate.
+
+Two things to fix in the fit itself, both known before spending a GPU hour. It needs float32
+for the fit and float64 for the screen and the shipped weights -- the surrogate's own error
+lands around 1e-4 m at best, four orders above float32's noise floor, so the precision buys
+nothing while costing roughly an order of magnitude. And the architecture should exploit the
+structure: a naive net learns all 33 body poses as one function of 12 inputs, but each
+segment's relative transform depends on **only its own three strains**, so a per-segment fit
+composed analytically is a far easier problem. Untried.
+
+**Still open:** the 25M-sample datasets, the chart training, the FK surrogate fit, and a cap
+ladder before any verdict is reported.
 
 ## Running on MIT SuperCloud (`cluster/`)
 

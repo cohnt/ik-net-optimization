@@ -43,7 +43,7 @@ from src.flow_loading import LoadFlowSolver
 from src.generic_program import IKFlowConstraints, IKFlowProgram, ProgramOptions
 from src.soft_arm import kinematics as K
 from src.soft_arm.params import GetSpec
-from src.utils import Mug
+from src.utils import Mug, RepoDir
 
 _CPU = "cpu"
 
@@ -52,7 +52,7 @@ class SoftArmIKProgram(IKFlowProgram):
     """Learned formulation, pose task: reach a 6-D pose with the tip frame."""
 
     def __init__(self, diagram, options=ProgramOptions(), rung="soft12", model=None,
-                 checkpoint=None):
+                 checkpoint=None, fk="analytic", surrogate=None):
         self.diagram = diagram
         self.plant = diagram.GetSubsystemByName("plant")
         self.autodiff_plant = self.plant.ToAutoDiffXd()
@@ -85,14 +85,52 @@ class SoftArmIKProgram(IKFlowProgram):
                 f"weights; nobody has published a chart for this robot.)")
 
         self._plant_slots = self._BuildPlantSlotMap()
+        ## The FORWARD MODEL. `analytic` is the exact constant-strain exponential;
+        ## `learned` swaps in a surrogate over the same backbone frames, which replaces the
+        ## forward model for the IK constraint AND the collision geometry at once, because
+        ## both read the same map. A constructor argument rather than a ProgramOptions
+        ## field: all arms share one options object, and an option naming something only
+        ## one robot has is what scored two cluster columns zero.
+        self.fk_mode = fk
+        self.fk_surrogate = None
+        if fk == "learned":
+            from src.soft_arm import fk_surrogate as FS
+            if surrogate is None:
+                path = FS.SurrogatePath(self.spec, RepoDir())
+                surrogate, self.fk_surrogate_metrics = FS.Load(self.spec, path)
+            else:
+                ## Shared across every program in a grid: loading per cell would be 480
+                ## loads of the same weights, and -- more to the point -- both arms must
+                ## carry the SAME forward model or the control is not a control.
+                self.fk_surrogate_metrics = getattr(surrogate, "screen_metrics", {})
+            self.fk_surrogate = surrogate
+            ## CalibrateFlowFrame cannot pass 1e-6 here. The flow is trained against the
+            ## TRUE kinematics, so the scene-to-flow offset it measures is the surrogate's
+            ## own error and is not constant. The tolerance becomes a stated number derived
+            ## from the surrogate's measured tail, and the spread is recorded -- the check
+            ## is loosened on the record, not switched off.
+            tail_mm = float(self.fk_surrogate_metrics.get("tip_mm/max", 10.0))
+            self.flow_frame_tol = max(1e-6, 10.0 * tail_mm / 1000.0)
+        elif fk != "analytic":
+            raise ValueError(f"unknown fk backend {fk!r}; expected 'analytic' or 'learned'")
         self.options = options
         self.ConfigureNetworkDtype()
         self.constraints = []
         ## Forward mode, and compiled when the flow's Jacobian is -- one switch, so a
         ## comparison cannot accidentally run one arm compiled and the other not.
-        self.config_jacobian = K.ConfigJacobianGen(
-            self.spec, compile_it=bool(getattr(options, "compile_flow_jacobian", False)),
-            device=_CPU)
+        compile_it = bool(getattr(options, "compile_flow_jacobian", False))
+        if self.fk_surrogate is not None:
+            from src.soft_arm import fk_surrogate as FS
+            forward = FS.MakeLearnedConfigToPlantQ(self.fk_surrogate)
+            jacobian = torch.func.jacfwd(forward)
+
+            def config_jacobian(cfg):
+                return jacobian(cfg), forward(cfg)
+
+            self.config_jacobian = config_jacobian
+        else:
+            self.config_jacobian = K.ConfigJacobianGen(
+                self.spec, compile_it=compile_it, device=_CPU)
         self.CalibrateFlowFrame()
 
     ## --------------------------- configuration vs plant --------------------------- ##
@@ -131,11 +169,35 @@ class SoftArmIKProgram(IKFlowProgram):
         return picks
 
     def ConfigToPlantQ(self, cfg):
-        """The kinematic map, in float. The only implementation; see `soft_arm/kinematics`."""
+        """The forward model, in float: exact, or the surrogate under `--fk learned`."""
         tensor = torch.as_tensor(np.asarray(cfg, dtype=float), dtype=torch.float64,
                                  device=_CPU)
-        canonical = K.config_to_plant_q(tensor, self.spec, device=_CPU).cpu().numpy()
+        if self.fk_surrogate is not None:
+            canonical = self.fk_surrogate(tensor).detach().cpu().numpy()
+        else:
+            canonical = K.config_to_plant_q(tensor, self.spec, device=_CPU).cpu().numpy()
         return canonical[self._plant_slots]
+
+    def ExactConfigToPlantQ(self, cfg):
+        """The EXACT forward model, whatever this program is optimising against."""
+        tensor = torch.as_tensor(np.asarray(cfg, dtype=float), dtype=torch.float64,
+                                 device=_CPU)
+        return K.config_to_plant_q(tensor, self.spec, device=_CPU).cpu().numpy()[
+            self._plant_slots]
+
+    def VerificationQ(self, q):
+        """Where `verify()` grades: always the exact kinematics.
+
+        Under `--fk analytic` this is the identity, and `np.array_equal` downstream sees
+        that and records nothing extra. Under `--fk learned` it re-derives the plant
+        positions from the configuration the solve returned, so the task gate, the pose
+        residual, the collision check and the true minimum distance are all measured on the
+        robot rather than on the model of it. Without this the learned-FK column would be
+        graded by the thing it is measuring.
+        """
+        if self.fk_surrogate is None:
+            return q
+        return self.ExactConfigToPlantQ(self._last_returned_cfg)
 
     ## `PadQ` keeps its meaning -- configuration to plant positions -- so anything that
     ## still calls it by that name gets the map rather than a zero-padded strain vector.
@@ -228,6 +290,7 @@ class SoftArmIKProgram(IKFlowProgram):
         if not autodiff:
             cfg = self.ik_inference(vars, add_correction=add_correction)
             cfg = cfg.detach().cpu().numpy()
+            self._last_returned_cfg = cfg
             return cfg, self.ConfigToPlantQ(cfg)
 
         values = np.array([v.value() for v in vars])
@@ -248,6 +311,7 @@ class SoftArmIKProgram(IKFlowProgram):
         plant_q = plant_q.detach().cpu().numpy()[self._plant_slots]
         q_gradients = map_jacobian @ cfg_gradients
 
+        self._last_returned_cfg = cfg
         cfg_ad = np.array([AutoDiffXd(cfg[i], cfg_gradients[i]) for i in range(len(cfg))])
         q_ad = np.array([AutoDiffXd(plant_q[i], q_gradients[i]) for i in range(len(plant_q))])
         return cfg_ad, q_ad
@@ -358,6 +422,10 @@ class _NumericalMixin:
 
     def VarsToConfigAndQ(self, rpy_vars, add_correction=False):
         cfg = np.asarray(rpy_vars[:self.num_arm_dof])
+        if not isinstance(rpy_vars[0], AutoDiffXd):
+            self._last_returned_cfg = np.asarray(cfg, dtype=float)
+        else:
+            self._last_returned_cfg = np.array([v.value() for v in cfg])
         if isinstance(rpy_vars[0], AutoDiffXd):
             values = np.array([v.value() for v in cfg])
             gradients = np.array([v.derivatives() for v in cfg])

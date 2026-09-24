@@ -7,6 +7,13 @@ ipopt_output.txt
 # against the wrong architecture.
 models/iiwa14/*.pkl
 models/panda/panda__*.pkl
+## The soft arm's rungs: checkpoints, and any learned forward-model weights. Same rule as
+## the rigid arms' -- weights are regenerable and do not belong in git.
+models/soft9/*.pkl
+models/soft12/*.pkl
+models/soft16/*.pkl
+models/soft*/*__fk_surrogate.pt
+models/soft*/*__fk_surrogate.json
 notebooks/artifacts
 results/
 
@@ -21,3 +28,6 @@ logs/
 
 # wandb CLI scratch (offline runs live under results/)
 wandb/
+
+## The SoRoMoX oracle venv: disposable, offline-only, and 300+ MB of jaxlib.
+.venv-soromox/

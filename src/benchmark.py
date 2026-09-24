@@ -390,7 +390,19 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
     if not np.all(np.isfinite(q)):
         return Verdict(False, "nan", {})
 
+    ## The point that is GRADED, which is not always the point the arm optimised against.
+    ## `VerificationQ` is the identity on every robot whose forward model is exact, so this
+    ## is `q` itself there. On a robot running a LEARNED forward model it re-derives the
+    ## plant positions from the EXACT kinematics: an arm that solves against its own
+    ## surrogate must not be scored by that surrogate. The collision check, the true
+    ## minimum distance and the task gate all read this vector; `detail["q"]` keeps the
+    ## returned one, so the difference between them stays recoverable per cell.
+    verify_q = np.asarray(getattr(program, "VerificationQ", lambda v: v)(q), dtype=float)
+
     detail = {"q": [float(v) for v in q]}
+    if not np.array_equal(verify_q, q):
+        detail["verify_q"] = [float(v) for v in verify_q]
+        detail["forward_model_error"] = float(np.max(np.abs(verify_q - q)))
 
     # Every binding's worst signed violation, unconditionally: this is the continuous
     # quantity from which any feasibility threshold can be recomputed later, so a change
@@ -405,7 +417,8 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
     relaxed_tol = tol if relaxed_tol is None else float(relaxed_tol)
     relaxed_violations = {k: v for k, v in worst.items() if v > relaxed_tol}
 
-    collision = float(np.asarray(program.collision_free_constraint_eval.Eval(q)).flatten()[0])
+    collision = float(np.asarray(
+        program.collision_free_constraint_eval.Eval(verify_q)).flatten()[0])
     detail["collision_value"] = collision
 
     # `collision_value` is the RAW value of Drake's MinimumDistanceLowerBoundConstraint: a
@@ -417,7 +430,7 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
     try:
         scene_graph = program.diagram.GetSubsystemByName("scene_graph")
         sg_context = scene_graph.GetMyContextFromRoot(program.diagram_context)
-        program.plant.SetPositions(program.plant_context, q)
+        program.plant.SetPositions(program.plant_context, verify_q)
         pairs = scene_graph.get_query_output_port().Eval(
             sg_context).ComputeSignedDistancePairwiseClosestPoints()
         if pairs:
@@ -440,7 +453,7 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
         detail["z_norm"] = float(np.linalg.norm(
             x[program.prog.FindDecisionVariableIndices(program.z)]))
 
-    ok, task_detail = task_gate(program, q)
+    ok, task_detail = task_gate(program, verify_q)
     detail.update(task_detail)
 
     # An interior-point method parks *on* an active constraint, so a converged solve
