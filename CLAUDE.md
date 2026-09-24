@@ -1405,6 +1405,23 @@ pole callback; `export_ckpt_to_pkl.py` writes the `.pkl` and a sidecar that roun
 inside `validation_step` -- the first eval AFTER training starts, so a cluster run would have
 burnt its queue wait before saying so.
 
+**Acceptance is HIGHER than the rigid arms', and the rejection guard is safe.** Measured by
+`scripts/probe_shelf_acceptance.py` over 20000 draws per rung at the fielded inset 0.10, as a
+fraction of collision-free draws:
+
+| rung | collision-free | grasp | pose | draws/target (grasp) |
+| --- | --- | --- | --- | --- |
+| `soft9` | 33.1% | 1.06% | 0.44% | 286 |
+| `soft12` | 38.3% | 1.29% | 0.73% | 202 |
+| `soft16` | 40.3% | 1.40% | 0.52% | 177 |
+
+against the rigid arms' 0.55-0.68% grasp and 0.23-0.37% pose, so this robot is about twice as
+easy to place in a compartment -- its tip reaches into one from many directions. `P(trip)` at
+the fielded `MAX_CONSECUTIVE_REJECTIONS = 50000` is **0 on every rung, task and inset**; the
+worst cell anywhere in the sweep is `soft9` pose at inset 0.125, at 4.5e-13. Collision-free
+fraction rises monotonically with DOF because the 3-segment rung bends furthest per segment
+(240 degrees at the box corner against 180) and so self-collides most.
+
 **Do not build datasets for several robots CONCURRENTLY.** Measured the hard way: three
 datagen jobs launched together, and soft9 exited 1 after 6:21 while soft12 and soft16 exited 0
 in the same 6:21 -- with soft9's five files already on disk and byte-perfect (25M x ndof x 4 +
