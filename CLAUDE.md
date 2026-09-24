@@ -1375,10 +1375,32 @@ cheap baseline; here it still places 231 floating-body positions. So the learned
 per-iteration premium will look smaller than on the Panda and iiwa **because the baseline got
 more expensive, not because the learned arm got cheaper.**
 
-**Still open:** the dataset, the chart (pre-registered at `nb_nodes = 6`, the most expressive the
-gain-ceiling rule admits below the ~1e7 band, with `n4` and `n8` trained and reported as the
-ladder measurement rather than as the selector), the benchmark script, the cluster stages, and a
-cap ladder before any verdict.
+**The training loop closes with no third-party edit.** `scripts/training/ikflow_entry.py` runs
+any vendored-ikflow script with this project's robots registered first, and
+`cluster/{train_flow,build_dataset_job}.sh` go through it. Measured locally end to end:
+ikflow's own `build_dataset.py` writes 20k samples in 0.55 s (so 25M is ~11 minutes) in its
+exact on-disk layout; `train_ddp.py` trains, checkpoints and populates `status.json` and the
+pole callback; `export_ckpt_to_pkl.py` writes the `.pkl` and a sidecar that round-trips through
+`LoadFlowSolver`. One bug only this robot could expose: the shim returned CPU tensors from
+`forward_kinematics` while ikflow's validation compares them against cuda targets, which raised
+inside `validation_step` -- the first eval AFTER training starts, so a cluster run would have
+burnt its queue wait before saying so.
+
+**Three cluster stages, 12 logical runs each**, all at the status-quo cap and shape so the rows
+can stand beside the record's: `SOFT12` (2 experiments x 2 protocols x 3 solvers),
+`SOFTCHART` (`nb_nodes` 4/6/8 on the primary rung, IPOPT only) and `SOFTDOF` (the three rungs,
+IPOPT only). They are SEPARATE stages rather than entries in `ADOPTED_RUNGS`, because the
+status quo is accepted work and this robot is not yet -- adding it there would silently have
+changed what STATUSQUO means. The chart ladder is **benchmarked, not merely screened**: neither
+intrinsic screen predicts cells, so a ladder reported on screens alone would report the one
+thing already known not to matter. The fielded rung is pre-registered at `n6` before any cell
+is read; that, not leaving the others unmeasured, is the guard against selecting on the test
+set. The DOF rungs are **not paired cell-for-cell** -- each draws its own grid, so they are
+compared by target-level success rate with a bootstrap CI over targets, and McNemar does not
+apply across them.
+
+**Still open:** the 25M-sample datasets, the chart training itself, a cap ladder before any
+verdict is reported, and the learned-FK axis.
 
 ## Running on MIT SuperCloud (`cluster/`)
 

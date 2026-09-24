@@ -9,12 +9,12 @@ directives:
 # world-frame scene pose against a base-frame flow pose and needs the offset to be
 # constant, which holds only at the origin.
   - add_model:
-      name: soft12
-      file: package://combining_kinematics/models/soft_arm/soft12.sdf
+      name: soft16
+      file: package://combining_kinematics/models/soft16/soft16.sdf
 
   - add_weld:
       parent: world
-      child: soft12::base
+      child: soft16::base
 
 # The same finray gripper the iiwa carries, so `between_fingers` and the
 # 0.100 m wrist-to-fingertip separation are literally the same geometry.
@@ -23,7 +23,7 @@ directives:
       file: package://combining_kinematics/models/wsg_finray/wsg50_110_finray_fingers_box_collision.sdf
 
   - add_weld:
-      parent: soft12::soft_tip
+      parent: soft16::soft_tip
       child: finray::hand
       X_PC:
         rotation: !Rpy { deg: [90.0, 0.0, 0.0] }
@@ -37,15 +37,15 @@ directives:
         - finray::hand
         - finray::left_finger
         - finray::right_finger
-        - soft12::seg3_sub0
-        - soft12::seg3_sub1
-        - soft12::seg3_sub2
-        - soft12::seg3_sub3
-        - soft12::seg3_sub4
-        - soft12::seg3_sub5
-        - soft12::seg3_sub6
-        - soft12::seg3_sub7
-        - soft12::soft_tip_link
+        - soft16::seg3_sub0
+        - soft16::seg3_sub1
+        - soft16::seg3_sub2
+        - soft16::seg3_sub3
+        - soft16::seg3_sub4
+        - soft16::seg3_sub5
+        - soft16::seg3_sub6
+        - soft16::seg3_sub7
+        - soft16::soft_tip_link
       ignored_collision_filter_groups: [gripper_and_tip]
 
   - add_model:
@@ -142,8 +142,8 @@ directives:
   - add_collision_filter_group:
       name: arm_base_and_tables
       members:
-        - soft12::seg0_sub0
-        - soft12::seg0_sub1
+        - soft16::seg0_sub0
+        - soft16::seg0_sub1
         - table::table_body
         - table2::table_body
       ignored_collision_filter_groups: [arm_base_and_tables]

@@ -34,10 +34,17 @@ import sys
 
 SCRIPTS = {"panda": "scripts/panda/panda_benchmark.py",
            "iiwa": "scripts/iiwa/iiwa_benchmark.py"}
+## The soft arm's three rungs share one driver, selected with --rung. Registered here so
+## `item()` can find a script for them like any other robot.
+SOFT_RUNGS = ("soft9", "soft12", "soft16")
+SCRIPTS.update({rung: "scripts/soft_arm/soft_arm_benchmark.py" for rung in SOFT_RUNGS})
 
 # Arms per robot. The iiwa has no analytic arm: no Iiwa14IKProgramAnalytic exists, and
 # writing one is future work or possibly not done at all (Thomas, 2026-09-19).
 ALL_ARMS = {"panda": "learned,numerical,analytic,analytic8", "iiwa": "learned,numerical"}
+## Two arms, for a stronger reason than the iiwa's: a redundant continuum arm has no
+## closed-form IK to write an analytic column from.
+ALL_ARMS.update({rung: "learned,numerical" for rung in SOFT_RUNGS})
 
 # Seconds per (cell x arm), used only for the LPT ordering and the --summary
 # estimate. Deliberately pessimistic: the learned arm is the one that can sit at
@@ -1789,6 +1796,140 @@ STATUSQUO_WALL = 180.0
 STATUSQUO_ROWS = tuple(r for r in SOLVER2_ROWS if "free" not in r[2])
 
 
+#: The soft arm's chart, once trained. Pre-registered at nb_nodes = 6 BEFORE any cell was
+#: measured: the gain-ceiling rule admits both 4 (2.2e4) and 6 (3.2e6) below the ~1e7 runaway
+#: band, and 6 is the most expressive it allows. n4 and n8 are trained and REPORTED as the
+#: ladder measurement -- n8 above the ceiling being the control that the ceiling matters --
+#: but the fielded rung is the pre-registered one. Selecting whichever rung benchmarks best
+#: is disqualified: that is selecting on the test set.
+#: Path follows the export contract exactly -- `models/<robot>/<robot>__<label>__step<N>.pkl`,
+#: where the "robot" is the rung. That is why each rung has its own models/ directory.
+SOFT_ADOPTED = {rung: ("n6", f"models/{rung}/{rung}__n6__step620000.pkl")
+                for rung in SOFT_RUNGS}
+
+#: The chart ladder on the primary rung. Benchmarked, not merely screened: CLAUDE.md is
+#: explicit that NEITHER intrinsic screen predicts cells in either direction, so a ladder
+#: reported on screens alone would be reporting the one thing already known not to matter.
+#: Measuring all three while FIELDING the pre-registered one is exactly what the iiwa and
+#: Panda ladders did -- the guard against selecting on the test set is that the choice was
+#: made before any cell was read, not that the other rungs went unmeasured.
+SOFT_CHART_RUNGS = tuple(
+    ("soft12", label, f"models/soft12/soft12__{label}__step620000.pkl")
+    for label in ("n4", "n6", "n8"))
+
+
+def stage_SOFT12(wall, targets, guesses, shards, only=None, tag="SOFT12", seed=1,
+                 solvers="ipopt,snopt,nlopt", starts="paired,native"):
+    """The soft arm's status-quo-shaped rows: 2 experiments x 2 protocols x 3 solvers.
+
+    Deliberately the same shape, cap and seed as stage_STATUSQUO so the soft arm's rows can
+    stand beside the record's without a caveat about conditions. It is a SEPARATE stage
+    rather than a third entry in ADOPTED_RUNGS because the status quo is accepted work and
+    this robot is not yet: adding it there would have silently changed what STATUSQUO means.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_solvers = [x.strip() for x in solvers.split(",") if x.strip()]
+    for sv in want_solvers:
+        if sv not in SOLVER_CLASSES:
+            raise SystemExit(f"--solvers: {sv!r} is not one of the three method classes")
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    if float(wall) != STATUSQUO_WALL:
+        raise SystemExit(f"--wall-time must be {STATUSQUO_WALL:g} to stand beside the status "
+                         f"quo; got {wall}")
+    wall = float(wall)
+    rung = "soft12"
+    if wanted is not None and rung not in wanted:
+        return []
+    label, ckpt = SOFT_ADOPTED[rung]
+    items = []
+    base = ["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+            "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
+            "--rung", rung, "--checkpoint", ckpt]
+    for solver in want_solvers:
+        item_shards = shards * STATUSQUO_SHARD_SCALE[solver]
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(rung,
+                              f"sc_{tag}_{rung}_{label}_{solver}_{token}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", solver]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[rung], wall, item_shards, seed=seed)
+    return items
+
+
+def stage_SOFTCHART(wall, targets, guesses, shards, only=None, tag="SOFTCHART", seed=1,
+                    starts="paired,native"):
+    """The chart ladder on soft12: nb_nodes 4 / 6 / 8, IPOPT only.
+
+    REPORTED, NOT SELECTED FROM. The fielded rung is pre-registered at n6 before any cell is
+    read; this stage exists so the ladder is a measurement of cells rather than of the
+    intrinsic screens, which the record says do not predict cells in either direction. n8
+    sits ABOVE the ~1e7 gain ceiling and is the control that the ceiling matters.
+
+    IPOPT only: the solver axis is closed, and this question is about the chart.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    wall = float(wall)
+    items = []
+    for rung, label, ckpt in SOFT_CHART_RUNGS:
+        if wanted is not None and label not in wanted and f"{rung}:{label}" not in wanted:
+            continue
+        base = ["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
+                "--rung", rung, "--checkpoint", ckpt]
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(rung,
+                              f"sc_{tag}_{rung}_{label}_ipopt_{token}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", "ipopt"]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[rung], wall, shards, seed=seed)
+    return items
+
+
+def stage_SOFTDOF(wall, targets, guesses, shards, only=None, tag="SOFTDOF", seed=1,
+                  starts="paired,native"):
+    """How much redundancy is worth: 9 vs 12 vs 16 DoF, same envelope, IPOPT only.
+
+    The rungs hold total backbone length and the strain limits fixed, so they share a
+    workspace envelope and differ ONLY in how many independent segments the same arm has.
+    That is what makes this a measurement of redundancy rather than of three robots.
+
+    IPOPT ONLY, and that is a deliberate trim rather than a shortcut: the solver axis is
+    closed, and this question is about the formulation. Running it under three solvers would
+    triple the cost to re-answer a question the record has already settled.
+
+    The rungs are NOT paired cell-for-cell. Each draws its own grid, because targets are
+    sampled from a robot's own collision-free configurations and the guesses live in
+    different configuration spaces. Compare by target-level success rate with a bootstrap CI
+    over targets; McNemar does not apply across rungs and must not be reported as though it
+    does.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    wall = float(wall)
+    items = []
+    for rung in SOFT_RUNGS:
+        if wanted is not None and rung not in wanted:
+            continue
+        label, ckpt = SOFT_ADOPTED[rung]
+        base = ["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
+                "--rung", rung, "--checkpoint", ckpt]
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(rung,
+                              f"sc_{tag}_{rung}_{label}_ipopt_{token}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", "ipopt"]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[rung], wall, shards, seed=seed)
+    return items
+
+
 def stage_STATUSQUO(wall, targets, guesses, shards, only=None, tag="STATUSQUO", seed=1,
                     solvers="ipopt,snopt,nlopt", starts="paired,native"):
     """The campaign of record at the new status quo: contained targets, 180 s, three solvers.
@@ -2092,7 +2233,14 @@ def _ladder_paths_match_export():
     # and already skipped.) Listed explicitly so a genuinely missing rung still fails.
     PRE_EXISTING = {"models/iiwa14/iiwa14__ddp-r1__step620000.pkl"}
 
-    benchmarked = {c for _, _, c in LADDER_RUNGS if c} - PRE_EXISTING
+    ## The soft arm's charts are benchmarked through SOFT_ADOPTED rather than
+    ## LADDER_RUNGS -- it is a separate stage, because the status quo is accepted work and
+    ## this robot is not yet -- so they are included here explicitly. Without this, every
+    ## soft row in ladder_runs.txt reads as "trains but nothing benchmarks it", and the
+    ## check that exists to catch a missing chart would be reporting a bookkeeping gap.
+    benchmarked = ({c for _, _, c in LADDER_RUNGS if c}
+                   | {c for _, c in SOFT_ADOPTED.values()}
+                   | {c for _, _, c in SOFT_CHART_RUNGS}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
         fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt row would export it")
@@ -2863,6 +3011,51 @@ def selftest():
         print("ok   stage HARDMUG: 30 iiwa runs, every item on the nobin scene")
     fails += len(hm_fails)
 
+    ## Stage SOFT12 / SOFTDOF / SOFTCHART. The invariants are the ones this robot could
+    ## plausibly get wrong, not a restatement of item(): that its rows are CONTAINED (the
+    ## `free` placement is a retired setting and must never be fielded again, which cost a
+    ## third of a 600 core-hour campaign the last time it was), that the cap matches the
+    ## status quo's so the rows can stand beside it, that every item names a rung AND a
+    ## checkpoint (this robot has no default chart to fall back on, and a missing one is the
+    ## whole-column-of-zeros failure mode), and that the two ladders are IPOPT-only, since
+    ## the solver axis is closed and re-running it would triple their cost to re-answer a
+    ## settled question.
+    soft_fails = []
+    soft_stages = {"SOFT12": stage_SOFT12(180, 60, 8, 8),
+                   "SOFTDOF": stage_SOFTDOF(180, 60, 8, 8),
+                   "SOFTCHART": stage_SOFTCHART(180, 60, 8, 8)}
+    for name, runs in soft_stages.items():
+        ids = [r["id"] for r in runs]
+        if len(set(ids)) != len(ids):
+            soft_fails.append(f"stage {name}: duplicate item ids")
+        logical = len({i.rsplit("_shard", 1)[0] for i in ids})
+        if logical != 12:
+            soft_fails.append(f"stage {name}: {logical} logical runs, expected 12")
+        for r in runs:
+            args = r["args"]
+            if r["script"] != "scripts/soft_arm/soft_arm_benchmark.py":
+                soft_fails.append(f"stage {name}: {r['id']} does not use the soft driver")
+            if "free" in args:
+                soft_fails.append(f"stage {name}: {r['id']} fields the retired free placement")
+            if "--rung" not in args or "--checkpoint" not in args:
+                soft_fails.append(f"stage {name}: {r['id']} omits --rung or --checkpoint")
+            if args[args.index("--wall-time") + 1] != str(STATUSQUO_WALL):
+                soft_fails.append(f"stage {name}: {r['id']} is not at the status-quo cap")
+            if args[args.index("--arms") + 1] != "learned,numerical":
+                soft_fails.append(f"stage {name}: {r['id']} does not field exactly two arms")
+            if name != "SOFT12" and args[args.index("--solver") + 1] != "ipopt":
+                soft_fails.append(f"stage {name}: {r['id']} is not IPOPT-only")
+        if name == "SOFT12":
+            solvers = {r["args"][r["args"].index("--solver") + 1] for r in runs}
+            if solvers != set(SOLVER_CLASSES):
+                soft_fails.append(f"stage SOFT12: solvers {sorted(solvers)}, expected all three")
+    for msg in soft_fails:
+        print(f"FAIL {msg}")
+    fails += len(soft_fails)
+    if not soft_fails:
+        print("ok   stages SOFT12/SOFTDOF/SOFTCHART: 12 logical runs each, contained rows "
+              "only, status-quo cap, rung and checkpoint on every item, ladders IPOPT-only")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -2880,7 +3073,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -2968,6 +3161,16 @@ def main():
                                                  args.guesses, args.shards,
                                                  only=args.rungs, solvers=args.solvers,
                                                  starts=args.starts),
+             "SOFT12": lambda: stage_SOFT12(args.wall_time, args.targets,
+                                            args.guesses, args.shards,
+                                            only=args.rungs, solvers=args.solvers,
+                                            starts=args.starts),
+             "SOFTDOF": lambda: stage_SOFTDOF(args.wall_time, args.targets,
+                                              args.guesses, args.shards,
+                                              only=args.rungs, starts=args.starts),
+             "SOFTCHART": lambda: stage_SOFTCHART(args.wall_time, args.targets,
+                                                  args.guesses, args.shards,
+                                                  only=args.rungs, starts=args.starts),
              "NLOPTTUNE": lambda: stage_NLOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,

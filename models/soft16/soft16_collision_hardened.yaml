@@ -10,7 +10,7 @@ directives:
 # constant, which holds only at the origin.
   - add_model:
       name: soft16
-      file: package://combining_kinematics/models/soft_arm/soft16.sdf
+      file: package://combining_kinematics/models/soft16/soft16.sdf
 
   - add_weld:
       parent: world

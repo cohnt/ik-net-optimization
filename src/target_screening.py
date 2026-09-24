@@ -150,8 +150,8 @@ SCENES = {
 ## both rigid arms: the soft arm carries the SAME finray gripper, so `between_fingers` and
 ## the 0.100 m step behind it are literally the same geometry on all three robots.
 for _spec in _SOFT_RUNGS.values():
-    _hardened = f"models/soft_arm/{_spec.name}_collision_hardened.yaml"
-    _legacy = f"models/soft_arm/{_spec.name}_collision.yaml"
+    _hardened = f"models/{_spec.name}/{_spec.name}_collision_hardened.yaml"
+    _legacy = f"models/{_spec.name}/{_spec.name}_collision.yaml"
     _instances = (_spec.name, "finray")
     SCENES[(_spec.name, "mug")] = SceneSpec(
         f"{_spec.name}_mug", _hardened, _legacy, _hardened,

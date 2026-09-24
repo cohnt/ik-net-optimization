@@ -130,13 +130,14 @@ def RenderSdf(spec: SoftArmSpec) -> str:
 
 
 def OutputPath(spec: SoftArmSpec, root: str) -> str:
-    return os.path.join(root, "models", "soft_arm", f"{spec.name}.sdf")
+    return os.path.join(root, "models", spec.name, f"{spec.name}.sdf")
 
 
 def main():
     from src.utils import RepoDir
     root = RepoDir()
-    os.makedirs(os.path.join(root, "models", "soft_arm"), exist_ok=True)
+    for spec in RUNGS.values():
+        os.makedirs(os.path.join(root, "models", spec.name), exist_ok=True)
     for spec in RUNGS.values():
         path = OutputPath(spec, root)
         with open(path, "w") as handle:
