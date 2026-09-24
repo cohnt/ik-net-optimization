@@ -111,3 +111,28 @@ directives:
       X_PC:
         translation: [-0.45, 0.55, 0.4]
         rotation: !Rpy { deg: [0.0, 0.0, 135.0] }
+
+# The arm is mounted THROUGH the table surface, which sits at z = 0, so its first
+# collision sphere is centred inside the table. The rigid arms get this for free:
+# their base link is welded, and Drake never generates collision candidates between
+# two ANCHORED geometries. The soft arm's sub-links are floating bodies, so the pair
+# IS generated, and every uniformly drawn configuration was rejected on collision
+# before containment was even consulted -- 50001 of 50001 draws, measured. Filtering
+# the first sphere against the two tables is the same statement a welded base makes.
+#
+# The alternative -- raising the backbone on a mount -- was built and measured, and
+# rejected: it would have given this robot a different base height from the rigid
+# arms, and a mismatch in setup across experiments is a landmine for comparability
+# even when the geometry is reasonable (Thomas, 2026-09-24).
+#
+# Deliberately only the spheres whose centres sit within one collision radius of
+# z = 0 -- derived from the spec, not hardcoded, so changing K or the radius cannot
+# leave one unfiltered. The rest of the arm must not pass through a table.
+  - add_collision_filter_group:
+      name: arm_base_and_tables
+      members:
+        - soft16::seg0_sub0
+        - soft16::seg0_sub1
+        - table::table_body
+        - table2::table_body
+      ignored_collision_filter_groups: [arm_base_and_tables]

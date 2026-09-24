@@ -133,6 +133,35 @@ def RenderScene(spec: SoftArmSpec, legacy: bool = False) -> str:
         lines += _model(name, _SHELF_URI)
         lines += _weld("world", f"{name}::shelves_body", translation, (0.0, 0.0, yaw))
 
+    ## AFTER the tables: directives are processed in order, and a filter group naming a
+    ## body that has not been added yet fails at parse time.
+    lines += [
+        "# The arm is mounted THROUGH the table surface, which sits at z = 0, so its first",
+        "# collision sphere is centred inside the table. The rigid arms get this for free:",
+        "# their base link is welded, and Drake never generates collision candidates between",
+        "# two ANCHORED geometries. The soft arm's sub-links are floating bodies, so the pair",
+        "# IS generated, and every uniformly drawn configuration was rejected on collision",
+        "# before containment was even consulted -- 50001 of 50001 draws, measured. Filtering",
+        "# the first sphere against the two tables is the same statement a welded base makes.",
+        "#",
+        "# The alternative -- raising the backbone on a mount -- was built and measured, and",
+        "# rejected: it would have given this robot a different base height from the rigid",
+        "# arms, and a mismatch in setup across experiments is a landmine for comparability",
+        "# even when the geometry is reasonable (Thomas, 2026-09-24).",
+        "#",
+        "# Deliberately only the spheres whose centres sit within one collision radius of",
+        "# z = 0 -- derived from the spec, not hardcoded, so changing K or the radius cannot",
+        "# leave one unfiltered. The rest of the arm must not pass through a table.",
+        "  - add_collision_filter_group:",
+        "      name: arm_base_and_tables",
+        "      members:",
+    ] + [f"        - {spec.name}::seg0_sub{sub}"
+         for sub in range(spec.sublinks_below_table())] + [
+        "        - table::table_body",
+        "        - table2::table_body",
+        "      ignored_collision_filter_groups: [arm_base_and_tables]",
+    ]
+
     return "\n".join(lines).rstrip() + "\n"
 
 

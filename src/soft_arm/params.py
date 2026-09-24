@@ -124,6 +124,18 @@ class SoftArmSpec:
     def tip_link_name(self) -> str:
         return "soft_tip_link"
 
+    def sublinks_below_table(self) -> int:
+        """How many leading collision spheres reach below the table top at z = 0.
+
+        The arm is mounted THROUGH the table surface, so the spheres whose centres sit
+        within one radius of z = 0 are inside it by construction and are filtered against
+        the tables.  Derived rather than hardcoded so that changing `K` or the collision
+        radius cannot silently leave one of them unfiltered -- which shows up as a scene
+        where no configuration is ever collision-free.
+        """
+        import math
+        return max(1, int(math.ceil(self.collision_radius / self.sublink_length)))
+
     def filter_group_sizes(self) -> Tuple[int, ...]:
         """Collision bodies per segment group; the tip joins the last segment."""
         sizes = [self.sublinks_per_segment] * self.num_segments
