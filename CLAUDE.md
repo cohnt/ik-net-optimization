@@ -1272,6 +1272,25 @@ Limits (`|kappa| <= 8.5 /m`, `|sigma_z| <= 0.3`, worst-case bend half a turn per
 `soft12`) were fixed from continuum-arm plausibility BEFORE any acceptance rate or cell count
 was measured, and are not revisited: they are part of the robot.
 
+**Our torch map IS SoRoMoX's model, and that is now CHECKED rather than claimed.** The
+analytic path is our torch reimplementation of the constant-strain exponential -- it has to
+be, since the solver needs it differentiable in torch and driving a Drake plant, and SoRoMoX
+is JAX -- so "the analytic forward kinematics from the soft robot repo" is only honest if the
+equivalence is pinned. It is: over 256 configurations per rung, corners and the straight arm
+included, `g_soromox = A @ g_ours` with a single constant `A` to **1.1e-15**. `A` is exactly
+`R_y(90 deg)` -- integer entries, zero translation -- because SoRoMoX runs the backbone along
+**-x** where we run it along **+z**. The conjugated form `A g A^-1` does NOT fit (residual
+1.4), which says the two disagree about the BASE frame only and agree about every body frame.
+
+The check is a **committed golden file**, not a live import: a test that only runs where
+SoRoMoX is installed is one disposable venv on one laptop, and a check that silently stops
+running is indistinguishable from one that passes. `tests/data/soft_arm_fk_golden.npz` carries
+its own metadata, including that JAX ran in float64 -- **JAX defaults to float32, and a 1e-12
+agreement claim against a float32 oracle is a fiction**. A second test regenerates the file
+through the ORACLE VENV'S OWN INTERPRETER and asserts byte-equality; gating it on `import
+soromox` would have skipped forever, since the test file imports pydrake and the oracle venv
+deliberately has no Drake.
+
 **The Drake model is generated, and its discretization is EXACT.** A segment carries a constant
 twist, so `exp(xi*L) == exp(xi*L/K)**K` identically; splitting it into K sub-links reproduces
 the tip pose to machine precision (measured: agreement across K = 1..20 to **2.7e-15**, and a

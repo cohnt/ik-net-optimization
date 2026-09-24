@@ -40,7 +40,8 @@ import torch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 from pydrake.all import (AddMultibodyPlantSceneGraph, DiagramBuilder,
-                         MinimumDistanceLowerBoundConstraint, Parser)
+                         MinimumDistanceLowerBoundConstraint, Parser, Quaternion,
+                         RotationMatrix)
 
 from src.soft_arm import kinematics as K
 from src.soft_arm.generate_sdf import OutputPath, RenderSdf
@@ -249,6 +250,99 @@ def test_a_curled_arm_collides_with_itself():
     print("PASS straight is clear and fully curled self-collides")
 
 
+#: SoRoMoX's base frame runs the backbone along -x; ours runs it along +z. The two models
+#: are otherwise the SAME map, so they differ by this exact constant rotation -- integer
+#: entries, zero translation, determinant 1. Declared rather than fitted, so this test pins
+#: the frame convention as well as the equivalence: a change to either is caught.
+SOROMOX_FROM_OURS = np.array([[0.0, 0.0, -1.0, 0.0],
+                              [0.0, 1.0, 0.0, 0.0],
+                              [1.0, 0.0, 0.0, 0.0],
+                              [0.0, 0.0, 0.0, 1.0]])
+
+GOLDEN = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                      "data", "soft_arm_fk_golden.npz")
+
+
+def _segment_tip_transforms(configurations, spec):
+    """Our map's per-segment tip transforms as 4x4s, to match `forward_kinematics_tips`.
+
+    The quaternion-to-matrix step goes through pydrake rather than through our own
+    `kinematics` helpers: a test that reuses the implementation it is checking would not
+    catch an error in that conversion.
+    """
+    tensor = torch.as_tensor(configurations, dtype=DTYPE)
+    quaternions, translations, tip_quaternion, tip_translation = K.sublink_poses(tensor, spec)
+    per_segment = spec.sublinks_per_segment
+    out = np.zeros((tensor.shape[0], spec.num_segments, 4, 4))
+    out[:, :, 3, 3] = 1.0
+    for segment in range(spec.num_segments):
+        if segment == spec.num_segments - 1:
+            quaternion, translation = tip_quaternion, tip_translation
+        else:
+            index = (segment + 1) * per_segment
+            quaternion, translation = quaternions[:, index, :], translations[:, index, :]
+        for row in range(tensor.shape[0]):
+            wxyz = quaternion[row].numpy()
+            rotation = RotationMatrix(Quaternion(wxyz / np.linalg.norm(wxyz)))
+            out[row, segment, :3, :3] = rotation.matrix()
+            out[row, segment, :3, 3] = translation[row].numpy()
+    return out
+
+
+def test_matches_soromox():
+    """Our torch map IS the SoRoMoX model, up to a declared constant base frame.
+
+    This is what makes "the analytic forward kinematics from the soft robot repo" a checked
+    statement rather than a provenance claim. The golden file is committed and carries its
+    own metadata (including that JAX ran in float64 -- a 1e-12 claim against a float32
+    oracle would be a fiction), so this runs everywhere with no JAX installed.
+    """
+    golden = np.load(GOLDEN)
+    assert bool(golden["jax_enable_x64"]), (
+        "the golden file was generated in float32; regenerate it with jax_enable_x64")
+    worst = 0.0
+    for name in sorted(RUNGS):
+        spec = RUNGS[name]
+        configurations, soromox = golden[f"{name}/cfg"], golden[f"{name}/tips"]
+        ours = _segment_tip_transforms(configurations, spec)
+        expected = SOROMOX_FROM_OURS[None, None] @ ours
+        error = float(np.abs(expected - soromox).max())
+        worst = max(worst, error)
+        assert error < 1e-12, f"{name}: disagrees with SoRoMoX by {error:.3e}"
+        print(f"PASS {name}: matches SoRoMoX over {configurations.shape[0]} configurations "
+              f"to {error:.1e}")
+    print(f"PASS the torch map is SoRoMoX's model to {worst:.1e}, up to R_y(90 deg)")
+
+
+def test_golden_file_is_reproducible():
+    """Regenerating the golden file must not move it. Opt-in: needs the oracle venv.
+
+    Runs the generator through the ORACLE VENV'S OWN INTERPRETER rather than this one. The
+    obvious spelling -- `try: import soromox` -- would skip forever: this test file imports
+    pydrake, which the oracle venv deliberately does not have, so the two interpreters can
+    never be the same one. A check that can only ever skip is exactly the failure this
+    golden file exists to avoid, so it is the VENV's presence that gates it, not an import.
+    """
+    import subprocess
+    oracle = os.path.join(RepoDir(), ".venv-soromox", "bin", "python")
+    if not os.path.exists(oracle):
+        print(f"SKIP golden-file regeneration (no oracle venv at "
+              f"{os.path.relpath(oracle, RepoDir())}; "
+              f"python3 -m venv .venv-soromox && pip install soromox 'jax[cpu]')")
+        return
+    with open(GOLDEN, "rb") as handle:
+        before = handle.read()
+    subprocess.check_call(
+        [oracle, os.path.join(RepoDir(), "scripts", "soft_arm", "generate_fk_golden.py")],
+        stdout=subprocess.DEVNULL)
+    with open(GOLDEN, "rb") as handle:
+        after = handle.read()
+    assert after == before, (
+        "regenerating the golden file changed it -- either SoRoMoX's model moved or the "
+        "spec did, and the committed numbers no longer describe this robot")
+    print("PASS the golden file regenerates identically from SoRoMoX")
+
+
 def test_generated_sdf_is_current():
     for spec in RUNGS.values():
         path = OutputPath(spec, RepoDir())
@@ -269,5 +363,7 @@ if __name__ == "__main__":
     test_spheres_contain_the_backbone()
     test_collision_filters_are_what_they_claim()
     test_a_curled_arm_collides_with_itself()
+    test_matches_soromox()
+    test_golden_file_is_reproducible()
     test_generated_sdf_is_current()
     print("ALL PASS")
