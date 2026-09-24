@@ -163,36 +163,53 @@ def sublink_poses(cfg, spec, dtype=torch.float64, device="cpu"):
     Sub-link `j` of segment `i` sits at the START of its own sub-arc, so the first
     sub-link of the first segment is the base pose itself. That is what puts a collision
     sphere at every sampled point of the backbone rather than half a step past it.
+
+    THE LOOP IS OVER SEGMENTS, NOT SUB-LINKS, and that is worth 30x. The naive version
+    composes one small transform per sub-link, which is 32 Python-level steps of tiny
+    tensor ops; its `jacfwd` measured 43.7 ms, against the flow's whole ~17 ms Jacobian --
+    i.e. the kinematics would have cost more than the network. But a segment carries a
+    CONSTANT twist, so sub-link `j` sits at `exp(xi * j * ds)` from the segment's base: a
+    closed form in `j`, evaluated for all K at once. Only the segment bases have to be
+    chained, and there are four of those.
     """
     omega, nu, squeeze = cfg_to_twists(cfg, spec, dtype, device)
+    sublinks = spec.sublinks_per_segment
     ds = spec.sublink_length
-    # One step transform per segment: every sub-link of a segment shares the segment's
-    # strain, so the same relative transform repeats K times.
-    step_quat, step_translation = se3_exp(omega * ds, nu * ds)
 
-    batch = step_quat.shape[0]
-    quat = torch.zeros(batch, 0, 4, dtype=dtype, device=device)
-    translation = torch.zeros(batch, 0, 3, dtype=dtype, device=device)
+    # Every sub-link offset within a segment, in one batched exponential.
+    steps = torch.arange(sublinks, dtype=dtype, device=device) * ds     # (K,)
+    scale = steps.reshape(1, 1, sublinks, 1)
+    offset_quat, offset_translation = se3_exp(omega.unsqueeze(2) * scale,
+                                              nu.unsqueeze(2) * scale)
 
-    current_quat = torch.zeros(batch, 4, dtype=dtype, device=device)
-    current_quat[:, 0] = 1.0
-    current_translation = torch.zeros(batch, 3, dtype=dtype, device=device)
+    # The segment-to-segment transform: the whole segment at once.
+    segment_quat, segment_translation = se3_exp(omega * spec.segment_length,
+                                                nu * spec.segment_length)
 
-    quats, translations = [], []
+    batch = omega.shape[0]
+    base_quat = torch.zeros(batch, 4, dtype=dtype, device=device)
+    base_quat[:, 0] = 1.0
+    base_translation = torch.zeros(batch, 3, dtype=dtype, device=device)
+
+    bases_quat, bases_translation = [], []
     for segment in range(spec.num_segments):
-        sq = step_quat[:, segment, :]
-        st = step_translation[:, segment, :]
-        for _ in range(spec.sublinks_per_segment):
-            quats.append(current_quat)
-            translations.append(current_translation)
-            current_translation = current_translation + quat_rotate(current_quat, st)
-            current_quat = quat_multiply(current_quat, sq)
+        bases_quat.append(base_quat)
+        bases_translation.append(base_translation)
+        base_translation = base_translation + quat_rotate(
+            base_quat, segment_translation[:, segment, :])
+        base_quat = quat_multiply(base_quat, segment_quat[:, segment, :])
 
-    quat = torch.stack(quats, dim=1)
-    translation = torch.stack(translations, dim=1)
+    stacked_quat = torch.stack(bases_quat, dim=1).unsqueeze(2)              # (B, N, 1, 4)
+    stacked_translation = torch.stack(bases_translation, dim=1).unsqueeze(2)
+
+    quat = quat_multiply(stacked_quat, offset_quat)
+    translation = stacked_translation + quat_rotate(stacked_quat, offset_translation)
+    quat = quat.reshape(batch, spec.num_sublinks, 4)
+    translation = translation.reshape(batch, spec.num_sublinks, 3)
+
     if squeeze:
-        return (quat[0], translation[0], current_quat[0], current_translation[0])
-    return quat, translation, current_quat, current_translation
+        return quat[0], translation[0], base_quat[0], base_translation[0]
+    return quat, translation, base_quat, base_translation
 
 
 def tip_pose(cfg, spec, dtype=torch.float64, device="cpu"):
@@ -216,39 +233,49 @@ def config_to_plant_q(cfg, spec, dtype=torch.float64, device="cpu"):
     """Configuration -> the Drake plant's position vector.
 
     Every sub-link is a quaternion floating body, whose 7 positions Drake orders
-    `[qw, qx, qy, qz, x, y, z]`; bodies appear in the order the generated SDF declares
-    them, which is segment-major. `tests/test_soft_arm_drake.py` pins both orderings
-    against the plant rather than trusting this comment.
+    `[qw, qx, qy, qz, x, y, z]`; bodies appear in the order `spec.body_names()` gives,
+    which is segment-major with the tip mount last. `tests/test_soft_arm_drake.py` pins
+    both orderings against the plant rather than trusting this comment.
     """
-    quat, translation, _, _ = sublink_poses(cfg, spec, dtype, device)
+    quat, translation, tip_quat, tip_translation = sublink_poses(cfg, spec, dtype, device)
+    quat = torch.cat([quat, tip_quat.unsqueeze(-2)], dim=-2)
+    translation = torch.cat([translation, tip_translation.unsqueeze(-2)], dim=-2)
     return torch.cat([quat, translation], dim=-1).reshape(*quat.shape[:-2], -1)
 
 
 def sphere_centers(cfg, spec, dtype=torch.float64, device="cpu"):
-    """Centres of the collision spheres, `(B, num_sublinks, 3)`.
+    """Centres of the collision spheres, `(B, num_bodies, 3)` -- the tip's included.
 
     These are the sub-link origins: the spheres ARE the robot, so this is its geometry,
     not a proxy for it.
     """
-    _, translation, _, _ = sublink_poses(cfg, spec, dtype, device)
-    return translation
+    _, translation, _, tip_translation = sublink_poses(cfg, spec, dtype, device)
+    return torch.cat([translation, tip_translation.unsqueeze(-2)], dim=-2)
 
 
-def backbone_points(cfg, spec, samples_per_sublink=8, dtype=torch.float64, device="cpu"):
+def backbone_points(cfg, spec, samples_per_sublink=8, dtype=torch.float64, device="cpu",
+                    return_frames=False):
     """Densely sampled points on the TRUE backbone curve, for the containment test.
 
     Walks each sub-arc at `samples_per_sublink` interior abscissae using the same
     exponential, so this is the continuous rod the sphere union has to contain -- not a
     re-sampling of the sphere centres, which would make the test vacuous.
+
+    With `return_frames`, also returns the backbone frame's quaternion at each sample, so
+    a caller can place points on the rod's SURFACE rather than its axis. Containment has
+    to be checked on the surface: an axis point within `R - r` of a centre is a far
+    stricter condition than the rod being covered, and using it would reject a model that
+    is in fact conservative.
     """
-    omega, nu, squeeze = cfg_to_twists(cfg, spec, dtype, device)
-    quat, translation, _, _ = sublink_poses(cfg, spec, dtype, device)
+    batched, squeeze = _as_batch(cfg, spec, dtype, device)
+    omega, nu, _ = cfg_to_twists(batched, spec, dtype, device)
+    quat, translation, _, _ = sublink_poses(batched, spec, dtype, device)
     ds = spec.sublink_length
 
     fractions = torch.arange(1, samples_per_sublink + 1, dtype=dtype, device=device)
     fractions = (fractions / samples_per_sublink) * ds
 
-    points = []
+    points, frames = [], []
     for segment in range(spec.num_segments):
         for sub in range(spec.sublinks_per_segment):
             index = segment * spec.sublinks_per_segment + sub
@@ -258,5 +285,90 @@ def backbone_points(cfg, spec, samples_per_sublink=8, dtype=torch.float64, devic
                 step_q, step_t = se3_exp(omega[:, segment, :] * fraction,
                                          nu[:, segment, :] * fraction)
                 points.append(base_p + quat_rotate(base_q, step_t))
+                frames.append(quat_multiply(base_q, step_q))
     stacked = torch.stack(points, dim=1)
-    return stacked[0] if squeeze else stacked
+    stacked_frames = torch.stack(frames, dim=1)
+    if squeeze:
+        stacked, stacked_frames = stacked[0], stacked_frames[0]
+    return (stacked, stacked_frames) if return_frames else stacked
+
+
+def backbone_surface_points(cfg, spec, samples_per_sublink=8, directions=8,
+                            dtype=torch.float64, device="cpu"):
+    """Points on the rod's SURFACE: the set the sphere union has to contain.
+
+    Each backbone sample is offset by `backbone_radius` in `directions` evenly spaced
+    directions perpendicular to the local tangent, using the backbone frame rather than a
+    fixed world direction, so the offsets stay perpendicular as the rod curves.
+    """
+    points, frames = backbone_points(cfg, spec, samples_per_sublink, dtype, device,
+                                     return_frames=True)
+    angles = torch.arange(directions, dtype=dtype, device=device) * (2 * math.pi / directions)
+    offsets = torch.stack([torch.cos(angles), torch.sin(angles),
+                           torch.zeros_like(angles)], dim=-1) * spec.backbone_radius
+    # (..., samples, 1, 3) rotated by each sample's frame, broadcast over directions.
+    rotated = quat_rotate(frames.unsqueeze(-2).expand(*frames.shape[:-1], directions, 4),
+                          offsets.expand(*frames.shape[:-1], directions, 3))
+    surface = points.unsqueeze(-2) + rotated
+    return surface.reshape(*points.shape[:-2], -1, 3)
+
+
+# --------------------------------------------------------------------------------------
+# The configuration -> plant-positions Jacobian
+#
+# MEASURED, on soft12 (12 coordinates, 231 plant positions), so it does not get
+# re-litigated. All four numbers are one laptop, one process, agreement to 2.2e-16:
+#
+#     mode      eager       compiled
+#     jacrev    6.3 ms      15.2 ms   (0.42x -- compilation makes it WORSE)
+#     jacfwd   10.7 ms       0.158 ms (67.9x)
+#
+# So: FORWARD mode, COMPILED. The shape argument says forward mode should win -- 12 inputs
+# against 231 outputs is forward mode's regime, the mirror image of the flow's 12 outputs
+# against 30 inputs -- and eager timings hide that under Python dispatch, which is the same
+# CPU-dispatch-bound regime the flow evaluation is documented to be in. Compiling removes
+# the dispatch and the shape argument reasserts itself by a factor of 68.
+#
+# The cold cost is ~15 s per process, once, like the flow's compiled Jacobian.
+#
+# The compiled path is tied to the SAME `--compile` switch as the flow's, not a second one.
+# It is bit-identical, but it changes how many iterations fit inside a fixed wall clock,
+# and that is precisely the property that forces `--compile` to be set identically on every
+# arm being compared.
+#
+# `torch.compile` guards on everything the callable closes over, so this compiles a FREE
+# function and memoises per spec -- compiling a bound method re-triggers dynamo for every
+# program, which is the trap the flow's Jacobian factory already documents.
+# --------------------------------------------------------------------------------------
+
+_COMPILED_CONFIG_JACOBIANS = {}
+
+
+def MakeConfigToPlantQ(spec, dtype=torch.float64, device="cpu"):
+    """A free function `cfg -> plant positions`, closing over the spec and nothing else."""
+
+    def config_to_plant(cfg):
+        return config_to_plant_q(cfg, spec, dtype=dtype, device=device)
+
+    return config_to_plant
+
+
+def ConfigJacobianGen(spec, compile_it=False, dtype=torch.float64, device="cpu"):
+    """`cfg -> (d(plant q)/d(cfg), plant q)`, forward mode, optionally compiled."""
+    generator = torch.func.jacfwd(MakeConfigToPlantQ(spec, dtype, device), has_aux=False)
+
+    def with_value(cfg):
+        return generator(cfg), config_to_plant_q(cfg, spec, dtype=dtype, device=device)
+
+    if not compile_it:
+        return with_value
+    key = (spec.name, str(dtype), str(device))
+    if key not in _COMPILED_CONFIG_JACOBIANS:
+        compiled = torch.compile(generator)
+        compiled_value = torch.compile(MakeConfigToPlantQ(spec, dtype, device))
+
+        def compiled_with_value(cfg):
+            return compiled(cfg), compiled_value(cfg)
+
+        _COMPILED_CONFIG_JACOBIANS[key] = compiled_with_value
+    return _COMPILED_CONFIG_JACOBIANS[key]

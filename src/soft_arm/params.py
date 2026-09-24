@@ -99,9 +99,36 @@ class SoftArmSpec:
         return self.num_segments * self.sublinks_per_segment
 
     @property
+    def num_bodies(self) -> int:
+        """Floating bodies: one per collision sub-link, plus the tip mount.
+
+        The arm's tip is one sub-arc PAST the last sub-link's origin, so it is not any
+        sub-link's frame and needs a body of its own. It carries no collision geometry --
+        it exists to be the frame the gripper welds to and the frame the flow conditions
+        on.
+        """
+        return self.num_sublinks + 1
+
+    @property
     def num_plant_positions(self) -> int:
-        """Drake positions: each sub-link is a quaternion floating body, 7 apiece."""
-        return 7 * self.num_sublinks
+        """Drake positions: every body is a quaternion floating body, 7 apiece."""
+        return 7 * self.num_bodies
+
+    def body_names(self) -> Tuple[str, ...]:
+        """The floating bodies, in the order the generated SDF declares them."""
+        return tuple(
+            [f"seg{i}_sub{j}" for i in range(self.num_segments)
+             for j in range(self.sublinks_per_segment)] + [self.tip_link_name])
+
+    @property
+    def tip_link_name(self) -> str:
+        return "soft_tip_link"
+
+    def filter_group_sizes(self) -> Tuple[int, ...]:
+        """Collision bodies per segment group; the tip joins the last segment."""
+        sizes = [self.sublinks_per_segment] * self.num_segments
+        sizes[-1] += 1
+        return tuple(sizes)
 
     # -- limits -----------------------------------------------------------------
 
@@ -133,12 +160,17 @@ class SoftArmSpec:
         return kappa_max * self.segment_length * (1.0 + elongation)
 
     def sphere_coverage_margin(self) -> float:
-        """How much room the collision spheres have, in metres, beyond covering the rod.
+        """Slack in the centre SPACING, in metres -- not in distance to the rod surface.
 
-        Consecutive sphere centres are `sublink_length` apart along the backbone, so the
-        union covers a rod of radius `r` when `sublink_length <= 2 * sqrt(R^2 - r^2)`.
-        This returns the slack in that inequality; the containment test measures the real
-        thing, this is the design-time bound.  Negative means the spheres leave gaps.
+        Consecutive sphere centres are `sublink_length` apart along the backbone (more
+        when stretched), so a straight rod of radius `r` is covered when that spacing is
+        at most `2 * sqrt(R^2 - r^2)`.  This returns the slack in THAT inequality, which
+        is several times larger than the clearance the containment test reports: a
+        millimetre of spacing slack buys well under a millimetre of surface clearance, and
+        curvature eats into it further by pushing the outside of a bend away from both
+        neighbouring centres.  Use this for design, and
+        `tests/test_soft_arm_kinematics.py::test_spheres_contain_the_backbone` for the
+        fact.  Negative means the spheres certainly leave gaps.
         """
         import math
         if self.collision_radius <= self.backbone_radius:
@@ -183,7 +215,7 @@ class SoftArmSpec:
 _KAPPA_MAX = 8.5           # 1/m
 _SIGMA_Z_MAX = 0.30        # 0.7x to 1.3x nominal length
 _TOTAL_LENGTH = 0.80       # m of backbone, iiwa-like reach
-_SUBLINK_TARGET = 0.0333   # m: the collision discretization, uniform across rungs
+_SUBLINK_TARGET = 0.0267   # m: the collision discretization, uniform across rungs
 
 #: LIMITS ARE IDENTICAL ON EVERY RUNG, and that is the point of the ladder.  Total
 #: backbone length is fixed at 0.8 m, so the total bend the arm can accumulate is
@@ -201,7 +233,7 @@ SOFT12 = SoftArmSpec(
     total_length=_TOTAL_LENGTH,
     strain_basis=(KAPPA_X, KAPPA_Y, SIGMA_Z),
     strain_limits=(*_BEND, _SIGMA_Z_MAX),
-    sublinks_per_segment=6,
+    sublinks_per_segment=8,
     backbone_radius=0.025,
     collision_radius=0.035,
 )
@@ -212,7 +244,7 @@ SOFT9 = SoftArmSpec(
     total_length=_TOTAL_LENGTH,
     strain_basis=(KAPPA_X, KAPPA_Y, SIGMA_Z),
     strain_limits=(*_BEND, _SIGMA_Z_MAX),
-    sublinks_per_segment=8,
+    sublinks_per_segment=10,
     backbone_radius=0.025,
     collision_radius=0.035,
 )
@@ -226,7 +258,7 @@ SOFT16 = SoftArmSpec(
     total_length=_TOTAL_LENGTH,
     strain_basis=(KAPPA_X, KAPPA_Y, KAPPA_Z, SIGMA_Z),
     strain_limits=(*_BEND, _KAPPA_MAX, _SIGMA_Z_MAX),
-    sublinks_per_segment=6,
+    sublinks_per_segment=8,
     backbone_radius=0.025,
     collision_radius=0.035,
 )
