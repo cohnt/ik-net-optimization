@@ -489,7 +489,14 @@ def start_diagnostics(program, q_init):
     n = getattr(program, "num_arm_dof", 7)
     try:
         x0 = program.prog.GetInitialGuess(program.lumped_vars)
-        q0 = np.asarray([float(v) for v in program.VarsToQ(x0)], dtype=float)
+        ## The CONFIGURATION at the start, not the first `n` entries of a plant position
+        ## vector. The two are the same object on a robot whose configuration IS its plant
+        ## vector -- which is both rigid arms, where `Config` returns exactly what
+        ## `VarsToQ` produced -- and they are different things on one whose plant carries
+        ## floating-body quaternions. Comparing the slice there measures strains against
+        ## quaternion components, reads ~1.2 rad on an EXACT start, and scores every cell
+        ## `unrepresentable_start` before a single solve is attempted.
+        q0 = np.asarray([float(v) for v in program.Config(x0)], dtype=float)
         out["start_q_error"] = _finite(np.max(np.abs(q0[:n] - np.asarray(q_init, dtype=float)[:n])))
     except Exception:
         out["start_q_error"] = None
