@@ -194,13 +194,18 @@ class SoftArmRobot(Robot):
             raise NotImplementedError(
                 f"{self._name} returns quaternions only; the rotation-matrix form is "
                 f"unused on every path this project takes.")
+        ## Computed on the CPU, returned on the CALLER'S device. jrl's own implementation
+        ## returns on the device it was given, and ikflow's validation relies on that: it
+        ## compares this against target poses that live on cuda, so a CPU return raises
+        ## "Expected all tensors to be on the same device" -- inside validation_step, which
+        ## is the first eval AFTER training has started, not at construction.
+        device = x.device if isinstance(x, torch.Tensor) else _CPU
         tensor = torch.as_tensor(x, dtype=dtype, device=_CPU)
         poses = K.forward_kinematics(tensor, self._spec, dtype=dtype, device=_CPU)
-        if out_device is not None:
-            poses = poses.to(out_device)
-        return poses
+        return poses.to(out_device if out_device is not None else device)
 
     def clamp_to_joint_limits(self, x):
+        ## Device-preserving by construction: clamp does not move anything.
         if isinstance(x, torch.Tensor):
             return torch.clamp(x, -1.0, 1.0)
         return np.clip(x, -1.0, 1.0)
@@ -211,6 +216,9 @@ class SoftArmRobot(Robot):
         Batched: returns a bool tensor for a batch, a plain bool for one configuration --
         the shape jrl's callers expect on each path.
         """
+        ## Returns a bool tensor on the caller's device, for the same reason
+        ## `forward_kinematics` does: ikflow's validation indexes it against cuda tensors.
+        device = x.device if isinstance(x, torch.Tensor) else _CPU
         tensor = torch.as_tensor(x, dtype=torch.float64, device=_CPU)
         single = tensor.dim() == 1
         if single:
@@ -219,7 +227,7 @@ class SoftArmRobot(Robot):
         separation = torch.linalg.norm(centres[:, self._pair_first, :]
                                        - centres[:, self._pair_second, :], dim=-1)
         collides = (separation < self._collision_distance).any(dim=-1)
-        return bool(collides[0]) if single else collides
+        return bool(collides[0]) if single else collides.to(device)
 
     # -- the paths this project never takes, failing loudly rather than silently ----
 
