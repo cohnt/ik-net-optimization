@@ -32,7 +32,7 @@ import os
 
 from src.soft_arm.params import SoftArmSpec, RUNGS
 
-_ARM_URI = "package://combining_kinematics/models/soft_arm/{name}.sdf"
+_ARM_URI = "package://combining_kinematics/models/{name}/{name}.sdf"
 _GRIPPER_URI = ("package://combining_kinematics/models/wsg_finray/"
                 "wsg50_110_finray_fingers_box_collision.sdf")
 _TABLE_URI = "package://drake_models/manipulation_station/table_wide.sdf"
@@ -167,13 +167,14 @@ def RenderScene(spec: SoftArmSpec, legacy: bool = False) -> str:
 
 def ScenePath(spec: SoftArmSpec, root: str, legacy: bool = False) -> str:
     suffix = "collision" if legacy else "collision_hardened"
-    return os.path.join(root, "models", "soft_arm", f"{spec.name}_{suffix}.yaml")
+    return os.path.join(root, "models", spec.name, f"{spec.name}_{suffix}.yaml")
 
 
 def main():
     from src.utils import RepoDir
     root = RepoDir()
-    os.makedirs(os.path.join(root, "models", "soft_arm"), exist_ok=True)
+    for spec in RUNGS.values():
+        os.makedirs(os.path.join(root, "models", spec.name), exist_ok=True)
     for spec in RUNGS.values():
         for legacy in (False, True):
             path = ScenePath(spec, root, legacy)

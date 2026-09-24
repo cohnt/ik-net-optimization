@@ -38,3 +38,15 @@ panda   panda_n6         --nb_nodes=6  --dim_latent_space=7
 panda   panda_n4         --nb_nodes=4  --dim_latent_space=7
 panda   panda_n8         --nb_nodes=8  --dim_latent_space=7
 panda   panda_n12_w256   --nb_nodes=12 --dim_latent_space=7 --coeff_fn_internal_size=256
+
+# The soft continuum arm. The fielded rung is PRE-REGISTERED at nb_nodes = 6 -- the most
+# expressive the gain-ceiling rule admits below the ~1e7 runaway band -- and n4 and n8 are
+# trained and reported as the ladder MEASUREMENT, with n8 above the ceiling as the control
+# that the ceiling matters. Selecting whichever rung benchmarks best is disqualified.
+# dim_latent_space is the rung's own DoF count and is not a free choice: InvertFlow writes
+# ndof entries into a buffer of width network_width.
+soft12  soft12_n6   --nb_nodes=6 --dim_latent_space=12
+soft12  soft12_n4   --nb_nodes=4 --dim_latent_space=12
+soft12  soft12_n8   --nb_nodes=8 --dim_latent_space=12
+soft9   soft9_n6    --nb_nodes=6 --dim_latent_space=9
+soft16  soft16_n6   --nb_nodes=6 --dim_latent_space=16
