@@ -45,7 +45,18 @@ STATIC_FURNITURE = {"table", "table2", "shelves", "shelves2", "shelves3", "shelv
 REMOVED = {
     ("panda", "mug"): ("binF",),
     ("iiwa", "mug"): ("binF",) + DECORATIVE_MUGS,
+    ## The soft arm's rungs. Their scenes are GENERATED, hardened and legacy from one
+    ## function, so the pair relation holds by construction -- but it is asserted on the
+    ## file contents anyway, because a generated scene can drift from its generator as
+    ## easily as a hand-written one, and nobody reads it. Only the bin: the generator never
+    ## emitted decorative mugs.
+    ("soft9", "mug"): ("binF",),
+    ("soft12", "mug"): ("binF",),
+    ("soft16", "mug"): ("binF",),
 }
+
+#: Rungs of the soft arm, for the tests that need a robot name rather than a SCENES sweep.
+SOFT_RUNGS = ("soft9", "soft12", "soft16")
 
 _CACHE = {}
 
@@ -116,6 +127,20 @@ def test_hardened_scenes_have_no_bin_or_decorative_mugs():
         assert legacy - hard == set(removed), (robot, task, legacy - hard)
         assert STATIC_FURNITURE <= hard, (robot, task, hard)
     print("PASS hardened scenes drop exactly the bin and the decorative mugs")
+
+
+def test_soft_rungs_have_no_separate_nobin_scene():
+    """As on the Panda: no decorative mugs to keep, so `nobin` IS `hardened`.
+
+    Asserted rather than assumed, because `SceneFile` raises for a robot with no nobin
+    variant, and silently returning the hardened scene for a run LABELLED nobin would be
+    worse than no run at all.
+    """
+    for rung in SOFT_RUNGS:
+        for task in ("mug", "pose"):
+            assert SceneFile(rung, task, "nobin") == SceneFile(rung, task, "hardened"), (
+                f"{rung}/{task}: nobin and hardened have diverged")
+    print(f"PASS the {len(SOFT_RUNGS)} soft rungs have no separate nobin scene")
 
 
 def test_nobin_scene_drops_only_the_bin():
@@ -228,7 +253,7 @@ def _screen_for(robot, task):
 
 
 def test_penetration_screen_accepts_and_rejects():
-    for robot, task in (("iiwa", "mug"), ("panda", "mug")):
+    for robot, task in (("iiwa", "mug"), ("panda", "mug"), ("soft12", "mug")):
         screen = _screen_for(robot, task)
         name, tx, ty, tz, yaw_deg = SHELF_WELDS[0]
         R = RotationMatrix.MakeZRotation(np.deg2rad(yaw_deg))
@@ -249,7 +274,7 @@ def test_penetration_screen_accepts_and_rejects():
 
 def test_screen_ignores_robot_pairs():
     """Mug-vs-robot must be ignored, or every candidate is rejected as 'penetrating'."""
-    for robot, task in (("iiwa", "mug"), ("panda", "mug")):
+    for robot, task in (("iiwa", "mug"), ("panda", "mug"), ("soft12", "mug")):
         screen = _screen_for(robot, task)
         ## Sitting inside the robot's own base geometry.
         assert not screen.Penetrates([RigidTransform([0.0, 0.0, 0.2])]), robot
@@ -269,9 +294,16 @@ def test_containment_points_agree_across_robots():
     for (robot, task), spec in SCENES.items():
         assert spec.wrist_frame and spec.fingertip_frame, (robot, task)
         _, plant, context = _scene(robot, task)
+        ## The plant's OWN default positions, not zeros. Zeros is a valid configuration only
+        ## where every position is a joint coordinate; on a plant with quaternion floating
+        ## bodies it zeroes the quaternions and Drake raises
+        ## "QuaternionToRotationMatrix(): All the elements in a quaternion are zero". The
+        ## quantity under test -- the distance between two frames both welded to the gripper
+        ## -- is configuration-INDEPENDENT, so which valid configuration is used cannot
+        ## change what this asserts.
+        q = plant.GetDefaultPositions()
         for mode in ("wrist", "fingertips"):
             pose_of, label = ContainmentPose(plant, context, spec, mode)
-            q = np.zeros(plant.num_positions())
             X = pose_of(q)
             assert np.all(np.isfinite(X.translation())), (robot, task, mode)
             assert label
@@ -279,7 +311,6 @@ def test_containment_points_agree_across_robots():
         ## different points on the hand and the two are not comparable problems.
         wrist, _ = ContainmentPose(plant, context, spec, "wrist")
         tip, _ = ContainmentPose(plant, context, spec, "fingertips")
-        q = np.zeros(plant.num_positions())
         d = float(np.linalg.norm(wrist(q).translation() - tip(q).translation()))
         seps.setdefault(task, set()).add(round(d, 9))
         if task == "mug":
@@ -332,6 +363,7 @@ def test_rejection_guard_trips_with_a_useful_message():
 if __name__ == "__main__":
     test_region_table_matches_scene_welds()
     test_hardened_scenes_have_no_bin_or_decorative_mugs()
+    test_soft_rungs_have_no_separate_nobin_scene()
     test_nobin_scene_drops_only_the_bin()
     test_hardened_matches_legacy_minus_removals()
     test_scene_registry_matches_plants()
