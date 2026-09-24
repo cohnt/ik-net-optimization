@@ -947,10 +947,12 @@ class IKFlowProgram:
         if self._LiftingQ():
             counts[bucket] += 1
             q = self.LiftedQ(vars)
+            self._last_config = (None, q)
             return q, self.fk(q)
         if not getattr(self.options, "share_flow_evaluations", False):
             counts[bucket] += 1
-            q = self.VarsToQ(vars)
+            cfg, q = self.VarsToConfigAndQ(vars)
+            self._last_config = (self._FlowCacheKey(vars), cfg)
             return q, self.fk(q)
         cache = getattr(self, "_flow_cache", None)
         if cache is None:
@@ -959,18 +961,54 @@ class IKFlowProgram:
         hit = cache.get(key)
         if hit is None:
             counts[bucket] += 1
-            q = self.VarsToQ(vars)
-            hit = (q, self.fk(q))
+            cfg, q = self.VarsToConfigAndQ(vars)
+            hit = (q, self.fk(q), cfg)
             cache[key] = hit
             while len(cache) > 4:
                 cache.pop(next(iter(cache)))
         else:
             counts["memo_hits"] += 1
-        return hit
+        return hit[0], hit[1]
+
+    def VarsToConfigAndQ(self, vars):
+        '''`(configuration, plant positions)` for an iterate.
+
+        The two coincide on a robot whose configuration IS its plant position vector,
+        which is both rigid arms -- `num_pos == num_arm_dof == 7` in every live scene --
+        and the default returns the SAME OBJECT twice, so nothing downstream can tell the
+        difference. They part company on a robot whose configuration parameterises
+        something else: the soft arm decides over 12 strains and drives 231 floating-body
+        positions, where the plant vector carries quaternions and metres and its "limits"
+        are +-inf.
+
+        Subclasses that separate the two override THIS, and let `VarsToQ` delegate to it,
+        so the expensive map runs once per iterate rather than once per consumer.
+        '''
+        q = self.VarsToQ(vars)
+        return q, q
+
+    def Config(self, vars):
+        '''The configuration at an iterate, from the same memo `QAndPose` fills.
+
+        A constraint row may call this freely: on the shared path it is a pure dictionary
+        hit, so the joint-limit row costs no second network pass. That matters -- the rule
+        this project learned the hard way is never to add a constraint that recomputes
+        `VarsToQ` itself, which is how half the network work was once redundant.
+        '''
+        key = self._FlowCacheKey(vars)
+        cache = getattr(self, "_flow_cache", None)
+        if cache is not None:
+            hit = cache.get(key)
+            if hit is not None and len(hit) > 2:
+                return hit[2]
+        last = getattr(self, "_last_config", None)
+        if last is not None and last[0] is not None and last[0] == key:
+            return last[1]
+        return self.VarsToConfigAndQ(vars)[0]
 
     ## ------------------------- shared starting point ----------------------- ##
 
-    def CalibrateFlowFrame(self, samples=4, tol=1e-9):
+    def CalibrateFlowFrame(self, samples=4, tol=None):
         '''Measure the offset between the scene's end-effector frame and the frame the
         flow was actually trained on, and cache it.
 
@@ -992,8 +1030,8 @@ class IKFlowProgram:
         if not self.options.calibrate_flow_frame:
             self.X_ee_flow = RigidTransform()
             return self.X_ee_flow
-        lower = self.plant.GetPositionLowerLimits()[:self.num_arm_dof]
-        upper = self.plant.GetPositionUpperLimits()[:self.num_arm_dof]
+        lower, upper = (np.asarray(bound)[:self.num_arm_dof]
+                        for bound in self.ConfigLimits())
         # A local, fixed-seed generator, for two reasons. The offset is constant by
         # construction, but it is *measured*, so it carries ~1e-8 of numerical noise that
         # differs with the configurations it was measured at; drawing them from the global
@@ -1006,7 +1044,7 @@ class IKFlowProgram:
         offsets = []
         for _ in range(samples):
             q_arm = rng.uniform(lower, upper)
-            self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
+            self.plant.SetPositions(self.plant_context, self.ConfigToPlantQ(q_arm))
             X_scene = self.frame_for_flow.CalcPoseInWorld(self.plant_context)
             pose = self.ik_solver.robot.forward_kinematics(
                 torch.tensor(q_arm[None, :], dtype=torch.float64, device=DEVICE))
@@ -1017,11 +1055,20 @@ class IKFlowProgram:
         spread = max(np.linalg.norm(offsets[0].translation() - o.translation())
                      + abs((offsets[0].inverse() @ o).rotation().ToAngleAxis().angle())
                      for o in offsets[1:])
-        if spread > 1e-6:
+        ## `tol` was a dead parameter for the life of this method -- the bound below was
+        ## hardcoded at 1e-6 and the signature's default was 1e-9. It is live now because a
+        ## robot whose forward model is a LEARNED surrogate cannot pass a 1e-6 constancy
+        ## check: the offset it measures is then the surrogate's own error, and the right
+        ## response is to state the tolerance and RECORD the spread, not to switch the
+        ## check off. Default unchanged at 1e-6, and no caller passes it.
+        if tol is None:
+            tol = getattr(self, "flow_frame_tol", 1e-6)
+        self.flow_frame_spread = spread
+        if spread > tol:
             raise RuntimeError(
                 f"the flow frame offset is not constant across configurations "
-                f"(spread {spread:.3e}); the scene's joint convention does not match the "
-                f"one the network was trained with")
+                f"(spread {spread:.3e} > {tol:.3e}); the scene's joint convention does not "
+                f"match the one the network was trained with")
         self.X_ee_flow = offsets[0]
         return self.X_ee_flow
 
@@ -1071,7 +1118,7 @@ class IKFlowProgram:
         a paired comparison.
         '''
         q_arm = np.asarray(q_arm, dtype=float)[:self.num_arm_dof]
-        self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
+        self.plant.SetPositions(self.plant_context, self.ConfigToPlantQ(q_arm))
         pose = self.FlowPoseInWorld()
         c = np.concatenate([pose.translation(), pose.rotation().ToRollPitchYaw().vector()])
         # Invert at the *unclipped* conditioning pose, then clip. The temptation is to do
@@ -1109,8 +1156,13 @@ class IKFlowProgram:
         self.prog.SetInitialGuess(self.z, z)
         clipped = c_clip_distance + z_clip_distance
         self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
+        ## Against the CONFIGURATION, not the first `num_arm_dof` entries of a plant
+        ## vector. The two are the same thing on both rigid arms, where the configuration
+        ## IS the plant vector; on a robot whose plant carries floating-body quaternions
+        ## the slice would be comparing strains against quaternion components.
         residual = q_arm - np.asarray(
-            self.VarsToQ(self.prog.GetInitialGuess(self.lumped_vars)), dtype=float)[:self.num_arm_dof]
+            self.Config(self.prog.GetInitialGuess(self.lumped_vars)),
+            dtype=float)[:self.num_arm_dof]
         bound = self.options.correction_bound
         residual = np.nan_to_num(residual, nan=0.0, posinf=bound, neginf=-bound)
         self.prog.SetInitialGuess(self.correction, np.clip(residual, -bound, bound))
@@ -1196,6 +1248,31 @@ class IKFlowProgram:
         solver instance shared between programs.'''
         self.ik_solver.nn_model.to(self.torch_dtype)
         self.ik_solver.nn_model.eval()
+
+    def ConfigLimits(self):
+        '''`(lower, upper)` for the CONFIGURATION, which is what the joint-limit row bounds.
+
+        The default is the plant's own position limits, which is exactly right for a robot
+        whose configuration is its plant vector. It is exactly wrong for one whose plant
+        vector is floating-body quaternions and metres -- there the limits are +-inf, and
+        handing IPOPT 231 vacuous rows is not a constraint, it is noise.
+        '''
+        return (self.plant.GetPositionLowerLimits(), self.plant.GetPositionUpperLimits())
+
+    def ConfigToPlantQ(self, cfg):
+        '''Configuration -> a full plant position vector. Inverse of nothing; a map.'''
+        return self.PadQ(cfg)
+
+    def SampleConfiguration(self, rng):
+        '''One uniform draw from the configuration box.
+
+        Exists so a benchmark script can sample the ROBOT rather than the plant. Drawing
+        uniformly over plant position limits is what the rigid arms' scripts do, and it is
+        the same thing there; on a floating-body model those limits are +-inf and the draw
+        is nan. Consumes exactly as many doubles as the configuration is wide.
+        '''
+        lower, upper = self.ConfigLimits()
+        return rng.uniform(lower, upper)
 
     def PadQ(self, q_arm):
         '''Arm joint angles -> a full plant position vector.'''
@@ -1319,10 +1396,13 @@ class IKFlowProgram:
         return self.collision_free_constraint
     
     def CreateJointLimitsConstraint(self):
-        lower_limits = self.plant.GetPositionLowerLimits()
-        upper_limits = self.plant.GetPositionUpperLimits()
+        ## Bounds the CONFIGURATION, not the plant vector. On both rigid arms those are the
+        ## same seven numbers against the same seven rows -- `ConfigLimits` defaults to the
+        ## plant's limits and `Config` returns the very object `VarsToQ` produced -- so this
+        ## is bit-identical there by construction rather than by measurement.
+        lower_limits, upper_limits = self.ConfigLimits()
         def eval_func(vars = None, q = None, pose = None):
-            return q
+            return self.Config(vars)
         self.joint_limit_constraint = IKFlowConstraints(lower_limits, upper_limits, eval_func, description="JointLimitsConstraint")
         self.constraints.append(self.joint_limit_constraint)
         return self.joint_limit_constraint
@@ -1473,7 +1553,8 @@ class IKFlowProgram:
         self.c_box_constraint.evaluator().set_description("CBoxConstraint")
         bound = self.options.correction_bound
         self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -bound * np.ones(7), bound * np.ones(7), self.correction
+            -bound * np.ones(self.num_arm_dof), bound * np.ones(self.num_arm_dof),
+            self.correction
         )
         self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
     
@@ -1489,14 +1570,19 @@ class IKFlowProgram:
     def EvalJointCenteringCost(self, vars):
         # Shares the constraint binding's flow evaluation when share_flow_evaluations is
         # on; otherwise this is a second full forward pass / jacrev at the same point.
-        q, _ = self.QAndPose(vars)
-        diff = q[:7] - self.q_nominal
-        return 0.5 * diff @ (self.options.joint_centering_cost * np.eye(7)) @ diff
+        ## Acts on the CONFIGURATION. Identical on the rigid arms, where the configuration
+        ## is the plant vector; on the soft arm this is a quadratic in strains, whose zero
+        ## is the straight unstretched rod -- the elastic-energy analogue of joint
+        ## centering, and the same shared objective either way.
+        self.QAndPose(vars)
+        n = self.num_arm_dof
+        diff = self.Config(vars)[:n] - self.q_nominal[:n]
+        return 0.5 * diff @ (self.options.joint_centering_cost * np.eye(n)) @ diff
     
     def CorrectionCost(self):
         self.correction_cost = self.prog.AddQuadraticCost(
-            Q=self.options.correction_cost_weight * np.eye(7),
-            b=np.zeros(7),
+            Q=self.options.correction_cost_weight * np.eye(self.num_arm_dof),
+            b=np.zeros(self.num_arm_dof),
             vars=self.correction
         )
         self.correction_cost.evaluator().set_description("CorrectionCost")
