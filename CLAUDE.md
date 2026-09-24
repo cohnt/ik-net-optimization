@@ -1230,6 +1230,156 @@ it falls only in the four wide bundles, the two charts become identical (59/60 a
 and 34/60 pose, same iteration counts). **Nothing about the near-limit bundles makes the *solve*
 harder; they are simply configurations that arm cannot be given.**
 
+## The soft arm: a robot whose configuration is not the plant's position vector
+
+**In progress on branch `soft-manipulator`.** The model, the kinematics, the scenes, the four
+programs and the ikflow shim have landed and are tested; the chart, the dataset and every
+number are still to come. The status-quo section is deliberately untouched until the campaign
+exists: it is written at the end of the push, and merging to main is Thomas's acceptance gate.
+
+A spatial **Piecewise Constant Strain** continuum arm, defined with **SoRoMoX**
+(`tud-phi/soromox`) and modelled on the soft-manipulator experiment in **LOInK**
+(arXiv 2609.21275) — whose baseline, IKFlow, is what we field, not their BiLipNet method. It
+has no closed-form IK, so like the iiwa it is a two-way comparison; unlike either rigid arm its
+configuration is *strain*, which is the first time the framework has met a robot whose
+configuration is not the plant's position vector.
+
+**Three rungs, one workspace envelope.** Total backbone length is fixed at 0.800 m and the
+strain limits are identical on every rung, so the bend the arm can accumulate
+(`kappa * total_length`) is the same and the rungs differ ONLY in how much redundancy the same
+arm has. That is what makes the DOF ladder a measurement rather than three different robots.
+
+| rung | segments | strains per segment | DOF | decision variables | plant positions |
+| --- | --- | --- | --- | --- | --- |
+| `soft9` | 3 x 0.2667 m | kx, ky, sz | 9 | 6 + 9 + 9 = 24 | 217 |
+| `soft12` | 4 x 0.2000 m | kx, ky, sz | 12 | 6 + 12 + 12 = 30 | 231 |
+| `soft16` | 4 x 0.2000 m | kx, ky, kz, sz | 16 | 6 + 16 + 16 = 38 | 231 |
+
+`soft12` is primary. `dim_latent_space` is the rung's own DOF count, which is not a free
+choice: `InvertFlow` writes `x[0, :num_arm_dof]` into a buffer of width `network_width`, so a
+narrower latent is a buffer overrun rather than a slower chart. Latent trust region follows the
+existing convention `sqrt(dim_latent) + 1.5` = **4.96** on `soft12`.
+
+**Normalized strain coordinates, symmetric about zero, and both halves matter.** The
+configuration is `strain / limit` in `[-1, 1]`, with `sigma_z` the *elongation* so that zero is
+the straight unstretched rod. Symmetry is forced by ikflow, which bakes `1 / max(|lo|, |hi|)`
+per coordinate into its first `FixedLinearTransform` — **a pure scaling with no offset**, so an
+off-centre coordinate hands the flow input its first layer cannot recentre. Normalization is
+what keeps `correction_bound = 0.1`, the joint-centering `w * I` and the trust region meaning
+one thing across coordinates of incompatible units (1/m against dimensionless) and comparable
+with the rigid arms. It is a **stated adaptation for the write-up**, not a silent convention.
+Limits (`|kappa| <= 8.5 /m`, `|sigma_z| <= 0.3`, worst-case bend half a turn per segment on
+`soft12`) were fixed from continuum-arm plausibility BEFORE any acceptance rate or cell count
+was measured, and are not revisited: they are part of the robot.
+
+**The Drake model is generated, and its discretization is EXACT.** A segment carries a constant
+twist, so `exp(xi*L) == exp(xi*L/K)**K` identically; splitting it into K sub-links reproduces
+the tip pose to machine precision (measured: agreement across K = 1..20 to **2.7e-15**, and a
+bending segment reproduces the closed-form circular arc to 1e-16). **K buys collision resolution
+and nothing else.** Each sub-link is a body no joint references, which SDFormat makes a
+quaternion floating body — chosen over a 3-prismatic + 3-revolute chain through dummy links
+because it has no gimbal lock, one body per sub-link instead of six, and `+-inf` position
+limits, so a sampler drawing uniformly over plant limits fails LOUDLY with nan instead of
+quietly producing nonsense. `src/soft_arm/generate_sdf.py` and `generate_scenes.py` emit the
+model and both scene variants from `params.py`, and a test asserts byte-equality.
+
+**CAPSULES HANG DRAKE'S PROXIMITY ENGINE, and this is measured, not a preference.** A 6-body
+capsule model with **zero** candidate collision pairs did not complete one
+`MinimumDistanceLowerBoundConstraint` evaluation in minutes; the identical sphere model
+evaluates in microseconds. So the collision geometry is spheres — as the tree's own
+`iiwa14_spheres_cylinders_collision.urdf` already is. In the four-shelf scene with 1000
+candidate pairs: **0.03 ms float, 0.07 ms AutoDiffXd with 30 derivative directions**, rising to
+1.3 ms curled into self-collision. Against the flow's ~17 ms, collision is not this robot's
+bottleneck.
+
+**The sphere union IS the robot's geometry**, declared, not an approximation of a swept rod, so
+the collision constraint is exact on the robot as defined. What must then be true is one-sided
+containment — the rod inside the union — and the test measures it on the rod's SURFACE over the
+corners of the configuration box, where spacing is worst. Worst-case clearance **3.5-4.2 mm**.
+Two things that test caught: the final sub-arc lay entirely outside the union until the tip body
+got a sphere of its own, and measuring axis points against `R - r` is a far stricter criterion
+than the rod being covered, which had rejected a model that was in fact conservative.
+
+**Configuration vs plant positions.** `QAndPose` memoises `(q, pose, cfg)` and still returns
+`(q, pose)`; `Config(vars)` reads the third slot from the same memo, so a constraint row costs
+no second network pass. `ConfigLimits()`, `ConfigToPlantQ()` and `SampleConfiguration()` default
+to the plant's own limits, `PadQ` and a uniform draw. On both rigid arms the default `cfg` is
+`q` **itself, the same object**, so the separation is bit-identical there by construction. The
+joint-limit row, the joint-centering cost and `SetStartFromQ`'s residual all act on the
+configuration. Verified before and after on four small grids (both robots, both tasks): same
+`grid_hash`, same verdicts, **19 of 20 cells identical to the bit**. The twentieth timed out in
+both runs, and a **same-code control run settles what that means**: on the converged cell all
+three runs agree to 0.0e+00, while on the cap-bound one before-vs-after differs by 5.0e-05 and
+**the same code against itself differs by 7.2e-01** — four orders of magnitude more. The residual
+is cap-boundedness, not the change.
+
+**Two Jacobians, each in its own regime, and a 68x.** The chain rule is
+`d(plant q)/d(vars) = dP/dcfg @ dflow/dvars`, with the flow's Jacobian left exactly as the rigid
+arms compute it (one `jacrev`, 12 outputs against 30 inputs). Composing the map inside
+`MakeFlowInference` instead would have made one reverse pass of 231 outputs against 30 inputs
+and silently voided the closed measurement that reverse mode wins on shape. The map is
+differentiated in FORWARD mode — 12 inputs against 231 outputs — and **compiled**:
+
+| mode | eager | compiled |
+| --- | --- | --- |
+| `jacrev` | 6.3 ms | 15.2 ms (0.42x, worse) |
+| `jacfwd` | 10.7 ms | **0.158 ms (67.9x)** |
+
+all agreeing to 2.2e-16. Eager timings hide the shape argument under Python dispatch — the same
+CPU-bound regime the flow is in — and compiling restores it. Vectorizing first was worth 4x on
+its own: sub-link `j` sits at `exp(xi * j * ds)` from the segment base, a closed form in `j`
+evaluated for all K at once, leaving only the four segment bases to chain. The compiled path is
+tied to the **same `--compile` switch** as the flow's, because it changes how many iterations
+fit in a fixed cap.
+
+**The base must be welded at the world origin, and this is load-bearing.**
+`CalibrateFlowFrame` compares a WORLD-frame scene pose against the flow's BASE-frame pose and
+requires the offset to be constant; that holds only at `X_W_base = I`. Both rigid arms are
+welded at the origin, which is *why* the check has always passed, though nothing said so. A
+plinth would break it by the plinth's height and would more quietly hand the network a
+conditioning pose in the wrong frame — the failure that collapsed the Panda pose task to 10/60.
+Measured on the soft scene: `X_ee_flow` is the identity with spread **5e-17**.
+
+**And welding the gripper REORDERS Drake's bodies.** `soft_tip_link` starts at position slot 168
+in the bare model and slot **0** in the scene, so a program assuming SDF declaration order
+places every sub-link one body off — and the symptom is not a crash but `CalibrateFlowFrame`
+reporting a non-constant offset, which reads exactly like a scene/convention mismatch. The slot
+map is read from the plant and checks that every position belongs to some body of the arm.
+
+**No fork of `jrl`, and no edit to the vendored ikflow fork.** `SoftArmRobot` subclasses
+`jrl.robot.Robot` — required, because `IKFlowSolver.__init__` asserts `isinstance(robot, Robot)`
+— and overrides `__init__` without calling `super()`, which would demand a URDF and klampt.
+`name` is a class attribute because `get_robot` compares it on the class. `src/soft_arm/register.py`
+appends the rungs to `jrl.robots.ALL_CLCS`. `sample_joint_angles_and_poses` is overridden rather
+than inherited (jrl's goes through klampt one configuration at a time): ours is the same batched
+torch map the solver differentiates, at **16 us/config including the self-collision screen**, so
+a 25M-sample dataset is about seven minutes and the dataset cannot describe a different robot
+from the program. Everything else jrl exposes that ikflow can reach raises `NotImplementedError`
+naming why. Every tensor is built explicitly on the CPU: `jrl.config` calls
+`set_default_device` AT IMPORT, so a bare `torch.as_tensor` allocates on cuda and the failure
+surfaces somewhere unrelated.
+
+**Learned forward kinematics is a planned axis, not a fallback.** The same
+configuration-to-plant-positions map is what a network would replace, so swapping it replaces
+the forward model for the IK constraint and the collision geometry at once. It is the general
+mechanism (SoRoMoX's GVS models integrate numerically; an actuation-space model of real hardware
+has no closed form), it is the setting LOInK's soft experiment is actually in, and it is a
+CONTROL rather than an advantage — the joint-space arm uses the same surrogate. Two things it
+forces: `verify()` must re-measure the task on exact kinematics so an arm is never graded by its
+own surrogate, and `CalibrateFlowFrame`'s tolerance becomes a stated, recorded number rather
+than a check switched off.
+
+**One caveat that must travel with this robot's runtime table.** The joint-space arm here is not
+free. On the rigid arms its `VarsToQ` is the identity, which is why their Table 3 shows a flat,
+cheap baseline; here it still places 231 floating-body positions. So the learned arm's
+per-iteration premium will look smaller than on the Panda and iiwa **because the baseline got
+more expensive, not because the learned arm got cheaper.**
+
+**Still open:** the dataset, the chart (pre-registered at `nb_nodes = 6`, the most expressive the
+gain-ceiling rule admits below the ~1e7 band, with `n4` and `n8` trained and reported as the
+ladder measurement rather than as the selector), the benchmark script, the cluster stages, and a
+cap ladder before any verdict.
+
 ## Running on MIT SuperCloud (`cluster/`)
 
 `cluster/README.md` is the playbook and `~/.claude/skills/supercloud/SKILL.md` carries the standing
