@@ -26,6 +26,11 @@ Datagen goes to `xeon-g6-volta` rather than `xeon-p8` because another project's
 
 ## Submitting
 
+**ONE AT A TIME.** Launching all three together made soft9 exit 1 after its data was already
+written: ikflow's end-of-run summary scans every dataset in the shared cache directory and read
+a sibling's half-written tensor. The data was fine; the missing `.DONE` sentinel was not, and
+`train_flow.sh` hard-fails without it.
+
 ```bash
 # datagen, one per rung -- from ~/learned-ik/repo on the login node
 DATASET_ROBOT=soft12 LLsub ./cluster/build_dataset_job.sh -s 48 -q xeon-g6-volta -T 02:00:00 -J lik_dataset

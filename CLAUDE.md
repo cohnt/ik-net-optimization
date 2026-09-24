@@ -1386,6 +1386,15 @@ pole callback; `export_ckpt_to_pkl.py` writes the `.pkl` and a sidecar that roun
 inside `validation_step` -- the first eval AFTER training starts, so a cluster run would have
 burnt its queue wait before saying so.
 
+**Do not build datasets for several robots CONCURRENTLY.** Measured the hard way: three
+datagen jobs launched together, and soft9 exited 1 after 6:21 while soft12 and soft16 exited 0
+in the same 6:21 -- with soft9's five files already on disk and byte-perfect (25M x ndof x 4 +
+header, seed 0). `build_dataset_job.sh` writes its `.DONE` sentinel only on `RC == 0`, so the
+dataset looked unfinished when it was complete. The cause is ikflow's own end-of-run summary,
+which scans EVERY dataset in the shared `~/.cache/ikflow/datasets/` and therefore read a
+sibling's half-written tensor. Run them one at a time; the failure mode is a job that destroys
+nothing and still blocks training, since `train_flow.sh` hard-fails without the sentinel.
+
 **Three cluster stages, 12 logical runs each**, all at the status-quo cap and shape so the rows
 can stand beside the record's: `SOFT12` (2 experiments x 2 protocols x 3 solvers),
 `SOFTCHART` (`nb_nodes` 4/6/8 on the primary rung, IPOPT only) and `SOFTDOF` (the three rungs,
