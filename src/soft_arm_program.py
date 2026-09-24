@@ -141,32 +141,12 @@ class SoftArmIKProgram(IKFlowProgram):
         return (-ones, ones)
 
     def _BuildPlantSlotMap(self):
-        """Where each body's 7 positions actually live in THIS plant's position vector.
+        """Where each body's 7 positions live in THIS plant's position vector.
 
-        Read from the plant rather than assumed, because the order is not the SDF's
-        declaration order and it is not stable across scenes. Welding the gripper to the
-        tip body moves that body to the FRONT of the position vector: in the bare model
-        `soft_tip_link` starts at slot 168, in the scene it starts at slot 0. A program
-        that assumed declaration order therefore placed every sub-link one body off, and
-        the symptom was not a crash -- it was `CalibrateFlowFrame` reporting a
-        non-constant flow-frame offset, which reads exactly like a scene/convention
-        mismatch. This map is what makes that impossible rather than caught.
+        Delegates to `kinematics.PlantSlotMap`, which the acceptance probe uses too, so the
+        program and the probe cannot disagree about the layout.
         """
-        picks = np.empty(self.num_pos, dtype=np.int64)
-        seen = np.zeros(self.num_pos, dtype=bool)
-        for index, name in enumerate(self.spec.body_names()):
-            start = self.plant.GetBodyByName(name).floating_positions_start()
-            if start < 0:
-                raise RuntimeError(
-                    f"{name} is not a floating body in this scene -- something welded it")
-            picks[start:start + 7] = np.arange(7 * index, 7 * index + 7)
-            seen[start:start + 7] = True
-        if not seen.all():
-            raise RuntimeError(
-                f"{self.spec.name}: {int((~seen).sum())} of the plant's {self.num_pos} "
-                f"positions belong to no body of this arm; the scene has extra degrees of "
-                f"freedom the kinematic map does not drive")
-        return picks
+        return K.PlantSlotMap(self.plant, self.spec)
 
     def ConfigToPlantQ(self, cfg):
         """The forward model, in float: exact, or the surrogate under `--fk learned`."""

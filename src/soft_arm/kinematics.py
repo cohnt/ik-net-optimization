@@ -372,3 +372,36 @@ def ConfigJacobianGen(spec, compile_it=False, dtype=torch.float64, device="cpu")
 
         _COMPILED_CONFIG_JACOBIANS[key] = compiled_with_value
     return _COMPILED_CONFIG_JACOBIANS[key]
+
+
+def PlantSlotMap(plant, spec):
+    """Where each body's 7 positions live in THIS plant's position vector.
+
+    Read from the plant, never assumed, because the order is NOT the SDF's declaration order
+    and it is not stable across scenes: welding the gripper to the tip moves that body to the
+    FRONT, so `soft_tip_link` starts at slot 168 in the bare model and slot 0 in the scene. A
+    consumer that assumed declaration order placed every sub-link one body off, and the
+    symptom was not a crash but a non-constant flow-frame offset, which reads exactly like a
+    scene/convention mismatch.
+
+    Returns an index array `picks` such that `plant_q = canonical_q[picks]`, where
+    `canonical_q` is what `config_to_plant_q` emits. Shared by the program and by
+    `scripts/probe_shelf_acceptance.py` so the two cannot disagree about the layout.
+    """
+    import numpy as np
+
+    num_positions = plant.num_positions()
+    picks = np.empty(num_positions, dtype=np.int64)
+    seen = np.zeros(num_positions, dtype=bool)
+    for index, name in enumerate(spec.body_names()):
+        start = plant.GetBodyByName(name).floating_positions_start()
+        if start < 0:
+            raise RuntimeError(f"{name} is not a floating body in this plant -- welded?")
+        picks[start:start + 7] = np.arange(7 * index, 7 * index + 7)
+        seen[start:start + 7] = True
+    if not seen.all():
+        raise RuntimeError(
+            f"{spec.name}: {int((~seen).sum())} of the plant's {num_positions} positions "
+            f"belong to no body of this arm; the scene has degrees of freedom the kinematic "
+            f"map does not drive")
+    return picks
