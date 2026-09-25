@@ -10,7 +10,7 @@ laptop, which is what the "verified locally" lines below mean.
 ## Order of operations, and why it is this order
 
 ```
-datagen (one rung at a time)        CPU-only, ~10 min each
+datagen (one rung at a time)        CPU partition (xeon-p8), no GPU used
         |
         v   train_flow.sh HARD-FAILS (exit 4) without the dataset's .DONE sentinel
 chart ladder, sequential at 4 nodes:
@@ -40,9 +40,12 @@ half-written tensor makes a finished job exit 1 with its data already correct on
 data is fine; the missing `.DONE` sentinel is not, and `train_flow.sh` hard-fails without it.
 
 ```bash
-# datagen, one per rung -- from ~/learned-ik/repo on the login node
-DATASET_ROBOT=helix7_p050 LLsub ./cluster/build_dataset_job.sh -s 48 -q xeon-g6-volta -T 02:00:00 -J lik_dataset
-DATASET_ROBOT=helix7_p000 LLsub ./cluster/build_dataset_job.sh -s 48 -q xeon-g6-volta -T 02:00:00 -J lik_dataset
+# datagen, one per rung -- from ~/learned-ik/repo on the login node, on the CPU
+# partition. `build_dataset_job.sh` exports CUDA_VISIBLE_DEVICES="" itself, so a GPU node
+# would be wasted on it, and the `xeon-g6-volta` group cap stays entirely available for
+# training. Verified locally with no GPU visible: the sampling path runs unchanged.
+DATASET_ROBOT=helix7_p050 LLsub ./cluster/build_dataset_job.sh -s 48 -q xeon-p8 -T 02:00:00 -J lik_dataset
+DATASET_ROBOT=helix7_p000 LLsub ./cluster/build_dataset_job.sh -s 48 -q xeon-p8 -T 02:00:00 -J lik_dataset
 # ...then p025 and p100 if the full pitch ladder is being run.
 
 # a 200-step smoke first: a FAILED SMOKE MUST BLOCK the long chain
@@ -92,6 +95,12 @@ whatever the queue says, and resubmitting resumes from `last.ckpt`.
   McNemar applies within a rung, between the arms, and not across rungs.
 * **Run a cap ladder (45 / 180 / 360 s) before reporting any verdict**, per the record's own
   precedent: a row that read as a clear loss at 45 s was a tie at 180 s with zero timeouts.
+* **Datagen belongs on the CPU partition; BENCHMARKS DO NOT.** The dataset builder is
+  pure sampling -- our batched torch FK and jrl's capsule distances -- and its job script
+  already forces `CUDA_VISIBLE_DEVICES=""`, so it should never occupy a GPU node. The
+  benchmark jobs are the opposite case: moving them to the CPU partition to dodge the
+  4-node `xeon-g6-volta` group cap has been tried on this project and does not work. Do
+  not read one as licence for the other.
 * **The status quo is not this robot's to change.** Its rows stand beside the record's until
   Thomas merges to main, which is the acceptance gate.
 
