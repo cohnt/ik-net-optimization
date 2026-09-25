@@ -51,9 +51,15 @@ for name in "$@"; do
     robot=$(awk '{print $1}' <<<"$row")
     args=$(cut -d' ' -f3- <<<"$(tr -s ' ' <<<"$row")")
 
-    ## GATE_TYPE (e.g. "afterok") gates EVERY rung on the FIRST job of the chain -- the
-    ## 200-step smoke -- in addition to its own predecessor link. Slurm reads a
-    ## comma-separated dependency list as an AND.
+    ## GATE_TYPE (e.g. "afterok") gates EVERY rung on the job this chain was queued
+    ## behind -- `$1`, whatever it is -- in addition to the rung's own predecessor link.
+    ## Slurm reads a comma-separated dependency list as an AND.
+    ##
+    ## ONLY SET GATE_TYPE WHEN `$1` IS ACTUALLY A GATE, such as a 200-step validation run
+    ## whose failure should stop the ladder. Chains are also queued behind an ordinary
+    ## predecessor rung purely for sequencing, and gating on one of those would make every
+    ## rung conditional on an unrelated run's exit code. Unset (the default) is right
+    ## there.
     ##
     ## Gating only the first rung is not enough, and whether it is enough depends on
     ## cluster configuration, which is the worst kind of dependence:
