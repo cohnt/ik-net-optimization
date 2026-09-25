@@ -1529,6 +1529,12 @@ records and **re-runs `summarise`** rather than stitching per-shard numbers, pre
 `_mcnemar`'s pair directions survive. `bash cluster/verify_sharding.sh` proves the round trip in ~2
 minutes — **run it after any change to sharding, the merger, or grid construction.**
 
+**Benchmarks run on the GPU partition, and that is settled** (Thomas, 2026-09-25: *"benchmarks
+have to use GPU. We've tried this before."*). So benchmark jobs and chart training compete for the
+same 4-node cap, and the lever when the cluster is saturated is **ordering the queued work**, never
+relocating benchmarks to `xeon-p8`. Datagen is the exception and does not generalise: it is pure
+CPU and `build_dataset_job.sh` runs on `xeon-p8`.
+
 **Two cluster facts that shaped the design.** The account's `xeon-g6-volta` limit is a Slurm
 **`GrpTRES` group** cap (`node=4`, `MaxSubmit=240`), not a per-job `MaxNodes`: work beyond it is
 accepted and **queued**, so a whole stage is submitted at once and Slurm meters it — and the cap is
