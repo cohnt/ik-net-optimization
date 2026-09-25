@@ -98,7 +98,7 @@ sc_run "cat > $LAUNCH_R && chmod +x $LAUNCH_R" <<LAUNCH
 #SBATCH --partition=$PARTITION
 #SBATCH --exclusive
 #SBATCH --time=$WALL
-#SBATCH --job-name=lik_bench_${MANIFEST%.txt}${DEP_DIRECTIVE:+
+#SBATCH --job-name=${SC_JOB_PREFIX}_bench_${MANIFEST%.txt}${DEP_DIRECTIVE:+
 #SBATCH --dependency=$DEPENDENCY}${EXC_DIRECTIVE:+
 #SBATCH --exclude=$EXCLUDE_NODES}
 #SBATCH --output=../results/bench_${MANIFEST%.txt}.log-%j

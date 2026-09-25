@@ -1246,15 +1246,11 @@ of the presence of some non-algebraic relations". So this is a **generality demo
 the soft arm — a robot class the algebraic baselines cannot touch, where the learned + optimization
 formulation needs no change at all. Two arms, `learned,numerical`.
 
-**The robot is INVENTED, and invented from scratch.** No real 7+-DoF arm with a lone helical joint
-exists in hardware or in any public model, and the reason is structural: a lone helical pair carries
-the drive torque and the load's reaction torque through the same thread, so every real screw
-actuator either grounds the nut against rotation (a prismatic joint with a gearbox) or adds a
-co-axial second motor (a cylindrical pair, which re-coordinatises back to an algebraic IK by an
-invertible linear map — every SCARA ball-screw-spline Z axis is this). In all of public GitHub
-exactly two models use an SDFormat `screw` joint and neither is an arm DOF. The *joint* is a
-catalogue part, first-class in Drake, DART, Simbody and Pinocchio; nobody has put one in an arm, and
-**that** is the reportable finding. Given it must be invented it is invented from scratch, not by
+**The robot is INVENTED, and invented from scratch.** We could not find a 7+-DoF arm with a lone
+helical joint in hardware or in any public model, and the reason is structural: a lone helical pair
+carries the drive torque and the load's reaction torque through the same thread. The next section
+gives the evidence. In all of public GitHub exactly two robot models use an SDFormat `screw` joint
+and neither is an arm DOF. Given the arm must be invented it is invented **from scratch**, not by
 perturbing a benchmark arm — which would carry a real robot's name and published identity while no
 longer being that robot.
 
@@ -1320,6 +1316,75 @@ acceptance at inset 0.10 of **0.31-0.39% grasp and 0.33-0.34% pose**, inside the
 `MAX_CONSECUTIVE_REJECTIONS = 50000`. Acceptance falls monotonically with pitch on the grasp row,
 which is the stroke carrying more of the configuration box out of the shelves. The dataset builder,
 a 200-step training smoke and the export round trip all run clean.
+
+### Why a helical joint is a sensible thing to build
+
+Asked for directly (Thomas, 2026-09-25), because an invented robot has to be defensible as a
+*machine* and not only as a test case. Claims below were checked against vendor documentation and
+patents; the three things that did **not** survive checking are named at the end, because the
+tempting version of this story is more confident than the evidence.
+
+**The pair is textbook, not exotic.** The helical or screw pair is one of the standard lower pairs,
+symbol **H**, with **one** degree of freedom — the same as R and P, imposing five constraints
+between two spatial bodies (Lynch & Park, *Modern Robotics*, §2.2.1 and Table 2.1). It is the
+general case of which R and P are the degenerate limits: pitch 0 is a pure rotation and pitch → ∞ a
+pure translation (ibid., Def. 3.24). So `helix7`'s pitch ladder is a sweep along a standard
+one-parameter family, and its zero-pitch member is the R end of it.
+
+**Mind the pitch units; three conventions are in play.** Drake's `screw_pitch` — and this repo's
+`params.py` — is **metres per revolution**, so translation is `pitch · q / 2π` with `q` in radians.
+*Modern Robotics* defines pitch `h` in **metres per radian**, giving `d = h·θ` with no 2π; Pinocchio
+follows that convention. Machine-tool practice adds a third trap: for a single-start thread "pitch"
+equals "lead", but for a multi-start thread lead = n × pitch, and a ball-screw catalogue quantity is
+the **lead**. Never copy a pitch between libraries without converting.
+
+**Hardware realises a lone H pair in exactly two ways, and neither is sold as a robot joint.**
+
+*As an internal element.* The **Newport Picomotor** is a genuine lone helical pair: a precision
+80-threads-per-inch screw clamped in a split nut and advanced by piezo stick-slip, so the screw —
+and with it the ball tip — rotates as it translates, rigidly coupled at 317.5 µm per revolution.
+Newport's own closed-loop arithmetic confirms the coupling (6000 encoder counts per revolution at
+52.9 nm each). And it shows exactly why a lone H pair is hard to use as a joint: the drive torque
+and the load's reaction torque pass through the same thread, so Newport publishes a **torsional load
+limit of 0.018 N·m** above which the actuator stalls, and specifies pushing against a smooth flat
+pad rather than bolting a load to the tip.
+
+*As a constrained operating mode.* A **ball screw/spline** — THK's BNS-type "Precision Ball
+Screw/Spline", NB's SPBR, PMI's PBSA — puts a ball-screw groove and a ball-spline groove on one
+shaft with two independently rotatable nuts. THK names three modes: *"rotational, linear, and
+**spiral**"*. **Spiral mode is the helical pair**: drive the spline nut with the screw nut held and
+the shaft advances at the screw's lead per turn. Drive the screw nut with the spline nut held and
+you get translation; drive both together and the screw nut's rotation cancels the translation,
+giving pure rotation.
+
+**So the joint is buildable from catalogue parts — but the honest statement is narrower than "an
+actuator with this structure exists".** Spiral mode is a *constrained mode of a 2-DoF device*: the
+hardware has two independent inputs and braking one is a control choice, not a kinematic constraint
+built into the pair. We are **not aware of any commercially available actuator that realises a lone
+helical pair as a robot joint.** Every rotary-linear product on the market is either a 2-DoF
+**cylindrical** actuator with two independent drives (LinMot's PR01 linear-rotary motors; the
+ball-screw/spline SCARA quill, which patents from Epson, Fanuc, ABB, Yaskawa, Denso Wave, Mitsubishi
+Electric and Nidec Sankyo all show driven by two motors) or a screw with an anti-rotation feature,
+which makes it **prismatic**. Helical joints in the robotics literature are pedagogical — Lynch &
+Park's RPH and HRR chains are exercises.
+
+**That is the reportable finding, and it is why the arm had to be invented rather than downloaded.**
+The joint is a standard pair, buildable, and first-class in Drake, DART, Simbody and Pinocchio;
+nobody has put one in an arm. The C-pair alternative would not have served: a screw in series with a
+prismatic or revolute joint **on the same axis** is a cylindrical pair, and its IK re-coordinatises
+back to an algebraic problem under an invertible linear map — so it would look non-algebraic and not
+be. What makes `helix7`'s coupling irreducible is that the H pair is the upper-arm **roll**, so its
+translation telescopes the link it rotates about, and every downstream link is offset from that
+axis.
+
+**Three claims that did not survive checking, recorded so they do not creep back.** NSK, Hiwin and
+Nook are **not** established ball-screw/spline suppliers — "spline" does not appear in NSK's
+sitemap, Hiwin lists ball splines only, Nook could not be checked; only THK, NB and PMI are
+confirmed. Kawasaki and Omron are **not** confirmed users of a ball-screw/spline SCARA quill, unlike
+the seven makers named above. And there is **no** non-rotating-tip Picomotor variant marketed for
+attaching loads — the only rotating/non-rotating distinction Newport actually sells is the 8341NF
+*rotary-output* actuator, which is the opposite. Note also that only the BNS/SPBR/PBSA-type models
+have both nuts rotatable; THK's NS type and NB's SPBF have a fixed spline nut and are linear-only.
 
 **What is wired and not run.** `stage_HELIX` (status-quo-shaped: 2 experiments x 2 protocols x 3
 solvers, 12 logical runs, 180 s, seed 1, refusing any other cap), `stage_HELIXCHART` (`nb_nodes`
