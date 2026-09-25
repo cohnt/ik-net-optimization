@@ -28,6 +28,7 @@ from pydrake.multibody.tree import ModelInstanceIndex
 from src.shelf_regions import (SHELF_HALF_EXTENTS, SHELF_WELDS, SHELF_Z_COMPARTMENTS,
                                PointInShelfCompartments, ShelfCompartmentRegions,
                                ShelfRegionsFromPlant)
+from src.helix_arm.params import SPECS as HELIX_RUNGS
 from src.target_screening import (SCENES, ContainmentPose, FloatingMugScreen,
                                   SampleShelfTargets, SceneFile)
 from src.utils import BuildEnv, RepoDir
@@ -46,6 +47,13 @@ REMOVED = {
     ("panda", "mug"): ("binF",),
     ("iiwa", "mug"): ("binF",) + DECORATIVE_MUGS,
 }
+
+## The helical-joint arm's rungs. Their scenes are GENERATED from one description, so the
+## hardened/legacy relation holds by construction rather than by diff discipline -- which
+## means these entries police the GENERATOR with the same test that polices the two
+## hand-written pairs, and a change to it that broke the relation would show up here.
+## Only the grasp key, as on the Panda: the pose scene IS the grasp scene.
+REMOVED.update({(name, "mug"): ("binF",) for name in sorted(HELIX_RUNGS)})
 
 _CACHE = {}
 
@@ -163,6 +171,19 @@ def test_hardened_matches_legacy_minus_removals():
         kept = [d for d in legacy if not any(n in removed for n in names(d))]
         assert [repr(d) for d in hard] == [repr(d) for d in kept], (robot, task)
     print("PASS hardened scenes are their legacy twins minus the removals")
+
+
+def test_helix_rungs_have_no_separate_nobin_scene():
+    """As on the Panda: these scenes never had decorative mugs, so hardened IS nobin.
+
+    Worth asserting rather than leaving implicit -- if a `nobin` file ever appeared for this
+    robot it would silently become a third scene that nothing generates, and the
+    "bin removed, clutter kept" disambiguation it implies has no clutter to keep here.
+    """
+    for name in sorted(HELIX_RUNGS):
+        for task in ("mug", "pose"):
+            assert SceneFile(name, task, "nobin") == SceneFile(name, task, "hardened")
+    print(f"PASS the {len(HELIX_RUNGS)} helix rungs have no separate nobin scene")
 
 
 def test_scene_registry_matches_plants():
@@ -334,6 +355,7 @@ if __name__ == "__main__":
     test_hardened_scenes_have_no_bin_or_decorative_mugs()
     test_nobin_scene_drops_only_the_bin()
     test_hardened_matches_legacy_minus_removals()
+    test_helix_rungs_have_no_separate_nobin_scene()
     test_scene_registry_matches_plants()
     test_exact_containment_vs_world_aabb()
     test_inset_shrinks_depth_only()

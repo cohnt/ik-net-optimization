@@ -32,6 +32,7 @@ from pydrake.multibody.plant import AddMultibodyPlantSceneGraph, MultibodyPlant
 from pydrake.systems.framework import DiagramBuilder
 
 from src.helix_arm import kinematics as K
+from src.helix_arm.generate_scenes import RenderScene, ScenePath
 from src.helix_arm.generate_sdf import OutputPath, RenderSdf
 from src.helix_arm.limits import ApplyScrewJointLimits, RequireFiniteLimits
 from src.helix_arm.params import (COLLISION_PAIRS, FILTERED_BUT_CLEAR, LINKS, PRIMARY,
@@ -72,6 +73,20 @@ def test_generated_models_are_current():
             f"{os.path.relpath(path, REPO)} is not what generate_sdf.py emits. The model is "
             f"generated from params.py; edit the spec, not the SDF.")
     print("PASS the committed models are byte-exactly what the generator emits")
+
+
+def test_generated_scenes_are_current():
+    for spec in SPECS.values():
+        for legacy in (True, False):
+            path = ScenePath(spec, REPO, legacy)
+            assert os.path.exists(path), (
+                f"{path} is missing; run src/helix_arm/generate_scenes.py")
+            with open(path) as f:
+                on_disk = f.read()
+            assert on_disk == RenderScene(spec, legacy), (
+                f"{os.path.relpath(path, REPO)} is not what generate_scenes.py emits. The "
+                f"hardened/legacy relation holds by construction here; edit the generator.")
+    print("PASS the committed scenes are byte-exactly what the generator emits")
 
 
 def test_screw_pitch_round_trips_through_the_plant():
@@ -362,6 +377,7 @@ def test_the_filtered_pair_that_must_stay_clear():
 
 if __name__ == "__main__":
     test_generated_models_are_current()
+    test_generated_scenes_are_current()
     test_screw_pitch_round_trips_through_the_plant()
     test_the_screw_joints_limits_are_dropped_by_the_parser()
     test_the_repair_restores_the_limits_the_sdf_records()

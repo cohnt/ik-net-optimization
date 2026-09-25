@@ -41,6 +41,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 from pydrake.multibody.inverse_kinematics import MinimumDistanceLowerBoundConstraint
 
+from src.helix_arm.limits import ApplyScrewJointLimits, RequireFiniteLimits
+from src.helix_arm.params import SPECS as HELIX_SPECS
 from src.generic_program import ProgramOptions
 from src.shelf_regions import PointInShelfCompartments, ShelfCompartmentRegions
 from src.target_screening import SCENES, FloatingMugScreen, SceneFile
@@ -50,7 +52,9 @@ from src.utils import BuildEnv, HiddenPrints
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--robots", default="panda,iiwa")
+    p.add_argument("--robots", default="panda,iiwa",
+                   help="comma-separated; the record's two robots by default. The "
+                        "helical-joint rungs are named helix7_p000 / p025 / p050 / p100.")
     p.add_argument("--tasks", default="mug,pose")
     p.add_argument("--insets", default="0,0.05,0.10,0.125")
     p.add_argument("--draws", type=int, default=20000)
@@ -75,6 +79,15 @@ def probe_scene(robot, task, draws, seed, scene="hardened"):
         diagram = BuildEnv(meshcat=None, directives_file=yaml_file)
     plant = diagram.GetSubsystemByName("plant")
     context = plant.GetMyContextFromRoot(diagram.CreateDefaultContext())
+
+    ## A screw joint's <limit> is discarded by Drake's parsers, so a helical-joint arm's
+    ## plant reports +-inf until it is repaired -- and this probe never constructs a program,
+    ## which is where the benchmark's own repair lives. Without this the uniform draw below
+    ## returns nan, every candidate is rejected, and the probe reports an acceptance of zero
+    ## that looks exactly like a too-deep inset.
+    if robot in HELIX_SPECS:
+        ApplyScrewJointLimits(plant, HELIX_SPECS[robot])
+    RequireFiniteLimits(plant, f"{robot}/{task}")
 
     ## Read off the defaults rather than retyping them, so the probe cannot drift from the
     ## benchmark's own collision geometry.

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pydrake.geometry import SceneGraph  # noqa: F401  (documents what BuildEnv returns)
 from pydrake.multibody.parsing import ModelDirective, AddModel
 
+from src.helix_arm.params import SPECS as _HELIX_SPECS
 from src.shelf_regions import PointInShelfCompartments
 from src.utils import BuildEnv, RepoDir
 
@@ -134,6 +135,32 @@ SCENES = {
         ("iiwa", "finray"), "iiwa_link_7",
         wrist_frame="hand", fingertip_frame="between_fingers"),
 }
+
+## The helical-joint arm's rungs, built from the same description that emits their scenes
+## rather than written out four times.  Their scenes carry the SAME four shelf welds and two
+## tables as the rigid arms', which is what lets the compartment table, the containment
+## predicate and the acceptance probe apply to them untouched.
+##
+## `nobin` is the hardened scene, as on the Panda: these scenes never had decorative mugs,
+## so there is no "bin removed, clutter kept" variant to distinguish -- the bin is the only
+## thing the hardened scene drops.
+##
+## The pose task targets `flange`, the arm's own mounting face, which is also the frame the
+## flow is conditioned on -- the iiwa's arrangement exactly.  The containment points are the
+## gripper's own, as on every other robot: this arm carries the SAME finray, so
+## `between_fingers` and the 0.100 m step behind it are literally the same geometry.
+for _helix in _HELIX_SPECS.values():
+    _hardened = f"models/{_helix.name}/{_helix.name}_collision_hardened.yaml"
+    _legacy = f"models/{_helix.name}/{_helix.name}_collision.yaml"
+    _instances = (_helix.name, "finray")
+    SCENES[(_helix.name, "mug")] = SceneSpec(
+        f"{_helix.name}_mug", _hardened, _legacy, _hardened,
+        _instances, "between_fingers",
+        wrist_frame="between_fingers", fingertip_frame="between_fingers")
+    SCENES[(_helix.name, "pose")] = SceneSpec(
+        f"{_helix.name}_pose", _hardened, _legacy, _hardened,
+        _instances, _helix.flange_link,
+        wrist_frame="hand", fingertip_frame="between_fingers")
 
 
 def SceneFile(robot, task, scene="hardened"):
