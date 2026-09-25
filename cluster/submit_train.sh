@@ -84,18 +84,39 @@ EXTRA_ARGS="$*"
 ## sibling campaign's jobs, in a different tree with no shared RUN_DIR, refused this
 ## submission.
 ##
-## ALLOW_CONCURRENT=1 skips the guard. It is now a NARROW escape hatch, not a broad one:
-## the guard already permits every distinct RUN_NAME, so the only thing this flag still
-## allows is a second job on the SAME RUN_DIR -- which is precisely the checkpoint race the
-## guard exists to stop. chain_ladder.sh sets it because its rungs are queued together and
-## a PENDING sibling is not a race. Do not set it when resubmitting a run that may still
-## have a live job.
+## TWO DISTINCT HAZARDS, and they were conflated in one over-broad check. Separating them
+## is what lets each be scoped correctly.
+##
+## (a) THE CHECKPOINT RACE is a property of the RUN: two jobs sharing one RUN_DIR overwrite
+## each other's checkpoints. Always refused, and NOT bypassable -- a legitimate reason to
+## run rungs concurrently is never a reason to run the same rung twice.
+WANT="${SC_JOB_PREFIX}_train_$RUN_NAME"
+LIVE=$(sc_run "squeue -u \$USER -h -n '$WANT' -o '%i' 2>/dev/null | wc -l" 2>/dev/null | tr -dc '0-9')
+if [ -n "${LIVE:-}" ] && [ "${LIVE:-0}" -gt 0 ]; then
+    echo "REFUSING: $LIVE job(s) named exactly $WANT already RUNNING/PENDING." >&2
+    echo "Two jobs on one RUN_DIR race the checkpoints. LLkill the old one or wait." >&2
+    exit 3
+fi
+
+## (b) ONE RUNG AT A TIME is a property of the TREE and of the volta cap: each rung takes
+## all 4 nodes, so two concurrent rungs halve each other's throughput inside a fixed step
+## budget. cluster/README.md documents this guard as what enforces it, and `--next` relies
+## on it rather than duplicating it -- so scoping the check above to RUN_NAME alone would
+## have silently dropped the property for anyone submitting rungs by hand.
+##
+## Scoped by submission directory (`%Z`), for the reason in stage_code.sh: a sibling
+## campaign in another tree competes for the cap but is not ours to refuse, and matching
+## job names cannot see a job submitted without `-J`.
+##
+## ALLOW_CONCURRENT=1 bypasses THIS check only. chain_ladder.sh sets it because its rungs
+## are queued as a dependency chain: they are submitted together but run strictly one at a
+## time, so the property is enforced by Slurm rather than by this guard.
 if [ "${ALLOW_CONCURRENT:-0}" != "1" ]; then
-    WANT="${SC_JOB_PREFIX}_train_$RUN_NAME"
-    LIVE=$(sc_run "squeue -u \$USER -h -n '$WANT' -o '%i' 2>/dev/null | wc -l" 2>/dev/null | tr -dc '0-9')
-    if [ -n "${LIVE:-}" ] && [ "${LIVE:-0}" -gt 0 ]; then
-        echo "REFUSING: $LIVE job(s) named exactly $WANT already RUNNING/PENDING." >&2
-        echo "Two jobs on one RUN_DIR race the checkpoints. LLkill the old one or wait." >&2
+    BUSY=$(sc_run "squeue -u \$USER -h -o '%Z %j' 2>/dev/null | awk -v d=\"\$HOME/$SC_ROOT/repo\" '\$1==d && \$2 ~ /_train_/' | wc -l" 2>/dev/null | tr -dc '0-9')
+    if [ -n "${BUSY:-}" ] && [ "${BUSY:-0}" -gt 0 ]; then
+        echo "REFUSING: $BUSY training job(s) of this tree (~/$SC_ROOT) already queued." >&2
+        echo "One rung at a time: each takes the whole volta cap. Wait, or chain them" >&2
+        echo "with cluster/chain_ladder.sh, which sets ALLOW_CONCURRENT=1 deliberately." >&2
         exit 3
     fi
 fi
