@@ -11,40 +11,36 @@
   <model name="helix7_p050">
     <link name="base_link">
       <inertial>
-        <pose>0.000000 0.000000 0.120000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.100000 0 0 0</pose>
         <mass>8.000000</mass>
         <inertia>
-          <ixx>0.052850000</ixx><iyy>0.052850000</iyy><izz>0.028900000</izz>
+          <ixx>0.041116667</ixx><iyy>0.041116667</iyy><izz>0.028900000</izz>
           <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
         </inertia>
       </inertial>
       <visual name="base_link_visual">
-        <pose>0.000000 0.000000 0.120000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.100000 0 0 0</pose>
         <geometry><cylinder><radius>0.085000</radius>
-          <length>0.240000</length></cylinder></geometry>
+          <length>0.200000</length></cylinder></geometry>
       </visual>
       <collision name="base_link_sphere0">
         <pose>0.000000 0.000000 0.000000 0 0 0</pose>
         <geometry><sphere><radius>0.085000</radius></sphere></geometry>
       </collision>
       <collision name="base_link_sphere1">
-        <pose>0.000000 0.000000 0.048000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.050000 0 0 0</pose>
         <geometry><sphere><radius>0.085000</radius></sphere></geometry>
       </collision>
       <collision name="base_link_sphere2">
-        <pose>0.000000 0.000000 0.096000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.100000 0 0 0</pose>
         <geometry><sphere><radius>0.085000</radius></sphere></geometry>
       </collision>
       <collision name="base_link_sphere3">
-        <pose>0.000000 0.000000 0.144000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.150000 0 0 0</pose>
         <geometry><sphere><radius>0.085000</radius></sphere></geometry>
       </collision>
       <collision name="base_link_sphere4">
-        <pose>0.000000 0.000000 0.192000 0 0 0</pose>
-        <geometry><sphere><radius>0.085000</radius></sphere></geometry>
-      </collision>
-      <collision name="base_link_sphere5">
-        <pose>0.000000 0.000000 0.240000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.200000 0 0 0</pose>
         <geometry><sphere><radius>0.085000</radius></sphere></geometry>
       </collision>
     </link>
@@ -340,7 +336,7 @@
       <axis>
         <xyz>0.000000 0.000000 1.000000</xyz>
         <limit>
-          <lower>0.000000000</lower><upper>12.566370614</upper>
+          <lower>-6.283185307</lower><upper>6.283185307</upper>
           <effort>200.0</effort><velocity>2.0</velocity>
         </limit>
       </axis>

@@ -25,7 +25,7 @@ file is the response to it.
 WHY FROM SCRATCH. The alternative was to declare one joint of an existing benchmark arm a
 screw. That is neither real nor clean: it carries a real robot's name, geometry and
 published identity while no longer being that robot, so every table is ambiguous about
-what was measured. This module is the robot, in the soft arm's idiom -- `generate_urdf.py`
+what was measured. This module is the robot, in the soft arm's idiom -- `generate_sdf.py`
 and `kinematics.py` are two RENDERINGS of it, and a test says they agree to 1e-12.
 
 THE FAMILY. Four rungs sharing every number except the pitch, so the pitch ladder is a
@@ -122,8 +122,8 @@ class LinkSpec:
 ## The geometry. Shared by every rung: the rungs differ ONLY in the screw joint's pitch, so
 ## the ladder measures the coupling and not the arm.
 ##
-## Offsets are chosen so the reach band matches the iiwa14 and the Panda (1.31 m fully
-## extended from the floor, ~0.97 m horizontal from the shoulder against the iiwa's ~0.95),
+## Offsets are chosen so the reach band matches the iiwa14 and the Panda (1.31 m of flange
+## height fully extended, 0.89 m horizontal from the shoulder against the iiwa's ~0.95),
 ## which is what lets the existing shelf welds, the two tables, the finray gripper and the
 ## whole of `src/shelf_regions.py` apply to this robot untouched. A robot that needed its own
 ## furniture would not be comparable with the record's rows.
@@ -132,12 +132,12 @@ class LinkSpec:
 #: The upper arm is a TELESCOPING TUBE running through a collar, which is what a helical
 #: joint at an upper-arm roll physically means: `upper_housing` is fixed to the shoulder and
 #: `upper_arm` rolls and slides through it. The tube's 0.06 m tail is what keeps it captive
-#: -- at full extension it still overlaps the collar by 0.08 m -- and that overlap, together
+#: -- at full extension it still overlaps the collar by 0.07 m -- and that overlap, together
 #: with the tube's tail clearing the pedestal, is what fixes the joint's range and the
 #: primary pitch together. The geometry and the stroke are one decision, and both are part
 #: of the robot.
 LINKS = (
-    LinkSpec("base_link",     (0.0, 0.0, 0.00),  (0.0, 0.0, 0.24), 0.085, mass=8.0),
+    LinkSpec("base_link",     (0.0, 0.0, 0.00),  (0.0, 0.0, 0.20), 0.085, mass=8.0),
     LinkSpec("shoulder",      (0.0, 0.0, -0.09), (0.0, 0.0, 0.09), 0.080, mass=4.0),
     LinkSpec("upper_housing", (0.0, 0.0, -0.02), (0.0, 0.0, 0.12), 0.072, mass=3.0),
     LinkSpec("upper_arm",     (0.0, 0.0, -0.06), (0.0, 0.0, 0.36), 0.055, mass=2.8),
@@ -150,10 +150,18 @@ LINKS = (
 #: The joint table. Limits are in radians; the screw joint's span TWO FULL REVOLUTIONS,
 #: which is deliberate -- many `q3` differing by `2*pi` give the same rotation and a
 #: different extension, so the solution set is richly multimodal, which is the property a
-#: normalizing flow is supposed to capture. The range is ONE-SIDED, `[0, 4*pi]`, because
-#: that is how a telescoping actuator is actually specified: the stroke starts at full
-#: retraction. It also keeps the tube's tail clear of the pedestal at every `q3`, which a
-#: symmetric range would not. Every other joint sits in the band the rigid arms use.
+#: normalizing flow is supposed to capture.
+#:
+#: The range is SYMMETRIC about zero, `+-2*pi`, and that is a constraint the chart imposes
+#: rather than the mechanism. With `sigmoid_on_output` false -- the configuration every
+#: checkpoint in this project is trained at -- ikflow's first layer is
+#: `x_i / max(|lo_i|, |hi_i|)`, a PURE SCALING with no offset (`ikflow/model.py`, the
+#: `else` branch). A one-sided `[0, 4*pi]` range has the same stroke but lands that
+#: coordinate in `[0, 1]` instead of `[-1, 1]`, spending half its input range and handing
+#: the flow an offset its first layer cannot remove. The stroke is therefore centred on the
+#: nominal extension, which a telescoping actuator is just as entitled to be.
+#:
+#: Every other joint sits in the band the rigid arms use.
 SCREW_JOINT_NAME = "upper_arm_screw"
 
 _JOINTS_AT_ZERO_PITCH = (
@@ -162,7 +170,8 @@ _JOINTS_AT_ZERO_PITCH = (
     JointSpec("shoulder_pitch", "revolute", "shoulder", "upper_housing",
               (0.0, 0.0, 0.00), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0), -2.00, 2.00),
     JointSpec(SCREW_JOINT_NAME, "screw", "upper_housing", "upper_arm",
-              (0.0, 0.0, 0.06), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 0.0, 4.0 * math.pi),
+              (0.0, 0.0, 0.06), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0),
+              -2.0 * math.pi, 2.0 * math.pi),
     JointSpec("elbow", "revolute", "upper_arm", "forearm",
               (0.0, 0.0, 0.36), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0), -2.60, 2.60),
     JointSpec("forearm_roll", "revolute", "forearm", "wrist",
