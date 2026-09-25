@@ -11,12 +11,27 @@ launched deliberately.
 
 ```
 5738845  helix_train_smoke_helix7_p050_n4   1 node, 20 min   afterany:5733058 (soft arm tail)
-5738846  helix7_p050_n6   4 nodes, 620k     afterok:5738845  <- a FAILED SMOKE BLOCKS THE LADDER
-5738847  helix7_p050_n4   4 nodes, 620k     afterany
-5738848  helix7_p050_n8   4 nodes, 620k     afterany
-5738849  helix7_p025_n6   4 nodes, 620k     afterany
-5738850  helix7_p100_n6   4 nodes, 620k     afterany  <- the tail; chain new work behind THIS
+5738846  helix7_p050_n6   4 nodes, 620k     afterok:5738845
+5738847  helix7_p050_n4   4 nodes, 620k     afterok:5738845,afterany:5738846
+5738848  helix7_p050_n8   4 nodes, 620k     afterok:5738845,afterany:5738847
+5738849  helix7_p025_n6   4 nodes, 620k     afterok:5738845,afterany:5738848
+5738850  helix7_p100_n6   4 nodes, 620k     afterok:5738845,afterany:5738849  <- the tail
 ```
+
+**EVERY rung carries the smoke gate, not just the first** (a comma-separated dependency
+list is an AND in Slurm), because gating only the first rung is correct or not depending on
+cluster configuration. Here `DependencyParameters` is null and `kill_invalid_depend` is
+unset, so a failed `afterok` leaves a job PENDING for ever with
+`DependencyNeverSatisfied` -- the ladder would be blocked, but only by the accident that
+rung 1 never *terminates* and so never satisfies rung 2's `afterany`. On a cluster that
+sets `kill_invalid_depend`, rung 1 would be cancelled, its termination would satisfy rung
+2, and the whole ladder would train on a robot whose smoke failed. `GATE_TYPE` in
+`chain_ladder.sh` now emits the AND form, which is right under both.
+
+**AN UNSATISFIED DEPENDENCY CANCELS NOTHING AND NOTIFIES NOBODY.** The jobs sit PENDING
+looking exactly like queued work. So watch the smoke's exit rather than assuming the chain
+is advancing, and if it fails, `scancel` the stalled rungs promptly -- another campaign is
+chained behind this one's tail and a stall propagates into it silently.
 
 Queued **explicitly behind** the soft arm's chain rather than left to backfill. Backfilling
 looks more polite and is worse: that campaign is back-to-back 4-node links, so the only

@@ -51,16 +51,38 @@ for name in "$@"; do
     robot=$(awk '{print $1}' <<<"$row")
     args=$(cut -d' ' -f3- <<<"$(tr -s ' ' <<<"$row")")
 
-    ## FIRST link only: `afterok` when the chain is queued behind a SMOKE run, so a failed
-    ## smoke blocks the ladder instead of letting it train for days on broken plumbing --
-    ## which is what this file's own runbook says must happen. Rung-to-rung links stay
-    ## `afterany` on purpose: an independent measurement that dies must not stall the
-    ## measurements behind it.
-    DEP_TYPE="afterany"
-    [ -n "${FIRST_DEP:-}" ] && [ "$PREV" = "$FIRST_PREV" ] && DEP_TYPE="$FIRST_DEP"
+    ## GATE_TYPE (e.g. "afterok") gates EVERY rung on the FIRST job of the chain -- the
+    ## 200-step smoke -- in addition to its own predecessor link. Slurm reads a
+    ## comma-separated dependency list as an AND.
+    ##
+    ## Gating only the first rung is not enough, and whether it is enough depends on
+    ## cluster configuration, which is the worst kind of dependence:
+    ##   * with `kill_invalid_depend` UNSET (MIT SuperCloud: DependencyParameters is null),
+    ##     a failed smoke leaves rung 1 PENDING for ever with DependencyNeverSatisfied, and
+    ##     later rungs pend behind it only because rung 1 never TERMINATES. The ladder is
+    ##     blocked by the accident of the chain's shape.
+    ##   * with `kill_invalid_depend` SET, rung 1 is CANCELLED, its termination satisfies
+    ##     rung 2's `afterany`, and the whole ladder trains on a robot whose smoke failed.
+    ## Gating every rung gives the same, correct answer under both.
+    ##
+    ## Rung-to-rung links stay `afterany` on purpose: an independent measurement that dies
+    ## must not stall the measurements behind it.
+    ##
+    ## NOTE either way: an unsatisfiable dependency here does not cancel anything and
+    ## notifies nobody. The jobs simply sit PENDING looking queued, so the smoke's exit has
+    ## to be watched rather than assumed.
+    if [ -n "${GATE_TYPE:-}" ]; then
+        if [ "$PREV" = "$FIRST_PREV" ]; then
+            DEP="$GATE_TYPE:$FIRST_PREV"
+        else
+            DEP="$GATE_TYPE:$FIRST_PREV,afterany:$PREV"
+        fi
+    else
+        DEP="afterany:$PREV"
+    fi
 
-    echo "=== chaining $name (robot=$robot, arch: $args) after job $PREV ($DEP_TYPE)"
-    out=$(ALLOW_CONCURRENT=1 DEPENDENCY="$DEP_TYPE:$PREV" ROBOT="$robot" BATCH="$BATCH" \
+    echo "=== chaining $name (robot=$robot, arch: $args) with dependency $DEP"
+    out=$(ALLOW_CONCURRENT=1 DEPENDENCY="$DEP" ROBOT="$robot" BATCH="$BATCH" \
             EXCLUDE_NODES="${EXCLUDE_NODES:-}" \
             bash cluster/submit_train.sh "$name" "$NNODES" "$WALL" -- $COMMON_ARGS $args 2>&1)
     echo "$out" | tail -3
