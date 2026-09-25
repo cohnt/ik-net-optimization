@@ -25,7 +25,10 @@
 # `rm -rf` removes without disturbing anything else.
 
 SC_DEST="tcohn@txe1-login.mit.edu"
-SC_ROOT="learned-ik"
+## Overridable so an EXPLORATION BRANCH can stage its own isolated tree beside the
+## default one instead of rsync --delete-ing over a live campaign's code. Each root
+## is self-contained and removable with one `rm -rf`.
+SC_ROOT="${SC_ROOT:-learned-ik}"
 SC_CTL_DIR="${XDG_RUNTIME_DIR:-/tmp}/supercloud-ctl"
 mkdir -p "$SC_CTL_DIR"
 SC_SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$SC_CTL_DIR/%r@%h:%p" -o ControlPersist=10m -o BatchMode=yes)
