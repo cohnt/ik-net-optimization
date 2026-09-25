@@ -42,6 +42,14 @@ from ikflow.model import IkflowModelParameters
 from ikflow.ikflow_solver import IKFlowSolver
 from jrl.robots import get_robot
 
+## Register this project's own robots BEFORE anything resolves one by name. This module is
+## the single funnel every by-name lookup passes through -- the programs, all three
+## checkpoint screens and the export round-trip -- so registering here is what stops
+## `get_robot` raising inside a screen that runs at the END of a 620k-step training job.
+from src.register_robots import ProjectRobotNames
+
+_PROJECT_ROBOT_NAMES = ProjectRobotNames()
+
 # The architecture every pre-sidecar checkpoint in this repo was trained at
 # (iiwa14__lemon-haze-7, iiwa14__ddp-r1). Used only as the fallback for a checkpoint with
 # no sidecar, and still shape-verified afterwards.
@@ -71,6 +79,13 @@ LEGACY_PANDA_ARCH = dict(LEGACY_IIWA_ARCH, dim_latent_space=7, softflow_noise_sc
 ARCH_FIELDS = tuple(LEGACY_IIWA_ARCH.keys())
 
 LEGACY_ARCH_BY_ROBOT = {"iiwa14": LEGACY_IIWA_ARCH, "panda": LEGACY_PANDA_ARCH}
+
+# `helix7` is a 7-DoF arm, so its baseline latent width is the Panda's. Without an entry
+# here a sidecar-less checkpoint would fall back to the iiwa's `dim_latent_space = 8`
+# against a 7-wide robot: `InvertFlow` writes `x[0, :num_arm_dof]` into a buffer of width
+# `network_width`, so a mismatch is a silently different chart at best.
+LEGACY_ARCH_BY_ROBOT.update(
+    {name: LEGACY_PANDA_ARCH for name in _PROJECT_ROBOT_NAMES})
 
 
 def SidecarPath(checkpoint):
