@@ -3,9 +3,39 @@
 What would be queued, what it depends on, and what a resuming session should check first.
 The design and the measured facts live in `CLAUDE.md`; this is the operational half.
 
-**NOTHING HAS BEEN SUBMITTED.** Every command below is written out so it can be launched
-deliberately; none of them has been run. The whole branch was built and verified on the
-laptop, which is what the "verified locally" lines below mean.
+**STATUS: the four datasets are BUILT. Nothing else has been submitted** -- no training,
+no benchmark stage. The rest of this file is written out so it can be launched
+deliberately.
+
+**This branch runs from its OWN cluster tree, `~/learned-ik-helix/`.** `~/learned-ik` is an
+rsync of a working tree rather than a version-controlled clone, so there is no branch there
+to switch and restaging means `rsync --delete` over whatever is present -- which, while the
+soft arm campaign is live, would change the code its queued items re-read when they start.
+The isolated tree has its own `repo/`, `home/` (so its ikflow dataset cache is its own),
+`state/` and `results/`, and `rm -rf` removes it without touching anything else. Its
+`venv/` is a symlink to `~/learned-ik/venv`: the same project's environment, which this
+branch adds no dependency to, used read-only. Select it with `SC_ROOT=learned-ik-helix`
+when staging and `LEARNED_IK_ROOT=$HOME/learned-ik-helix` when submitting.
+
+### Datasets, built 2026-09-25
+
+Jobs 5738219-5738222 on `xeon-p8`, chained `afterok` by `cluster/chain_datasets.sh` so
+exactly one ran at a time on one node. 25M training samples + 15k test each, seed 0,
+`--only_non_self_colliding`, 1.4 GB per rung, **1:06 to 1:22 each and 5.5 minutes for all
+four** -- far cheaper than the soft arm's, which is what a 7-DoF analytic forward
+kinematics buys over a 9-DoF numerical one.
+
+They are four genuinely different robots, not one robot four times, and the datasets say so
+physically: the joint-angle columns agree across rungs (same limits, same seed, screw
+coordinate spanning +-6.2788 = +-2pi), while the reachable set grows with the stroke --
+flange `z` reaches 1.260 at pitch 0 against 1.359 at 0.100 m/rev, a difference of 0.0994 m,
+which is the full +-1-revolution travel to three decimal places. Horizontal reach moves the
+same way, 0.840 to 0.935.
+
+A 20000-sample plumbing smoke ran first as a job on `debug-cpu`, in a throwaway root: this
+job writes a `.DONE` sentinel on success and `train_flow.sh` hard-fails without one, so a
+smoke landing beside the real cache would leave a sentinel indistinguishable from a
+finished 25M build.
 
 ## Order of operations, and why it is this order
 
@@ -40,7 +70,11 @@ half-written tensor makes a finished job exit 1 with its data already correct on
 data is fine; the missing `.DONE` sentinel is not, and `train_flow.sh` hard-fails without it.
 
 ```bash
-# datagen, one per rung -- from ~/learned-ik/repo on the login node, on the CPU
+# datagen -- ALREADY RUN on 2026-09-25, kept for the record and for a rebuild.
+# One node, one rung at a time, from ~/learned-ik-helix/repo on the login node:
+#   LEARNED_IK_ROOT=$HOME/learned-ik-helix bash cluster/chain_datasets.sh \
+#       helix7_p050 helix7_p000 helix7_p025 helix7_p100
+# The single-rung form below is the equivalent by hand., on the CPU
 # partition. `build_dataset_job.sh` exports CUDA_VISIBLE_DEVICES="" itself, so a GPU node
 # would be wasted on it, and the `xeon-g6-volta` group cap stays entirely available for
 # training. Verified locally with no GPU visible: the sampling path runs unchanged.
