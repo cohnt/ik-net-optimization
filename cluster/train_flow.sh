@@ -90,7 +90,7 @@ nvidia-smi -L || true
 "$PY" -m torch.distributed.run \
     --nnodes="$NNODES" --nproc_per_node="$GPUS_PER_NODE" --node_rank="$NODE_RANK" \
     --rdzv_backend=c10d --rdzv_endpoint="$MASTER_ADDR:29500" --rdzv_id="${SLURM_JOB_ID:-local}" \
-    "$REPO/third_party/ikflow/scripts/train_ddp.py" \
+    "$REPO/scripts/training/ikflow_entry.py" train_ddp \
     --robot_name="$ROBOT" --run_dir="$RUN_DIR" --ckpt_path=auto \
     --num_nodes="$NNODES" --gpus_per_node="$GPUS_PER_NODE" --batch_size="$BATCH" \
     ${TRAIN_EXTRA_ARGS:-}

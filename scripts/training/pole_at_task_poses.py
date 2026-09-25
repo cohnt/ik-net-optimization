@@ -37,12 +37,13 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__f
 sys.path.append(REPO_ROOT)
 sys.path.append(os.path.join(REPO_ROOT, "scripts/training"))
 
-from pole_metric import load_solver  # noqa: E402
+from pole_metric import ProjectRobotNames, ScreenDomain, load_solver  # noqa: E402
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--robot", default="iiwa14", choices=["iiwa14", "panda", "iiwa7"],
+    p.add_argument("--robot", default="iiwa14",
+                   choices=["iiwa14", "panda", "iiwa7"] + ProjectRobotNames(),
                    help="Robot the checkpoint was trained for. The Panda ladder needs "
                         "this; without --checkpoint it screens the upstream pretrained chart.")
     p.add_argument("--checkpoint", default=None,
@@ -83,7 +84,10 @@ def main():
     else:
         g = rng.normal(size=(args.n, width))
         g /= np.linalg.norm(g, axis=1, keepdims=True)
-        z = g * 4.3 * rng.uniform(size=(args.n, 1)) ** (1.0 / width)
+        ## The latent ball follows the ROBOT rather than a literal: 4.3 is the iiwa's
+        ## sqrt(8) + 1.5 and is silently wrong at any other width.
+        radius = ScreenDomain(args.robot)[2]
+        z = g * radius * rng.uniform(size=(args.n, 1)) ** (1.0 / width)
 
     model = solver.nn_model.double().eval()
     dev = next(model.parameters()).device
