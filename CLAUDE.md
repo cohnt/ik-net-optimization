@@ -1273,8 +1273,18 @@ shoulder at z 0.42), so every shelf weld, table and containment screen applies u
 any number was read.** Every other number is shared, so the ladder is a dose-response rather than
 four robots. **`helix7_p000` is a full spec, not a code path** — a control that takes a different
 code path is not a control — and at pitch 0 the arm is an ordinary S-R-S arm for which the closed
-form is standard, so the family runs from "an analytic column could exist here" to "no analytic
-column can exist here" across one scene and one generator.
+form is standard, so the family contains its own degenerate, algebraic member.
+
+**That member is NOT trained, by decision** (Thomas, 2026-09-25: *"Seems like a waste of time to
+train a model for helix7_p000. We already have analytic arms, we don't need a specific control
+example here."*). The project already fields two S-R-S arms **with** analytic columns, so a seventh
+chart would spend 620k steps rediscovering that an algebraic arm is algebraic. The spec and its
+dataset stay — the tests use it, and it is what makes the pitch a *parameter* rather than a fact
+about one robot — but the trained ladder is the three helical rungs, and the "an analytic column
+could exist here" end of the scale is held by the Panda and the iiwa. One consequence to keep in
+view: with the limit box held at ±2π for comparability, the zero-pitch member's screw coordinate
+covers the circle twice, so `q` and `q+2π` are the same configuration there and different
+everywhere else.
 
 **TRAP: every Drake parser silently discards a screw joint's `<limit>`.** `ParseJointLimits` is
 reached only for revolute and prismatic joints, in URDF and SDFormat alike, so the plant reports
@@ -1322,8 +1332,9 @@ set, so each draws its own grid and its `grid_hash` differs by design — compar
 success rate with a bootstrap CI over targets, and keep McNemar within a rung, between the arms.
 
 **Cost, to decide before launching.** Each pitch is a different robot, so the full ladder is **4
-datasets and 6 training runs**; narrowing to `{p000, p050}` is 2 and 2 and still answers the control
-question, at one dose instead of three. **Build datasets one at a time** — ikflow's end-of-run
+datasets and **5 training runs** — three architectures on the primary rung plus the two other
+pitches at the adopted one, with the zero-pitch member deliberately untrained.
+Narrowing further to the primary rung alone is 3 runs and drops the dose-response. **Build datasets one at a time** — ikflow's end-of-run
 summary scans the shared cache directory, so a concurrent sibling's half-written tensor makes a
 finished job exit 1 with its data correct on disk and its `.DONE` sentinel missing, which
 `train_flow.sh` hard-fails without. And **run a cap ladder (45 / 180 / 360 s) before reporting any

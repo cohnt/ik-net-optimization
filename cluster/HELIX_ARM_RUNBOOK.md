@@ -47,8 +47,7 @@ chart ladder, sequential at 4 nodes:
         helix7_p050_n6   <- the FIELDED rung, pre-registered
         helix7_p050_n4       the chart ladder measurement
         helix7_p050_n8       the chart ladder measurement
-        helix7_p000_n6       the pitch ladder's control
-        helix7_p025_n6
+        helix7_p025_n6       the pitch ladder
         helix7_p100_n6
         |
         v   export + screening run INSIDE each training job, on node 0, on rc=0
@@ -56,11 +55,19 @@ benchmark stages: HELIX, HELIXCHART, HELIXPITCH
 ```
 
 **Each pitch is a different robot**, so each needs its own 25M-sample dataset and its own
-620k steps. The full ladder is 4 datasets and 6 training runs, comparable to the soft arm's
-push. Narrowing to `{p000, p050}` is 2 datasets and 2 charts and still answers the pitch
-ladder's control question, at one dose instead of three — a budget decision, not a design
-one. `helix7_p000` cannot borrow another robot's chart: at pitch 0 it is still *this* arm,
-with these links.
+620k steps, and cannot borrow another rung's chart, because the arm's links are its own.
+
+**`helix7_p000` IS NOT TRAINED.** At pitch 0 the arm is an ordinary S-R-S manipulator, and
+the project already fields two of those *with* analytic columns, so a chart for it would
+spend 620k steps rediscovering that an algebraic arm is algebraic. Thomas, 2026-09-25:
+*"Seems like a waste of time to train a model for helix7_p000. We already have analytic
+arms, we don't need a specific control example here."* The spec stays — the tests use it,
+and it is the degenerate member that makes the family a family — and its dataset is already
+built, so the rung can be added later for the price of one training run. The ladder is
+therefore **5 training runs**: three architectures on the primary rung, plus the two other
+pitches at the adopted architecture. What the pitch ladder measures is a dose-response
+among helical arms; the "an analytic column could exist here" end of the scale is held by
+the Panda and the iiwa, which already have one.
 
 ## Submitting
 
@@ -74,6 +81,8 @@ data is fine; the missing `.DONE` sentinel is not, and `train_flow.sh` hard-fail
 # One node, one rung at a time, from ~/learned-ik-helix/repo on the login node:
 #   LEARNED_IK_ROOT=$HOME/learned-ik-helix bash cluster/chain_datasets.sh \
 #       helix7_p050 helix7_p000 helix7_p025 helix7_p100
+# (p000's dataset was built before that rung was dropped from the ladder; it is kept
+#  because it costs 1.4 GB and would otherwise have to be rebuilt to revive the rung.)
 # The single-rung form below is the equivalent by hand., on the CPU
 # partition. `build_dataset_job.sh` exports CUDA_VISIBLE_DEVICES="" itself, so a GPU node
 # would be wasted on it, and the `xeon-g6-volta` group cap stays entirely available for
@@ -87,7 +96,7 @@ bash cluster/submit_ladder.sh --smoke helix7_p050
 
 # then the ladder, chained so it advances with no session attached
 bash cluster/chain_ladder.sh <smoke_jobid> helix7_p050_n6 helix7_p050_n4 helix7_p050_n8 \
-    helix7_p000_n6 helix7_p025_n6 helix7_p100_n6
+    helix7_p025_n6 helix7_p100_n6
 
 # the benchmark stages, once the charts exist
 python cluster/gen_manifest.py --stage HELIX      --wall-time 180 --targets 60 --guesses 8 --shards 8

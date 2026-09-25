@@ -48,6 +48,17 @@ ALL_ARMS = {"panda": "learned,numerical,analytic,analytic8", "iiwa": "learned,nu
 from src.helix_arm.params import SPECS as _HELIX_SPECS  # noqa: E402
 
 HELIX_ROBOTS = tuple(sorted(_HELIX_SPECS))
+
+#: The rungs that get a CHART. `helix7_p000` is deliberately absent: at pitch 0 the
+#: arm is an ordinary S-R-S manipulator, and the project already fields two of those
+#: WITH analytic columns, so training a seventh chart to rediscover that an
+#: algebraic arm is algebraic buys nothing. The zero-pitch spec stays -- the tests
+#: use it, and it is the degenerate member that makes the family a family -- but it
+#: is not a row. Thomas, 2026-09-25: "Seems like a waste of time to train a model
+#: for helix7_p000. We already have analytic arms, we do not need a specific control
+#: example here."
+HELIX_UNTRAINED = ("helix7_p000",)
+HELIX_TRAINED_ROBOTS = tuple(r for r in HELIX_ROBOTS if r not in HELIX_UNTRAINED)
 SCRIPTS.update({r: "scripts/helix_arm/helix_arm_benchmark.py" for r in HELIX_ROBOTS})
 ALL_ARMS.update({r: "learned,numerical" for r in HELIX_ROBOTS})
 
@@ -1879,13 +1890,14 @@ HELIX_CHART_RUNGS = tuple(
     (HELIX_PRIMARY, label, f"models/{HELIX_PRIMARY}/{HELIX_PRIMARY}__{label}__step620000.pkl")
     for label in ("n4", "n6", "n8"))
 
-#: The pitch ladder. Every rung carries its own chart, including the control: at pitch 0 the
-#: arm is still THIS arm, with these links and this scene, so it cannot borrow another
-#: robot's network. That is the cost of building the robot from scratch rather than
-#: perturbing an existing one, and it is the right cost -- the control is a member of the
-#: same family rather than a different robot wearing the same name.
+#: The pitch ladder: the three HELICAL rungs, each carrying its own chart, because each is
+#: a different robot and cannot borrow another's network. The zero-pitch member is not here
+#: -- see HELIX_UNTRAINED. What the ladder measures is therefore a DOSE-RESPONSE among
+#: helical arms (0.025 / 0.050 / 0.100 m/rev), and the "could an analytic column exist"
+#: end of the scale is held by the Panda and the iiwa, which already have one.
 HELIX_PITCH_RUNGS = tuple(
-    (robot, "n6", f"models/{robot}/{robot}__n6__step620000.pkl") for robot in HELIX_ROBOTS)
+    (robot, "n6", f"models/{robot}/{robot}__n6__step620000.pkl")
+    for robot in HELIX_TRAINED_ROBOTS)
 
 
 def _helix_base(robot, ckpt):
@@ -3035,7 +3047,7 @@ def selftest():
     ## silently: a missing checkpoint (a column of zeros, not an error) and a stage that
     ## quietly fields the retired `free` placement.
     helix_fails = []
-    helix_expected = {"HELIX": 12, "HELIXCHART": 12, "HELIXPITCH": 16}
+    helix_expected = {"HELIX": 12, "HELIXCHART": 12, "HELIXPITCH": 12}
     helix_stages = {"HELIX": stage_HELIX, "HELIXCHART": stage_HELIXCHART,
                     "HELIXPITCH": stage_HELIXPITCH}
     for name, builder in sorted(helix_stages.items()):
@@ -3090,9 +3102,14 @@ def selftest():
     per_robot = {}
     for r in pitch:
         per_robot.setdefault(r["robot"], set()).add(r["id"].split("_shard")[0])
-    if set(per_robot) != set(HELIX_ROBOTS):
-        helix_fails.append("stage HELIXPITCH covers %s, not every rung %s"
-                           % (sorted(per_robot), list(HELIX_ROBOTS)))
+    if set(per_robot) != set(HELIX_TRAINED_ROBOTS):
+        helix_fails.append("stage HELIXPITCH covers %s, not every trained rung %s"
+                           % (sorted(per_robot), list(HELIX_TRAINED_ROBOTS)))
+    ## And the untrained spec must never reach a manifest: it has no chart, and a missing
+    ## checkpoint is a column of zeros rather than an error.
+    if set(per_robot) & set(HELIX_UNTRAINED):
+        helix_fails.append("stage HELIXPITCH fields %s, which is not trained"
+                           % sorted(set(per_robot) & set(HELIX_UNTRAINED)))
     for robot, runs in sorted(per_robot.items()):
         if len(runs) != len(STATUSQUO_ROWS) * 2:
             helix_fails.append("stage HELIXPITCH: %s has %d runs, expected %d"
@@ -3107,7 +3124,7 @@ def selftest():
     for line in helix_fails:
         print("FAIL " + line)
     if not helix_fails:
-        print("ok   stages HELIX/HELIXCHART/HELIXPITCH: 12/12/16 logical runs, contained "
+        print("ok   stages HELIX/HELIXCHART/HELIXPITCH: 12/12/12 logical runs, contained "
               "placement, every item carrying its own rung's chart")
     fails += len(helix_fails)
 
