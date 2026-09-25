@@ -32,6 +32,30 @@ sys.path.append(REPO_ROOT)
 
 from ikflow.training.pole_callback import pole_metrics, sample_conditioning_and_latents  # noqa: E402
 
+from src.register_robots import ProjectRobotNames  # noqa: E402
+
+
+def ScreenDomain(robot):
+    """`(position_base, position_slack, latent_radius, runaway_threshold)` for a robot.
+
+    A seam for robots whose coordinates are not joint angles in a workspace this box covers
+    -- and for `helix7` it deliberately returns the rigid tuple UNCHANGED, which is the
+    point worth recording. Its coordinates are radians, its limits are the rigid arms'
+    band, the [0.4, 0, 0.5] +- 0.25 conditioning box is inside its workspace, and 1000 rad
+    is the same threshold it has always been. So this robot's screens are directly quotable
+    beside the record's, with none of the labelling hazard a robot in other units carries.
+
+    Only the latent radius follows the robot: `sqrt(width) + 1.5`, which is 4.15 at seven
+    coordinates against the iiwa's 4.3 at eight.
+    """
+    import math
+
+    if robot in ProjectRobotNames():
+        from src.helix_arm.params import GetSpec
+
+        return ((0.4, 0.0, 0.5), 0.25, GetSpec(robot).latent_trust_region, 1000.0)
+    return ((0.4, 0.0, 0.5), 0.25, 4.3, 1000.0)
+
 # The adopted chart, matching the defaults in chart_accuracy.py and pole_at_task_poses.py.
 # (This used to point at lemon-haze-7 while its two siblings pointed here, so the three
 # scripts silently measured different networks when run without --checkpoint.)
@@ -100,7 +124,8 @@ def crosscheck(nn_model, width: int, ndof: int, n: int = 100, seed: int = 0) -> 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--robot", type=str, default="iiwa14", choices=["iiwa14", "panda", "iiwa7"])
+    parser.add_argument("--robot", type=str, default="iiwa14",
+                        choices=["iiwa14", "panda", "iiwa7"] + ProjectRobotNames())
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a .pkl state dict (iiwa default: the shipped lemon-haze-7)")
     parser.add_argument("--nb_nodes", type=int, default=12)
     parser.add_argument("--dim_latent_space", type=int, default=8)

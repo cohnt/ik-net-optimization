@@ -38,3 +38,32 @@ panda   panda_n6         --nb_nodes=6  --dim_latent_space=7
 panda   panda_n4         --nb_nodes=4  --dim_latent_space=7
 panda   panda_n8         --nb_nodes=8  --dim_latent_space=7
 panda   panda_n12_w256   --nb_nodes=12 --dim_latent_space=7 --coeff_fn_internal_size=256
+
+# ---------------------------------------------------------------------------------------
+# The helical-joint arm. Its charts are 7-wide -- it is a 7-DoF arm -- so dim_latent_space
+# is the Panda's baseline, and it is held fixed across the ladder for the same reason: the
+# latent width IS the program's decision-variable count (20 variables here: 6 + 7 + 7), so
+# varying it would change the optimization problem rather than the chart.
+#
+# THE FIELDED RUNG IS PRE-REGISTERED AT n6, before any cell is read. That is the Panda's
+# adopted rung and this is a 7-DoF arm, so it is the obvious prior; n4 and n8 are trained
+# and REPORTED as the ladder measurement, never selected from. Picking whichever benchmarks
+# best is selecting on the test set.
+#
+# EACH PITCH IS A DIFFERENT ROBOT, so it needs its own 25M-sample dataset and its own 620k
+# steps. The full pitch ladder below is therefore 4 datasets and 6 training runs, comparable
+# to the soft arm's push, and only helix7_p000 would be free if it could reuse another
+# robot's chart -- it cannot, because the arm's links are its own. Narrowing the ladder to
+# {p000, p050} is 2 datasets and 2 charts and still answers the control question, at one
+# dose instead of three. That is a budget decision, not a design one.
+#
+# BUILD THE DATASETS ONE AT A TIME: ikflow's end-of-run summary scans every dataset in the
+# shared cache directory, so a concurrent sibling's half-written tensor makes a finished job
+# exit 1 and withhold the .DONE sentinel that train_flow.sh hard-fails without.
+
+helix7_p050  helix7_p050_n6   --nb_nodes=6 --dim_latent_space=7
+helix7_p050  helix7_p050_n4   --nb_nodes=4 --dim_latent_space=7
+helix7_p050  helix7_p050_n8   --nb_nodes=8 --dim_latent_space=7
+helix7_p000  helix7_p000_n6   --nb_nodes=6 --dim_latent_space=7
+helix7_p025  helix7_p025_n6   --nb_nodes=6 --dim_latent_space=7
+helix7_p100  helix7_p100_n6   --nb_nodes=6 --dim_latent_space=7
