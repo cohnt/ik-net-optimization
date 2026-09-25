@@ -3,39 +3,80 @@
 What would be queued, what it depends on, and what a resuming session should check first.
 The design and the measured facts live in `CLAUDE.md`; this is the operational half.
 
-**STATUS: the four datasets are BUILT. Nothing else has been submitted** -- no training,
-no benchmark stage. The rest of this file is written out so it can be launched
-deliberately.
+**STATUS: datasets BUILT; the training ladder is QUEUED behind the soft arm's campaign.**
+No benchmark stage is submitted. The rest of this file is written out so it can be
+launched deliberately.
 
-**This branch runs from its OWN cluster tree, `~/learned-ik-helix/`.** `~/learned-ik` is an
-rsync of a working tree rather than a version-controlled clone, so there is no branch there
-to switch and restaging means `rsync --delete` over whatever is present -- which, while the
-soft arm campaign is live, would change the code its queued items re-read when they start.
-The isolated tree has its own `repo/`, `home/` (so its ikflow dataset cache is its own),
-`state/` and `results/`, and `rm -rf` removes it without touching anything else. Its
-`venv/` is a symlink to `~/learned-ik/venv`: the same project's environment, which this
-branch adds no dependency to, used read-only. Select it with `SC_ROOT=learned-ik-helix`
-when staging and `LEARNED_IK_ROOT=$HOME/learned-ik-helix` when submitting.
+### The queued chain, 2026-09-25
+
+```
+5738845  helix_train_smoke_helix7_p050_n4   1 node, 20 min   afterany:5733058 (soft arm tail)
+5738846  helix7_p050_n6   4 nodes, 620k     afterok:5738845  <- a FAILED SMOKE BLOCKS THE LADDER
+5738847  helix7_p050_n4   4 nodes, 620k     afterany
+5738848  helix7_p050_n8   4 nodes, 620k     afterany
+5738849  helix7_p025_n6   4 nodes, 620k     afterany
+5738850  helix7_p100_n6   4 nodes, 620k     afterany  <- the tail; chain new work behind THIS
+```
+
+Queued **explicitly behind** the soft arm's chain rather than left to backfill. Backfilling
+looks more polite and is worse: that campaign is back-to-back 4-node links, so the only
+windows to backfill into are the drains between them, and a 1-node job starting in one
+head-of-line blocks the next 620k-step run for its whole duration.
+
+**The zero-pitch rung is not in the chain.** See below.
+
+### This branch runs from its OWN cluster tree, `~/learned-ik-helix/`
+
+`~/learned-ik` is an rsync of a working tree rather than a version-controlled clone, so
+there is no branch there to switch and restaging means `rsync --delete` over whatever is
+present — which, while another campaign is live, changes the code its queued items re-read
+when they start. Select the tree with `SC_ROOT=learned-ik-helix` when staging or
+submitting; `LEARNED_IK_ROOT` is what the job-side scripts read, and the submitters now
+forward it (they used to build paths from `SC_ROOT` while the payload silently fell back to
+the default tree).
+
+Its own: `repo/`, `home/` (its own ikflow dataset cache), `state/`, `results/`.
+Symlinked to the default tree and used **strictly read-only**: `venv/`, `drake/`,
+`sysdeps/`, `home/.cache/drake`. Read-only means no `pip install` of any kind — the other
+campaign runs out of that venv, and a package added here would land inside its run
+invisibly. If this branch ever needs a package the default tree lacks, **copy** the venv.
+`rm -rf ~/learned-ik-helix` removes the tree without touching anything else.
+
+**Job names carry a prefix derived from the tree** (`learned-ik` -> `lik`,
+`learned-ik-helix` -> `helix`), because `stage_code.sh`'s live-campaign guard and
+`submit_train.sh`'s RUN_DIR guard both match on job NAMES. Unscoped, two campaigns refuse
+each other's submissions for as long as either runs — which happened, and is fixed in both
+places rather than forced past.
+
+**Check a tree before trusting it:** `LEARNED_IK_ROOT=$HOME/learned-ik-helix ROBOT=helix7_p050
+LLsub ./cluster/preflight_root.sh -s 8 -q debug-cpu -T 00:20:00 -J helix_cal_preflight`.
+It exercises what a *benchmark worker* needs, which is strictly more than a dataset build
+needs: `run_items.sh`, not the payload, is what puts Drake on `PYTHONPATH`, the extracted
+libraries on `LD_LIBRARY_PATH` and the `drake_models` cache where `ProcessModelDirectives`
+looks. It passed on 2026-09-25 (job 5738820): Drake imports, all four rungs register, the
+scene builds at 7 positions and 22 bodies, the screw row reads `-inf` before the repair and
+`+-6.2832` after, and the dataset resolves with its sentinel.
 
 ### Datasets, built 2026-09-25
 
 Jobs 5738219-5738222 on `xeon-p8`, chained `afterok` by `cluster/chain_datasets.sh` so
 exactly one ran at a time on one node. 25M training samples + 15k test each, seed 0,
 `--only_non_self_colliding`, 1.4 GB per rung, **1:06 to 1:22 each and 5.5 minutes for all
-four** -- far cheaper than the soft arm's, which is what a 7-DoF analytic forward
+four** -- far cheaper than the soft arm's, which is what a 7-DoF closed-form forward
 kinematics buys over a 9-DoF numerical one.
 
 They are four genuinely different robots, not one robot four times, and the datasets say so
 physically: the joint-angle columns agree across rungs (same limits, same seed, screw
 coordinate spanning +-6.2788 = +-2pi), while the reachable set grows with the stroke --
 flange `z` reaches 1.260 at pitch 0 against 1.359 at 0.100 m/rev, a difference of 0.0994 m,
-which is the full +-1-revolution travel to three decimal places. Horizontal reach moves the
-same way, 0.840 to 0.935.
+which is the one-sided travel of a full revolution to three decimals. Horizontal reach moves
+the same way, 0.840 to 0.935.
 
 A 20000-sample plumbing smoke ran first as a job on `debug-cpu`, in a throwaway root: this
 job writes a `.DONE` sentinel on success and `train_flow.sh` hard-fails without one, so a
 smoke landing beside the real cache would leave a sentinel indistinguishable from a
-finished 25M build.
+finished 25M build. `helix7_p000`'s dataset was built before that rung left the ladder and
+is kept, so reviving the rung costs one training run rather than a rebuild.
 
 ## Order of operations, and why it is this order
 
