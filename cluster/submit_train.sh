@@ -120,7 +120,13 @@ LAUNCH
 
 ## RUN_EXPORT reaches train_flow.sh's inline export step; validation runs set it to 0
 ## because a 200-step checkpoint is not worth exporting or screening.
+## LEARNED_IK_ROOT must be forwarded EXPLICITLY. This script resolves its own paths from
+## SC_ROOT, but train_flow.sh reads `${LEARNED_IK_ROOT:-$HOME/learned-ik}` and would
+## otherwise fall back to the DEFAULT tree while running THIS one's code -- reading another
+## campaign's dataset cache and writing into its results. Silent, and worse from an
+## isolated root than from the default one, because the two trees then disagree.
 sc_run "cd ~/$SC_ROOT/repo && \
+  LEARNED_IK_ROOT=\$HOME/$SC_ROOT \
   RUN_NAME='$RUN_NAME' ROBOT='$ROBOT' NNODES=$NNODES GPUS_PER_NODE=$GPUS_PER_NODE BATCH=$BATCH \
   RUN_EXPORT='${RUN_EXPORT:-1}' \
   TRAIN_EXTRA_ARGS='$EXTRA_ARGS' \
