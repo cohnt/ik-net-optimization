@@ -43,7 +43,7 @@ echo '--- worker sentinels (most recent 20) ---'
 find state -maxdepth 2 -name '*.SENTINEL' -printf '%T@ %p ' -exec head -1 {} \; \\
     | sort -n | tail -20 | cut -d' ' -f2-
 echo '--- queue ---'
-LLstat 2>/dev/null | head -20"
+squeue -u \$USER -h -o '%.10i %.2t %.10M %j  %R' 2>/dev/null | head -20"
     exit 0
 fi
 

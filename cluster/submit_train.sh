@@ -93,8 +93,11 @@ EXTRA_ARGS="$*"
 WANT="${SC_JOB_PREFIX}_train_$RUN_NAME"
 LIVE=$(sc_run "squeue -u \$USER -h -n '$WANT' -o '%i' 2>/dev/null | wc -l" 2>/dev/null | tr -dc '0-9')
 if [ -n "${LIVE:-}" ] && [ "${LIVE:-0}" -gt 0 ]; then
-    echo "REFUSING: $LIVE job(s) named exactly $WANT already RUNNING/PENDING." >&2
-    echo "Two jobs on one RUN_DIR race the checkpoints. LLkill the old one or wait." >&2
+    echo "REFUSING: $LIVE job(s) named exactly $WANT are queued, running or completing." >&2
+    echo "Two jobs on one RUN_DIR race the checkpoints. LLkill the old one, or wait." >&2
+    echo "NOTE: a job just killed lingers in CG for up to a minute and squeue still" >&2
+    echo "lists it, so an immediate resubmit of the same name is refused. That is" >&2
+    echo "this guard working, not a bug -- wait for the old job to clear." >&2
     exit 3
 fi
 
