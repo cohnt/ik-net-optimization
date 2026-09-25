@@ -340,6 +340,35 @@ tested.** Scoping per manifest is also tighter than the original intent: a worke
 touches the manifest it was handed, so an unrelated `learned-ik` campaign is no reason to
 refuse.
 
+**Then a second TREE appeared, and "by job name" turned out to be one step too narrow.**
+When an exploration branch staged its own cluster tree (`~/learned-ik-helix` beside
+`~/learned-ik`), every name-based guard was still matching a prefix that BOTH campaigns
+shared. `stage_code.sh` refused to stage either tree because the other tree's jobs were
+running, and `submit_train.sh` — whose stated hazard is two jobs racing one `RUN_DIR` —
+refused a submission in one tree because of four `lik_train_*` jobs in the other, with no
+shared `RUN_DIR` anywhere. Two campaigns deadlocked each other's staging for as long as
+either ran. So: **scope a shared-account check to the TREE that owns the work.** Job names
+now carry a prefix derived from `SC_ROOT` (`learned-ik` -> `lik`, `learned-ik-helix` ->
+`helix`), and each guard matches only its own.
+
+**NEVER USE `LLstat` FOR A PROGRAMMATIC CHECK.** It truncates the `NAME` column to 15
+characters, so `lik_train_soft12_n4`, `lik_train_soft12_n8` and `lik_train_soft16_n6` all
+render as `lik_train_soft1`, and every rung of a ladder collapses into one string. A guard
+built on it cannot distinguish the run it is protecting from that run's siblings, and the
+project's own comments used to teach a prefix-matching workaround for the truncation —
+which quietly capped how finely anything could be scoped. The truncation is an `LLstat`
+display artifact, not a Slurm one: `squeue -u $USER -h -o '%j'` gives full names,
+`squeue -u $USER -h -n '<name>'` matches one exactly and prints nothing on a miss, and
+`sacct -j <id> -X --format=State` is exact for a single job.
+
+**And the rule from the entry above applies to its own repairs: a guard nobody has
+observed refusing has not been tested.** Both were made to refuse on purpose before being
+believed — the staging guard refused with 6 jobs of its own tree queued, the exact-name
+query returned 1 for a live run name and 0 for an invented one, each sibling rung matched
+only itself rather than all five, and the per-tree counts came back disjoint (6 `helix`,
+9 `lik`). The calibration and smoke exemptions were checked against the pattern directly,
+since no such job happened to be queued at the time.
+
 ## How work is claimed, and how to recover
 
 `run_items.sh` claims an item by `mkdir "$STATE/<id>.claim"` — atomic on POSIX,
