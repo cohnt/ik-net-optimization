@@ -1386,10 +1386,36 @@ threshold is 1000 times the COORDINATE LIMIT rather than 1000 radians, because t
 configuration is normalized strain. The STANDALONE screens resolve the domain per robot
 (`ScreenDomain` in `scripts/training/pole_metric.py`: radius `sqrt(width) + 1.5`, threshold
 345, which is the same multiple of the limit that 1000 rad is of an iiwa joint). So the same
-checkpoint gets two different numbers. Closing the gap means passing the domain into the
+checkpoint gets two different numbers, and on `soft12__n6__step620000` they differ by **eight
+orders of magnitude**: the in-training callback ends the run at `pole/max` 2.4e8 with
+`frac_gt_1000` 0.0198, while the standalone screen at the robot's own task poses reports
+`pole/max` **5.44** and `frac_gt_threshold` **0.0** -- at a STRICTER threshold (345) and a WIDER
+latent ball (4.96 against 4.3).
+
+**The mechanism is the orientation draw, and it is specific to this robot.** The fork's callback
+takes orientation from `RollPitchYaw(uniform(-pi, pi, 3))` at a position drawn in the iiwa's box
+(`third_party/ikflow/ikflow/training/pole_callback.py:70-71`), i.e. position and orientation
+INDEPENDENTLY. `soft12` activates `kappa_x, kappa_y, sigma_z` and has **no torsion**, so its tip
+orientation is not free given the tip position -- an independently drawn orientation is
+essentially never reachable, and the callback is therefore evaluating the flow almost entirely
+out of distribution. The standalone screen draws its conditioning poses from actual forward
+kinematics, so it is in distribution. **Quote the standalone number for this robot**; the
+in-training curve is still worth watching as a within-run trend, but its LEVEL is a statement
+about unreachable poses, not about the chart. Closing the gap means passing the domain into the
 fork's callback; it cannot be done mid-campaign, since staging is refused while jobs are
 queued. Both are smoke tests and neither predicts cells, so this is a labelling hazard rather
 than a measurement one -- but the labels have to be right.
+
+**The primary chart is TRAINED: `soft12__n6__step620000`.** Job 5732986, 13:55:34 wall on 4
+nodes x 8 ranks, exited 0 at 620k steps; all 31 checkpoints exported to `.pkl` with their
+architecture sidecars. Accuracy is a clean monotone dose curve and it converges: median tip
+error over 5000 held-out poses runs **9.40 / 4.77 / 3.62 / 3.13 / 2.90 / 2.74 mm** at
+20k / 100k / 200k / 300k / 400k / 620k, with p99 24.4 mm at the end. That is **better than either
+rigid arm's adopted rung** (iiwa `n4` 20.0 mm, Panda `n6` 9.5 mm), which is worth stating but not
+celebrating: the record's own finding is that chart accuracy runs BACKWARDS to cells, so this
+predicts nothing about the benchmark. `frac_gt_threshold` is 0.0 at EVERY checkpoint on the
+in-distribution screen, so the gain-ceiling bet the pre-registered `n6` encodes is not under
+strain here.
 
 **Learned forward kinematics is a planned axis, not a fallback.** The same
 configuration-to-plant-positions map is what a network would replace, so swapping it replaces
@@ -1477,8 +1503,9 @@ structure: a naive net learns all 33 body poses as one function of 12 inputs, bu
 segment's relative transform depends on **only its own three strains**, so a per-segment fit
 composed analytically is a far easier problem. Untried.
 
-**Still open:** the 25M-sample datasets, the chart training, the FK surrogate fit, and a cap
-ladder before any verdict is reported.
+**Still open:** the remaining four charts (`soft12` `n4`/`n8`, `soft9` `n6`, `soft16` `n6`, chained
+on `afterany` behind the primary), the FK surrogate fit, and a cap ladder before any verdict is
+reported. The datasets are built; `soft9`'s was rebuilt alone after the concurrency failure above.
 
 ## Running on MIT SuperCloud (`cluster/`)
 
