@@ -38,12 +38,25 @@ fi
 ## PREFIXES on purpose: LLstat truncates NAME to 15 characters, so a full job name
 ## like `lik_train_iiwa14_n6` shows as `lik_train_iiwa1` and would never match. Calibration
 ## and smoke are named lik_cal_* / smoke.sh and deliberately do not match.
+##
+## The guard protects the tree whose code queued items will import, which is the DEFAULT
+## tree. An alternate SC_ROOT is a separate tree: nothing already queued resolves its code
+## from there, so another campaign running out of ~/learned-ik is not a reason to refuse --
+## and forcing past the guard to stage an isolated tree would be exactly the wrong habit.
+## Staging an alternate root that has ITS OWN jobs in flight is still unsafe, and the notice
+## says so rather than pretending the question does not arise.
+if [ "$SC_ROOT" != "learned-ik" ]; then
+    echo "NOTE: staging the ISOLATED tree ~/$SC_ROOT, not the default ~/learned-ik."
+    echo "      The live-campaign refusal is scoped to the default tree. Make sure no job"
+    echo "      of your own reads ~/$SC_ROOT before continuing."
+else
 RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|train_flow\|lik_train\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
 if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
     echo "REFUSING: $RUNNING campaign job(s) are on the cluster right now." >&2
     echo "Restaging would change the code later items import mid-stage." >&2
     echo "Wait for the stage to drain, or re-run with FORCE_STAGE=1 if you are sure." >&2
     exit 3
+fi
 fi
 
 ## An INCOMPLETE local tree is worse than a stale one, because the rsync below runs with
