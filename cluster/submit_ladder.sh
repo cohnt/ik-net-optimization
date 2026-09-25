@@ -52,7 +52,7 @@ cmd_status() {
           elif [ -d \"\$r\" ]; then printf '%-18s %s\n' \"\$r\" 'submitted, no status yet'
           else printf '%-18s %s\n' \"\$r\" '-'; fi
         done
-        echo '--- queue ---'; squeue -u \$USER -h -o '%Z|%.10i %.34j %.9T %R' 2>/dev/null | awk -F'|' -v d=\"\$HOME/$SC_ROOT/repo\" '\$1==d {print \$2; n++} END {if (!n) print \"(no jobs for this tree)\"}'"
+        echo '--- queue ---'; squeue -u \$USER -h -o '%Z|%.10i %.9T %j  %R' 2>/dev/null | awk -F'|' -v d=\"\$HOME/$SC_ROOT/repo\" '\$1==d {print \$2; n++} END {if (!n) print \"(no jobs for this tree)\"}'"
 }
 
 # Prints the first rung whose status.json has not reached MAX_STEPS.
