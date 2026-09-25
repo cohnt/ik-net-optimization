@@ -51,6 +51,12 @@ fi
 ## Calibration and smoke stay exempt (`*_cal_*`, `smoke.sh`): they produce no campaign
 ## records. Everything else running out of this tree counts.
 ##
+## A DELIBERATE WIDENING, so nobody is surprised by it: scoping by directory also catches
+## DATASET jobs, which run out of this tree on the CPU partition and matched no previous
+## pattern. That is correct -- datagen reads repo code through `ikflow_entry.py`, so
+## restaging under one is the same hazard as restaging under a training run -- but it does
+## refuse in a case the old guard let through.
+##
 ## NEVER use LLstat for a programmatic check: it truncates NAME to 15 characters, so
 ## `lik_train_soft12_n4`, `lik_train_soft12_n8` and `lik_train_soft16_n6` all render as
 ## `lik_train_soft1` and every rung of a ladder collapses into one string. Measured.
