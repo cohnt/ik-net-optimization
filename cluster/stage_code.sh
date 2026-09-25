@@ -33,25 +33,18 @@ fi
 ## versions. That is the same hazard as changing a result schema mid-campaign,
 ## and it is invisible afterwards. Calibration and smoke jobs are exempt: they
 ## produce no campaign records.
-## Match on the payload script name, which LLstat shows when a job is submitted
-## without -J, AND on the lik_<stage>_n<i> convention used when it is. These are
-## PREFIXES on purpose: LLstat truncates NAME to 15 characters, so a full job name
-## like `lik_train_iiwa14_n6` shows as `lik_train_iiwa1` and would never match. Calibration
-## and smoke are named lik_cal_* / smoke.sh and deliberately do not match.
+## Scoped to THIS TREE's jobs. The guard protects the tree whose code queued items re-read
+## when they start, so a sibling campaign's jobs are none of its business -- an
+## account-wide match had two campaigns refusing each other's staging for as long as either
+## ran. Calibration and smoke stay exempt (`<prefix>_cal_*`, `smoke.sh`): no campaign
+## records.
 ##
-## The guard protects the tree whose code queued items will import, which is the DEFAULT
-## tree. An alternate SC_ROOT is a separate tree: nothing already queued resolves its code
-## from there, so another campaign running out of ~/learned-ik is not a reason to refuse --
-## and forcing past the guard to stage an isolated tree would be exactly the wrong habit.
-## Staging an alternate root that has ITS OWN jobs in flight is still unsafe, and the notice
-## says so rather than pretending the question does not arise.
-## Matched on THIS tree's job-name prefix, not on `lik_` globally. The guard protects the
-## tree whose code queued items re-read when they start, so a sibling campaign's jobs are
-## none of its business -- and an unscoped guard would have the two campaigns refusing each
-## other's staging for as long as either was running. Calibration and smoke jobs stay
-## exempt (`*_cal_*`, `smoke.sh`): they produce no campaign records.
-GUARD_PAT="${SC_JOB_PREFIX}_train\|${SC_JOB_PREFIX}_bench\|${SC_JOB_PREFIX}_[A-Za-z]*_n[0-9]"
-RUNNING=$(sc_run "LLstat 2>/dev/null | grep -c \"$GUARD_PAT\"" 2>/dev/null | tr -dc '0-9')
+## Read through `squeue -h -o %j`, which gives FULL job names. NEVER use LLstat for a
+## programmatic check: it truncates NAME to 15 characters, so `lik_train_soft12_n4`,
+## `lik_train_soft12_n8` and `lik_train_soft16_n6` all render as `lik_train_soft1` and
+## every rung of a ladder collapses into one string. Measured, not assumed.
+GUARD_PAT="^${SC_JOB_PREFIX}_(train|bench)_"
+RUNNING=$(sc_run "squeue -u \$USER -h -o '%j' 2>/dev/null | grep -cE '$GUARD_PAT'" 2>/dev/null | tr -dc '0-9')
 if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
     echo "REFUSING: $RUNNING campaign job(s) of THIS tree (~/$SC_ROOT) are running." >&2
     echo "Restaging would change the code later items import mid-stage." >&2
