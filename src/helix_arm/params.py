@@ -136,16 +136,30 @@ class LinkSpec:
 #: with the tube's tail clearing the pedestal, is what fixes the joint's range and the
 #: primary pitch together. The geometry and the stroke are one decision, and both are part
 #: of the robot.
+#: Two offsets here are set by things OUTSIDE this file, and both were measured rather than
+#: guessed. The pedestal's spheres start at `z = 0.090` rather than at 0 so the union's
+#: underside touches the table top at `z = 0` instead of sinking 85 mm into it -- which
+#: nothing would have reported, because Drake never generates collision candidates between
+#: two ANCHORED geometries and both the welded base and the welded table are anchored. And
+#: the flange barrel is 0.100 m long so the gripper, welded at its end, clears the wrist:
+#: the finray's `hand` collision box is 0.0725 m deep about its own origin, and at a 0.070 m
+#: barrel it overlapped `wrist_pitch` by 14 mm and `wrist` by 8 mm at the HOME configuration,
+#: making every draw collide and the acceptance probe read 0 of 20000.
 LINKS = (
-    LinkSpec("base_link",     (0.0, 0.0, 0.00),  (0.0, 0.0, 0.20), 0.085, mass=8.0),
+    LinkSpec("base_link",     (0.0, 0.0, 0.09),  (0.0, 0.0, 0.20), 0.085, mass=8.0),
     LinkSpec("shoulder",      (0.0, 0.0, -0.09), (0.0, 0.0, 0.09), 0.080, mass=4.0),
     LinkSpec("upper_housing", (0.0, 0.0, -0.02), (0.0, 0.0, 0.12), 0.072, mass=3.0),
     LinkSpec("upper_arm",     (0.0, 0.0, -0.06), (0.0, 0.0, 0.36), 0.055, mass=2.8),
     LinkSpec("forearm",       (0.0, 0.0, 0.00),  (0.0, 0.0, 0.36), 0.055, mass=2.4),
     LinkSpec("wrist",         (0.0, 0.0, -0.05), (0.0, 0.0, 0.05), 0.052, mass=1.2),
     LinkSpec("wrist_pitch",   (0.0, 0.0, 0.00),  (0.0, 0.0, 0.06), 0.048, mass=0.8),
-    LinkSpec("flange",        (0.0, 0.0, 0.00),  (0.0, 0.0, 0.07), 0.045, mass=0.6),
+    LinkSpec("flange",        (0.0, 0.0, 0.00),  (0.0, 0.0, 0.10), 0.045, mass=0.6),
 )
+
+#: Where the gripper mounts, in the flange's frame: the end of the barrel. Kept here rather
+#: than in `generate_scenes.py` because it is a property of the ROBOT, and because the
+#: clearance it buys against the wrist is a number this file's geometry has to respect.
+GRIPPER_MOUNT_Z = 0.10
 
 #: The joint table. Limits are in radians; the screw joint's span TWO FULL REVOLUTIONS,
 #: which is deliberate -- many `q3` differing by `2*pi` give the same rotation and a

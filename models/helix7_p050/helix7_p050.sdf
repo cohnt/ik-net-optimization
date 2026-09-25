@@ -11,35 +11,31 @@
   <model name="helix7_p050">
     <link name="base_link">
       <inertial>
-        <pose>0.000000 0.000000 0.100000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.145000 0 0 0</pose>
         <mass>8.000000</mass>
         <inertia>
-          <ixx>0.041116667</ixx><iyy>0.041116667</iyy><izz>0.028900000</izz>
+          <ixx>0.022516667</ixx><iyy>0.022516667</iyy><izz>0.028900000</izz>
           <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
         </inertia>
       </inertial>
       <visual name="base_link_visual">
-        <pose>0.000000 0.000000 0.100000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.145000 0 0 0</pose>
         <geometry><cylinder><radius>0.085000</radius>
-          <length>0.200000</length></cylinder></geometry>
+          <length>0.110000</length></cylinder></geometry>
       </visual>
       <collision name="base_link_sphere0">
-        <pose>0.000000 0.000000 0.000000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.090000 0 0 0</pose>
         <geometry><sphere><radius>0.085000</radius></sphere></geometry>
       </collision>
       <collision name="base_link_sphere1">
-        <pose>0.000000 0.000000 0.050000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.126667 0 0 0</pose>
         <geometry><sphere><radius>0.085000</radius></sphere></geometry>
       </collision>
       <collision name="base_link_sphere2">
-        <pose>0.000000 0.000000 0.100000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.163333 0 0 0</pose>
         <geometry><sphere><radius>0.085000</radius></sphere></geometry>
       </collision>
       <collision name="base_link_sphere3">
-        <pose>0.000000 0.000000 0.150000 0 0 0</pose>
-        <geometry><sphere><radius>0.085000</radius></sphere></geometry>
-      </collision>
-      <collision name="base_link_sphere4">
         <pose>0.000000 0.000000 0.200000 0 0 0</pose>
         <geometry><sphere><radius>0.085000</radius></sphere></geometry>
       </collision>
@@ -279,28 +275,28 @@
     <link name="flange">
       <pose relative_to="wrist_roll">0 0 0 0 0 0</pose>
       <inertial>
-        <pose>0.000000 0.000000 0.035000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.050000 0 0 0</pose>
         <mass>0.600000</mass>
         <inertia>
-          <ixx>0.000548750</ixx><iyy>0.000548750</iyy><izz>0.000607500</izz>
+          <ixx>0.000803750</ixx><iyy>0.000803750</iyy><izz>0.000607500</izz>
           <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
         </inertia>
       </inertial>
       <visual name="flange_visual">
-        <pose>0.000000 0.000000 0.035000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.050000 0 0 0</pose>
         <geometry><cylinder><radius>0.045000</radius>
-          <length>0.070000</length></cylinder></geometry>
+          <length>0.100000</length></cylinder></geometry>
       </visual>
       <collision name="flange_sphere0">
         <pose>0.000000 0.000000 0.000000 0 0 0</pose>
         <geometry><sphere><radius>0.045000</radius></sphere></geometry>
       </collision>
       <collision name="flange_sphere1">
-        <pose>0.000000 0.000000 0.035000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.050000 0 0 0</pose>
         <geometry><sphere><radius>0.045000</radius></sphere></geometry>
       </collision>
       <collision name="flange_sphere2">
-        <pose>0.000000 0.000000 0.070000 0 0 0</pose>
+        <pose>0.000000 0.000000 0.100000 0 0 0</pose>
         <geometry><sphere><radius>0.045000</radius></sphere></geometry>
       </collision>
     </link>
