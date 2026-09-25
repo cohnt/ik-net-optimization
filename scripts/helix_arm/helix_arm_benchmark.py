@@ -1,0 +1,466 @@
+"""Paired-grid benchmark on `helix7`, the helical-joint arm: learned against joint space.
+
+The same harness as `scripts/iiwa/iiwa_benchmark.py`; only the robot, the scene and the
+program classes differ.
+
+THERE IS NO ANALYTIC ARM HERE, and unlike the iiwa's absence that is not a matter of
+effort. A closed-form inverse kinematics needs the forward kinematics to be an ALGEBRAIC
+function of the joint variables -- for a revolute arm every entry of `FK(q)` is a polynomial
+in `(cos q, sin q)`, and the tangent half-angle substitution turns the whole problem into a
+polynomial system. A helical joint contributes `cos q`, `sin q` AND `q` at once, and `q` is
+algebraically independent of `exp(i q)`, so there is no such system to solve. Abban, Li and
+Schicho (arXiv:1312.1060) state the obstruction from the algebra side.
+
+`--robot` selects the pitch rung. The rungs share every number except the screw pitch, so
+the pitch ladder is a dose-response on one robot; `helix7_p000` is the control, the same arm
+with the coupling switched off. Each rung DRAWS ITS OWN GRID -- the stroke changes the
+reachable set, so two rungs do not pair cell for cell and their `grid_hash`es differ by
+design.
+
+Usage:
+    python scripts/helix_arm/helix_arm_benchmark.py --task mug --targets 15 --guesses 2 \\
+        --wall-time 20 --robot helix7_p050 --checkpoint models/.../....pkl
+"""
+import argparse
+import hashlib
+import os
+import sys
+from ast import literal_eval
+from dataclasses import fields, replace
+
+import numpy as np
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from src.utils import (RepoDir, BuildEnv, GenerateDiagramWithMug, HiddenPrints,
+                       CalculateError)
+from src import benchmark as bm
+from src.shelf_regions import DEFAULT_SHELF_DEPTH_INSET, ShelfCompartmentRegions
+from src.target_screening import (MAX_CONSECUTIVE_REJECTIONS, SCENES,
+                                  ContainmentPose, FloatingMugScreen,
+                                  FormatTargetStats,
+                                  SampleShelfTargets, SceneFile)
+from src.generic_program import ProgramOptions, orientation_error_rpy
+from src.helix_arm.params import PRIMARY, SPECS, GetSpec
+from src.helix_arm_program import (HelixArmIKProgram, HelixArmIKProgramNumerical,
+                                   HelixArmMugProgram, HelixArmMugProgramNumerical)
+from pydrake.all import Quaternion, RigidTransform, RollPitchYaw, RotationMatrix
+from pydrake.geometry import Meshcat
+from tqdm import tqdm
+
+def Configs(spec):
+    """The option bundles, with the trust-region radius taken from the ROBOT.
+
+    `sqrt(dim_latent) + 1.5`, the convention the rigid arms and the soft arm share -- 4.15
+    at seven coordinates. Computed rather than written out, because the iiwa's literal 4.3
+    is the single most copy-pasteable wrong number in this tree: it is right for an
+    8-dimensional latent and silently wrong for any other, and nothing downstream would say
+    so. The assertion below is what makes a future rung of a different width fail loudly.
+    """
+    assert spec.ndof == 7, (
+        f"{spec.name} has {spec.ndof} coordinates; the latent width, the correction's width "
+        f"and the trust region all follow the robot, so check each before widening it.")
+    return {
+        "baseline": dict(calibrate_flow_frame=False, share_flow_evaluations=False),
+        "frame":    dict(share_flow_evaluations=False),
+        "eval":     dict(share_flow_evaluations=True),
+        "latent":   dict(share_flow_evaluations=True,
+                         latent_trust_region=spec.latent_trust_region),
+    }
+
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--task", choices=["mug", "pose"], default="mug")
+    p.add_argument("--targets", type=int, default=15)
+    p.add_argument("--guesses", type=int, default=2)
+    p.add_argument("--wall-time", type=float, default=20.0)
+    p.add_argument("--solver", choices=["ipopt", "snopt", "nlopt"], default="ipopt",
+                   help="the solver axis is three METHOD CLASSES, not three vendors: "
+                        "ipopt is interior point, snopt is SQP, nlopt is an augmented "
+                        "Lagrangian (LD_AUGLAG). Each converges at its own defaults -- "
+                        "transplanting one solver's tolerances onto another makes the "
+                        "axis a handicap rather than a comparison. Note nlopt reports no "
+                        "iteration count at all, so its runs are read by the map-evaluation "
+                        "counters instead; see src/generic_program.py ResetEvalCounts.")
+    p.add_argument("--start", choices=["paired", "native"], default="paired",
+                   help="paired: every arm starts at the same q_init, in its own variables "
+                        "(SetStartFromQ). native: every arm uses its own initialisation -- "
+                        "the flow's latent drawn from its prior, the analytic map's "
+                        "redundancy parameter and branch drawn from theirs, the joint-space "
+                        "arm from a random configuration. Sampled, never searched: no "
+                        "candidate is scored against the problem in either mode.")
+    p.add_argument("--arms", default="learned,numerical")
+    # "axis" named a config that was removed with the mug-axis tolerance, so the default
+    # raised KeyError; "latent" is the configuration the Panda ladder settled on.
+    p.add_argument("--config", default="latent")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--task-tol", type=float, default=1e-3,
+                   help="task-space gate: metres off the mug axis / per-axis position "
+                        "error. DELIBERATELY an order of magnitude looser than the "
+                        "solver's constraint tolerance (ik_constraint_tol = 1e-4), and "
+                        "that gap must not be closed -- Thomas, 2026-09-03: \"go back to "
+                        "1e-4 actual tol and 1e-3 task tol, to avoid this issue (that's "
+                        "why I did it in the first place)\". An interior-point method "
+                        "parks ON an active bound, so at convergence the gated quantity "
+                        "sits at the bound plus or minus rounding: measured over 480 iiwa "
+                        "pose cells, 64%% of joint-space solutions are a rounding error "
+                        "above the 1e-4 they are pinned to, and none are above 1.01e-4. A "
+                        "gate at the bound would score which way the last ulp fell, and "
+                        "appeared to reverse a real result. The gate measures whether the "
+                        "arm reached the target, not whose rounding is smaller. The raw "
+                        "errors are stored per record, so any other gate can be "
+                        "recomputed from the summary without re-running.")
+    p.add_argument("--robot", default=PRIMARY, choices=sorted(SPECS),
+                   help="which pitch rung to benchmark. The rungs share every number except "
+                        "the screw pitch, so this selects the dose and nothing else; "
+                        "helix7_p000 is the control, the same arm with the coupling switched "
+                        "off. Each rung draws its OWN grid -- the stroke changes the "
+                        "reachable set -- so two rungs do not pair cell for cell.")
+    p.add_argument("--checkpoint", required=True,
+                   help="path to this rung's IKFlow .pkl. REQUIRED: this robot has no "
+                        "published chart to fall back on, and a missing one is not an error "
+                        "you would notice -- it is a column of zeros. The architecture comes "
+                        "from the checkpoint's own .arch.json sidecar. Recorded in the run "
+                        "metadata and in the tag, so runs against different networks cannot "
+                        "be paired by accident or overwrite each other's summary.json.")
+    p.add_argument("--tag", default=None)
+    p.add_argument("--cells", default=None, metavar="TI:GI[,TI:GI...]",
+                   help="run only these (target, guess) cells of the seeded grid")
+    p.add_argument("--shard", default=None, metavar="K/N",
+                   help="run shard K of N of the seeded grid, split target-major. See the "
+                        "panda script; '_shardKofN' is appended to the tag and "
+                        "cluster/merge_shard_summaries.py pools the shards.")
+    p.add_argument("--cell-timeout", type=float, default=None,
+                   help="seconds before a stalled cell dumps stacks (default 5*wall_time + 300)")
+    p.add_argument("--compile", action="store_true",
+                   help="torch.compile the flow Jacobian, once per process, warmed up "
+                        "before the grid. Moves the learned arm's success rate inside a "
+                        "fixed cap, so runs being compared must set it the same way.")
+    p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
+                   help="override any ProgramOptions field, e.g. --set correction_bound=0.4")
+    p.add_argument("--scene", choices=("hardened", "nobin", "legacy"), default="hardened",
+                   help="`hardened` is the campaign scene: four shelves, two tables, no bin "
+                        "and no decorative mugs. `nobin` drops ONLY the bin, keeping the "
+                        "clutter -- it exists to separate 'targets must be in a shelf' from "
+                        "'the scene lost obstacles', which the 2026-09-15 campaign confounded "
+                        "on the iiwa (iiwa only; the Panda grasp scene never had decorative "
+                        "mugs). `legacy` is the pre-2026-09-15 scene, kept so archived runs "
+                        "reproduce. The obstacle set changes which uniform draws survive, so "
+                        "these produce different grids by construction.")
+    p.add_argument("--target-placement", choices=("shelf", "free", "auto"), default="auto",
+                   help="`shelf` accepts a sampled target only if its point lands inside a "
+                        "shelf compartment (and, on the grasp task, only if the mug placed "
+                        "there does not penetrate the scene). `free` is the old sampler, "
+                        "which accepted any collision-free draw. This is what makes the "
+                        "obstacles part of the problem rather than scenery. `auto` (the "
+                        "default) resolves to `shelf` for BOTH tasks -- Thomas's 2026-09-19 "
+                        "call, which supersedes the 2026-09-15 one that left grasp free. "
+                        "Grasp containment is what creates headroom: on free targets the "
+                        "joint-space arm sits at 94-95%% and only ~25 cells of 480 are "
+                        "winnable at all, while contained it drops to 300-323 and needs "
+                        "965-970 median iterations against 125-176. It is adopted TOGETHER "
+                        "with the 180 s cap, because at 45 s the iiwa's contained-grasp rows "
+                        "are cap-bound (64-74 learned timeouts) and score as joint-space "
+                        "wins, whereas at 180 s they are ties with zero timeouts and the "
+                        "360 s column reproduces 180 s exactly. Use `free` to reproduce any "
+                        "grasp column measured before this.")
+    p.add_argument("--placement-point", choices=("wrist", "fingertips"), default="fingertips",
+                   help="which point on the GRIPPER must lie inside a compartment. `wrist` "
+                        "is the gripper base link, `fingertips` is between_fingers; they are "
+                        "0.100 m apart on BOTH robots, which is the point -- rejection "
+                        "sampling has to key on the same physical point on the hand or the "
+                        "two robots are not solving comparable problems. (The task's own "
+                        "target frame fails that: the iiwa's is the arm flange, the Panda's "
+                        "the gripper mount, 84 mm apart.) They coincide on the grasp task, "
+                        "where the mug is welded at between_fingers. Default `fingertips`, "
+                        "adopted 2026-09-16: it is the faithful statement of the task -- the "
+                        "GRIPPER reaches into the shelf, not the wrist -- and it scores higher "
+                        "for both arms on every row, because requiring the wrist inside a "
+                        "0.10 m compartment silently demands 0.1 m more penetration.")
+    p.add_argument("--shelf-inset", type=float, default=DEFAULT_SHELF_DEPTH_INSET,
+                   help="metres each shelf compartment is inset along its depth axis. "
+                        "Symmetric, because shelves.sdf has no back wall. Deeper is harder "
+                        "AND rarer -- see scripts/probe_shelf_acceptance.py before moving it; "
+                        "0.125 is not fielded.")
+    p.add_argument("--max-target-rejections", type=int, default=MAX_CONSECUTIVE_REJECTIONS,
+                   help="consecutive rejected candidates before target sampling gives up. "
+                        "A tail bound, not a budget; the default is sized from the measured "
+                        "acceptance rates.")
+    return p.parse_args()
+
+
+def apply_overrides(options, overrides):
+    parsed = {}
+    for item in overrides:
+        if "=" not in item:
+            raise SystemExit(f"--set expects NAME=VALUE, got {item!r}")
+        name, _, value = item.partition("=")
+        name = name.strip()
+        if not any(f.name == name for f in fields(ProgramOptions)):
+            raise SystemExit(f"--set: no such ProgramOptions field {name!r}")
+        try:
+            parsed[name] = literal_eval(value)
+        except (ValueError, SyntaxError):
+            parsed[name] = value
+    return replace(options, **parsed), parsed
+
+
+def main():
+    args = parse_args()
+    if args.shard and args.cells:
+        raise SystemExit("--shard and --cells are mutually exclusive")
+    shard = bm.parse_shard(args.shard)
+    # A non-default checkpoint goes in the tag as well as the metadata: two runs of the
+    # same grid against DIFFERENT networks are not comparable, and without this they would
+    # resolve to the same summary.json and overwrite each other (the same trap --shard hit).
+    ckpt_tok = ([os.path.splitext(os.path.basename(args.checkpoint))[0]]
+                if args.checkpoint else [])
+    ## The solver belongs in the tag for exactly the reason the checkpoint does: two runs
+    ## of the same grid under DIFFERENT solvers are not the same measurement, and without
+    ## this they resolve to the same log_dir and the same summary.json and silently
+    ## overwrite each other. The panda script has always included it; this one did not.
+    tag = args.tag or "_".join(
+        [args.robot, args.task, args.config, args.solver, args.start] + ckpt_tok
+        + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
+        + (["compiled"] if args.compile else []))
+    if shard is not None:
+        tag = f"{tag}_shard{shard[0]}of{shard[1]}"
+    log_dir = os.path.join(RepoDir(), "results/helix_arm/benchmark", tag)
+    out_path = os.path.join(log_dir, "summary.json")
+
+    base_options = ProgramOptions(
+        visualize=False, joint_centering_cost=1e-4, max_wall_time=args.wall_time,
+        which_solver=args.solver, acceptable_tol=1e-3,
+        acceptable_constr_viol_tol=1e-4, ik_constraint_tol=(1e-4, 0.01),
+        mug_height=0.04)
+    robot_spec = GetSpec(args.robot)
+    base_options = replace(base_options, **Configs(robot_spec)[args.config],
+                           compile_flow_jacobian=args.compile)
+    base_options, overrides = apply_overrides(base_options, args.overrides)
+    # `ik_constraint_tol` no longer forms any constraint bound -- the pose rows are a
+    # hard equality (see IKFlowProgram.CreateIKConstraint) -- so what survives of it here
+    # is purely a MEASUREMENT threshold: `ori_tol` is the pose gate's orientation bound.
+    # It is read from the option rather than scaled off the position tolerance, which is
+    # what the gate used to do (`10 * task_tol`, equal to ik_constraint_tol[1] only by
+    # coincidence at the default task_tol of 1e-3, so moving one would silently have
+    # dragged the other). The position entry is deliberately unused: the gate's position
+    # threshold is `task_tol`, kept an order of magnitude looser than any bound the
+    # solver optimises against.
+    _, ori_tol = base_options.ik_constraint_tol
+    slack = base_options.acceptable_constr_viol_tol
+
+    # A local generator for the grid: see the note in the Panda script -- draws made during
+    # program construction used to shift which targets a configuration was measured on.
+    rng = np.random.default_rng(args.seed)
+    np.random.seed(args.seed)
+    # No visualization means no Meshcat server; see the note in the Panda script.
+    meshcat = Meshcat() if base_options.visualize else None
+    # One scene serves both tasks here; the registry differs only in which frame's origin
+    # the containment test applies to. `--scene legacy` restores the pre-2026-09-15
+    # obstacle set (the bin and the seven decorative mugs).
+    spec = SCENES[(args.robot, args.task)]
+    yaml_file = SceneFile(args.robot, args.task, args.scene)
+    with HiddenPrints():
+        diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
+        sampler_cls = HelixArmMugProgram if args.task == "mug" else HelixArmIKProgram
+        sampler = sampler_cls(diagram, options=base_options, robot=args.robot,
+                              checkpoint=args.checkpoint)
+        sampler.create_prog()
+    ik_solver = sampler.ik_solver
+    lower = sampler.plant.GetPositionLowerLimits()
+    upper = sampler.plant.GetPositionUpperLimits()
+    ## THE ORDER ABOVE IS LOAD-BEARING. Constructing the sampler is what applies the
+    ## screw-limit repair to this plant, and these two lines are read from it -- a screw
+    ## joint's <limit> is discarded by Drake's parsers, so before the repair they carry
+    ## +-inf, every `rng.uniform(lower, upper)` below returns nan, and `sample_collision_free`
+    ## spins for ever without ever failing. Asserted rather than trusted, because "the grid
+    ## sampler never returned" is the most expensive way to find out.
+    if not (np.all(np.isfinite(lower)) and np.all(np.isfinite(upper))):
+        raise SystemExit(
+            f"{args.robot}: the plant's position limits are not finite, so the target "
+            f"sampler would draw nan. ApplyScrewJointLimits runs in the program's "
+            f"__init__; something has reordered it past ToAutoDiffXd.")
+
+    def sample_collision_free():
+        while True:
+            q = rng.uniform(lower, upper)
+            sampler.plant.SetPositions(sampler.plant_context, q)
+            if sampler.collision_free_constraint_eval.Eval(q) < 1:
+                return q
+
+    # Under `--target-placement shelf` a draw is additionally rejected unless the target
+    # lands inside a shelf compartment, and (grasp task only) unless the mug placed there
+    # clears the scene -- Drake never generates collision candidates between two ANCHORED
+    # geometries, so the welded target mug's overlap with a shelf board is invisible on the
+    # solve scene and needs its own diagram. See scripts/probe_shelf_acceptance.py for the
+    # acceptance rates this buys, and src/target_screening.py for the rest.
+    placement = args.target_placement
+    if placement == "auto":
+        ## Both tasks, since 2026-09-19. See --target-placement's help.
+        placement = "shelf"
+    regions = (ShelfCompartmentRegions(args.shelf_inset) if placement == "shelf" else None)
+    target_pose_of, placement_point = ContainmentPose(
+        sampler.plant, sampler.plant_context, spec, args.placement_point)
+    mug_screen = None
+    if regions is not None and args.task == "mug":
+        with HiddenPrints():
+            mug_screen = FloatingMugScreen(yaml_file, spec.robot_instances)
+
+    target_qs, target_stats = SampleShelfTargets(
+        args.targets,
+        draw=lambda: rng.uniform(lower, upper),
+        collision_free=lambda q: sampler.collision_free_constraint_eval.Eval(q) < 1,
+        target_pose=target_pose_of, regions=regions,
+        screen=(lambda X: mug_screen.Penetrates([X])) if mug_screen else None,
+        max_consecutive_rejections=args.max_target_rejections,
+        label=f"{args.robot}/{args.task}/{placement}/{args.placement_point}",
+        progress=tqdm(total=args.targets, desc="targets"))
+    print(FormatTargetStats(f"{args.robot}/{args.task}", target_stats))
+    # Per-target guesses; see the panda script for the rationale.
+    guesses = [[sample_collision_free() for _ in range(args.guesses)] for _ in range(args.targets)]
+    # The task is a suffix rather than part of the hash input: the mug and pose grids are
+    # drawn from the same seed over the same joint limits, so they hashed *identically*
+    # (9f5953e3c669 for both) and `collate.py --pair` would happily have compared a mug run
+    # against a pose one. Appending keeps the hash of the cells themselves unchanged, so
+    # pairing against archived runs still works once their task is taken into account.
+    grid_hash = hashlib.sha1(np.asarray(
+        target_qs + [g for row in guesses for g in row]).tobytes()).hexdigest()[:12]
+    grid_hash = f"{grid_hash}-{args.task}"
+
+    # Resolved before the scenes are built: the mug loop only builds this shard's targets.
+    if shard is not None:
+        cells = bm.shard_cells(*shard, args.targets, args.guesses)
+    elif args.cells:
+        cells = [tuple(map(int, c.split(":"))) for c in args.cells.split(",")]
+    else:
+        cells = None
+
+    compile_seconds = None
+    if args.compile:
+        compile_seconds = sampler.WarmUpJacobian()
+        print(f"compiled the flow Jacobian in {compile_seconds:.1f} s")
+
+    if args.task == "mug":
+        mug_meshcat = Meshcat() if base_options.visualize else None
+        # Only this shard's targets need a scene; the draws above are unconditional, so the
+        # grid and its hash are untouched.
+        wanted = {ti for ti, _ in cells} if cells is not None else set(range(args.targets))
+        targets = [None] * len(target_qs)
+        for ti, q in enumerate(tqdm(target_qs, desc="mugs")):
+            if ti not in wanted:
+                continue
+            with HiddenPrints():
+                targets[ti] = GenerateDiagramWithMug(q, sampler, yaml_file, mug_meshcat)
+
+        def task_gate(program, q):
+            program.plant.SetPositions(program.plant_context, q)
+            grasp = program.plant.GetFrameByName("between_fingers")
+            p_W = grasp.CalcPoseInWorld(program.plant_context).translation()
+            p_M = program.target_mug.middle.inverse() @ p_W
+            axis_error = float(np.linalg.norm(p_M[:2]))
+            height = float(abs(p_M[2]))
+            ok = (axis_error <= args.task_tol
+                  and height <= program.options.mug_height + args.task_tol)
+            return ok, dict(axis_error=axis_error, height=height)
+    else:
+        targets = []
+        for q in target_qs:
+            sampler.plant.SetPositions(sampler.plant_context, q)
+            pose = sampler.frame.CalcPoseInWorld(sampler.plant_context)
+            targets.append(np.array([*pose.translation(),
+                                     *pose.rotation().ToQuaternion().wxyz()]))
+
+        def task_gate(program, q):
+            translation, wxyz = program.fk(q)
+            target = program.target_pose
+            axis_max = float(np.max(np.abs(np.asarray(translation) - target[:3])))
+            target_rpy = RollPitchYaw(RotationMatrix(Quaternion(target[3:]))).vector()
+            rpy_max = float(np.max(np.abs(
+                np.asarray(orientation_error_rpy(wxyz, target_rpy), dtype=float))))
+            ok = axis_max <= args.task_tol and rpy_max <= ori_tol
+            return ok, dict(pos_error=axis_max, rpy_error=rpy_max)
+
+    numerical_options = replace(base_options, joint_centering_cost=1e0)
+    mug = args.task == "mug"
+
+    def build(cls, options, target, q_init, cell):
+        if mug:
+            diagram_with_mug, target_mug = target
+            with HiddenPrints():
+                program = cls(diagram_with_mug, options=options, robot=args.robot,
+                              model=ik_solver)
+                program.create_prog(target_mug=target_mug)
+        else:
+            with HiddenPrints():
+                program = cls(diagram, options=options, robot=args.robot,
+                              model=ik_solver)
+                program.create_prog(target)
+        with HiddenPrints():
+            if args.start == "paired":
+                program.clip_distance = program.SetStartFromQ(q_init)
+            else:
+                # A generator per cell, so a native start varies from guess to guess and
+                # from target to target while staying reproducible from --seed.
+                program.clip_distance = program.SetNativeStart(
+                    q_init, np.random.default_rng([args.seed, *cell]))
+        return program
+
+    learned_cls = HelixArmIKProgram
+    if mug:
+        learned_cls = HelixArmMugProgram
+    all_arms = {
+        "learned": bm.Arm("learned",
+                          lambda t, g, c: build(learned_cls, base_options, t, g, c),
+                          base_options.joint_centering_cost),
+        "numerical": bm.Arm("numerical",
+                            lambda t, g, c: build(
+                                HelixArmMugProgramNumerical if mug else HelixArmIKProgramNumerical,
+                                numerical_options, t, g, c),
+                            numerical_options.joint_centering_cost),
+    }
+    arms = [all_arms[name] for name in args.arms.split(",")]
+
+    n_cells = len(cells) if cells is not None else args.targets * args.guesses
+    bar = tqdm(total=len(arms) * n_cells, desc=tag)
+    records = bm.run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol=slack,
+                          relaxed_tol=args.task_tol,
+        cell_timeout=args.cell_timeout or (5 * args.wall_time + 300),
+        cells=cells,
+        # Paired means starting AT q_init: a cell whose q_init the arm's variables cannot
+        # represent is an immediate failure (fail_reason "unrepresentable_start"), not a
+        # solve from a projection. Native starts are the formulation's own draw, so the
+        # rule does not apply there.
+        unrepresentable_tol=(1e-3 if args.start == "paired" else None),
+                          progress=lambda *a: bar.update(1),
+                          metadata=dict(robot=args.robot, task=args.task,
+                                        solver=args.solver, config=args.config,
+                                        wall_time=args.wall_time, seed=args.seed,
+                                        grid_hash=grid_hash, compiled=args.compile,
+                                        scene=os.path.basename(yaml_file),
+                                        scene_mode=args.scene,
+                                        target_placement=placement,
+                                        shelf_inset=(args.shelf_inset
+                                                     if placement == "shelf"
+                                                     else None),
+                                        target_screen=(mug_screen is not None),
+                                        placement_point=placement_point,
+                                        placement_point_mode=args.placement_point,
+                                        target_candidates_drawn=target_stats["drawn"],
+                                        target_accept_rate=target_stats["accept_rate"],
+                                        compile_seconds=compile_seconds,
+                                        overrides=overrides, start=args.start,
+                                        n_targets=args.targets, n_guesses=args.guesses,
+                                        shard=args.shard, checkpoint=args.checkpoint,
+                                        screw_pitch=robot_spec.pitch,
+                                        screw_stroke=robot_spec.travel,
+                                        latent_trust_region=base_options.latent_trust_region,
+                                        **bm.provenance()))
+    bar.close()
+    print()
+    bm.print_table(bm.summarise(records, arms, args.targets, args.guesses),
+                   [a.name for a in arms])
+    print(f"\nwrote {out_path}")
+
+
+if __name__ == "__main__":
+    main()
