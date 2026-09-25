@@ -197,8 +197,13 @@ bash cluster/watch_ladder.sh
 ### The five things about this that are not obvious
 
 - **One rung at a time, at full 4-node parallelism.** Each rung takes the whole volta cap.
-  `submit_train.sh`'s one-at-a-time `lik_train` guard is what enforces it, and `--next`
-  relies on that guard rather than duplicating it. Two concurrent rungs would not merely
+  `submit_train.sh` enforces it with TWO separate checks, deliberately split because they
+  are different hazards at different scopes: a same-`RUN_NAME` check that is never
+  bypassable (two jobs on one `RUN_DIR` race its checkpoints), and a one-rung-at-a-time
+  check over this tree's training jobs that `ALLOW_CONCURRENT=1` bypasses.
+  `chain_ladder.sh` sets that flag legitimately: its rungs are submitted together but run
+  strictly one at a time, so Slurm enforces the property instead. `--next` relies on the
+  second check rather than duplicating it. Two concurrent rungs would not merely
   share the cap — they would halve each other's throughput inside a fixed step budget and
   make the wall-clock column meaningless.
 - **`ALLOW_CONCURRENT=1` is correct in `chain_ladder.sh` and essentially nowhere else.**
@@ -325,8 +330,10 @@ staged from the local checkout and `stage_code.sh`, never by asking the cluster.
 **Any check that asks the cluster whether it is busy must be scoped to this project.**
 The account is shared with Thomas's other campaigns, so `LLstat | grep -c RUNNI` refuses
 whenever anything at all is running — it fired on an unrelated `run_matrix.sh`. Filter by
-**`squeue -u $USER -n "lik_bench_$MANIFEST_NAME"`**, and count `PENDING` as well as
-`RUNNING`.
+**`squeue -u $USER -n "${SC_JOB_PREFIX}_bench_$MANIFEST_NAME"`**, and count `PENDING` as
+well as `RUNNING`. **The prefix is derived per cluster tree and must never be written out
+as `lik_`** — see the two-tree entry below, where hardcoding it reintroduced this exact
+bug.
 
 **Filter on the JOB name, not the script's filename.** `--reclaim`'s guard filtered
 `squeue -n run_items.sh` for its whole life and therefore matched nothing: a job's name is
