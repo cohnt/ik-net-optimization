@@ -32,6 +32,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 PREV="${1:?usage: chain_ladder.sh <after_jobid> <run_name> [run_name...]}"
+FIRST_PREV="$PREV"    # so the first link can differ in dependency TYPE
 shift
 [ $# -gt 0 ] || { echo "no rungs given" >&2; exit 2; }
 
@@ -50,8 +51,16 @@ for name in "$@"; do
     robot=$(awk '{print $1}' <<<"$row")
     args=$(cut -d' ' -f3- <<<"$(tr -s ' ' <<<"$row")")
 
-    echo "=== chaining $name (robot=$robot, arch: $args) after job $PREV"
-    out=$(ALLOW_CONCURRENT=1 DEPENDENCY="afterany:$PREV" ROBOT="$robot" BATCH="$BATCH" \
+    ## FIRST link only: `afterok` when the chain is queued behind a SMOKE run, so a failed
+    ## smoke blocks the ladder instead of letting it train for days on broken plumbing --
+    ## which is what this file's own runbook says must happen. Rung-to-rung links stay
+    ## `afterany` on purpose: an independent measurement that dies must not stall the
+    ## measurements behind it.
+    DEP_TYPE="afterany"
+    [ -n "${FIRST_DEP:-}" ] && [ "$PREV" = "$FIRST_PREV" ] && DEP_TYPE="$FIRST_DEP"
+
+    echo "=== chaining $name (robot=$robot, arch: $args) after job $PREV ($DEP_TYPE)"
+    out=$(ALLOW_CONCURRENT=1 DEPENDENCY="$DEP_TYPE:$PREV" ROBOT="$robot" BATCH="$BATCH" \
             EXCLUDE_NODES="${EXCLUDE_NODES:-}" \
             bash cluster/submit_train.sh "$name" "$NNODES" "$WALL" -- $COMMON_ARGS $args 2>&1)
     echo "$out" | tail -3
