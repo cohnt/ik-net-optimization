@@ -88,3 +88,32 @@ whatever the queue says, and resubmitting resumes from `last.ckpt`.
 * The SoRoMoX golden-file equivalence test. `.venv-soromox` (soromox 0.5.0, jax 0.11.2 CPU)
   is built; the generator and the test are not written. Until they are, "the analytic model
   from the soft robot repo" is a provenance claim rather than a checked one.
+
+## Run record: the primary chart (added 2026-09-25)
+
+`5732986 lik_train_soft12_n6` **COMPLETED 0:0**, 13:55:34 wall, 4 nodes x 8 ranks, 620000
+steps, ~12.9 steps/s once startup washed out. The inline export wrote all 31 checkpoints to
+`models/soft12/soft12__n6__step*.pkl` with architecture sidecars (`export rc=0`), and screened
+every one. The fielded checkpoint is `soft12__n6__step620000.pkl`.
+
+Final numbers, both screens, on the SAME checkpoint -- keep them labelled:
+
+| quantity | value |
+| --- | --- |
+| standalone `pos_err_mm/median` (5000 poses) | 2.74 |
+| standalone `pos_err_mm/p99` | 24.36 |
+| standalone `pole/max` (task poses, threshold 345, radius 4.96) | 5.44 |
+| standalone `pole/frac_gt_threshold` | 0.0 |
+| in-training `pole/max` (iiwa box, RPY-uniform orientation) | 2.4e8 |
+| in-training `pole/frac_gt_1000` | 0.0198 |
+
+The eight-order gap is the orientation draw, not the chart: the fork's callback draws position
+and orientation independently, and `soft12` has no torsion, so an independently drawn
+orientation is essentially never reachable. See CLAUDE.md for the full statement.
+
+Accuracy over training (median tip error, mm): 9.40 (20k) / 4.77 (100k) / 3.62 (200k) /
+3.13 (300k) / 2.90 (400k) / 2.74 (620k). Validation flattened around 460-500k.
+
+Queue handoff worked as predicted: on release, `5733053` (the soft9 dataset re-run) claimed
+nodes ahead of the chained `5733055 soft12_n4`, which is what its lower job ID buys. Nothing
+had to be resubmitted.
