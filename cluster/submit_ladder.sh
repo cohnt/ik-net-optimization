@@ -52,7 +52,7 @@ cmd_status() {
           elif [ -d \"\$r\" ]; then printf '%-18s %s\n' \"\$r\" 'submitted, no status yet'
           else printf '%-18s %s\n' \"\$r\" '-'; fi
         done
-        echo '--- queue ---'; LLstat 2>/dev/null | grep -E 'lik_train|JOBID' || echo '(no lik_train jobs)'"
+        echo '--- queue ---'; squeue -u \$USER -h -o '%Z|%.10i %.34j %.9T %R' 2>/dev/null | awk -F'|' -v d=\"\$HOME/$SC_ROOT/repo\" '\$1==d {print \$2; n++} END {if (!n) print \"(no jobs for this tree)\"}'"
 }
 
 # Prints the first rung whose status.json has not reached MAX_STEPS.
@@ -83,6 +83,17 @@ cmd_next() {
         bash "$(dirname "$0")/submit_train.sh" "$name" "$NNODES" "$WALL" -- $COMMON_ARGS $args
 }
 
+smoke_latent_arg() {
+    ## The latent width a smoke run must be told, where it is not the iiwa's default of 8.
+    ## A PREFIX match on the helix rungs, so adding a pitch needs no edit here -- and they
+    ## are all 7-wide, being a 7-DoF arm.
+    case "$1" in
+        panda)     echo "--dim_latent_space=7" ;;
+        helix7_*)  echo "--dim_latent_space=7" ;;
+        *)         echo "" ;;
+    esac
+}
+
 cmd_smoke() {
     local robot="${1:?usage: --smoke <robot>}"
     echo "200-step validation run for $robot at nb_nodes=4 on ${PARTITION:-xeon-g6-volta} (ONE node)."
@@ -101,7 +112,7 @@ cmd_smoke() {
         bash "$(dirname "$0")/submit_train.sh" "smoke_${robot}_n4" 1 00:20:00 -- \
         --max_steps=200 --nb_nodes=4 --eval_every=100 --val_set_size=20 \
         --checkpoint_every=100 --pole_eval_n=500 --disable_wandb \
-        $( [ "$robot" = panda ] && echo --dim_latent_space=7 )
+        $(smoke_latent_arg "$robot")
 }
 
 case "${1:---status}" in
