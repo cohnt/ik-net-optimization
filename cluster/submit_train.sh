@@ -82,10 +82,17 @@ EXTRA_ARGS="$*"
 ## RUN_NAMEs cannot race each other's checkpoints, and the volta GrpTRES cap
 ## meters however many jobs are queued. NEVER set it when resubmitting a run
 ## that might still have a live job -- that is exactly the race the guard stops.
+## Scoped to THIS RUN_NAME in THIS tree. The hazard is two jobs sharing one RUN_DIR and
+## racing its checkpoints, which is a property of the run, not of the account: matching
+## `lik_train` globally made a sibling campaign's jobs -- or any other rung of this
+## ladder -- refuse an unrelated submission. LLstat truncates NAME to 15 characters, so
+## compare on the truncated form or a long run name never matches itself.
 if [ "${ALLOW_CONCURRENT:-0}" != "1" ]; then
-    LIVE=$(sc_run 'LLstat 2>/dev/null | grep -c "lik_train"' 2>/dev/null | tr -dc '0-9')
+    WANT="${SC_JOB_PREFIX}_train_$RUN_NAME"
+    WANT_TRUNC=$(printf '%.15s' "$WANT")
+    LIVE=$(sc_run "LLstat 2>/dev/null | grep -c \"$WANT_TRUNC\"" 2>/dev/null | tr -dc '0-9')
     if [ -n "${LIVE:-}" ] && [ "${LIVE:-0}" -gt 0 ]; then
-        echo "REFUSING: $LIVE lik_train job(s) already RUNNING/PENDING." >&2
+        echo "REFUSING: $LIVE job(s) named $WANT_TRUNC* already RUNNING/PENDING." >&2
         echo "Two jobs on one RUN_DIR race the checkpoints. LLkill the old one or wait." >&2
         exit 3
     fi
