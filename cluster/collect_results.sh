@@ -66,8 +66,13 @@ if [ "${1:-}" = "--reclaim" ]; then
 # ever touches the manifest it was handed, so an unrelated learned-ik campaign is no
 # reason to refuse. Two lessons: a guard that cannot be observed refusing has not been
 # tested, and a job's name is a property of the submitter, not of the script it runs.
+#
+# THE NAME ALSO CARRIES THE TREE. Job names are prefixed per cluster tree (SC_JOB_PREFIX:
+# learned-ik -> lik, learned-ik-helix -> helix), so a hardcoded `lik_bench_` here would
+# match nothing for any campaign but the first -- reintroducing, exactly, the
+# unconditionally-0 guard described above. It must be derived, never written out.
     sc_run "cd ~/$SC_ROOT/state/$MANIFEST_NAME 2>/dev/null || { echo 'no such manifest state'; exit 1; }
-JOB_NAME=lik_bench_\${MANIFEST_NAME%.txt}
+JOB_NAME=${SC_JOB_PREFIX}_bench_\${MANIFEST_NAME%.txt}
 BUSY=\$(squeue -u \$USER -h -n \"\$JOB_NAME\" -t RUNNING,PENDING 2>/dev/null | wc -l)
 if [ \"\$BUSY\" -gt 0 ]; then
     echo \"REFUSING: \$BUSY \$JOB_NAME job(s) queued or running -- a live item must not be stolen.\"
