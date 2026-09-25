@@ -110,7 +110,7 @@ sc_run "mkdir -p $RUN_DIR_R && cat > $RUN_DIR_R/launch.sh && chmod +x $RUN_DIR_R
 #SBATCH --partition=$PARTITION
 #SBATCH --exclusive
 #SBATCH --time=$WALL
-#SBATCH --job-name=lik_train_$RUN_NAME${DEP_DIRECTIVE:+
+#SBATCH --job-name=${SC_JOB_PREFIX}_train_$RUN_NAME${DEP_DIRECTIVE:+
 #SBATCH --dependency=$DEPENDENCY}${EXC_DIRECTIVE:+
 #SBATCH --exclude=$EXCLUDE_NODES}
 #SBATCH --output=../results/train/$RUN_NAME/launch.log-%j

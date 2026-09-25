@@ -29,6 +29,17 @@ SC_DEST="tcohn@txe1-login.mit.edu"
 ## default one instead of rsync --delete-ing over a live campaign's code. Each root
 ## is self-contained and removable with one `rm -rf`.
 SC_ROOT="${SC_ROOT:-learned-ik}"
+## Job-name prefix, DERIVED from the tree so it cannot be forgotten. Two campaigns share
+## one account, and stage_code.sh's live-campaign guard matches job NAMES -- so if an
+## isolated tree kept the default `lik` prefix, each campaign's staging would refuse
+## because of the other campaign's jobs, deadlocking both for as long as either runs.
+## `learned-ik` -> `lik`; `learned-ik-helix` -> `helix`.
+case "$SC_ROOT" in
+    learned-ik)   SC_JOB_PREFIX="${SC_JOB_PREFIX:-lik}" ;;
+    learned-ik-*) SC_JOB_PREFIX="${SC_JOB_PREFIX:-${SC_ROOT#learned-ik-}}" ;;
+    *)            SC_JOB_PREFIX="${SC_JOB_PREFIX:-$SC_ROOT}" ;;
+esac
+
 SC_CTL_DIR="${XDG_RUNTIME_DIR:-/tmp}/supercloud-ctl"
 mkdir -p "$SC_CTL_DIR"
 SC_SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$SC_CTL_DIR/%r@%h:%p" -o ControlPersist=10m -o BatchMode=yes)
