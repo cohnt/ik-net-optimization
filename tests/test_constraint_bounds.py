@@ -240,6 +240,116 @@ def main():
         # it must SAY so rather than passing silently.
         print(f"  SKIP  iiwa checks unavailable: {type(exc).__name__}: {exc}")
 
+    # ----------------------------------------------------------------- helix7
+    # The helical-joint arm, on the same base rows. It is here for one reason the other
+    # robots cannot supply: its screw coordinate's joint-limit row is the row every Drake
+    # parser leaves at `+-inf`, silently (`ParseJointLimits` is reached only for revolute
+    # and prismatic joints). A vacuous row is the mirror image of the defect this file was
+    # written for -- there a task equality was wrongly written as a box, here a genuine
+    # inequality goes unbounded -- and it is invisible in exactly the same way, because
+    # every arm still solves and reports no violation on a row that constrains nothing.
+    #
+    # Unlike the iiwa's, this block cannot skip: the chart is built UNTRAINED, which
+    # exercises every bound-forming path and says nothing about solve quality.
+    print("\n--- helix7: the same base rows, and a joint-limit row that must be FINITE ---")
+    try:
+        import torch
+        from ikflow.ikflow_solver import IKFlowSolver
+        from ikflow.model import IkflowModelParameters
+        from jrl.robots import get_robot
+
+        from src.flow_loading import LEGACY_ARCH_BY_ROBOT
+        from src.helix_arm.params import PRIMARY, GetSpec
+        from src.helix_arm_program import (HelixArmIKProgram, HelixArmIKProgramNumerical,
+                                           HelixArmMugProgram, HelixArmMugProgramNumerical)
+
+        spec = GetSpec(PRIMARY)
+        hopts = ProgramOptions(collision_avoidance=True, joint_limits=True, use_float64=True,
+                               latent_trust_region=spec.latent_trust_region)
+        scene = os.path.join(REPO, f"models/{PRIMARY}/{PRIMARY}_collision_hardened.yaml")
+        with HiddenPrints():
+            parameters = IkflowModelParameters()
+            parameters.__dict__.update(dict(LEGACY_ARCH_BY_ROBOT[PRIMARY], nb_nodes=4))
+            torch.manual_seed(0)
+            hsolver = IKFlowSolver(parameters, get_robot(PRIMARY))
+
+            hdiagram = BuildEnv(meshcat=None, directives_file=scene)
+            hsampler = HelixArmIKProgram(hdiagram, options=hopts, robot=PRIMARY, model=hsolver)
+            hsampler.create_prog()
+            q_h = rng.uniform(hsampler.plant.GetPositionLowerLimits(),
+                              hsampler.plant.GetPositionUpperLimits())
+            htarget = np.concatenate(hsampler.fk(q_h))
+
+        n_q_h = hsampler.plant.num_positions()
+        for cls, label in ((HelixArmIKProgram, "helix learned"),
+                           (HelixArmIKProgramNumerical, "helix numerical")):
+            with HiddenPrints():
+                hp = cls(hdiagram, options=hopts, robot=PRIMARY, model=hsolver)
+                hp.create_prog(htarget)
+            lb, ub = stacked_rows(hp.prog, label)
+            if lb is None:
+                continue
+            check(f"{label}: position rows are an EQUALITY at 0",
+                  np.array_equal(lb[:3], np.zeros(3)) and np.array_equal(ub[:3], np.zeros(3)),
+                  f"lb={lb[:3]} ub={ub[:3]}")
+            check(f"{label}: orientation rows are an EQUALITY at 0",
+                  np.array_equal(lb[3:6], np.zeros(3)) and np.array_equal(ub[3:6], np.zeros(3)),
+                  f"lb={lb[3:6]} ub={ub[3:6]}")
+            # The rows after IK (6) and collision (1) are the joint limits, one per plant
+            # position. `RequireFiniteLimits` already refuses a PLANT carrying the
+            # parser's `+-inf`, so what these two rows add is the step after it: that the
+            # numbers Drake was actually handed are the ones the repair wrote. The
+            # failure they are the only guard against is a repair that runs and writes
+            # the WRONG limits -- finite, so the existing guard passes, and not the
+            # spec's, so the row this robot exists to stress bounds the wrong set.
+            # Verified by reinstating exactly that defect: these checks trip, nothing
+            # else does.
+            limit_rows = slice(7, 7 + n_q_h)
+            check(f"{label}: every joint-limit row is FINITE -- no parser `+-inf` survived",
+                  bool(np.all(np.isfinite(lb[limit_rows])) and np.all(np.isfinite(ub[limit_rows]))),
+                  f"infinite rows at {np.flatnonzero(~np.isfinite(lb[limit_rows]) | ~np.isfinite(ub[limit_rows])).tolist()}")
+            # Located through the PLANT, not by counting the spec: the point of the
+            # check is that these two agree, so reading the index off the spec would
+            # make it circular.
+            name = spec.screw_joint_names[0]
+            row = 7 + hsampler.plant.GetJointByName(name).position_start()
+            want = spec.joint_names.index(name)
+            check(f"{label}: the SCREW row carries the spec's own limits, not the parser's",
+                  np.allclose([lb[row], ub[row]],
+                              [spec.limits[0][want], spec.limits[1][want]]),
+                  f"row={lb[row]}..{ub[row]}, spec="
+                  f"{spec.limits[0][want]}..{spec.limits[1][want]}")
+            check(f"{label}: joint-limit rows stay INEQUALITIES, none tightened to a point",
+                  bool(np.all(ub[limit_rows] > lb[limit_rows])),
+                  f"equal rows at {np.flatnonzero(ub[limit_rows] <= lb[limit_rows]).tolist()}")
+
+        with HiddenPrints():
+            hmug_sampler = HelixArmMugProgram(hdiagram, options=hopts, robot=PRIMARY,
+                                              model=hsolver)
+            hmug_sampler.create_prog()
+            q_hm = rng.uniform(hmug_sampler.plant.GetPositionLowerLimits(),
+                               hmug_sampler.plant.GetPositionUpperLimits())
+            hdiagram_with_mug, hmug = GenerateDiagramWithMug(q_hm, hmug_sampler, scene, None)
+        for cls, label in ((HelixArmMugProgram, "helix mug learned"),
+                           (HelixArmMugProgramNumerical, "helix mug numerical")):
+            with HiddenPrints():
+                hpm = cls(hdiagram_with_mug, options=hopts, robot=PRIMARY, model=hsolver)
+                hpm.create_prog(target_mug=hmug)
+            lb, ub = stacked_rows(hpm.prog, label)
+            if lb is None:
+                continue
+            check(f"{label}: axis rows x, y are an EQUALITY at 0 (the task's definition)",
+                  np.array_equal(lb[:2], np.zeros(2)) and np.array_equal(ub[:2], np.zeros(2)),
+                  f"lb={lb[:2]} ub={ub[:2]}")
+            check(f"{label}: height row is a BAND, deliberately not an equality",
+                  not np.isclose(lb[2], ub[2])
+                  and np.isclose(ub[2], hopts.mug_height) and np.isclose(lb[2], -hopts.mug_height),
+                  f"lb={lb[2]} ub={ub[2]} mug_height={hopts.mug_height}")
+    except (ImportError, FileNotFoundError, RuntimeError) as exc:
+        # The chart is built in-process, so nothing here depends on a gitignored pickle.
+        # A skip therefore means the robot itself failed to build, and must SAY so.
+        print(f"  SKIP  helix7 checks unavailable: {type(exc).__name__}: {exc}")
+
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failures")
     for f in FAILURES:
         print(f"  - {f}")
