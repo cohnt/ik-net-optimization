@@ -51,11 +51,15 @@ panda   panda_n12_w256   --nb_nodes=12 --dim_latent_space=7 --coeff_fn_internal_
 # best is selecting on the test set.
 #
 # EACH PITCH IS A DIFFERENT ROBOT, so it needs its own 25M-sample dataset and its own 620k
-# steps. The full pitch ladder below is therefore 4 datasets and 6 training runs, comparable
-# to the soft arm's push, and only helix7_p000 would be free if it could reuse another
-# robot's chart -- it cannot, because the arm's links are its own. Narrowing the ladder to
-# {p000, p050} is 2 datasets and 2 charts and still answers the control question, at one
-# dose instead of three. That is a budget decision, not a design one.
+# steps: it cannot borrow another rung's chart, because the arm's links are its own.
+#
+# helix7_p000 IS NOT TRAINED. At pitch 0 the arm is an ordinary S-R-S manipulator, and the
+# project already fields two of those with analytic columns, so a chart for it would spend
+# 620k steps rediscovering that an algebraic arm is algebraic. The spec and its dataset
+# exist; the rung does not. Thomas, 2026-09-25: "Seems like a waste of time to train a
+# model for helix7_p000. We already have analytic arms, we don't need a specific control
+# example here." So the ladder is 5 training runs: three architectures on the primary rung,
+# plus the two other pitches at the adopted architecture.
 #
 # BUILD THE DATASETS ONE AT A TIME: ikflow's end-of-run summary scans every dataset in the
 # shared cache directory, so a concurrent sibling's half-written tensor makes a finished job
@@ -64,6 +68,5 @@ panda   panda_n12_w256   --nb_nodes=12 --dim_latent_space=7 --coeff_fn_internal_
 helix7_p050  helix7_p050_n6   --nb_nodes=6 --dim_latent_space=7
 helix7_p050  helix7_p050_n4   --nb_nodes=4 --dim_latent_space=7
 helix7_p050  helix7_p050_n8   --nb_nodes=8 --dim_latent_space=7
-helix7_p000  helix7_p000_n6   --nb_nodes=6 --dim_latent_space=7
 helix7_p025  helix7_p025_n6   --nb_nodes=6 --dim_latent_space=7
 helix7_p100  helix7_p100_n6   --nb_nodes=6 --dim_latent_space=7
