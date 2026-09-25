@@ -32,12 +32,24 @@ import re
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
 SCRIPTS = {"panda": "scripts/panda/panda_benchmark.py",
            "iiwa": "scripts/iiwa/iiwa_benchmark.py"}
 
 # Arms per robot. The iiwa has no analytic arm: no Iiwa14IKProgramAnalytic exists, and
 # writing one is future work or possibly not done at all (Thomas, 2026-09-19).
 ALL_ARMS = {"panda": "learned,numerical,analytic,analytic8", "iiwa": "learned,numerical"}
+
+## The helical-joint arm's pitch rungs. TWO ARMS, and unlike the iiwa's that is not a matter
+## of effort: a closed-form inverse kinematics needs the forward kinematics to be an
+## ALGEBRAIC function of the joint variables, and a helical joint contributes cos q, sin q
+## and q at once. There is no analytic column to write.
+from src.helix_arm.params import SPECS as _HELIX_SPECS  # noqa: E402
+
+HELIX_ROBOTS = tuple(sorted(_HELIX_SPECS))
+SCRIPTS.update({r: "scripts/helix_arm/helix_arm_benchmark.py" for r in HELIX_ROBOTS})
+ALL_ARMS.update({r: "learned,numerical" for r in HELIX_ROBOTS})
 
 # Seconds per (cell x arm), used only for the LPT ordering and the --summary
 # estimate. Deliberately pessimistic: the learned arm is the one that can sit at
@@ -1848,6 +1860,155 @@ def stage_STATUSQUO(wall, targets, guesses, shards, only=None, tag="STATUSQUO", 
     return items
 
 
+## ------------------------------------------------------------------------------- HELIX --
+##
+## The helical-joint arm. THREE SEPARATE STAGES rather than entries in ADOPTED_RUNGS,
+## because the status quo is accepted work and this robot is not: adding it there would
+## silently change what STATUSQUO means, which is the same reason the soft arm's stages
+## stand apart. Every stage is shaped like the record's rows -- same cap, same seed, same
+## contained placement -- so a row here can stand beside one of the record's without a
+## caveat about conditions.
+
+HELIX_PRIMARY = "helix7_p050"
+
+#: The fielded rung, PRE-REGISTERED at n6 before any cell is read -- the Panda's adopted
+#: rung, this being a 7-DoF arm. n4 and n8 are trained and REPORTED, never selected from.
+HELIX_ADOPTED = ("n6", f"models/{HELIX_PRIMARY}/{HELIX_PRIMARY}__n6__step620000.pkl")
+
+HELIX_CHART_RUNGS = tuple(
+    (HELIX_PRIMARY, label, f"models/{HELIX_PRIMARY}/{HELIX_PRIMARY}__{label}__step620000.pkl")
+    for label in ("n4", "n6", "n8"))
+
+#: The pitch ladder. Every rung carries its own chart, including the control: at pitch 0 the
+#: arm is still THIS arm, with these links and this scene, so it cannot borrow another
+#: robot's network. That is the cost of building the robot from scratch rather than
+#: perturbing an existing one, and it is the right cost -- the control is a member of the
+#: same family rather than a different robot wearing the same name.
+HELIX_PITCH_RUNGS = tuple(
+    (robot, "n6", f"models/{robot}/{robot}__n6__step620000.pkl") for robot in HELIX_ROBOTS)
+
+
+def _helix_base(robot, ckpt):
+    return ["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+            "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
+            "--robot", robot, "--checkpoint", ckpt]
+
+
+def _helix_require_statusquo_wall(wall, stage):
+    if float(wall) != STATUSQUO_WALL:
+        raise SystemExit(
+            f"--wall-time must be {STATUSQUO_WALL:g} for {stage}; got {wall}. These rows are "
+            f"shaped to stand beside the status quo, and a different cap makes them a "
+            f"different measurement rather than a comparable one.")
+    return float(wall)
+
+
+def stage_HELIX(wall, targets, guesses, shards, only=None, tag="HELIX", seed=1,
+                solvers="ipopt,snopt,nlopt", starts="paired,native"):
+    """The helical arm's status-quo-shaped rows: 2 experiments x 2 protocols x 3 solvers.
+
+    Twelve logical runs on the primary rung at its adopted chart, deliberately the same
+    shape, cap and seed as stage_STATUSQUO so the rows are directly comparable with the
+    record's. Each solver at its own adopted configuration and NO settings axis: the solver
+    axis is closed, and this stage is about a robot.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_solvers = [x.strip() for x in solvers.split(",") if x.strip()]
+    for name in want_solvers:
+        if name not in SOLVER_CLASSES:
+            raise SystemExit(f"--solvers: {name!r} is not one of the three method classes "
+                             f"{sorted(SOLVER_CLASSES)}")
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    wall = _helix_require_statusquo_wall(wall, "stage HELIX")
+
+    if wanted is not None and HELIX_PRIMARY not in wanted:
+        return []
+    label, ckpt = HELIX_ADOPTED
+    base = _helix_base(HELIX_PRIMARY, ckpt)
+    items = []
+    for solver in want_solvers:
+        item_shards = shards * STATUSQUO_SHARD_SCALE[solver]
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(HELIX_PRIMARY,
+                              f"sc_{tag}_{HELIX_PRIMARY}_{label}_{solver}_{token}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", solver]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[HELIX_PRIMARY], wall, item_shards,
+                              seed=seed)
+    return items
+
+
+def stage_HELIXCHART(wall, targets, guesses, shards, only=None, tag="HELIXCHART", seed=1,
+                     starts="paired,native"):
+    """The chart ladder on the primary rung: nb_nodes 4 / 6 / 8, IPOPT only.
+
+    BENCHMARKED, NOT MERELY SCREENED, and REPORTED rather than selected from. The record is
+    explicit that neither intrinsic screen predicts cells in either direction, so a ladder
+    reported on screens alone would report the one thing already known not to matter; and
+    the fielded rung is pre-registered at n6 before any cell is read, because picking
+    whichever benchmarks best is selecting on the test set.
+
+    IPOPT only: the solver axis is closed, and this question is about the chart.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    wall = _helix_require_statusquo_wall(wall, "stage HELIXCHART")
+    items = []
+    for robot, label, ckpt in HELIX_CHART_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = _helix_base(robot, ckpt)
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(robot,
+                              f"sc_{tag}_{robot}_{label}_ipopt_{token}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", "ipopt"]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[robot], wall, shards, seed=seed)
+    return items
+
+
+def stage_HELIXPITCH(wall, targets, guesses, shards, only=None, tag="HELIXPITCH", seed=1,
+                     starts="paired,native"):
+    """The pitch ladder: four rungs x 2 experiments x 2 protocols, IPOPT only.
+
+    THE CONTROL THAT THE EFFECT IS THE COUPLING AND NOT THE GEOMETRY. Every rung is the same
+    arm -- same links, same scene, same joint limits, same chart architecture -- differing
+    only in how many metres of axial travel one revolution of the screw joint buys.
+    `helix7_p000` is that arm with the coupling switched off, which makes it an ordinary
+    S-R-S arm for which a closed form exists; the ladder therefore runs from "an analytic
+    column could exist here" to "no analytic column can exist here".
+
+    THE RUNGS DO NOT PAIR CELL FOR CELL. The stroke changes the reachable set, so each rung
+    draws its own grid and its `grid_hash` differs by design -- compare by target-level
+    success rate with a bootstrap CI over targets. McNemar applies WITHIN a rung, between
+    the learned and joint-space arms, and not across rungs. This is the same mistake the
+    soft arm's DOF ladder had to avoid.
+
+    IPOPT only: the solver axis is closed, and this question is about the robot.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    wall = _helix_require_statusquo_wall(wall, "stage HELIXPITCH")
+    items = []
+    for robot, label, ckpt in HELIX_PITCH_RUNGS:
+        if wanted is not None and robot not in wanted:
+            continue
+        base = _helix_base(robot, ckpt)
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(robot,
+                              f"sc_{tag}_{robot}_{label}_ipopt_{token}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", "ipopt"]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[robot], wall, shards, seed=seed)
+    return items
+
+
 def stage_INSET(wall, targets, guesses, shards, only=None, tag="INSET", seed=1):
     """Sweep the compartment depth inset, on both tasks, at reduced scale.
 
@@ -2092,7 +2253,13 @@ def _ladder_paths_match_export():
     # and already skipped.) Listed explicitly so a genuinely missing rung still fails.
     PRE_EXISTING = {"models/iiwa14/iiwa14__ddp-r1__step620000.pkl"}
 
-    benchmarked = {c for _, _, c in LADDER_RUNGS if c} - PRE_EXISTING
+    ## The helical arm's rungs are benchmarked by their own three stages rather than by
+    ## LADDER_RUNGS, so they have to be unioned in here or every one of them would read as
+    ## "trains but nothing benchmarks it". The check is still two-directional for them: a
+    ## chart named by a stage with no ladder_runs.txt row to export it still fails.
+    benchmarked = ({c for _, _, c in LADDER_RUNGS if c}
+                   | {c for _, _, c in HELIX_CHART_RUNGS}
+                   | {c for _, _, c in HELIX_PITCH_RUNGS}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
         fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt row would export it")
@@ -2863,6 +3030,87 @@ def selftest():
         print("ok   stage HARDMUG: 30 iiwa runs, every item on the nobin scene")
     fails += len(hm_fails)
 
+    ## Stage HELIX / HELIXCHART / HELIXPITCH. The invariants are about what must be true of
+    ## a row for it to stand beside the record's, plus the two things this robot can lose
+    ## silently: a missing checkpoint (a column of zeros, not an error) and a stage that
+    ## quietly fields the retired `free` placement.
+    helix_fails = []
+    helix_expected = {"HELIX": 12, "HELIXCHART": 12, "HELIXPITCH": 16}
+    helix_stages = {"HELIX": stage_HELIX, "HELIXCHART": stage_HELIXCHART,
+                    "HELIXPITCH": stage_HELIXPITCH}
+    for name, builder in sorted(helix_stages.items()):
+        runs = builder(STATUSQUO_WALL, 60, 8, 8)
+        logical = {r["id"].split("_shard")[0] for r in runs}
+        if len(logical) != helix_expected[name]:
+            helix_fails.append("stage %s has %d logical runs, expected %d"
+                               % (name, len(logical), helix_expected[name]))
+        ids = [r["id"] for r in runs]
+        if len(ids) != len(set(ids)):
+            helix_fails.append("stage %s has duplicate item ids" % name)
+        solvers_seen = set()
+        for r in runs:
+            args = r["args"]
+            if r["script"] != "scripts/helix_arm/helix_arm_benchmark.py":
+                helix_fails.append("stage %s: %s uses %s" % (name, r["id"], r["script"]))
+            if "free" in args:
+                helix_fails.append("stage %s: %s fields the retired `free` placement"
+                                   % (name, r["id"]))
+            if "--robot" not in args or "--checkpoint" not in args:
+                helix_fails.append("stage %s: %s is missing --robot or --checkpoint -- a "
+                                   "missing chart is a column of zeros, not an error"
+                                   % (name, r["id"]))
+            else:
+                robot = args[args.index("--robot") + 1]
+                ckpt = args[args.index("--checkpoint") + 1]
+                if r["robot"] != robot:
+                    helix_fails.append("stage %s: %s names robot %r but is filed under %r"
+                                       % (name, r["id"], robot, r["robot"]))
+                if not ckpt.startswith("models/%s/" % robot):
+                    helix_fails.append("stage %s: %s loads %s, which is another robot's "
+                                       "chart" % (name, r["id"], ckpt))
+            if args[args.index("--wall-time") + 1] != str(STATUSQUO_WALL):
+                helix_fails.append("stage %s: %s is not at the status-quo cap"
+                                   % (name, r["id"]))
+            if args[args.index("--arms") + 1] != "learned,numerical":
+                helix_fails.append("stage %s: %s does not field exactly the two arms"
+                                   % (name, r["id"]))
+            solvers_seen.add(args[args.index("--solver") + 1])
+        if name == "HELIX":
+            if solvers_seen != set(SOLVER_CLASSES):
+                helix_fails.append("stage HELIX covers %s, not all three method classes"
+                                   % sorted(solvers_seen))
+        elif solvers_seen != {"ipopt"}:
+            helix_fails.append("stage %s is not IPOPT-only (saw %s); the solver axis is "
+                               "closed and these stages are about the robot"
+                               % (name, sorted(solvers_seen)))
+
+    ## The pitch ladder must cover every rung exactly once per (task, protocol), or it is
+    ## not a dose-response.
+    pitch = stage_HELIXPITCH(STATUSQUO_WALL, 60, 8, 8)
+    per_robot = {}
+    for r in pitch:
+        per_robot.setdefault(r["robot"], set()).add(r["id"].split("_shard")[0])
+    if set(per_robot) != set(HELIX_ROBOTS):
+        helix_fails.append("stage HELIXPITCH covers %s, not every rung %s"
+                           % (sorted(per_robot), list(HELIX_ROBOTS)))
+    for robot, runs in sorted(per_robot.items()):
+        if len(runs) != len(STATUSQUO_ROWS) * 2:
+            helix_fails.append("stage HELIXPITCH: %s has %d runs, expected %d"
+                               % (robot, len(runs), len(STATUSQUO_ROWS) * 2))
+
+    ## And the primary rung must be a member of the pitch ladder, or the ladder is not a
+    ## control on the row stage HELIX actually reports.
+    if HELIX_PRIMARY not in per_robot:
+        helix_fails.append("stage HELIXPITCH does not include the primary rung %s, so it "
+                           "is not a control on what stage HELIX reports" % HELIX_PRIMARY)
+
+    for line in helix_fails:
+        print("FAIL " + line)
+    if not helix_fails:
+        print("ok   stages HELIX/HELIXCHART/HELIXPITCH: 12/12/16 logical runs, contained "
+              "placement, every item carrying its own rung's chart")
+    fails += len(helix_fails)
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -2880,7 +3128,8 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO",
+                            "HELIX", "HELIXCHART", "HELIXPITCH", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -2968,6 +3217,16 @@ def main():
                                                  args.guesses, args.shards,
                                                  only=args.rungs, solvers=args.solvers,
                                                  starts=args.starts),
+             "HELIX": lambda: stage_HELIX(args.wall_time, args.targets,
+                                         args.guesses, args.shards,
+                                         only=args.rungs, solvers=args.solvers,
+                                         starts=args.starts),
+             "HELIXCHART": lambda: stage_HELIXCHART(args.wall_time, args.targets,
+                                                   args.guesses, args.shards,
+                                                   only=args.rungs, starts=args.starts),
+             "HELIXPITCH": lambda: stage_HELIXPITCH(args.wall_time, args.targets,
+                                                   args.guesses, args.shards,
+                                                   only=args.rungs, starts=args.starts),
              "NLOPTTUNE": lambda: stage_NLOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,
