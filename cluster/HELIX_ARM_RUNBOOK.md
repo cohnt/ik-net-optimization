@@ -167,10 +167,20 @@ whatever the queue says, and resubmitting resumes from `last.ckpt`.
 
 ## What a resuming session should check FIRST
 
-1. `bash cluster/submit_ladder.sh --status` — global_step per rung against 620000.
-2. `LLstat` — our jobs are named `lik_dataset` / `lik_train_<run>`.
-3. That each dataset has its `.DONE` sentinel:
-   `ls ~/learned-ik/home/.cache/ikflow/datasets/helix7_p050/`
+0. **DID THE SMOKE PASS?** `sacct -X -o JobID,JobName%30,State,Elapsed -j 5738845`. This is
+   first because it is the one failure with NO SIGNAL: if the smoke failed, the five rungs
+   gated on it sit PENDING for ever with `Reason=DependencyNeverSatisfied`, looking exactly
+   like ordinary queued work. Nothing exits, nothing notifies. Check with
+   `squeue -u $USER -o '%i %j %T %r'` and look for `DependencyNeverSatisfied`.
+   **If it failed: `scancel` the stalled rungs and TELL THE SOFT ARM SESSION** — it has work
+   chained behind this ladder's tail (5738850), so a stall here silently stalls that too.
+1. `SC_ROOT=learned-ik-helix bash cluster/submit_ladder.sh --status` — global_step per rung
+   against 620000. A rung short of it was not trained, whatever the queue says;
+   resubmitting resumes from `last.ckpt`.
+2. `LLstat` — this tree's jobs are named `helix_*` (`helix_train_<run>`, `helix_bench_*`,
+   `helix_cal_*`). `lik_*` jobs belong to the soft arm campaign and are not ours.
+3. That each dataset has its `.DONE` sentinel, **in this tree's own cache**:
+   `ls ~/learned-ik-helix/home/.cache/ikflow/datasets/helix7_p050/`
 4. `python cluster/gen_manifest.py --selftest` before generating any manifest.
 
 ## Traps specific to THIS robot
