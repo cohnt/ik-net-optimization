@@ -118,6 +118,10 @@ carrying more of the configuration box out of the shelves.
 
 ## Still to build
 
-* A `CLAUDE.md` section for this robot, written at the end of the push as the record
-  requires.
-* The cap ladder, before any verdict is reported.
+* The cap ladder (45 / 180 / 360 s), before any verdict is reported. It needs trained
+  charts, so it is the campaign's first methodological step rather than part of this
+  infrastructure push.
+
+The record's own section for this robot is written: **"The helical-joint arm: a robot no
+algebraic method can chart"** in `CLAUDE.md`, which holds the design, the two traps and the
+locally measured numbers. This file stays the operational half.

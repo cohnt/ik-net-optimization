@@ -1230,6 +1230,111 @@ it falls only in the four wide bundles, the two charts become identical (59/60 a
 and 34/60 pose, same iteration counts). **Nothing about the near-limit bundles makes the *solve*
 harder; they are simply configurations that arm cannot be given.**
 
+## The helical-joint arm: a robot no algebraic method can chart
+
+**Branch `non-analytic-arm`. NOTHING IS MEASURED AND NOTHING IS SUBMITTED.** The infrastructure is
+complete and self-tested on the laptop and the campaign is one command away; merging to main is
+Thomas's acceptance gate, and until then no row here stands beside the status quo's.
+
+**Why the robot exists.** An analytic column needs `FK(q)` to be *algebraic*: for a revolute arm
+every entry is a polynomial in `(cos q_i, sin q_i)`, and `c^2 + s^2 = 1` turns IK into a polynomial
+system elimination solves. A **helical (screw) joint** rotates by `q` *and* translates
+`pitch * q / (2*pi)` along the same axis, so `q` enters both trigonometrically and linearly and is
+algebraically independent of `e^{iq}` (Lindemann-Weierstrass). Abban, Li & Schicho
+(arXiv:1312.1060) state it for linkages: algebraic-geometry methods "have failed so far ... because
+of the presence of some non-algebraic relations". So this is a **generality demonstration**, like
+the soft arm — a robot class the algebraic baselines cannot touch, where the learned + optimization
+formulation needs no change at all. Two arms, `learned,numerical`.
+
+**The robot is INVENTED, and invented from scratch.** No real 7+-DoF arm with a lone helical joint
+exists in hardware or in any public model, and the reason is structural: a lone helical pair carries
+the drive torque and the load's reaction torque through the same thread, so every real screw
+actuator either grounds the nut against rotation (a prismatic joint with a gearbox) or adds a
+co-axial second motor (a cylindrical pair, which re-coordinatises back to an algebraic IK by an
+invertible linear map — every SCARA ball-screw-spline Z axis is this). In all of public GitHub
+exactly two models use an SDFormat `screw` joint and neither is an arm DOF. The *joint* is a
+catalogue part, first-class in Drake, DART, Simbody and Pinocchio; nobody has put one in an arm, and
+**that** is the reportable finding. Given it must be invented it is invented from scratch, not by
+perturbing a benchmark arm — which would carry a real robot's name and published identity while no
+longer being that robot.
+
+**`helix7`.** A 7-DoF S-R-S arm whose **upper-arm roll is helical**: the upper arm telescopes as it
+rolls, and every downstream link is offset from that axis, which is what makes the coupling
+irreducible. `src/helix_arm/params.py` **is** the robot; the SDFormat model and the batched torch FK
+are two renderings of it and a test says they agree, so there is no second source of truth and
+nothing to drift. The screw coordinate is `±2π`, deliberately symmetric about zero because
+**ikflow's first layer is `x_i / max(|lo_i|, |hi_i|)` — a pure scaling with no offset** — so a
+one-sided range would land that coordinate in `[0, 1]`. Many `q3` differing by `2π` give the same
+rotation at a different extension, so the solution set is richly multimodal, which is the property a
+flow is supposed to capture. Reach matches the iiwa (flange at z 1.26 home, 0.89 m horizontal from a
+shoulder at z 0.42), so every shelf weld, table and containment screen applies untouched.
+
+**Four rungs, one robot: pitch `{0, 0.025, 0.050, 0.100}` m/rev, primary `helix7_p050`, fixed before
+any number was read.** Every other number is shared, so the ladder is a dose-response rather than
+four robots. **`helix7_p000` is a full spec, not a code path** — a control that takes a different
+code path is not a control — and at pitch 0 the arm is an ordinary S-R-S arm for which the closed
+form is standard, so the family runs from "an analytic column could exist here" to "no analytic
+column can exist here" across one scene and one generator.
+
+**TRAP: every Drake parser silently discards a screw joint's `<limit>`.** `ParseJointLimits` is
+reached only for revolute and prismatic joints, in URDF and SDFormat alike, so the plant reports
+`[-inf, inf]` on that coordinate and nothing raises. The joint-limit row — the one row this robot
+exists to stress — goes vacuous, the joint-space arm's box goes unbounded, and the target sampler's
+`rng.uniform(lower, upper)` returns `nan` and spins for ever. `src/helix_arm/limits.py` repairs it
+in the program's `__init__`, after `Finalize()` and **before `ToAutoDiffXd()`**, which takes an
+independent copy that would otherwise carry the infinities for ever. Anything that builds this plant
+without constructing a program must repair it itself; `scripts/probe_shelf_acceptance.py` does.
+
+**TRAP, and it is the conditioning-frame lesson a second time: `ee_frame` must be set BEFORE
+`CalibrateFlowFrame`.** The grasp program set it after `super().__init__()`, which is what the
+iiwa's structure invites, so the calibration measured `between_fingers` and applied that 0.2 m
+offset to the flange. Nothing raised: `frame_for_flow` falls back to `self.frame`, and the offset
+**is** constant, so the constancy check passes. `X_ee_flow` must be exactly the identity on both
+tasks — which doubles as a free end-to-end witness over the whole SDFormat-versus-torch chain — and
+a test pins it.
+
+Three smaller ones worth not rediscovering. **Capsules hang Drake's proximity engine**, so collision
+geometry is a sphere union along each capsule's segment. A `<drake:collision_filter_group>` named
+after its own link raises "Non-unique name detected 2 times", hence the `cfg_` prefix. And `jrl`
+cannot parse or evaluate a screw joint at all, so `src/helix_arm/robot.py` follows the soft arm's
+shim pattern — no `super().__init__()`, and every jrl method we do not implement raises
+`NotImplementedError` naming why. `RationalForwardKinematics` refusing this arm is **not** a test:
+it keys on the joint *type*, so it refuses `helix7_p000` just as readily and distinguishes nothing.
+
+**Measured on the laptop, before anything was queued.** Torch FK against Drake 4.4e-16 position and
+1.3e-15 rotation, every link frame under 1e-12; all twelve AutoDiffXd constraint gradient blocks
+within 5.2e-10 of central differences; `X_ee_flow` exactly the identity; paired start
+`|q(start) - q_init| = 0.0` on all four rungs; 54.1-54.7% of uniform draws collision-free;
+acceptance at inset 0.10 of **0.31-0.39% grasp and 0.33-0.34% pose**, inside the rigid arms' band
+(0.55-0.68% and 0.23-0.37%), at 465-588 draws per target, with `P(trip)` zero at the fielded
+`MAX_CONSECUTIVE_REJECTIONS = 50000`. Acceptance falls monotonically with pitch on the grasp row,
+which is the stroke carrying more of the configuration box out of the shelves. The dataset builder,
+a 200-step training smoke and the export round trip all run clean.
+
+**What is wired and not run.** `stage_HELIX` (status-quo-shaped: 2 experiments x 2 protocols x 3
+solvers, 12 logical runs, 180 s, seed 1, refusing any other cap), `stage_HELIXCHART` (`nb_nodes`
+4/6/8 on the primary, IPOPT only) and `stage_HELIXPITCH` (4 pitches, IPOPT only), all self-tested;
+`cluster/HELIX_ARM_RUNBOOK.md` is the operational half. **Separate stages, never entries in
+`ADOPTED_RUNGS`** — the status quo is accepted work and this robot is not. The fielded rung is
+**pre-registered at `nb_nodes = 6`**, the Panda's adopted rung, this being a 7-DoF arm; 4 and 8 are
+reported, never selected from. **The pitch rungs do not pair**: the stroke changes the reachable
+set, so each draws its own grid and its `grid_hash` differs by design — compare by target-level
+success rate with a bootstrap CI over targets, and keep McNemar within a rung, between the arms.
+
+**Cost, to decide before launching.** Each pitch is a different robot, so the full ladder is **4
+datasets and 6 training runs**; narrowing to `{p000, p050}` is 2 and 2 and still answers the control
+question, at one dose instead of three. **Build datasets one at a time** — ikflow's end-of-run
+summary scans the shared cache directory, so a concurrent sibling's half-written tensor makes a
+finished job exit 1 with its data correct on disk and its `.DONE` sentinel missing, which
+`train_flow.sh` hard-fails without. And **run a cap ladder (45 / 180 / 360 s) before reporting any
+verdict**, per the record's own precedent.
+
+**The curvilinear rail is deferred, not dropped.** `<drake:joint type="curvilinear">` parses in the
+pinned build with finite limits. Two things to know on return: on each piece the map is algebraic (a
+circular arc is a revolute joint about the arc centre, relabelled), so the non-algebraicity is
+global rather than pointwise; and Drake's trajectory is planar and piecewise line-and-arc only,
+which matches every real curved track and admits no clothoid or spline.
+
 ## Running on MIT SuperCloud (`cluster/`)
 
 `cluster/README.md` is the playbook and `~/.claude/skills/supercloud/SKILL.md` carries the standing
@@ -1318,6 +1423,10 @@ cheapness.
 **The rescue rate is the quantity the success counts hide: 82-99% on every row** (see the table
 under "Headroom and the rescue rate"). Containment is what makes that matter, leaving 157-263
 joint-space failures available to rescue.
+
+**A third robot is in flight on branch `non-analytic-arm`** — `helix7`, a 7-DoF arm with a
+helical joint, which no algebraic method can chart. The infrastructure is built and
+self-tested; nothing is measured and nothing is submitted. See "The helical-joint arm".
 
 Thomas's roadmap (2026-09-04), with status: **(1) iiwa checkpoint training — DONE**, the
 reduced-capacity ladder is trained, measured and has a selection rule; **(2) SNOPT and NLOPT —
