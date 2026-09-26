@@ -193,20 +193,28 @@ baseline getting more expensive, never as the learned arm getting cheaper.
 (334/334) and SNOPT (303/303), and 51 against 52 under NLopt, so protocol differences are
 attributable to the learned arm alone.
 
-**THE PAIRED PROTOCOL COSTS THE LEARNED ARM 41 TO 86 CELLS, AND THE PAIRED ROWS ARE EXACTLY
-THE ROWS WITH `median_clip_distance` 1.39.** Native rows clip 0.00 and paired rows clip 1.39
-on all three solvers; `median_start_q_error` is 0.0 on the paired rows, so the arm represents
-`q_init` exactly and something is projected afterwards. The learned arm's ONLY bounding box is
-`correction` at +-0.1 (`LatentBoxConstraint` is a general linear constraint, verified, and the
-`c` box is `AddLinearConstraint`), and 1.39 / sqrt(12) = 0.40 per coordinate. So the paired
-start appears to need a correction the box forbids, IPOPT projects it at iterate 0, and the
-cells are lost.
+**The paired protocol costs the learned arm 41 to 86 cells on every solver** (IPOPT 477 ->
+436, SNOPT 479 -> 393, NLopt 358 -> 325), while the joint-space arm is unmoved (334/334,
+303/303, 51/52). So the protocol effect belongs entirely to the learned arm, and it is larger
+here than the record's largest rigid-arm protocol effect under IPOPT (476 -> 471).
 
-That is the project's own forbidden pattern -- *a region an initial guess may violate must be
-a general constraint, never a variable bound* -- appearing on a box that was safe on both rigid
-arms, where the paired start's correction is 0. **It is a formulation question and therefore
-Thomas's**: `correction_bound` and the +-0.1 box are a stated part of the learned formulation.
-Confirming it needs one measurement -- the correction vector at the start, before projection.
+**It is NOT a clipping defect, and `median_clip_distance` 1.39 does not mean anything was
+clipped.** `clip_distance` is `c_clip_distance + z_clip_distance`
+(`src/generic_program.py:1139-1157`): the distance of the unprojected `c` and `z` from their
+REGIONS. Both regions are general linear constraints, not variable bounds, so IPOPT never
+projects them -- the number is a diagnostic of how far outside its region the start sits, and
+the comment at `:1152-1154` calling it "how far the solver's own projection will move the first
+iterate" is stale for the non-legacy path. Measured directly: at the paired start the
+correction is **0 to machine precision** on every seed tried, `|z|` is inside the region on an
+untrained chart, and `median_start_q_error` is 0.0 on every paired row -- the arm represents
+`q_init` exactly and keeps doing so. On the trained chart the smoke recorded `start_z_norm`
+7.18, and `z_box` is +-5 per component, so a componentwise excess summing to ~1.39 is exactly
+what the diagnostic should read.
+
+So the paired penalty is the DESIGNED behaviour the record describes -- the arm starts outside
+the latent region and the solver walks it in -- not a bound projecting a start it should not.
+What is worth reporting is its SIZE on this robot relative to the rigid arms, which is a
+result about the soft arm, not a bug.
 
 NLopt's joint-space column is at 51-52 of 480 with `median_max_violation` **1.37e-01**, which
 is the record's augmented-Lagrangian collapse reproduced on a third robot.
