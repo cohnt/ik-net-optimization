@@ -304,8 +304,14 @@ class SoftArmMugProgram(SoftArmIKProgram):
     """Learned formulation, grasp task: the gripper on the mug's axis, orientation free."""
 
     def __init__(self, diagram, options=ProgramOptions(), rung="soft12", model=None,
-                 checkpoint=None):
-        super().__init__(diagram, options, rung, model, checkpoint)
+                 checkpoint=None, fk="analytic", surrogate=None):
+        ## `fk`/`surrogate` are FORWARDED, not defaulted here. The benchmark driver passes
+        ## `fk=args.fk` to whichever class the task selects, so an override that dropped
+        ## them made the grasp task a TypeError at construction -- every mug item of stage
+        ## SOFT12 died in 58 s while the pose items ran, i.e. half a campaign lost to a
+        ## signature that only the other half exercised.
+        super().__init__(diagram, options, rung, model, checkpoint, fk=fk,
+                         surrogate=surrogate)
         ## The flow conditions on the arm's tip; the grasp acts between the fingers.
         self.ee_frame = self.frame
         self.frame = self.plant.GetFrameByName("between_fingers")

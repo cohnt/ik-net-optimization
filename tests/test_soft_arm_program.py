@@ -193,7 +193,35 @@ def test_verification_q_is_exact_under_a_learned_forward_model():
     print("PASS verify() grades on exact kinematics even when the forward model is wrong")
 
 
+def test_every_program_accepts_what_the_driver_passes():
+    """The four classes must take the SAME constructor keywords.
+
+    `scripts/soft_arm/soft_arm_benchmark.py` picks the class from `--task` and then calls it
+    with one fixed keyword set, so a keyword only one branch accepts is a TypeError on the
+    other -- raised at construction, before the first cell, and therefore an item that dies
+    in under a minute rather than a column of bad numbers. Stage SOFT12 lost all 80 of its
+    grasp items that way while the 80 pose items ran, because `SoftArmMugProgram.__init__`
+    overrode the signature and dropped `fk`/`surrogate`.
+
+    Signature introspection rather than construction on purpose: it needs no scene and no
+    checkpoint, so it runs everywhere and cannot be skipped into uselessness.
+    """
+    import inspect
+
+    from src.soft_arm_program import SoftArmMugProgramNumerical
+
+    ## Exactly what the driver passes, plus the two that only the base class had.
+    required = {"diagram", "options", "rung", "model", "checkpoint", "fk", "surrogate"}
+    for cls in (SoftArmIKProgram, SoftArmMugProgram,
+                SoftArmIKProgramNumerical, SoftArmMugProgramNumerical):
+        params = inspect.signature(cls.__init__).parameters
+        missing = required - set(params) - {"diagram"}
+        assert not missing, f"{cls.__name__}.__init__ does not accept {sorted(missing)}"
+    print("PASS all four soft-arm programs accept the driver's keyword set")
+
+
 if __name__ == "__main__":
+    test_every_program_accepts_what_the_driver_passes()
     test_gradients_match_central_differences()
     test_paired_start_is_exact()
     test_config_is_a_memo_hit()
