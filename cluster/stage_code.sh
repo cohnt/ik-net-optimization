@@ -84,13 +84,41 @@ sc_run "mkdir -p ~/$SC_ROOT/repo ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/
 ## This bit on 2026-09-10: iiwa14_n4's step-620000 export lived only on the cluster,
 ## a routine stage_code run deleted it, and the queued benchmark would have hit a
 ## missing checkpoint. models/ is NOT excluded (see the header), so it needs this.
+## What is never staged. rsync reads the WORKING TREE, not git, so .gitignore has NO
+## effect here -- anything present locally is pushed unless it is named below. That is
+## how `.venv-soromox` reached the cluster and stayed there: the JAX oracle venv was
+## committed by accident, then removed from history and gitignored, and none of that
+## touched the cluster, because none of it is something rsync reads. It cost 621 MB of
+## Lustre and about eleven minutes of every stage until it was named here (2026-09-26).
+##
+## An --exclude ALSO protects the path from --delete, so adding one stops future pushes
+## but does NOT remove a copy already on the cluster. That needs an explicit rm.
+EXCLUDES=(
+    '.git/' '.git' '.claude/' '.venv/' '.venv-soromox/'
+    'results/' 'logs/' 'notebooks/artifacts/'
+    '__pycache__/' '*.pyc' '.pytest_cache/'
+    'workshop-paper-draft.pdf'
+)
+
+## STAGE_EXTRA_EXCLUDES adds to the list for one run, space-separated:
+##   STAGE_EXTRA_EXCLUDES='models/panda/ scratch.npz' bash cluster/stage_code.sh
+## Same warning as above: an exclude added here suppresses the PUSH and the DELETE, so
+## it holds whatever is on the cluster frozen rather than removing it.
+if [ -n "${STAGE_EXTRA_EXCLUDES:-}" ]; then
+    read -r -a _EXTRA_EXCLUDES <<< "$STAGE_EXTRA_EXCLUDES"
+    EXCLUDES+=("${_EXTRA_EXCLUDES[@]}")
+fi
+
+EXCLUDE_ARGS=()
+for _e in "${EXCLUDES[@]}"; do
+    [ -n "$_e" ] && EXCLUDE_ARGS+=("--exclude=$_e")
+done
+echo "excluding: ${EXCLUDES[*]}"
+
 sc_rsync -az --delete \
     --filter='P models/*/*__step*.pkl' --filter='P models/*/*__step*.arch.json' \
     --filter='P models/*/*__global_step*.pkl' --filter='P models/*/*__global_step*.arch.json' \
-    --exclude='.git/' --exclude='.git' --exclude='.claude/' --exclude='.venv/' \
-    --exclude='results/' --exclude='logs/' --exclude='notebooks/artifacts/' \
-    --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' \
-    --exclude='workshop-paper-draft.pdf' \
+    "${EXCLUDE_ARGS[@]}" \
     "$REPO_ROOT/" "$SC_DEST:$SC_ROOT/repo/"
 
 sc_run "echo $COMMIT > ~/$SC_ROOT/repo/.staged-commit
