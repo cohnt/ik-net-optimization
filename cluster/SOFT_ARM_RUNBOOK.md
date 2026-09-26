@@ -117,3 +117,51 @@ Accuracy over training (median tip error, mm): 9.40 (20k) / 4.77 (100k) / 3.62 (
 Queue handoff worked as predicted: on release, `5733053` (the soft9 dataset re-run) claimed
 nodes ahead of the chained `5733055 soft12_n4`, which is what its lower job ID buys. Nothing
 had to be resubmitted.
+
+## Run record: stage SOFT12 lost its grasp half (2026-09-25)
+
+**What happened.** Job 5737149, the two-item smoke, exited 1. Its pose item ran and wrote a
+summary; its grasp item died in 58 s with
+
+```
+TypeError: SoftArmMugProgram.__init__() got an unexpected keyword argument 'fk'
+```
+
+The stage is chained `afterany` on the smoke, so 5737163-66 started anyway and the same
+failure repeated for every grasp item: **all 80 `mugshelf` items claimed and none completed,
+while all 80 `posetip` items ran normally.** Half a campaign, from one constructor.
+
+**The bug.** `SoftArmMugProgram.__init__` overrode the base signature and dropped `fk` and
+`surrogate`. `scripts/soft_arm/soft_arm_benchmark.py` picks the class from `--task` and then
+calls it with one fixed keyword set including `fk=args.fk`, so only the grasp branch raised.
+It was in the tree from the moment `--fk` was plumbed in; the existing `--fk` test exercised
+the pose program only, which is exactly why it survived. Fixed in `197e636`, with
+`test_every_program_accepts_what_the_driver_passes` comparing all four classes' signatures
+against the keyword set the driver passes -- introspection, so it needs neither a scene nor a
+checkpoint and cannot be skipped into uselessness.
+
+**Why this one escaped `_abort_on_dead_arm`.** That guard watches for an arm failing
+identically and in under a second on its first three cells. This failure is at CONSTRUCTION,
+before the first cell, so the item exits non-zero and the guard never runs. The record's rule
+-- an arm whose per-cell wall time is orders below the cap is not solving badly, it is not
+solving at all -- has a companion: **an item that exits in under a minute never solved
+anything, and no per-cell guard will tell you so.** Read `sacct` ExitCode, not just the
+summaries.
+
+**What the smoke would have caught, and when.** The smoke ran at 20:13 and failed by 20:20.
+The stage started immediately behind it and had burned all 80 grasp items within the hour.
+The whole point of a smoke on `afterany` is that a human reads it inside that hour; nobody
+did. Either gate the stage on `afterok`, or accept that the smoke only saves the campaign if
+someone is awake. Note that on this cluster `kill_invalid_depend` is unset, so an `afterok`
+gate leaves the tail PENDING for ever rather than cancelling it -- blocked, but silent.
+
+**Provenance split, which must travel with these rows.** The pose half ran against the tree
+staged as `fd95c783`; the grasp half reruns against `197e636`. The only runtime differences
+are the constructor fix above and a slot-map refactor into `K.PlantSlotMap` that was verified
+behaviour-preserving before the campaign. Note also that `fd95c783` is **not an ancestor of
+HEAD** -- it carried the since-removed `.venv-soromox` and history was rewritten after it, so
+the recorded staged-commit marker is orphaned. Trust the tree comparison, not the marker.
+
+`cluster/manifest_stageSOFT12MUG.txt` is the rerun: the 80 dead items, byte-identical to the
+`mugshelf` lines of `manifest_stageSOFT12.txt`, so tags, shards and grid hashes match the pose
+half already on disk.
