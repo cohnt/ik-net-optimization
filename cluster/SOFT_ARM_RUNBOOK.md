@@ -165,3 +165,48 @@ the recorded staged-commit marker is orphaned. Trust the tree comparison, not th
 `cluster/manifest_stageSOFT12MUG.txt` is the rerun: the 80 dead items, byte-identical to the
 `mugshelf` lines of `manifest_stageSOFT12.txt`, so tags, shards and grid hashes match the pose
 half already on disk.
+
+## The soft arm's first real rows: stage SOFT12, pose half (2026-09-25)
+
+Six logical runs, 480 cells each, 2,880 cells, 180 s, seed 1, `soft12__n6__step620000`, arms
+`learned,numerical`. The grasp half of this stage died at construction (see above) and reruns
+separately. All shards merged cleanly: 8 / 8 / 24 / 24 / 8 / 8.
+
+| solver | start | learned | joint space | exact McNemar | L ms/it | N ms/it | L timeouts |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| IPOPT | native | **477**/480 | 334/480 | 6.5e-42 | 89.8 | 13.8 | 0 |
+| IPOPT | paired | **436**/480 | 334/480 | 1.8e-16 | -- | -- | 3 |
+| SNOPT | native | **479**/480 | 303/480 | 9.3e-52 | 25.5 | 29.3 | 0 |
+| SNOPT | paired | **393**/480 | 303/480 | 9.6e-11 | -- | -- | 0 |
+| NLopt | native | **358**/480 | 51/480 | 2.0e-79 | -- | -- | 126 |
+| NLopt | paired | **325**/480 | 52/480 | 1.0e-69 | -- | -- | 161 |
+
+**The learned arm wins all six rows decisively.** That is the same direction as the record's
+rigid-arm pose rows, where every pose row under every solver is a decisive learned win.
+
+**The per-iteration premium is ~6.5x, not 10-30x** (IPOPT native, 89.8 ms/it against 13.8),
+which is the predicted consequence of this robot's joint-space arm not being free: it places
+231 floating-body positions where the rigid arms' `VarsToQ` is the identity. Report it as the
+baseline getting more expensive, never as the learned arm getting cheaper.
+
+**Harness self-check passes**: the joint-space arm is identical between protocols on IPOPT
+(334/334) and SNOPT (303/303), and 51 against 52 under NLopt, so protocol differences are
+attributable to the learned arm alone.
+
+**THE PAIRED PROTOCOL COSTS THE LEARNED ARM 41 TO 86 CELLS, AND THE PAIRED ROWS ARE EXACTLY
+THE ROWS WITH `median_clip_distance` 1.39.** Native rows clip 0.00 and paired rows clip 1.39
+on all three solvers; `median_start_q_error` is 0.0 on the paired rows, so the arm represents
+`q_init` exactly and something is projected afterwards. The learned arm's ONLY bounding box is
+`correction` at +-0.1 (`LatentBoxConstraint` is a general linear constraint, verified, and the
+`c` box is `AddLinearConstraint`), and 1.39 / sqrt(12) = 0.40 per coordinate. So the paired
+start appears to need a correction the box forbids, IPOPT projects it at iterate 0, and the
+cells are lost.
+
+That is the project's own forbidden pattern -- *a region an initial guess may violate must be
+a general constraint, never a variable bound* -- appearing on a box that was safe on both rigid
+arms, where the paired start's correction is 0. **It is a formulation question and therefore
+Thomas's**: `correction_bound` and the +-0.1 box are a stated part of the learned formulation.
+Confirming it needs one measurement -- the correction vector at the start, before projection.
+
+NLopt's joint-space column is at 51-52 of 480 with `median_max_violation` **1.37e-01**, which
+is the record's augmented-Lagrangian collapse reproduced on a third robot.
