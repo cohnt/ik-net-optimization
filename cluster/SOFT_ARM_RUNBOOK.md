@@ -267,9 +267,17 @@ identity, and it costs 22.4 ms/it against the iiwa's ~2. Under SNOPT the two arm
 of each other per iteration (32.7 against 32.4 native), so on this robot the premium is a
 property of the solver's iteration mix, not a constant.
 
-Cost splits by task exactly as the record's Table 2 does: learned is cheaper on pose and ~1.8x
-more expensive on grasp. `correction_binding` is 0 and `median_start_q_error` is exactly 0 under
-paired on every row, so the harness self-check passes on all twelve.
+**Cost does NOT split by task here, and that is a departure from the record.** On the rigid arms
+Table 2 has the learned arm cheaper on pose and ~1.4-1.8x more expensive on grasp. On this robot
+joint space is cheaper on **nine of the ten comparable rows**, pose included -- IPOPT pose native
+1.37 against 0.55 (2.5x), IPOPT grasp native 0.84 against 0.33 (2.6x), SNOPT pose essentially
+level at 1.02-1.04x. The single row where the learned arm is cheaper is NLopt pose paired (0.85
+against 0.98) on 41 shared cells, which is thin. So on the soft arm the learned formulation buys
+feasibility and pays for it in objective value on both tasks, where on the rigid arms it bought
+pose cost outright. State it as a robot-level difference, not as a task split.
+
+`correction_binding` is 0 and `median_start_q_error` is exactly 0 under paired on every row, so
+the harness self-check passes on all twelve.
 
 ### The two NLopt grasp rows are a FLOOR, not a result
 
