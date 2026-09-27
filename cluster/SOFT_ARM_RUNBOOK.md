@@ -218,3 +218,114 @@ result about the soft arm, not a bug.
 
 NLopt's joint-space column is at 51-52 of 480 with `median_max_violation` **1.37e-01**, which
 is the record's augmented-Lagrangian collapse reproduced on a third robot.
+
+## Stage SOFT12 complete: all twelve logical runs (2026-09-27)
+
+The grasp half landed 2026-09-26/27 (jobs `5745556-58`, `5745563`, 80 items, 8 + 8 + 24 shards
+per protocol pair, all merged cleanly). With the pose half above that is **12 logical runs,
+5,760 solves**, the shape the record's own stage STATUSQUO uses: 2 experiments x 2 protocols x
+3 solvers, 480 cells, 180 s, seed 1, `soft12__n6__step620000`, arms `learned,numerical`.
+
+| solver | task | start | learned | joint space | McNemar (learned / joint discordant) | p | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| IPOPT | pose  | native | **477**/480 | 334/480 | 144 / 1 | 6.5e-42 | LEARNED |
+| IPOPT | pose  | paired | **436**/480 | 334/480 | 132 / 30 | 1.8e-16 | LEARNED |
+| SNOPT | pose  | native | **479**/480 | 303/480 | 177 / 1 | 9.3e-52 | LEARNED |
+| SNOPT | pose  | paired | **393**/480 | 303/480 | 143 / 53 | 9.6e-11 | LEARNED |
+| NLopt | pose  | native | **358**/480 | 51/480 | 318 / 11 | 2.0e-79 | LEARNED |
+| NLopt | pose  | paired | **325**/480 | 52/480 | 284 / 11 | 1.0e-69 | LEARNED |
+| IPOPT | grasp | native | **474**/480 | 445/480 | 33 / 4 | 1.1e-06 | LEARNED |
+| IPOPT | grasp | paired | **468**/480 | 445/480 | 31 / 8 | 0.00029 | LEARNED |
+| SNOPT | grasp | native | 340/480 | 358/480 | 83 / 101 | 0.21 | tie |
+| SNOPT | grasp | paired | 315/480 | **358**/480 | 77 / 120 | 0.0027 | joint space |
+| NLopt | grasp | native | 0/480 | 0/480 | 0 / 0 | 1.0 | floor, no comparison |
+| NLopt | grasp | paired | 2/480 | 0/480 | 2 / 0 | 0.5 | floor, no comparison |
+
+**Learned wins 8, ties 1, loses 1, and two rows carry no comparison.** The single loss is
+**grasp under SQP paired**, which mirrors the rigid arms exactly: the record's only two losses
+across 24 cells are iiwa contained grasp under SQP. A third robot reproducing the same solver x
+task corner is the strongest evidence yet that it is a property of SQP on this problem class
+rather than of a robot.
+
+### The grasp quartet, IPOPT native (441 shared cells)
+
+| | learned | joint space |
+| --- | --- | --- |
+| success | **474**/480 | 445/480 |
+| median reported cost | 0.840 | **0.328** |
+| mean wall (s) | 11.10 | **5.37** |
+| median major iterations | **149** | 320 |
+| median `max_violation` | **5.4e-09** | 1.2e-08 |
+| ms per iteration | 89.0 | 22.4 |
+| timeouts | 5 | 0 |
+
+**The per-iteration premium is 4.0x here (89.0 against 22.4 ms) and the wall-clock premium 2.1x,
+against 14x on the iiwa** -- and CLAUDE.md's prediction for why is confirmed in the direction it
+was made: the baseline got more expensive, not the learned arm cheaper. The joint-space arm
+places 231 floating-body positions per evaluation where the rigid arms' `VarsToQ` is the
+identity, and it costs 22.4 ms/it against the iiwa's ~2. Under SNOPT the two arms are within 13%
+of each other per iteration (32.7 against 32.4 native), so on this robot the premium is a
+property of the solver's iteration mix, not a constant.
+
+Cost splits by task exactly as the record's Table 2 does: learned is cheaper on pose and ~1.8x
+more expensive on grasp. `correction_binding` is 0 and `median_start_q_error` is exactly 0 under
+paired on every row, so the harness self-check passes on all twelve.
+
+### The two NLopt grasp rows are a FLOOR, not a result
+
+Both arms at 0/480 and 2/480, with **478-480 of 480 cells timing out on both arms** and
+`median_max_violation` 3.7e-02 (learned) against 4.7e-02 (joint space) -- roughly 4 cm, so
+neither arm is near a solution when the clock stops. This is the record's iiwa pattern
+reproduced on a third robot: "rows where both arms sit at the floor carry no comparison and no
+cost column". Report them as printed rows with no verdict; an omitted row reads as missing data.
+
+**The cap rule is NOT satisfied on these two rows and must not be quoted as if it were.** Both
+arms are 100% cap-bound, which is exactly the condition under which the rule says to raise the
+cap and re-measure rather than conclude. The record's NLopt precedent says the likely answer is
+that more wall clock buys nothing, because the augmented Lagrangian's inner solve never
+terminates -- but that precedent was established by RUNNING the cap arm, not by assuming it. A
+45 / 180 / 360 s ladder on `nlopt grasp native` is the outstanding measurement before these two
+rows are written up as anything at all.
+
+## The chart ladder's pole screens: an OOD-only anomaly (2026-09-27)
+
+All three `soft12` rungs finished 620k steps (`n6` job 5732986, `n4` 5733055, `n8` 5733056,
+exports rc=0). The two screens disagree by eight orders of magnitude on one rung and agree on
+the other two, which is worth recording because it looks like a bad chart and is not.
+
+| rung | gain ceiling | in-distribution `pole/max` | frac > 345 | in-training (OOD) `pole/max` | OOD frac > 1000 | `val_l2_error` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `n4` | 2.2e4 | 7.99 | 0.0 | 40.1 | 0.0 | 5.34 mm |
+| `n6` | 3.2e6 | 5.44 | 0.0 | **2.44e8** | **0.0198** | 4.04 mm |
+| `n8` | 4.8e8 | 4.56 | 0.0 | 5.51 | 0.0 | 2.76 mm |
+
+**On the in-distribution screen the ladder is clean and monotone**: `pole/max` falls 7.99 ->
+5.44 -> 4.56 with depth, every rung is two orders below its own threshold of 345, and
+`frac_gt_threshold` is 0.0 everywhere. Accuracy is the usual monotone dose curve, improving
+with depth.
+
+**The anomaly is confined to the in-training callback, and there it is non-monotone in the gain
+ceiling**: `n6` ends at 2.44e8 with 2% of draws past 1000 while `n8`, whose ceiling is 150x
+higher, sits at 5.51 and never climbed -- flat at ~5 from step 20k onward. `n6` was already at
+7.6e6 at its first evaluation. A ceiling bounds a chart; it does not predict where inside the
+bound one lands, and on this robot two rungs used almost none of theirs while the middle one
+used most of its own.
+
+**The resolution is the domain, not the chart.** CLAUDE.md's "two pole screens, two domains"
+section already names the mechanism: the fork's callback draws position in the iiwa's box and
+orientation INDEPENDENTLY from `RollPitchYaw(uniform(-pi, pi, 3))`, and `soft12` has no torsion,
+so tip orientation is not free given tip position and an independently drawn orientation is
+essentially never reachable. The callback is therefore evaluating all three charts almost
+entirely out of distribution, and 2.44e8 is a statement about unreachable poses.
+
+**Quote the in-distribution row.** The in-training curve stays useful as a within-run trend and
+as the thing that would catch a chart diverging mid-run; its LEVEL is not a property of the
+chart. Neither screen predicts cells in any case -- that is closed -- so this is a labelling
+hazard, not a measurement one. Closing the gap means passing the domain into the fork's
+callback, which cannot be done while jobs are queued, since staging is refused under a live
+campaign.
+
+**What the ladder does NOT yet say** is anything about cells. `n4` and `n8` are trained and
+exported but not benchmarked; the fielded rung stays the pre-registered `n6`, and stage
+SOFTCHART is what turns the ladder into a measurement. Selecting a rung on these screens would
+be selecting on a criterion the project has already measured to be uninformative.
