@@ -329,3 +329,26 @@ campaign.
 exported but not benchmarked; the fielded rung stays the pre-registered `n6`, and stage
 SOFTCHART is what turns the ladder into a measurement. Selecting a rung on these screens would
 be selecting on a criterion the project has already measured to be uninformative.
+
+## Run record: `soft9_n6`, the first DOF-ladder rung (2026-09-27)
+
+Job `5733057`, 14:00:16 wall on 4 nodes x 8 ranks, 620k steps at 11.9 steps/s, export rc=0 at
+14:32:44, 30 checkpoints with sidecars. `val_l2_error` 3.23 mm. `soft16_n6` (`5733058`) took the
+nodes automatically on the `afterany` dependency.
+
+| screen | `pole/max` | `frac > thr` | p50 | p99 |
+| --- | --- | --- | --- | --- |
+| in-distribution (radius 4.5 = sqrt(9)+1.5, threshold 345) | 5.80 | 0.0 | 1.01 | 2.27 |
+| in-training callback (OOD) | 13.09 | 0.0 | 1.17 | 4.88 |
+
+Median tip error over held-out poses is **2.02 mm**, the most accurate rung in the push so far
+(`soft12_n6` is 2.74 mm). Fewer DOF, less redundancy, an easier map -- and by the record's own
+finding that accuracy runs BACKWARDS to cells, this predicts nothing about the benchmark.
+
+**A mid-training transient that must not be read as a result.** At 60k steps this rung's
+in-training (OOD) screen stood at `pole/max` 5.6e7 with `frac_gt_1000` 0.011, which looked like
+`soft12_n6`'s excursion reproducing on a second `nb_nodes=6` run. It is not: by 620k the same
+screen reads 13.09 with `frac_gt_1000` **0.0**. The excursion resolved during training.
+`soft12_n6` remains the only rung that FINISHES high on the OOD screen, and the general lesson
+is that the in-training callback's level is not even monotone within a run, which is a further
+reason to quote the standalone screen and read the callback only as a trend.
