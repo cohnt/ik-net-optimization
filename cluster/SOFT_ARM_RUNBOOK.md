@@ -3,7 +3,7 @@
 What is queued, what it depends on, and what a resuming session should check first. The
 design and the measured facts live in `CLAUDE.md`; this is the operational half.
 
-## STATE AS OF 2026-09-28 11:08 -- READ THIS FIRST ON RESUME
+## STATE AS OF 2026-09-28 11:55 -- READ THIS FIRST ON RESUME
 
 The session that queued all of this was paused here deliberately. **Nothing needs a human or an
 agent to advance; the whole remaining chain is expressed in Slurm dependencies and will run to
@@ -23,22 +23,50 @@ updated; the `max_iter` caveat is recorded and Thomas ruled on 2026-09-28 to re-
 
 STILL RUNNING -- the only live work:
 
-* **SOFTCAP** (`5752635-38`), the NLopt grasp cap ladder at 90 / 180 / 360 s. 192 items.
-  Readings: **17 done / 49 claimed at 09:24**, **32 / 64 at 10:05**, unchanged at 10:11,
-  **39 / 71 at 11:08**.
-  Claimed-minus-done is always ~32 (= 4 jobs x 8 workers), so a gap of 32 is work in flight and
-  NOT a stall; items take 1-4 h, so compare readings an hour or more apart before suspecting one.
+* **SOFTCAP** (`5752635-38`), the NLopt grasp cap ladder. **The 360 s rung was RETIRED at
+  11:55 on Thomas's call**, so the stage now delivers a **two-point ladder at 90 and 180 s**.
 
-  **Do not extrapolate the early rate.** 15 items in those 41 minutes is ~22/h, which would put
-  the drain near 17:20, but the manifest deliberately mixes caps and shard counts: the 90 s rung
-  is sharded 24 ways and the 360 s rung 48, so a 360 s shard is ~4 h against a 90 s shard's ~1 h.
-  The cheap shards finish first, so throughput FALLS as the ladder's top rung comes to dominate.
+  | rung | items | state |
+  | --- | --- | --- |
+  | 180 s | 48 | **complete**, and it is the same-configuration reproducibility control against SOFT12 |
+  | 90 s | 48 | queued, runs as workers come free |
+  | 360 s | 96 | 19 done, 32 finishing, **45 blocked and never run** |
 
-  **Measured, and it confirms the falling rate: 7 items in the 57 minutes to 11:08, i.e. ~7.4/h
-  against the first hour's ~22/h.** 153 items remain, 32 in flight, and what is left is dominated
-  by the 360 s rung's ~4 h shards -- about five more waves. So **SOFTCAP does not drain today;
-  expect tomorrow morning, 2026-09-29.** That is the estimate to plan against, and it is still a
-  lower bound in the same direction as before.
+  **Why retired.** Both NLopt grasp rows sit at 0/480 and 2/480 with 478-480 cells cap-bound on
+  BOTH arms and median `max_violation` ~4 cm, so the row carries no verdict until the cap moves --
+  that is what the stage is for. But the record predicts the floor holds: the iiwa grasp rows are
+  0-3 of 60 under *every* NLopt setting and at 180 s, and 4 cm is not a solve about to converge.
+  Against that, the 360 s rung is half the stage and ~8-10 h, and the screw-joint arm's five-rung
+  training campaign is queued behind these four jobs on `afterany`. Thomas took the 90/180
+  comparison and gave the nodes back.
+
+  **How, and this is the part worth reusing.** Not `scancel`: the 90 s items sit at manifest lines
+  145-192, BEHIND all 96 of the 360 s items (`CAP_SWEEP` is `(90, 180, 360)` but the manifest came
+  out ordered 180, 360, 90), so cancelling would have left 180 s alone -- one cap, no ladder -- and
+  a resubmission of the 90 s rung would have queued behind ~5 days of screw-joint training.
+  Instead `cluster/retire_stage.sh manifest_stageSOFTCAP --skip 360 --yes` pre-created the
+  **claims** on the 45 un-run 360 s items, which is what `run_items.sh` tests before taking an
+  item, so the jobs already running step over that block and carry on to the 90 s rung with no
+  resubmission and no queue wait. Claims, not `.done` markers: a claim never inflates the done
+  count and is the documented dead-item state, so `--status` stays honest about what ran.
+  Reversible with `collect_results.sh --reclaim manifest_stageSOFTCAP` once no job is active.
+
+  **What to expect.** Workers reach the 90 s rung as each finishes its current 360 s item (up to
+  ~4 h), then 48 cheap items at up to 32 concurrent, so **the stage should exhaust its manifest
+  and the jobs exit this evening**, releasing `afterany` and starting the screw-joint chain. Final
+  state will be ~147 done of 192 with 45 blocked -- that shortfall is the retirement, not a
+  failure.
+
+  **The 51 completed 360 s items are NOT a row.** Shards are target-major and neither protocol's
+  shard set completes, so they cannot be merged into a 480-cell row. They stay on disk; do not
+  report them as a 360 s column.
+
+  Readings, for rate intuition: 17 done / 49 claimed at 09:24, 32 / 64 at 10:05, 39 / 71 at 11:08,
+  67 / 99 at 11:55. **Do not extrapolate a single rate** -- the 09:24-11:08 window was the cheap
+  180 s rung draining and read as ~7-22 items/h, which badly misled a 20 h estimate for work that
+  was really ~8-10 h. Derive the remaining time from the PER-RUNG breakdown
+  (`retire_stage.sh <manifest> --groups 90,180,360`), never from a done-count slope.
+
 * **The screw-joint arm** (`5738845` smoke, `5738846-50` training), another agent's work, PENDING
   on `afterany:5752635:5752636:5752637:5752638`. It fires on its own when SOFTCAP drains. Do not
   touch it. Its owner watches for its own `afterok` hazard (a failed smoke leaves the five rungs

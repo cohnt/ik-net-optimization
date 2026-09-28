@@ -9,6 +9,8 @@
 #
 #   cluster/retire_stage.sh <manifest> [--groups a,b,c]         DRY RUN: report only
 #   cluster/retire_stage.sh <manifest> [--groups a,b,c] --yes   actually scancel
+#   cluster/retire_stage.sh <manifest> --skip <substr>          DRY RUN: what --skip would block
+#   cluster/retire_stage.sh <manifest> --skip <substr> --yes    block that group, jobs keep running
 #
 # <manifest> is a name under cluster/, with or without the .txt (e.g.
 # manifest_stageSOFTCAP). --groups takes substrings of item ids and reports
@@ -42,12 +44,28 @@
 # items later, `collect_results.sh --reclaim <manifest>` clears the dead claims
 # and resubmitting the same manifest picks them up.
 #
-# DO NOT instead pre-create `.done` markers for the items you want skipped. It
-# is tempting -- workers skip a marked item cleanly and the jobs exit by
-# themselves -- but it makes the state lie: the stage would read 192/192 done
-# with half its summaries missing, and a later reader could not tell a retired
-# item from a finished one. A `.done` that means "never ran" is precisely the
-# check that silently stops running.
+# --skip IS THE OTHER HALF, and it is usually the better one. Cancelling ends the
+# jobs, which releases any Slurm dependency waiting on them and hands the nodes
+# to whatever is queued next -- so if you only want to abandon PART of a stage,
+# cancelling is too blunt: the items you still wanted may sit later in the
+# manifest than the ones you are dropping, and a resubmission goes to the back of
+# the queue. --skip instead blocks a group of items IN PLACE, so the jobs already
+# running step over that block and carry straight on to the rest of the manifest.
+#
+# The mechanism is the claim, not the done marker. run_items.sh skips an item
+# whose `<id>.claim` it cannot create, so pre-creating claims on the un-run items
+# of a group steers every running worker past them. It is deliberately NOT done
+# with `.done` markers, even though those would also skip: a `.done` would make
+# the stage read 192/192 with half its summaries missing, and a later reader could
+# not tell a retired item from a finished one -- a `.done` that means "never ran"
+# is precisely the check that silently stops running. A claim with no done is the
+# opposite: it is the documented dead-item state, it never inflates the done
+# count, and `collect_results.sh --reclaim <manifest>` clears it if the group is
+# ever wanted after all. Each blocked claim gets an `owner` file saying who
+# blocked it and when, so it cannot be mistaken for a worker that died.
+#
+# --skip does NOT stop items already in flight. A worker mid-item finishes it
+# first, so the steering takes effect per worker as each one comes free.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,17 +74,19 @@ source "$HERE/ssh_common.sh"
 
 MANIFEST=""
 RS_GROUPS=""
+SKIP_GROUP=""
 CONFIRM=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --groups) RS_GROUPS="${2:?--groups needs a comma-separated list}"; shift 2 ;;
+        --skip)   SKIP_GROUP="${2:?--skip needs an item-id substring}"; shift 2 ;;
         --yes)    CONFIRM=1; shift ;;
         -*)       echo "retire_stage.sh: unknown flag $1" >&2; exit 2 ;;
         *)        [ -z "$MANIFEST" ] || { echo "retire_stage.sh: one manifest only" >&2; exit 2; }
                   MANIFEST="$1"; shift ;;
     esac
 done
-[ -n "$MANIFEST" ] || { echo "usage: retire_stage.sh <manifest> [--groups a,b,c] [--yes]" >&2; exit 2; }
+[ -n "$MANIFEST" ] || { echo "usage: retire_stage.sh <manifest> [--groups a,b,c] [--skip s] [--yes]" >&2; exit 2; }
 
 STEM="${MANIFEST%.txt}"
 LOCAL_MANIFEST="$HERE/$STEM.txt"
@@ -81,7 +101,7 @@ REMOTE=$(cat <<REMOTE_EOF
 set -u
 cd "\$HOME/$SC_ROOT" 2>/dev/null || { echo "NOROOT"; exit 0; }
 echo "---MINE---"
-squeue -h -u "\$USER" -n "$JOB_NAME" -o '%i %j %T %M' 2>/dev/null
+squeue -h -u "\$USER" -n "$JOB_NAME" -o '%i %j %T elapsed=%M left=%L limit=%l' 2>/dev/null
 echo "---OTHERS---"
 squeue -h -u "\$USER" -o '%i %j %T' 2>/dev/null | grep -v " $JOB_NAME " || true
 echo "---STATE---"
@@ -91,9 +111,15 @@ if [ -d "state/$STEM" ]; then
     echo "DONE=\$(wc -l < /tmp/.rs_done.\$\$) CLAIM=\$(wc -l < /tmp/.rs_claim.\$\$)"
     echo "---DONEIDS---"; cat /tmp/.rs_done.\$\$
     echo "---CLAIMIDS---"; cat /tmp/.rs_claim.\$\$
+    ## A claim this script blocked carries a BLOCKED owner file. Separating those
+    ## from live claims matters: otherwise a block is indistinguishable from a
+    ## worker mid-solve, which is the confusion the owner file exists to prevent.
+    echo "---BLOCKEDIDS---"
+    grep -l 'BLOCKED by' state/$STEM/*.claim/owner 2>/dev/null \
+        | sed 's|.*/\([^/]*\)\.claim/owner|\1|' || true
     rm -f /tmp/.rs_done.\$\$ /tmp/.rs_claim.\$\$
 else
-    echo "DONE=0 CLAIM=0"; echo "---DONEIDS---"; echo "---CLAIMIDS---"
+    echo "DONE=0 CLAIM=0"; echo "---DONEIDS---"; echo "---CLAIMIDS---"; echo "---BLOCKEDIDS---"
 fi
 REMOTE_EOF
 )
@@ -107,6 +133,8 @@ MINE="$(Section MINE)"
 OTHERS="$(Section OTHERS)"
 DONE_IDS="$(Section DONEIDS)"
 CLAIM_IDS="$(Section CLAIMIDS)"
+BLOCKED_IDS="$(Section BLOCKEDIDS)"
+NBLOCK=$(printf '%s\n' "$BLOCKED_IDS" | grep -c . || true)
 NDONE=$(printf '%s\n' "$DONE_IDS" | grep -c . || true)
 NCLAIM=$(printf '%s\n' "$CLAIM_IDS" | grep -c . || true)
 NITEMS=$(grep -cvE '^[[:space:]]*(#|$)' "$LOCAL_MANIFEST")
@@ -114,12 +142,13 @@ NITEMS=$(grep -cvE '^[[:space:]]*(#|$)' "$LOCAL_MANIFEST")
 echo "stage        : $STEM"
 echo "job name     : $JOB_NAME   (the ONLY name this script can cancel)"
 echo "manifest     : $NITEMS items"
-echo "state        : $NDONE done, $NCLAIM claimed  ($((NCLAIM - NDONE)) in flight)"
+echo "state        : $NDONE done, $NCLAIM claimed  ($((NCLAIM - NDONE - NBLOCK)) in flight,"\
+"" " $NBLOCK blocked by a previous --skip)"
 echo
 
 if [ -n "$RS_GROUPS" ]; then
     echo "per-group state (a group is a substring of an item id):"
-    printf '  %-10s %7s %7s %7s\n' group items done "in flight"
+    printf '  %-10s %7s %7s %9s %8s\n' group items done "in flight" blocked
     ## NOT named GROUPS. `GROUPS` is a bash SPECIAL variable -- an array of the
     ## invoking user's group ids -- and bash ignores assignments to it while
     ## keeping its own value, so `--groups 90,180,360` silently became the
@@ -132,9 +161,75 @@ if [ -n "$RS_GROUPS" ]; then
         gi=$(grep -vE '^[[:space:]]*(#|$)' "$LOCAL_MANIFEST" | cut -d'|' -f1 | grep -c "_${g}_" || true)
         gd=$(printf '%s\n' "$DONE_IDS"  | grep -c "_${g}_" || true)
         gc=$(printf '%s\n' "$CLAIM_IDS" | grep -c "_${g}_" || true)
-        printf '  %-10s %7s %7s %7s\n' "$g" "$gi" "$gd" "$((gc - gd))"
+        gb=$(printf '%s\n' "$BLOCKED_IDS" | grep -c "_${g}_" || true)
+        printf '  %-10s %7s %7s %9s %8s\n' "$g" "$gi" "$gd" "$((gc - gd - gb))" "$gb"
     done
     echo
+fi
+
+## --- --skip: block a group in place, leaving the jobs running -----------------
+if [ -n "$SKIP_GROUP" ]; then
+    ## Split the manifest's ids for this group three ways against live state. Only
+    ## the third set is touched: an item already done keeps its result, and an item
+    ## already claimed is IN FLIGHT and must never be disturbed -- stealing a live
+    ## claim is the one thing the claim design exists to prevent.
+    ALL_IDS="$(grep -vE '^[[:space:]]*(#|$)' "$LOCAL_MANIFEST" | cut -d'|' -f1 | grep "_${SKIP_GROUP}_" || true)"
+    if [ -z "$(printf '%s' "$ALL_IDS" | tr -d '[:space:]')" ]; then
+        echo "REFUSING: no item id in $STEM contains \"_${SKIP_GROUP}_\"."
+        echo "(--skip takes a substring of an item id, e.g. a cap: --skip 360)"
+        exit 3
+    fi
+    TO_BLOCK=""
+    n_all=0; n_done=0; n_live=0; n_block=0
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        n_all=$((n_all + 1))
+        if printf '%s\n' "$DONE_IDS" | grep -qxF "$id"; then
+            n_done=$((n_done + 1))
+        elif printf '%s\n' "$CLAIM_IDS" | grep -qxF "$id"; then
+            n_live=$((n_live + 1))
+        else
+            n_block=$((n_block + 1)); TO_BLOCK="$TO_BLOCK$id"$'\n'
+        fi
+    done <<< "$ALL_IDS"
+
+    echo "--skip $SKIP_GROUP"
+    echo "  $n_all item(s) match, of which:"
+    echo "    $n_done already done      -- left alone, their results stand"
+    echo "    $n_live already claimed   -- IN FLIGHT, left alone; each finishes first"
+    echo "    $n_block unclaimed         -- these get a blocking claim"
+    echo
+    echo "Effect: every running worker steps over the blocked items as it comes free"
+    echo "and carries on to the rest of $STEM. The jobs are NOT cancelled, so no Slurm"
+    echo "dependency is released early. Reversible with:"
+    echo "  cluster/collect_results.sh --reclaim $STEM   (once no job is active)"
+    echo
+    if [ "$n_block" = 0 ]; then
+        echo "Nothing to block. No change needed."; exit 0
+    fi
+    if [ "$CONFIRM" != 1 ]; then
+        echo "DRY RUN. Nothing was blocked. Re-run with --yes to act."; exit 0
+    fi
+    WHO="retire_stage.sh --skip $SKIP_GROUP on $(hostname) at $(date -Is)"
+    BLOCKED="$(printf '%s' "$TO_BLOCK" | sc_run "
+        set -u
+        cd \"\$HOME/$SC_ROOT/state/$STEM\" || { echo 'NOSTATE'; exit 0; }
+        n=0
+        while IFS= read -r id; do
+            [ -n \"\$id\" ] || continue
+            ## mkdir is the same atomic claim a worker uses, so a worker that grabs
+            ## this item in the same instant wins and we simply do not block it.
+            if mkdir \"\$id.claim\" 2>/dev/null; then
+                printf '%s\n' \"BLOCKED by $WHO -- this item was never run\" > \"\$id.claim/owner\"
+                n=\$((n + 1))
+            fi
+        done
+        echo \"BLOCKED=\$n\"
+    ")" || { echo "retire_stage.sh: blocking ssh failed" >&2; exit 1; }
+    case "$BLOCKED" in NOSTATE*) echo "retire_stage.sh: no state dir for $STEM" >&2; exit 1 ;; esac
+    echo "$BLOCKED"
+    echo "Workers will step over these as they come free. Nothing was cancelled."
+    exit 0
 fi
 
 if [ -z "$(printf '%s' "$MINE" | tr -d '[:space:]')" ]; then
