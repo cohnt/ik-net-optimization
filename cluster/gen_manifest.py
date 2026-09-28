@@ -1858,6 +1858,66 @@ def stage_SOFT12(wall, targets, guesses, shards, only=None, tag="SOFT12", seed=1
     return items
 
 
+def stage_SOFTCAP(wall, targets, guesses, shards, only=None, tag="SOFTCAP", seed=1,
+                  starts="paired,native"):
+    """The cap ladder the two NLopt grasp rows are owed before they mean anything.
+
+    Stage SOFT12 returned `nlopt` x grasp at 0/480 native and 2/480 paired, with 478-480
+    cells cap-bound ON BOTH ARMS and `median_max_violation` around 4 cm. That is the exact
+    shape the cap rule refuses to read: a row where both arms sit at the floor is measuring
+    the wall clock, not the formulation, so it carries no verdict until the cap is moved and
+    the answer re-measured. The record's own precedent is iiwa `n4` contained grasp, which
+    read as a clear loss at 45 s with 88 timeouts and was a TIE at 180 s with none.
+
+    `wall` is ignored; CAP_SWEEP supplies the caps, and it is the tree's existing ladder
+    rather than a new one. The 180 s rung is REGENERATED rather than reused from SOFT12,
+    even though the grid is identical -- the cap does not enter target sampling, so it pairs
+    cell for cell -- because that makes this stage self-contained and turns the middle rung
+    into a same-configuration reproducibility control, which this robot does not otherwise
+    have. Stage STEP measured that control at up to 7 net and 19 discordant cells of 480
+    where cells are cap-bound, so it is worth having on the row where EVERY cell is.
+
+    GRASP ONLY, and that is the cap rule's own scope rather than a trim: the four NLopt pose
+    rows already have decisive verdicts with the joint-space arm, not the learned one, at the
+    floor. The rule asks whether a LOSING or floored arm is budget-bound; it does not ask for
+    a ladder under a row that is already settled.
+
+    Sharded harder at 360 s. A shard of 480/24 = 20 cells that mostly times out costs
+    20 x 2 arms x 360 s = 4 h, which is inside run_items.sh's 8 h ITEM_TIMEOUT but close
+    enough that one slow node would lose the item and take its siblings' claims with it. The
+    top rung therefore doubles again, to 2 h worst case.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    rung = "soft12"
+    if wanted is not None and rung not in wanted:
+        return []
+    label, ckpt = SOFT_ADOPTED[rung]
+    ## The grasp row of the status quo, by lookup rather than by literal, so that a change to
+    ## the placement convention cannot leave this ladder measuring a different experiment
+    ## from the rows it exists to adjudicate.
+    grasp_rows = [r for r in STATUSQUO_ROWS if r[0] == "mug"]
+    assert len(grasp_rows) == 1, f"expected exactly one contained grasp row, got {grasp_rows}"
+    task, token, placement = grasp_rows[0]
+
+    base = ["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+            "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
+            "--rung", rung, "--checkpoint", ckpt]
+    items = []
+    for cap in CAP_SWEEP:
+        item_shards = shards * STATUSQUO_SHARD_SCALE["nlopt"]
+        if cap > STATUSQUO_WALL:
+            item_shards *= 2
+        for start in want_starts:
+            items += item(rung,
+                          f"sc_{tag}_{rung}_{label}_nlopt_{token}"
+                          f"_{targets * guesses}_{int(cap)}_{start}",
+                          ["--task", task, "--start", start, "--solver", "nlopt"]
+                          + placement + base,
+                          targets, guesses, ALL_ARMS[rung], cap, item_shards, seed=seed)
+    return items
+
+
 def stage_SOFTCHART(wall, targets, guesses, shards, only=None, tag="SOFTCHART", seed=1,
                     starts="paired,native"):
     """The chart ladder on soft12: nb_nodes 4 / 6 / 8, IPOPT only.
@@ -3111,6 +3171,56 @@ def selftest():
         print("ok   stages SOFT12/SOFTDOF/SOFTCHART: 12 logical runs each, contained rows "
               "only, status-quo cap, rung and checkpoint on every item, ladders IPOPT-only")
 
+    ## SOFTCAP is checked SEPARATELY, because it breaks two of the invariants above BY
+    ## DESIGN: it is not at the status-quo cap (sweeping the cap is the entire question) and
+    ## it is NLopt, not IPOPT (it adjudicates the NLopt grasp floor). Folding it into the
+    ## loop above would mean weakening two checks that are unqualified statements about every
+    ## other soft stage, so it gets its own, with the things that DO have to hold.
+    cap_fails = []
+    cap_runs = stage_SOFTCAP(180, 60, 8, 8)
+    cap_ids = [r["id"] for r in cap_runs]
+    if len(set(cap_ids)) != len(cap_ids):
+        cap_fails.append("duplicate item ids")
+    logical = len({i.rsplit("_shard", 1)[0] for i in cap_ids})
+    if logical != 2 * len(CAP_SWEEP):
+        cap_fails.append(f"{logical} logical runs, expected {2 * len(CAP_SWEEP)} "
+                         f"({len(CAP_SWEEP)} caps x 2 protocols)")
+    caps_seen = {float(r["args"][r["args"].index("--wall-time") + 1]) for r in cap_runs}
+    if caps_seen != set(CAP_SWEEP):
+        cap_fails.append(f"caps {sorted(caps_seen)}, expected {sorted(CAP_SWEEP)}")
+    ## The middle rung must be the status-quo cap, or it is not a ladder THROUGH the row it
+    ## is adjudicating and the 180 s column is not a reproducibility control on SOFT12.
+    if STATUSQUO_WALL not in caps_seen:
+        cap_fails.append(f"ladder does not pass through the status-quo cap {STATUSQUO_WALL:g}")
+    for r in cap_runs:
+        args = r["args"]
+        if r["script"] != "scripts/soft_arm/soft_arm_benchmark.py":
+            cap_fails.append(f"{r['id']} does not use the soft driver")
+        if args[args.index("--solver") + 1] != "nlopt":
+            cap_fails.append(f"{r['id']} is not the NLopt column it exists to adjudicate")
+        if args[args.index("--task") + 1] != "mug" or "free" in args:
+            cap_fails.append(f"{r['id']} is not the contained grasp row")
+        if args[args.index("--arms") + 1] != "learned,numerical":
+            cap_fails.append(f"{r['id']} does not field exactly two arms")
+        if "--rung" not in args or "--checkpoint" not in args:
+            cap_fails.append(f"{r['id']} omits --rung or --checkpoint")
+    ## A shard at the top cap must stay well inside run_items.sh's 8 h ITEM_TIMEOUT, or a
+    ## killed item takes its node-mates' claims with it. Worst case is every cell timing out.
+    for r in cap_runs:
+        args = r["args"]
+        cap = float(args[args.index("--wall-time") + 1])
+        n_shards = int(args[args.index("--shard") + 1].split("/")[1]) if "--shard" in args else 1
+        cells = int(args[args.index("--targets") + 1]) * int(args[args.index("--guesses") + 1])
+        worst_h = (cells / n_shards) * 2 * cap / 3600.0
+        if worst_h > 4.0:
+            cap_fails.append(f"{r['id']}: worst-case shard {worst_h:.1f} h, over the 4 h bound")
+    for msg in cap_fails:
+        print(f"FAIL stage SOFTCAP: {msg}")
+    fails += len(cap_fails)
+    if not cap_fails:
+        print(f"ok   stage SOFTCAP: {2 * len(CAP_SWEEP)} logical runs over caps "
+              f"{sorted(CAP_SWEEP)}, NLopt contained grasp only, every shard inside 4 h")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -3128,7 +3238,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTFK",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -3226,6 +3336,9 @@ def main():
              "SOFTCHART": lambda: stage_SOFTCHART(args.wall_time, args.targets,
                                                   args.guesses, args.shards,
                                                   only=args.rungs, starts=args.starts),
+             "SOFTCAP": lambda: stage_SOFTCAP(args.wall_time, args.targets,
+                                              args.guesses, args.shards,
+                                              only=args.rungs, starts=args.starts),
              "SOFTFK": lambda: stage_SOFTFK(args.wall_time, args.targets,
                                             args.guesses, args.shards,
                                             only=args.rungs, starts=args.starts),
