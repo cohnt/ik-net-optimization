@@ -3,6 +3,60 @@
 What is queued, what it depends on, and what a resuming session should check first. The
 design and the measured facts live in `CLAUDE.md`; this is the operational half.
 
+## STATE AS OF 2026-09-28 10:15 -- READ THIS FIRST ON RESUME
+
+The session that queued all of this was paused here deliberately. **Nothing needs a human or an
+agent to advance; the whole remaining chain is expressed in Slurm dependencies and will run to
+completion unattended.** Branch `soft-manipulator` is clean and pushed at `c1c6bdd`.
+
+DONE, collected, merged, promoted and reported:
+
+| stage | jobs | outcome |
+| --- | --- | --- |
+| all five charts trained | 5732986, 5733055-56, 5733057-58 | 620k steps each, exports rc=0 |
+| SOFT12 (3 solvers x 2 tasks x 2 protocols) | earlier | 12 logical runs, in `CLAUDE.md` |
+| SOFTCHART (`soft12` n4/n6/n8, IPOPT) | 5752615-18 | 96/96 items, rc=0, 12 logical runs |
+| SOFTDOF (soft9/12/16 at n6, IPOPT) | 5752619-22 | 96/96 items, rc=0, 12 logical runs |
+
+Tables and verdicts: **`docs/soft-arm-ladders.md`**. Both ladders are reported; the record is
+updated; the `max_iter` caveat is recorded and Thomas ruled on 2026-09-28 to re-measure nothing.
+
+STILL RUNNING -- the only live work:
+
+* **SOFTCAP** (`5752635-38`), the NLopt grasp cap ladder at 90 / 180 / 360 s. 192 items. At
+  10:15 it stood at **32 done, 64 claimed** (so 32 in flight, = 4 jobs x 8 workers), having gone
+  17 -> 32 in the preceding hour. At ~15 items/h the remaining 160 drain around **21:00 on
+  2026-09-28**. Items are 1-4 h each, so a claimed-but-not-done count of 32 is normal and is
+  NOT a stall -- compare two readings an hour apart before suspecting one.
+* **helix** (`5738845` smoke, `5738846-50` training), another agent's work, PENDING on
+  `afterany:5752635:5752636:5752637:5752638`. It fires on its own when SOFTCAP drains. Do not
+  touch it. Its owner is watching for its own `afterok` hazard (a failed smoke leaves the five
+  rungs on `DependencyNeverSatisfied` forever) and will scancel them itself if needed.
+
+WHAT TO DO ON RESUME, in order:
+
+1. `bash cluster/collect_results.sh --status` -- confirm `manifest_stageSOFTCAP` reads 192 done.
+2. `bash cluster/collect_results.sh` and then promote the merged tags out of
+   `results/_cluster_staging/<stamp>/` into `results/<robot>/benchmark/`.
+   **EXPECT TO BUILD THE UNION BY HAND for the two NLopt grasp groups.** SOFTCAP was collected
+   once mid-flight (staging `20260928-092551`) when only 17 items were done, so its shard set
+   now spans two collections and `collect_results.sh` will report
+   `sc_SOFTCAP_soft12_n6_nlopt_mugshelf_480_180_{native,paired}` as "could not be merged".
+   Nothing is lost -- every shard summary is on local disk under the staging directories. Merge
+   across them with `cluster/merge_shard_summaries.py`, which re-runs `summarise` rather than
+   stitching per-shard numbers.
+3. Report SOFTCAP against the cap rule it exists to answer: the two NLopt grasp rows came back
+   0/480 native and 2/480 paired with 478-480 cap-bound ON BOTH ARMS and median
+   `max_violation` ~4 cm. The question is whether 360 s moves them. Check `hit_eval_cap` as well
+   as `timed_out` -- `nlopt_max_eval` defaults to 0 so it should be disabled, but verify rather
+   than assume, and remember the 180 s rung is a same-configuration reproducibility control
+   against stage SOFT12's own NLopt grasp rows.
+4. Then the FK surrogate fit, which is the last open item on this robot. It is a CLUSTER job,
+   never local. Two things are known before spending a GPU hour: float32 for the fit and float64
+   for the screen and shipped weights, and a per-segment architecture composed analytically
+   rather than one net over all 33 body poses.
+
+
 ## Order of operations, and why it is this order
 
 ```
