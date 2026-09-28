@@ -54,7 +54,7 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--robots", default="panda,iiwa",
                    help="comma-separated; the record's two robots by default. The "
-                        "helical-joint rungs are named helix7_p000 / p025 / p050 / p100.")
+                        "screw-joint rungs are named helix7_p000 / p025 / p050 / p100.")
     p.add_argument("--tasks", default="mug,pose")
     p.add_argument("--insets", default="0,0.05,0.10,0.125")
     p.add_argument("--draws", type=int, default=20000)
@@ -80,7 +80,7 @@ def probe_scene(robot, task, draws, seed, scene="hardened"):
     plant = diagram.GetSubsystemByName("plant")
     context = plant.GetMyContextFromRoot(diagram.CreateDefaultContext())
 
-    ## A screw joint's <limit> is discarded by Drake's parsers, so a helical-joint arm's
+    ## A screw joint's <limit> is discarded by Drake's parsers, so a screw-joint arm's
     ## plant reports +-inf until it is repaired -- and this probe never constructs a program,
     ## which is where the benchmark's own repair lives. Without this the uniform draw below
     ## returns nan, every candidate is rejected, and the probe reports an acceptance of zero

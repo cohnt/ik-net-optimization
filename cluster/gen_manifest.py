@@ -41,9 +41,9 @@ SCRIPTS = {"panda": "scripts/panda/panda_benchmark.py",
 # writing one is future work or possibly not done at all (Thomas, 2026-09-19).
 ALL_ARMS = {"panda": "learned,numerical,analytic,analytic8", "iiwa": "learned,numerical"}
 
-## The helical-joint arm's pitch rungs. TWO ARMS, and unlike the iiwa's that is not a matter
+## The screw-joint arm's pitch rungs. TWO ARMS, and unlike the iiwa's that is not a matter
 ## of effort: a closed-form inverse kinematics needs the forward kinematics to be an
-## ALGEBRAIC function of the joint variables, and a helical joint contributes cos q, sin q
+## ALGEBRAIC function of the joint variables, and a screw joint contributes cos q, sin q
 ## and q at once. There is no analytic column to write.
 from src.helix_arm.params import SPECS as _HELIX_SPECS  # noqa: E402
 
@@ -1873,7 +1873,7 @@ def stage_STATUSQUO(wall, targets, guesses, shards, only=None, tag="STATUSQUO", 
 
 ## ------------------------------------------------------------------------------- HELIX --
 ##
-## The helical-joint arm. THREE SEPARATE STAGES rather than entries in ADOPTED_RUNGS,
+## The screw-joint arm. THREE SEPARATE STAGES rather than entries in ADOPTED_RUNGS,
 ## because the status quo is accepted work and this robot is not: adding it there would
 ## silently change what STATUSQUO means, which is the same reason the soft arm's stages
 ## stand apart. Every stage is shaped like the record's rows -- same cap, same seed, same
@@ -1890,10 +1890,10 @@ HELIX_CHART_RUNGS = tuple(
     (HELIX_PRIMARY, label, f"models/{HELIX_PRIMARY}/{HELIX_PRIMARY}__{label}__step620000.pkl")
     for label in ("n4", "n6", "n8"))
 
-#: The pitch ladder: the three HELICAL rungs, each carrying its own chart, because each is
+#: The pitch ladder: the three SCREW rungs, each carrying its own chart, because each is
 #: a different robot and cannot borrow another's network. The zero-pitch member is not here
 #: -- see HELIX_UNTRAINED. What the ladder measures is therefore a DOSE-RESPONSE among
-#: helical arms (0.025 / 0.050 / 0.100 m/rev), and the "could an analytic column exist"
+#: screw-joint arms (0.025 / 0.050 / 0.100 m/rev), and the "could an analytic column exist"
 #: end of the scale is held by the Panda and the iiwa, which already have one.
 HELIX_PITCH_RUNGS = tuple(
     (robot, "n6", f"models/{robot}/{robot}__n6__step620000.pkl")
@@ -1917,7 +1917,7 @@ def _helix_require_statusquo_wall(wall, stage):
 
 def stage_HELIX(wall, targets, guesses, shards, only=None, tag="HELIX", seed=1,
                 solvers="ipopt,snopt,nlopt", starts="paired,native"):
-    """The helical arm's status-quo-shaped rows: 2 experiments x 2 protocols x 3 solvers.
+    """The screw arm's status-quo-shaped rows: 2 experiments x 2 protocols x 3 solvers.
 
     Twelve logical runs on the primary rung at its adopted chart, deliberately the same
     shape, cap and seed as stage_STATUSQUO so the rows are directly comparable with the
@@ -2265,7 +2265,7 @@ def _ladder_paths_match_export():
     # and already skipped.) Listed explicitly so a genuinely missing rung still fails.
     PRE_EXISTING = {"models/iiwa14/iiwa14__ddp-r1__step620000.pkl"}
 
-    ## The helical arm's rungs are benchmarked by their own three stages rather than by
+    ## The screw arm's rungs are benchmarked by their own three stages rather than by
     ## LADDER_RUNGS, so they have to be unioned in here or every one of them would read as
     ## "trains but nothing benchmarks it". The check is still two-directional for them: a
     ## chart named by a stage with no ladder_runs.txt row to export it still fails.

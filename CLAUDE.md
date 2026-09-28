@@ -1230,7 +1230,7 @@ it falls only in the four wide bundles, the two charts become identical (59/60 a
 and 34/60 pose, same iteration counts). **Nothing about the near-limit bundles makes the *solve*
 harder; they are simply configurations that arm cannot be given.**
 
-## The helical-joint arm: a robot no algebraic method can chart
+## The screw-joint arm: a robot no algebraic method can chart
 
 **Branch `non-analytic-arm`. NOTHING IS MEASURED AND NOTHING IS SUBMITTED.** The infrastructure is
 complete and self-tested on the laptop and the campaign is one command away; merging to main is
@@ -1238,7 +1238,7 @@ Thomas's acceptance gate, and until then no row here stands beside the status qu
 
 **Why the robot exists.** An analytic column needs `FK(q)` to be *algebraic*: for a revolute arm
 every entry is a polynomial in `(cos q_i, sin q_i)`, and `c^2 + s^2 = 1` turns IK into a polynomial
-system elimination solves. A **helical (screw) joint** rotates by `q` *and* translates
+system elimination solves. A **screw joint** rotates by `q` *and* translates
 `pitch * q / (2*pi)` along the same axis, so `q` enters both trigonometrically and linearly and is
 algebraically independent of `e^{iq}` (Lindemann-Weierstrass). Abban, Li & Schicho
 (arXiv:1312.1060) state it for linkages: algebraic-geometry methods "have failed so far ... because
@@ -1247,14 +1247,14 @@ the soft arm — a robot class the algebraic baselines cannot touch, where the l
 formulation needs no change at all. Two arms, `learned,numerical`.
 
 **The robot is INVENTED, and invented from scratch.** We could not find a 7+-DoF arm with a lone
-helical joint in hardware or in any public model, and the reason is structural: a lone helical pair
+screw joint in hardware or in any public model, and the reason is structural: a lone screw pair
 carries the drive torque and the load's reaction torque through the same thread. The next section
 gives the evidence. In all of public GitHub exactly two robot models use an SDFormat `screw` joint
 and neither is an arm DOF. Given the arm must be invented it is invented **from scratch**, not by
 perturbing a benchmark arm — which would carry a real robot's name and published identity while no
 longer being that robot.
 
-**`helix7`.** A 7-DoF S-R-S arm whose **upper-arm roll is helical**: the upper arm telescopes as it
+**`helix7`.** A 7-DoF S-R-S arm whose **upper-arm roll is a screw joint**: the upper arm telescopes as it
 rolls, and every downstream link is offset from that axis, which is what makes the coupling
 irreducible. `src/helix_arm/params.py` **is** the robot; the SDFormat model and the batched torch FK
 are two renderings of it and a test says they agree, so there is no second source of truth and
@@ -1276,7 +1276,7 @@ train a model for helix7_p000. We already have analytic arms, we don't need a sp
 example here."*). The project already fields two S-R-S arms **with** analytic columns, so a seventh
 chart would spend 620k steps rediscovering that an algebraic arm is algebraic. The spec and its
 dataset stay — the tests use it, and it is what makes the pitch a *parameter* rather than a fact
-about one robot — but the trained ladder is the three helical rungs, and the "an analytic column
+about one robot — but the trained ladder is the three screw rungs, and the "an analytic column
 could exist here" end of the scale is held by the Panda and the iiwa. One consequence to keep in
 view: with the limit box held at ±2π for comparability, the zero-pitch member's screw coordinate
 covers the circle twice, so `q` and `q+2π` are the same configuration there and different
@@ -1317,14 +1317,14 @@ acceptance at inset 0.10 of **0.31-0.39% grasp and 0.33-0.34% pose**, inside the
 which is the stroke carrying more of the configuration box out of the shelves. The dataset builder,
 a 200-step training smoke and the export round trip all run clean.
 
-### Why a helical joint is a sensible thing to build
+### Why a screw joint is a sensible thing to build
 
 Asked for directly (Thomas, 2026-09-25), because an invented robot has to be defensible as a
 *machine* and not only as a test case. Claims below were checked against vendor documentation and
 patents; the three things that did **not** survive checking are named at the end, because the
 tempting version of this story is more confident than the evidence.
 
-**The pair is textbook, not exotic.** The helical or screw pair is one of the standard lower pairs,
+**The pair is textbook, not exotic.** The screw pair is one of the standard lower pairs,
 symbol **H**, with **one** degree of freedom — the same as R and P, imposing five constraints
 between two spatial bodies (Lynch & Park, *Modern Robotics*, §2.2.1 and Table 2.1). It is the
 general case of which R and P are the degenerate limits: pitch 0 is a pure rotation and pitch → ∞ a
@@ -1340,7 +1340,7 @@ the **lead**. Never copy a pitch between libraries without converting.
 
 **Hardware realises a lone H pair in exactly two ways, and neither is sold as a robot joint.**
 
-*As an internal element.* The **Newport Picomotor** is a genuine lone helical pair: a precision
+*As an internal element.* The **Newport Picomotor** is a genuine lone screw pair: a precision
 80-threads-per-inch screw clamped in a split nut and advanced by piezo stick-slip, so the screw —
 and with it the ball tip — rotates as it translates, rigidly coupled at 317.5 µm per revolution.
 Newport's own closed-loop arithmetic confirms the coupling (6000 encoder counts per revolution at
@@ -1352,7 +1352,7 @@ pad rather than bolting a load to the tip.
 *As a constrained operating mode.* A **ball screw/spline** — THK's BNS-type "Precision Ball
 Screw/Spline", NB's SPBR, PMI's PBSA — puts a ball-screw groove and a ball-spline groove on one
 shaft with two independently rotatable nuts. THK names three modes: *"rotational, linear, and
-**spiral**"*. **Spiral mode is the helical pair**: drive the spline nut with the screw nut held and
+**spiral**"*. **Spiral mode is the screw pair**: drive the spline nut with the screw nut held and
 the shaft advances at the screw's lead per turn. Drive the screw nut with the spline nut held and
 you get translation; drive both together and the screw nut's rotation cancels the translation,
 giving pure rotation.
@@ -1361,11 +1361,11 @@ giving pure rotation.
 actuator with this structure exists".** Spiral mode is a *constrained mode of a 2-DoF device*: the
 hardware has two independent inputs and braking one is a control choice, not a kinematic constraint
 built into the pair. We are **not aware of any commercially available actuator that realises a lone
-helical pair as a robot joint.** Every rotary-linear product on the market is either a 2-DoF
+screw pair as a robot joint.** Every rotary-linear product on the market is either a 2-DoF
 **cylindrical** actuator with two independent drives (LinMot's PR01 linear-rotary motors; the
 ball-screw/spline SCARA quill, which patents from Epson, Fanuc, ABB, Yaskawa, Denso Wave, Mitsubishi
 Electric and Nidec Sankyo all show driven by two motors) or a screw with an anti-rotation feature,
-which makes it **prismatic**. Helical joints in the robotics literature are pedagogical — Lynch &
+which makes it **prismatic**. Screw joints in the robotics literature are pedagogical — Lynch &
 Park's RPH and HRR chains are exercises.
 
 **That is the reportable finding, and it is why the arm had to be invented rather than downloaded.**
@@ -1502,8 +1502,8 @@ under "Headroom and the rescue rate"). Containment is what makes that matter, le
 joint-space failures available to rescue.
 
 **A third robot is in flight on branch `non-analytic-arm`** — `helix7`, a 7-DoF arm with a
-helical joint, which no algebraic method can chart. The infrastructure is built and
-self-tested; nothing is measured and nothing is submitted. See "The helical-joint arm".
+screw joint, which no algebraic method can chart. The infrastructure is built and
+self-tested; nothing is measured and nothing is submitted. See "The screw-joint arm".
 
 Thomas's roadmap (2026-09-04), with status: **(1) iiwa checkpoint training — DONE**, the
 reduced-capacity ladder is trained, measured and has a selection rule; **(2) SNOPT and NLOPT —

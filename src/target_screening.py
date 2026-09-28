@@ -136,7 +136,7 @@ SCENES = {
         wrist_frame="hand", fingertip_frame="between_fingers"),
 }
 
-## The helical-joint arm's rungs, built from the same description that emits their scenes
+## The screw-joint arm's rungs, built from the same description that emits their scenes
 ## rather than written out four times.  Their scenes carry the SAME four shelf welds and two
 ## tables as the rigid arms', which is what lets the compartment table, the containment
 ## predicate and the acceptance probe apply to them untouched.
