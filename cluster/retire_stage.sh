@@ -64,6 +64,13 @@
 # ever wanted after all. Each blocked claim gets an `owner` file saying who
 # blocked it and when, so it cannot be mistaken for a worker that died.
 #
+# READ THE STRING, NOT THE FILE. Every claim has an `owner` file -- run_items.sh
+# writes `<host>_p<N> <timestamp>` into one the moment it claims an item -- so
+# testing for the file's existence finds every claim ever made, live, completed
+# and blocked alike. The discriminator is the CONTENT: a block says `BLOCKED by`,
+# a live worker says its host and pid. Both this script and any hand inspection
+# must grep inside the file; a second reader hit exactly this trap.
+#
 # --skip does NOT stop items already in flight. A worker mid-item finishes it
 # first, so the steering takes effect per worker as each one comes free.
 set -uo pipefail
