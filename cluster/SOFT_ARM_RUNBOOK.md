@@ -39,17 +39,19 @@ STILL RUNNING -- the only live work:
   by the 360 s rung's ~4 h shards -- about five more waves. So **SOFTCAP does not drain today;
   expect tomorrow morning, 2026-09-29.** That is the estimate to plan against, and it is still a
   lower bound in the same direction as before.
-* **helix** (`5738845` smoke, `5738846-50` training), another agent's work, PENDING on
-  `afterany:5752635:5752636:5752637:5752638`. It fires on its own when SOFTCAP drains. Do not
-  touch it. Its owner said it was watching for its own `afterok` hazard (a failed smoke leaves
-  the five rungs on `DependencyNeverSatisfied` forever) and would scancel them itself.
+* **The screw-joint arm** (`5738845` smoke, `5738846-50` training), another agent's work, PENDING
+  on `afterany:5752635:5752636:5752637:5752638`. It fires on its own when SOFTCAP drains. Do not
+  touch it. Its owner watches for its own `afterok` hazard (a failed smoke leaves the five rungs
+  on `DependencyNeverSatisfied` forever) and will scancel them itself if needed.
 
-  **But that session is GONE as of 11:08** -- it is no longer in the peer roster, so nobody is
-  watching that hazard any more. The jobs themselves are unaffected: they live in Slurm and fire
-  on their dependency whether or not the session that queued them exists. What is lost is the
-  watcher. **Do not scancel them on that agent's behalf** -- they are its work, a cancel is hard
-  to reverse, and the `DependencyNeverSatisfied` state wastes no compute. If `5738845` exits
-  nonzero, report it to Thomas and let him decide; do not act unilaterally.
+  The Slurm job names are `helix_*` and the agent's own robot key is `helix7`, so match on those
+  strings when reading `LLstat` -- but **call the mechanism a screw joint** in prose.
+  Thomas, 2026-09-28: *"stop calling it a helix joint. It's a screw joint. That's standard
+  terminology (e.g. in URDF or SDF)."* Renaming that agent's stages or jobs is its call, not ours.
+
+  **Should its session ever be absent, do not scancel these on its behalf** -- they are its work,
+  a cancel is hard to reverse, and `DependencyNeverSatisfied` wastes no compute. Report a nonzero
+  smoke to Thomas and let him decide.
 
 WHAT TO DO ON RESUME, in order:
 
