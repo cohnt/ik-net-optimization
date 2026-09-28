@@ -1458,13 +1458,14 @@ to this project's own jobs, by JOB name** — the fix that filtered the payload 
 meant `--reclaim`'s guard was unconditionally 0 and never refused for its whole life, so **a guard nobody
 has observed refusing has not been tested.**
 
-**The laptop suspends when idle**, which accounted for every multi-hour stall this repo ever
-recorded (GNOME suspends after 900 s idle *even on AC*). Three plausible solver-level theories each
-fit part of the evidence before `journalctl` matched every stall to the minute. **Any long unattended
-run here must hold a sleep inhibitor** (`systemd-inhibit --what=sleep:idle --mode=block`, launched
-with `setsid`), and a "hung" unattended process is diagnosed by checking
-`journalctl -b | grep "suspend now"` against the stall window *first*. Long benchmarks now run on the
-cluster.
+**The laptop does NOT suspend on AC** (Thomas, 2026-09-28), so a gap in a session is not a stall to
+diagnose: it is him closing the session deliberately, or the usage cap. Do not propose a sleep
+inhibitor or read a pause as a fault. This record previously asserted the opposite — that GNOME
+suspended at 900 s even on AC — and that claim is retired. What survives it: detach long local work
+with `setsid` rather than `nohup` (nohup only ignores SIGHUP, so a teardown group kill takes the
+process too), and `pgrep -f <script>` from a Bash call often matches the calling shell's own command
+line, so a dead process reads as alive. Long benchmarks run on the cluster regardless, which is what
+makes a paused session cost nothing.
 
 **Reproducibility at the cap scales with the cap-bound population, not the grid.** On 60-cell grids
 two runs of the same configuration scored 34/60 and 35/60, the differing cell hitting the wall clock
