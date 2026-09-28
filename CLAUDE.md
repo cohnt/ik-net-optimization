@@ -1460,9 +1460,12 @@ The measured calibration — workers per node, GPU-vs-CPU, the cap ladder and pr
 `cluster/README.md`; it is a property of that hardware, not of the project.
 
 Three operational post-mortems live in `cluster/README.md` in more detail than a project record needs,
-and the transferable lesson of each is stated there: a shard set spanning **three** collections cannot be
-merged by `collect_results.sh` alone, so **collect less often than an item takes, or expect to build the
-union** (nothing is lost — the shard summaries are all on local disk); per-cell solver logs go to
+and the transferable lesson of each is stated there: a shard set spanning **three** collections was
+once unmergeable by `collect_results.sh`, which passed only the single most recent prior staging
+directory — **fixed 2026-09-20 in `b2e932e`**, which passes `--also` for every timestamp-shaped prior
+directory, so **run the normal collect and read the merger's own report; do not throttle collection
+and do not assemble a union by hand** (and nothing was ever lost — the shard summaries sit on local
+disk, which is why the failure looked exactly like data loss); per-cell solver logs go to
 node-local `$TMPDIR` and roll into one archive, because 35,596 small files on Lustre took a routine
 collection from three minutes to thirty; and **any cluster-wide check on a shared account must be scoped
 to this project's own jobs, by JOB name** — the fix that filtered the payload script's filename instead
