@@ -23,11 +23,17 @@ updated; the `max_iter` caveat is recorded and Thomas ruled on 2026-09-28 to re-
 
 STILL RUNNING -- the only live work:
 
-* **SOFTCAP** (`5752635-38`), the NLopt grasp cap ladder at 90 / 180 / 360 s. 192 items. At
-  10:15 it stood at **32 done, 64 claimed** (so 32 in flight, = 4 jobs x 8 workers), having gone
-  17 -> 32 in the preceding hour. At ~15 items/h the remaining 160 drain around **21:00 on
-  2026-09-28**. Items are 1-4 h each, so a claimed-but-not-done count of 32 is normal and is
-  NOT a stall -- compare two readings an hour apart before suspecting one.
+* **SOFTCAP** (`5752635-38`), the NLopt grasp cap ladder at 90 / 180 / 360 s. 192 items.
+  Readings: **17 done / 49 claimed at 09:24**, **32 / 64 at 10:05**, unchanged at 10:11.
+  Claimed-minus-done is always ~32 (= 4 jobs x 8 workers), so a gap of 32 is work in flight and
+  NOT a stall; items take 1-4 h, so compare readings an hour or more apart before suspecting one.
+
+  **Do not extrapolate the early rate.** 15 items in those 41 minutes is ~22/h, which would put
+  the drain near 17:20, but the manifest deliberately mixes caps and shard counts: the 90 s rung
+  is sharded 24 ways and the 360 s rung 48, so a 360 s shard is ~4 h against a 90 s shard's ~1 h.
+  The cheap shards finish first, so throughput FALLS as the ladder's top rung comes to dominate.
+  Expect **late afternoon at the earliest and plausibly into the evening**; treat any single-rate
+  estimate as a lower bound on the finish time.
 * **helix** (`5738845` smoke, `5738846-50` training), another agent's work, PENDING on
   `afterany:5752635:5752636:5752637:5752638`. It fires on its own when SOFTCAP drains. Do not
   touch it. Its owner is watching for its own `afterok` hazard (a failed smoke leaves the five
