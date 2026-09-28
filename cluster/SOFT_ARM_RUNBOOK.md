@@ -3,7 +3,7 @@
 What is queued, what it depends on, and what a resuming session should check first. The
 design and the measured facts live in `CLAUDE.md`; this is the operational half.
 
-## STATE AS OF 2026-09-28 10:15 -- READ THIS FIRST ON RESUME
+## STATE AS OF 2026-09-28 11:08 -- READ THIS FIRST ON RESUME
 
 The session that queued all of this was paused here deliberately. **Nothing needs a human or an
 agent to advance; the whole remaining chain is expressed in Slurm dependencies and will run to
@@ -24,7 +24,8 @@ updated; the `max_iter` caveat is recorded and Thomas ruled on 2026-09-28 to re-
 STILL RUNNING -- the only live work:
 
 * **SOFTCAP** (`5752635-38`), the NLopt grasp cap ladder at 90 / 180 / 360 s. 192 items.
-  Readings: **17 done / 49 claimed at 09:24**, **32 / 64 at 10:05**, unchanged at 10:11.
+  Readings: **17 done / 49 claimed at 09:24**, **32 / 64 at 10:05**, unchanged at 10:11,
+  **39 / 71 at 11:08**.
   Claimed-minus-done is always ~32 (= 4 jobs x 8 workers), so a gap of 32 is work in flight and
   NOT a stall; items take 1-4 h, so compare readings an hour or more apart before suspecting one.
 
@@ -32,12 +33,23 @@ STILL RUNNING -- the only live work:
   the drain near 17:20, but the manifest deliberately mixes caps and shard counts: the 90 s rung
   is sharded 24 ways and the 360 s rung 48, so a 360 s shard is ~4 h against a 90 s shard's ~1 h.
   The cheap shards finish first, so throughput FALLS as the ladder's top rung comes to dominate.
-  Expect **late afternoon at the earliest and plausibly into the evening**; treat any single-rate
-  estimate as a lower bound on the finish time.
+
+  **Measured, and it confirms the falling rate: 7 items in the 57 minutes to 11:08, i.e. ~7.4/h
+  against the first hour's ~22/h.** 153 items remain, 32 in flight, and what is left is dominated
+  by the 360 s rung's ~4 h shards -- about five more waves. So **SOFTCAP does not drain today;
+  expect tomorrow morning, 2026-09-29.** That is the estimate to plan against, and it is still a
+  lower bound in the same direction as before.
 * **helix** (`5738845` smoke, `5738846-50` training), another agent's work, PENDING on
   `afterany:5752635:5752636:5752637:5752638`. It fires on its own when SOFTCAP drains. Do not
-  touch it. Its owner is watching for its own `afterok` hazard (a failed smoke leaves the five
-  rungs on `DependencyNeverSatisfied` forever) and will scancel them itself if needed.
+  touch it. Its owner said it was watching for its own `afterok` hazard (a failed smoke leaves
+  the five rungs on `DependencyNeverSatisfied` forever) and would scancel them itself.
+
+  **But that session is GONE as of 11:08** -- it is no longer in the peer roster, so nobody is
+  watching that hazard any more. The jobs themselves are unaffected: they live in Slurm and fire
+  on their dependency whether or not the session that queued them exists. What is lost is the
+  watcher. **Do not scancel them on that agent's behalf** -- they are its work, a cancel is hard
+  to reverse, and the `DependencyNeverSatisfied` state wastes no compute. If `5738845` exits
+  nonzero, report it to Thomas and let him decide; do not act unilaterally.
 
 WHAT TO DO ON RESUME, in order:
 
