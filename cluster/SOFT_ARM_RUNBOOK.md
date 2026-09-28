@@ -333,6 +333,31 @@ hazard, not a measurement one. Closing the gap means passing the domain into the
 callback, which cannot be done while jobs are queued, since staging is refused under a live
 campaign.
 
+### `soft16` confirms the diagnosis from the other direction (2026-09-28)
+
+The OOD explanation above predicts something falsifiable: a rung WITH torsion has a tip
+orientation that IS free given its tip position, so the callback's independent orientation draw
+lands in distribution and the callback should read clean from the first evaluation. `soft16`
+activates `kappa_z` and is that rung. Job 5733058, 620k steps, export rc=0 at 05:29.
+
+| screen | `pole/max` | frac > threshold | p50 | p99 |
+| --- | --- | --- | --- | --- |
+| in-distribution (`pole_at_task_poses.py`, threshold 345, radius 5.5) | 3.49-3.66 | **0.0** | 1.12-1.16 | 1.87-1.97 |
+| in-training callback (OOD for a torsion-free arm, in-distribution here) | **2.85** | 0.0 | 0.94 | 1.96 |
+
+**The prediction holds: 2.85, flat from the start, against `soft12_n6`'s 2.44e8 on the SAME
+callback with the SAME constants.** The rung whose kinematics match the callback's assumption is
+the rung that screens clean, which is the mechanism confirmed rather than merely re-asserted --
+and it is confirmed by a rung that was not designed to test it.
+
+Two consequences worth keeping. The in-training callback's LEVEL is now demonstrated to be a
+statement about the ROBOT's reachability under the callback's sampler, not about the chart, so it
+must never be compared across rungs of differing strain bases. And `soft16` screens cleaner than
+`soft12` in distribution too (3.5-3.7 against 5.44), which lines up with what the benchmark then
+showed: **no rung of this robot has a runaway population, on any screen, and the chart ladder is
+correspondingly flat** (`docs/soft-arm-ladders.md`). The gain-ceiling criterion is satisfied
+vacuously here; the screens were never going to separate anything.
+
 **What the ladder does NOT yet say** is anything about cells. `n4` and `n8` are trained and
 exported but not benchmarked; the fielded rung stays the pre-registered `n6`, and stage
 SOFTCHART is what turns the ladder into a measurement. Selecting a rung on these screens would
