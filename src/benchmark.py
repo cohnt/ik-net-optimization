@@ -497,6 +497,18 @@ def start_diagnostics(program, q_init):
     onto the mug axis, which moves the configuration by radians. That is a property of the
     formulations, not a defect, but it has to be *reported* rather than assumed away, so
     every cell carries the number.
+
+    One caveat on `clip_distance` itself, because it is summed over start variables whose
+    regions are of two different kinds. Where the region is a genuine variable bound (the
+    joint-space arms' `q`, the analytic arm's `psi`, and its `xyz_rpy` on the grasp task)
+    the distance is what IPOPT's `bound_push` moves at iterate 0 -- a displacement that
+    really happens. Where it is a general constraint (the learned arm's `c` and `z`, the
+    analytic arm's `xyz_rpy` on the pose task) nothing projects and iterate 0 is the guess
+    as written, so the distance only says the start began outside the region -- which for
+    the latent is the intended behaviour, not a loss. `median_clip_distance` therefore
+    answers "how far outside their regions did the starts sit", NOT "how much of the
+    paired start the solver discarded"; the second reading is only valid on the arms whose
+    regions are bounds. Read it beside `start_q_error`, which is measured on the guess.
     """
     out = {"clip_distance": _finite(getattr(program, "clip_distance", None))}
     n = getattr(program, "num_arm_dof", 7)

@@ -1144,14 +1144,24 @@ class IKFlowProgram:
             clipped = c_clip_distance + z_clip_distance
             self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
             return clipped
-        # The exact paired start. The conditioning pose is set *unclipped* -- a Drake
-        # initial guess need not satisfy the bounds, and IPOPT projects variables into
-        # their box itself -- so flow(c, z) reproduces q_arm to the network's noise floor
-        # (measured ~1e-6 in float32, tighter in float64), and the correction closes that
-        # residual. q(start) is then q_arm to float precision, which is what "paired"
-        # claims; the pre-clipped version started 1.2-3.3 rad away. The distance from c to
-        # its box is returned as the clip distance: it is how far the solver's own
-        # projection will move the first iterate.
+        # The exact paired start. Both the conditioning pose and the latent are set
+        # *unclipped* -- a Drake initial guess need not satisfy a constraint -- so
+        # flow(c, z) reproduces q_arm to the network's noise floor (measured ~1e-6 in
+        # float32, tighter in float64), and the correction closes that residual. q(start)
+        # is then q_arm to float precision, which is what "paired" claims; the pre-clipped
+        # version started 1.2-3.3 rad away.
+        #
+        # What is returned is the distance from BOTH guesses to their own regions, summed.
+        # It is a pure DIAGNOSTIC and nothing projects it: `CBoxConstraint` and
+        # `LatentBoxConstraint` are general linear constraints, so IPOPT's `bound_push`
+        # -- which acts only on variable bounds -- never sees them and the first evaluated
+        # iterate is the guess as written. That is the whole point of those two regions not
+        # being bounding boxes. So read a nonzero value here as "the start began outside the
+        # region and the solver walked it in", the behaviour the latent region exists to
+        # allow (measured: |z| ~ 7.9 at the start against a radius-4.96 region, |z| ~ 2.9 at
+        # the solution), NOT as a displacement already applied to iterate 0. The correction's
+        # +-0.1 box is still a variable bound, but a paired start always respects it, being
+        # set to zero here.
         self.prog.SetInitialGuess(self.c, c)
         self.prog.SetInitialGuess(self.z, z)
         clipped = c_clip_distance + z_clip_distance
