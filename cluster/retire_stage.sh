@@ -255,7 +255,9 @@ else
     printf '%s\n' "$OTHERS" | sed 's/^/  /'
 fi
 echo
-echo "$((NCLAIM - NDONE)) item(s) in flight will die with a .claim and no .done."
+## Blocked claims are NOT in flight and cannot "die" -- they were never running.
+## Counting them here would overstate what a cancel costs by the size of the block.
+echo "$((NCLAIM - NDONE - NBLOCK)) item(s) in flight will die with a .claim and no .done."
 echo "That is the documented dead-item state: honest, recoverable with"
 echo "  cluster/collect_results.sh --reclaim $STEM"
 echo "Completed items are unaffected and still need a normal collect_results.sh run."
