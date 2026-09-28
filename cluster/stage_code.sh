@@ -38,7 +38,17 @@ fi
 ## PREFIXES on purpose: LLstat truncates NAME to 15 characters, so a full job name
 ## like `lik_train_iiwa14_n6` shows as `lik_train_iiwa1` and would never match. Calibration
 ## and smoke are named lik_cal_* / smoke.sh and deliberately do not match.
-RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|train_flow\|lik_train\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
+##
+## `lik_bench` is listed EXPLICITLY, and its absence was a live hole until 2026-09-27.
+## submit_bench.sh sets `--job-name=lik_bench_<manifest>`, which LLstat truncates to
+## `lik_bench_manif` -- matching none of the other three patterns, since `lik_[A-Za-z]*_n[0-9]`
+## wants `_n<digit>` and this has `_manifest`. So a whole chained benchmark campaign was
+## invisible to this guard. That is the WORSE of the two cases it protects: a training job
+## produces a checkpoint, where a benchmark produces campaign records, and a mid-stage
+## restage silently builds one result set from two code versions. It went unseen because
+## submit.sh leaves its jobs unnamed, so the stages that ran through it showed as
+## `run_items.sh` and did match.
+RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|train_flow\|lik_train\|lik_bench\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
 if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
     echo "REFUSING: $RUNNING campaign job(s) are on the cluster right now." >&2
     echo "Restaging would change the code later items import mid-stage." >&2
