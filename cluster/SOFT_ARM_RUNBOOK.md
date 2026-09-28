@@ -83,20 +83,31 @@ STILL RUNNING -- the only live work:
 
 WHAT TO DO ON RESUME, in order:
 
-1. `bash cluster/collect_results.sh --status` -- confirm `manifest_stageSOFTCAP` reads 192 done.
+1. `bash cluster/collect_results.sh --status` -- SOFTCAP reads **~147 done of 192**, not 192.
+   The 45-item shortfall is the retired 360 s rung (see above), not a failure.
 2. `bash cluster/collect_results.sh` and then promote the merged tags out of
    `results/_cluster_staging/<stamp>/` into `results/<robot>/benchmark/`.
-   **EXPECT TO BUILD THE UNION BY HAND for the two NLopt grasp groups.** SOFTCAP was collected
-   once mid-flight (staging `20260928-092551`) when only 17 items were done, so its shard set
-   now spans two collections and `collect_results.sh` will report
-   `sc_SOFTCAP_soft12_n6_nlopt_mugshelf_480_180_{native,paired}` as "could not be merged".
-   Nothing is lost -- every shard summary is on local disk under the staging directories. Merge
-   across them with `cluster/merge_shard_summaries.py`, which re-runs `summarise` rather than
-   stitching per-shard numbers.
-3. Report SOFTCAP against the cap rule it exists to answer: the two NLopt grasp rows came back
-   0/480 native and 2/480 paired with 478-480 cap-bound ON BOTH ARMS and median
-   `max_violation` ~4 cm. The question is whether 360 s moves them. Check `hit_eval_cap` as well
-   as `timed_out` -- `nlopt_max_eval` defaults to 0 so it should be disabled, but verify rather
+
+   **The 180 s shard set straddles two collections, and the tooling ALREADY handles it.**
+   SOFTCAP was collected once mid-flight (staging `20260928-092551`) at 17 items done, so the
+   24 shards of each `sc_SOFTCAP_soft12_n6_nlopt_mugshelf_480_180_{native,paired}` row span that
+   directory and the final one. An earlier note here said to expect to build the union by hand;
+   **that was stale.** `collect_results.sh` passes `--also` for EVERY prior timestamp-shaped
+   staging directory (its lines 176-206), which was added on 2026-09-20 after stage STATUSQUO
+   put one row's shards across THREE collections, and was verified by re-merging seven
+   already-merged rows and reproducing them exactly. So run the normal collect, then READ THE
+   MERGER'S REPORT for those two tags and intervene only if it says `INCOMPLETE`.
+   If it ever does, `cluster/merge_shard_summaries.py <newest> --also <older> --only <tag>` is
+   the manual form -- it re-runs `summarise` rather than stitching per-shard numbers. Do not
+   create a hand-made directory inside `results/_cluster_staging/`: a non-timestamp name there
+   was once mistaken for a collection and silently cost two rows their merge.
+3. Report SOFTCAP against the cap rule it exists to answer, **as a 90-vs-180 two-point ladder**:
+   the two NLopt grasp rows came back 0/480 native and 2/480 paired with 478-480 cap-bound ON
+   BOTH ARMS and median `max_violation` ~4 cm. The question the surviving rungs answer is
+   whether HALVING the cap to 90 s changes anything; if it does not, the floor is not a budget
+   artefact. The 360 s direction was retired unmeasured and must be reported as such, never as
+   a null result. Check `hit_eval_cap` as well as
+   `timed_out` -- `nlopt_max_eval` defaults to 0 so it should be disabled, but verify rather
    than assume, and remember the 180 s rung is a same-configuration reproducibility control
    against stage SOFT12's own NLopt grasp rows.
 4. Then the FK surrogate fit, which is the last open item on this robot. It is a CLUSTER job,
