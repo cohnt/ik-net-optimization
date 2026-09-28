@@ -504,9 +504,16 @@ can only represent a configuration its variables reach.
 Two projections that were once necessary have been removed — the learned arm's pre-clipping of `c`,
 and the pose analytic arm's clipping into its `xyz_rpy` box (which had it always beginning at the
 target pose, a median 2.7 rad from the shared `q_init`). `legacy_paired_start=True` restores the old
-behaviour. `start_q_error` measures the *initial guess*; where a guess sits outside a variable's
-bounds IPOPT projects it at iterate 0 and `clip_distance` records that, so the two numbers together
-describe how much survives the solver's own bound projection.
+behaviour. `start_q_error` measures the *initial guess*, and `clip_distance` how far the start sat
+outside its own regions — but **that second number is summed over regions of two different kinds and
+must not be read as a projection everywhere.** Where the region is a genuine variable bound (the
+joint-space arms' `q`, the analytic arm's `psi`, and its `xyz_rpy` on the grasp task) IPOPT's
+`bound_push` really does move iterate 0 by that much. Where it is a general constraint — the learned
+arm's `c` and `z`, the analytic arm's `xyz_rpy` on the pose task, which is the whole point of those
+regions not being bounds — nothing projects, iterate 0 is the guess as written, and a nonzero value
+means only that the solver was handed a start outside the region and walked it in. On the latent
+that is the intended behaviour and the measurement that established it (start `|z| ~ 7.9` against a
+radius-4.96 region, solution `|z| ~ 2.9`), not a loss.
 
 ### `collision_value` is a penalty, not a clearance
 
