@@ -188,4 +188,7 @@ enough that the declared wall-clock cap is the binding budget. `ProgramOptions`'
 the wall clock is what binds". That premise is false on any row where a cell reaches 3000 inside
 the cap.
 
-**Whether to re-measure, and whether that includes the record's own rows, is Thomas's call.**
+**Thomas's ruling, 2026-09-28: do not re-run, on either the soft arm or the record.** The soft
+tables stand as measured with the losing row reported as budget-bound and carrying no verdict, and
+the status quo is left untouched with the caveat recorded against the two iiwa contained-grasp ties.
+No compute was spent on this. Do not re-open either question.
