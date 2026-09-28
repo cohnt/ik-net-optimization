@@ -241,7 +241,7 @@ def main():
         print(f"  SKIP  iiwa checks unavailable: {type(exc).__name__}: {exc}")
 
     # ----------------------------------------------------------------- helix7
-    # The helical-joint arm, on the same base rows. It is here for one reason the other
+    # The screw-joint arm, on the same base rows. It is here for one reason the other
     # robots cannot supply: its screw coordinate's joint-limit row is the row every Drake
     # parser leaves at `+-inf`, silently (`ParseJointLimits` is reached only for revolute
     # and prismatic joints). A vacuous row is the mirror image of the defect this file was

@@ -40,7 +40,7 @@ panda   panda_n8         --nb_nodes=8  --dim_latent_space=7
 panda   panda_n12_w256   --nb_nodes=12 --dim_latent_space=7 --coeff_fn_internal_size=256
 
 # ---------------------------------------------------------------------------------------
-# The helical-joint arm. Its charts are 7-wide -- it is a 7-DoF arm -- so dim_latent_space
+# The screw-joint arm. Its charts are 7-wide -- it is a 7-DoF arm -- so dim_latent_space
 # is the Panda's baseline, and it is held fixed across the ladder for the same reason: the
 # latent width IS the program's decision-variable count (20 variables here: 6 + 7 + 7), so
 # varying it would change the optimization problem rather than the chart.

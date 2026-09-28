@@ -48,7 +48,7 @@ REMOVED = {
     ("iiwa", "mug"): ("binF",) + DECORATIVE_MUGS,
 }
 
-## The helical-joint arm's rungs. Their scenes are GENERATED from one description, so the
+## The screw-joint arm's rungs. Their scenes are GENERATED from one description, so the
 ## hardened/legacy relation holds by construction rather than by diff discipline -- which
 ## means these entries police the GENERATOR with the same test that polices the two
 ## hand-written pairs, and a change to it that broke the relation would show up here.
