@@ -1236,6 +1236,17 @@ harder; they are simply configurations that arm cannot be given.**
 complete and self-tested on the laptop and the campaign is one command away; merging to main is
 Thomas's acceptance gate, and until then no row here stands beside the status quo's.
 
+**OWED BEFORE THE PUSH CLOSES: purge "helix" from the identifiers.** The joint is a **screw** joint —
+the name URDF, SDFormat and Drake's `ScrewJoint` all use — and the prose says so everywhere. The
+symbols do not yet: robot `helix7_p*`, `src/helix_arm/`, `src/helix_arm_program.py`,
+`scripts/helix_arm/`, `models/helix7_p*/`, stages HELIX / HELIXCHART / HELIXPITCH, the
+`helix_train_*` job names and `cluster/HELIX_ARM_RUNBOOK.md`. They are vestigial and were left alone
+**only** because Slurm items are queued against them and the ikflow datasets and checkpoint paths
+carry the old spelling. Thomas, 2026-09-28: *"by the end of this push, I do want to purge mentions of
+a 'helix arm' everywhere. That will include updating the source, etc."* So this is a deliverable, not
+a nicety; do it once the campaign's jobs have drained, and regenerate the models rather than renaming
+their contents by hand.
+
 **Why the robot exists.** An analytic column needs `FK(q)` to be *algebraic*: for a revolute arm
 every entry is a polynomial in `(cos q_i, sin q_i)`, and `c^2 + s^2 = 1` turns IK into a polynomial
 system elimination solves. A **screw joint** rotates by `q` *and* translates
