@@ -3,118 +3,43 @@
 What is queued, what it depends on, and what a resuming session should check first. The
 design and the measured facts live in `CLAUDE.md`; this is the operational half.
 
-## STATE AS OF 2026-09-28 11:55 -- READ THIS FIRST ON RESUME
+## STATE AS OF 2026-09-28 16:30 -- SOFTCAP IS DONE AND COLLECTED
 
-The session that queued all of this was paused here deliberately. **Nothing needs a human or an
-agent to advance; the whole remaining chain is expressed in Slurm dependencies and will run to
-completion unattended.** Branch `soft-manipulator` is clean and pushed at `c1c6bdd`.
+Nothing on this robot is running. Branch `soft-manipulator` is clean and pushed.
 
-DONE, collected, merged, promoted and reported:
+| stage | outcome |
+| --- | --- |
+| all five charts | 620k steps each, exports rc=0 |
+| SOFT12 | 12 logical runs |
+| SOFTCHART / SOFTDOF | 96/96 items each, 24 logical runs |
+| **SOFTCAP** | **147/192 items; 5 rows promoted, the 360 s paired rung retired unmeasured** |
 
-| stage | jobs | outcome |
-| --- | --- | --- |
-| all five charts trained | 5732986, 5733055-56, 5733057-58 | 620k steps each, exports rc=0 |
-| SOFT12 (3 solvers x 2 tasks x 2 protocols) | earlier | 12 logical runs, in `CLAUDE.md` |
-| SOFTCHART (`soft12` n4/n6/n8, IPOPT) | 5752615-18 | 96/96 items, rc=0, 12 logical runs |
-| SOFTDOF (soft9/12/16 at n6, IPOPT) | 5752619-22 | 96/96 items, rc=0, 12 logical runs |
+SOFTCAP's result, tables in `docs/soft-arm-ladders.md`: **the NLopt grasp floor is real.** Native
+at 90/180/360 s is 0/480 on both arms at every cap, paired at 90/180 s is 2/480 against 0/480, and
+`hit_eval_cap` is 0 throughout so `max_time` is confirmed as the binding budget. The 180 s rung
+reproduces SOFT12 cell for cell. Collection needed **no hand merge**: `collect_results.sh` passes
+`--also` for every prior staging directory and resolved the straddled 180 s shard set by itself.
 
-Tables and verdicts: **`docs/soft-arm-ladders.md`**. Both ladders are reported; the record is
-updated; the `max_iter` caveat is recorded and Thomas ruled on 2026-09-28 to re-measure nothing.
+The only group `collect_results.sh` could not merge is
+`sc_SOFTCAP_soft12_n6_nlopt_mugshelf_480_360_paired`, which is the retired rung and is EXPECTED to
+be incomplete. Its 51 finished shards stay in staging and are **not** a row: shards are
+target-major and its set does not complete. Do not promote or report them.
 
-STILL RUNNING -- the only live work:
+**The cluster is now the screw-joint arm's.** Its smoke `5738845` exited COMPLETED, `5738846` (its
+pre-registered n6 rung) is training on all 4 nodes, and `5738847-50` are chained behind it. That is
+a single job at a time for as long as its ladder takes, so **this project has no nodes until it
+finishes or its owner parks a rung**. The remaining soft-arm work -- the FK surrogate fit -- is a
+cluster job and must wait for nodes or be negotiated with that agent and Thomas.
 
-* **SOFTCAP** (`5752635-38`), the NLopt grasp cap ladder. **The 360 s rung was RETIRED at
-  11:55 on Thomas's call**, so the stage now delivers a **two-point ladder at 90 and 180 s**.
+### The one open item on this robot: the FK surrogate fit
 
-  | rung | items | state |
-  | --- | --- | --- |
-  | 180 s | 48 | **complete**, and it is the same-configuration reproducibility control against SOFT12 |
-  | 90 s | 48 | queued, runs as workers come free |
-  | 360 s | 96 | 19 done, 32 finishing, **45 blocked and never run** |
-
-  **Why retired.** Both NLopt grasp rows sit at 0/480 and 2/480 with 478-480 cells cap-bound on
-  BOTH arms and median `max_violation` ~4 cm, so the row carries no verdict until the cap moves --
-  that is what the stage is for. But the record predicts the floor holds: the iiwa grasp rows are
-  0-3 of 60 under *every* NLopt setting and at 180 s, and 4 cm is not a solve about to converge.
-  Against that, the 360 s rung is half the stage and ~8-10 h, and the screw-joint arm's five-rung
-  training campaign is queued behind these four jobs on `afterany`. Thomas took the 90/180
-  comparison and gave the nodes back.
-
-  **How, and this is the part worth reusing.** Not `scancel`: the 90 s items sit at manifest lines
-  145-192, BEHIND all 96 of the 360 s items (`CAP_SWEEP` is `(90, 180, 360)` but the manifest came
-  out ordered 180, 360, 90), so cancelling would have left 180 s alone -- one cap, no ladder -- and
-  a resubmission of the 90 s rung would have queued behind ~5 days of screw-joint training.
-  Instead `cluster/retire_stage.sh manifest_stageSOFTCAP --skip 360 --yes` pre-created the
-  **claims** on the 45 un-run 360 s items, which is what `run_items.sh` tests before taking an
-  item, so the jobs already running step over that block and carry on to the 90 s rung with no
-  resubmission and no queue wait. Claims, not `.done` markers: a claim never inflates the done
-  count and is the documented dead-item state, so `--status` stays honest about what ran.
-  Reversible with `collect_results.sh --reclaim manifest_stageSOFTCAP` once no job is active.
-
-  **What to expect.** Workers reach the 90 s rung as each finishes its current 360 s item (up to
-  ~4 h), then 48 cheap items at up to 32 concurrent, so **the stage should exhaust its manifest
-  and the jobs exit this evening**, releasing `afterany` and starting the screw-joint chain. Final
-  state will be ~147 done of 192 with 45 blocked -- that shortfall is the retirement, not a
-  failure.
-
-  **The 51 completed 360 s items are NOT a row.** Shards are target-major and neither protocol's
-  shard set completes, so they cannot be merged into a 480-cell row. They stay on disk; do not
-  report them as a 360 s column.
-
-  Readings, for rate intuition: 17 done / 49 claimed at 09:24, 32 / 64 at 10:05, 39 / 71 at 11:08,
-  67 / 99 at 11:55. **Do not extrapolate a single rate** -- the 09:24-11:08 window was the cheap
-  180 s rung draining and read as ~7-22 items/h, which badly misled a 20 h estimate for work that
-  was really ~8-10 h. Derive the remaining time from the PER-RUNG breakdown
-  (`retire_stage.sh <manifest> --groups 90,180,360`), never from a done-count slope.
-
-* **The screw-joint arm** (`5738845` smoke, `5738846-50` training), another agent's work, PENDING
-  on `afterany:5752635:5752636:5752637:5752638`. It fires on its own when SOFTCAP drains. Do not
-  touch it. Its owner watches for its own `afterok` hazard (a failed smoke leaves the five rungs
-  on `DependencyNeverSatisfied` forever) and will scancel them itself if needed.
-
-  The Slurm job names are `helix_*` and the agent's own robot key is `helix7`, so match on those
-  strings when reading `LLstat` -- but **call the mechanism a screw joint** in prose.
-  Thomas, 2026-09-28: *"stop calling it a helix joint. It's a screw joint. That's standard
-  terminology (e.g. in URDF or SDF)."* Renaming that agent's stages or jobs is its call, not ours.
-
-  **Should its session ever be absent, do not scancel these on its behalf** -- they are its work,
-  a cancel is hard to reverse, and `DependencyNeverSatisfied` wastes no compute. Report a nonzero
-  smoke to Thomas and let him decide.
-
-WHAT TO DO ON RESUME, in order:
-
-1. `bash cluster/collect_results.sh --status` -- SOFTCAP reads **~147 done of 192**, not 192.
-   The 45-item shortfall is the retired 360 s rung (see above), not a failure.
-2. `bash cluster/collect_results.sh` and then promote the merged tags out of
-   `results/_cluster_staging/<stamp>/` into `results/<robot>/benchmark/`.
-
-   **The 180 s shard set straddles two collections, and the tooling ALREADY handles it.**
-   SOFTCAP was collected once mid-flight (staging `20260928-092551`) at 17 items done, so the
-   24 shards of each `sc_SOFTCAP_soft12_n6_nlopt_mugshelf_480_180_{native,paired}` row span that
-   directory and the final one. An earlier note here said to expect to build the union by hand;
-   **that was stale.** `collect_results.sh` passes `--also` for EVERY prior timestamp-shaped
-   staging directory (its lines 176-206), which was added on 2026-09-20 after stage STATUSQUO
-   put one row's shards across THREE collections, and was verified by re-merging seven
-   already-merged rows and reproducing them exactly. So run the normal collect, then READ THE
-   MERGER'S REPORT for those two tags and intervene only if it says `INCOMPLETE`.
-   If it ever does, `cluster/merge_shard_summaries.py <newest> --also <older> --only <tag>` is
-   the manual form -- it re-runs `summarise` rather than stitching per-shard numbers. Do not
-   create a hand-made directory inside `results/_cluster_staging/`: a non-timestamp name there
-   was once mistaken for a collection and silently cost two rows their merge.
-3. Report SOFTCAP against the cap rule it exists to answer, **as a 90-vs-180 two-point ladder**:
-   the two NLopt grasp rows came back 0/480 native and 2/480 paired with 478-480 cap-bound ON
-   BOTH ARMS and median `max_violation` ~4 cm. The question the surviving rungs answer is
-   whether HALVING the cap to 90 s changes anything; if it does not, the floor is not a budget
-   artefact. The 360 s direction was retired unmeasured and must be reported as such, never as
-   a null result. Check `hit_eval_cap` as well as
-   `timed_out` -- `nlopt_max_eval` defaults to 0 so it should be disabled, but verify rather
-   than assume, and remember the 180 s rung is a same-configuration reproducibility control
-   against stage SOFT12's own NLopt grasp rows.
-4. Then the FK surrogate fit, which is the last open item on this robot. It is a CLUSTER job,
-   never local. Two things are known before spending a GPU hour: float32 for the fit and float64
-   for the screen and shipped weights, and a per-segment architecture composed analytically
-   rather than one net over all 33 body poses.
-
+A cluster job, never local (Thomas, 2026-09-24: *"we shouldn't train models locally"*). Two fixes
+are known before spending a GPU hour: **float32 for the fit and float64 for the screen and the
+shipped weights** (the surrogate's own error lands near 1e-4 m, four orders above float32's noise
+floor, so the precision buys nothing and costs ~an order of magnitude), and a **per-segment
+architecture composed analytically** rather than one net learning all 33 body poses from 12 inputs,
+since each segment's relative transform depends on only its own three strains. The code work is
+local and free; only the fit needs nodes.
 
 ## Order of operations, and why it is this order
 

@@ -1250,7 +1250,7 @@ harder; they are simply configurations that arm cannot be given.**
 
 **In progress on branch `soft-manipulator`.** The model, the kinematics, the scenes, the four
 programs and the ikflow shim have landed and are tested; all five charts are trained and stages
-SOFT12, SOFTCHART and SOFTDOF are measured, with the NLopt cap ladder still running. The status-quo section is deliberately untouched until the campaign
+SOFT12, SOFTCHART, SOFTDOF and SOFTCAP are measured. Only the FK surrogate fit remains. The status-quo section is deliberately untouched until the campaign
 exists: it is written at the end of the push, and merging to main is Thomas's acceptance gate.
 
 A spatial **Piecewise Constant Strain** continuum arm, defined with **SoRoMoX**
@@ -1551,8 +1551,18 @@ clock, at a 3.5-6x premium against the rigid arms' ~10-13x. State the cause with
 got more expensive, not the learned arm cheaper** (231 floating-body positions, 14-25 ms/it against
 ~2 ms).
 
-**Still open:** stage SOFTCAP (the NLopt grasp cap ladder, 90/180/360 s — running, unaffected by the
-`max_iter` issue since `nlopt_max_eval` defaults to 0 so `max_time` binds) and the FK surrogate fit.
+**Stage SOFTCAP closes the cap rule on the NLopt grasp rows: the floor is REAL.** Native runs
+90/180/**360** s and is **0/480 on both arms at every cap** — quadrupling the wall clock moves exactly
+zero cells; paired runs 90/180 s at 2/480 against 0/480, the same two cells. `hit_eval_cap` is 0
+throughout, confirming (not assuming) that `nlopt_max_eval` defaults to 0 and `max_time` is what
+binds. So these rows are a property of the augmented Lagrangian on this program, not of the clock —
+and they still carry **no verdict**, both arms being at the floor. The 180 s rung doubles as a
+same-configuration reproducibility control and reproduces SOFT12 **cell for cell** across two
+separately generated and submitted stages (same `grid_hash`, identical McNemar), on a row where every
+cell is cap-bound. **The 360 s paired rung was retired unmeasured** (Thomas, 2026-09-28) to give the
+nodes back to the screw-joint campaign; it is absent, not null. Tables: `docs/soft-arm-ladders.md`.
+
+**Still open:** the FK surrogate fit.
 
 ## Running on MIT SuperCloud (`cluster/`)
 

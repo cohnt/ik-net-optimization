@@ -192,3 +192,63 @@ the cap.
 tables stand as measured with the losing row reported as budget-bound and carrying no verdict, and
 the status quo is left untouched with the caveat recorded against the two iiwa contained-grasp ties.
 No compute was spent on this. Do not re-open either question.
+
+## Stage SOFTCAP: the NLopt grasp cap ladder, and the floor is real
+
+The two NLopt contained-grasp rows on this robot came back **0/480 native and 2/480 paired with
+478-480 cells cap-bound ON BOTH ARMS** and median `max_violation` around 4 cm. A row where both
+arms sit at the floor carries no verdict until the cap is moved, so the cap rule owes it a ladder
+before anything may be said about it. This stage is that ladder.
+
+| start | cap | learned | joint space | `hit_eval_cap` | `timed_out` | McNemar |
+| --- | --- | --- | --- | --- | --- | --- |
+| native | 90 s | 0/480 | 0/480 | 0 | 480 / 480 | 0/0, p = 1 |
+| native | 180 s | 0/480 | 0/480 | 0 | 480 / 480 | 0/0, p = 1 |
+| native | **360 s** | 0/480 | 0/480 | 0 | 480 / 480 | 0/0, p = 1 |
+| paired | 90 s | 2/480 | 0/480 | 0 | 478 / 480 | 2/0, p = 0.5 |
+| paired | 180 s | 2/480 | 0/480 | 0 | 478 / 480 | 2/0, p = 0.5 |
+
+**Quadrupling the wall clock moves exactly zero cells.** On `native` the ladder spans 90 to 360 s
+-- a 4x -- and every entry is 0/480 on both arms. On `paired` it spans 90 to 180 s and both entries
+are 2/480 against 0/480, the same two cells. **So the floor is NOT a budget artefact**, the cap rule
+is discharged, and these rows may be reported as what they are: a property of the augmented
+Lagrangian on this program, not of the clock. They still carry **no learned-vs-joint-space verdict**,
+because both arms are at the floor and a row where nothing solves compares nothing.
+
+`hit_eval_cap` is **0 on every row**, which confirms rather than assumes the mechanism: `nlopt_max_eval`
+defaults to 0 and 0 DISABLES the evaluation budget, so `max_time` is the only budget binding. That
+check matters because the sibling failure -- `max_iter` silently binding inside the wall clock -- is
+exactly what invalidated the cap reading on the IPOPT rows above. Here the wall clock really is what
+binds, and it is saturated.
+
+This agrees with the rigid arms and extends them: the iiwa grasp rows are 0-3 of 60 under *every*
+NLopt setting and at 180 s, and `docs/closed-axes.md` records that at NLopt's own defaults ten of
+twelve rows are identical between 45 s and 180 s. The soft arm now adds a 4x cap sweep on a row where
+every single cell is cap-bound, and it does not move.
+
+**The 180 s rung is also a same-configuration reproducibility control, and it lands exactly.** It was
+regenerated and resubmitted as its own stage rather than reused from SOFT12, and it reproduces SOFT12
+cell for cell -- 0/480 native, 2/480 paired, identical `a_only`/`b_only`, same `grid_hash`
+`2faa0584b178`. Two separately generated, separately submitted stages agreeing exactly is the
+strongest reproducibility statement this robot has alongside the `soft12_n6` duplication above, and it
+is on the row where EVERY cell is cap-bound -- where stage STEP measured a same-configuration re-run
+moving up to 7 net and 19 discordant cells of 480. Here it moves zero, because nothing converges to be
+unstable about.
+
+### What was retired, and why it must not be read as a null
+
+**The 360 s `paired` rung was never run.** Thomas retired it on 2026-09-28 while it was in flight: it
+was half the stage at ~8-10 h, the screw-joint arm's five-rung training campaign was queued behind
+these jobs on `afterany`, and the record predicted the floor would hold. 45 of its 96 items were
+blocked in place with `cluster/retire_stage.sh --skip 360`, which pre-creates claims so the running
+workers step over them -- no cancellation, so no Slurm dependency was released early. The stage
+finished 147 of 192 items; the 45-item shortfall is that retirement.
+
+Two consequences for reading the table. The `native` side of the 360 s rung **did** complete, because
+its 48 shards sat earlier in the manifest than the block, which is why the native ladder has three
+points and the paired ladder two. And the missing paired cell is **absent, not null** -- it was not
+measured and must never be written as 2/480 by analogy with its neighbours.
+
+The prediction the retirement was taken on is the one the completed 360 s native rung then tested, and
+it held: 4x the budget, zero cells. That is evidence the retired cell would have agreed, and it is
+still not a measurement of it.
