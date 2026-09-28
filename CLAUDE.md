@@ -1608,9 +1608,17 @@ The measured calibration — workers per node, GPU-vs-CPU, the cap ladder and pr
 `cluster/README.md`; it is a property of that hardware, not of the project.
 
 Three operational post-mortems live in `cluster/README.md` in more detail than a project record needs,
-and the transferable lesson of each is stated there: a shard set spanning **three** collections cannot be
-merged by `collect_results.sh` alone, so **collect less often than an item takes, or expect to build the
-union** (nothing is lost — the shard summaries are all on local disk); per-cell solver logs go to
+and the transferable lesson of each is stated there. **A straddled shard set is HANDLED, and the old
+mitigation here was stale**: `collect_results.sh` passes `--also` for every timestamp-shaped prior
+staging directory (`b2e932e`, 2026-09-20), so a run whose shards span any number of collections merges
+normally — verified then by re-merging seven already-merged rows exactly, and again on stage SOFTCAP,
+whose 180 s shard set straddled two collections and needed no intervention. This file used to say such
+a set "cannot be merged by `collect_results.sh` alone, so collect less often than an item takes, or
+expect to build the union"; **delete that instinct.** It is the expensive direction — it delays every
+row's results to guard against something the script already does — and a stale MITIGATION costs more
+than a stale diagnosis, because it is acted on. Collect when you want results; just read the merger's
+report and intervene only on an actual `INCOMPLETE`. What remains true is only that each collection is
+a tar and rsync over Lustre, so do not collect in a tight loop. Next: per-cell solver logs go to
 node-local `$TMPDIR` and roll into one archive, because 35,596 small files on Lustre took a routine
 collection from three minutes to thirty; and **any cluster-wide check on a shared account must be scoped
 to this project's own jobs, by JOB name** — the fix that filtered the payload script's filename instead
