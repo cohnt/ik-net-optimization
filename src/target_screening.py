@@ -24,6 +24,7 @@ from pydrake.geometry import SceneGraph  # noqa: F401  (documents what BuildEnv 
 from pydrake.multibody.parsing import ModelDirective, AddModel
 
 from src.shelf_regions import PointInShelfCompartments
+from src.gvs_arm.params import RUNGS as _GVS_RUNGS
 from src.soft_arm.params import RUNGS as _SOFT_RUNGS
 from src.utils import BuildEnv, RepoDir
 
@@ -150,6 +151,22 @@ SCENES = {
 ## both rigid arms: the soft PCS arm carries the SAME finray gripper, so `between_fingers` and
 ## the 0.100 m step behind it are literally the same geometry on all three robots.
 for _spec in _SOFT_RUNGS.values():
+    _hardened = f"models/{_spec.name}/{_spec.name}_collision_hardened.yaml"
+    _legacy = f"models/{_spec.name}/{_spec.name}_collision.yaml"
+    _instances = (_spec.name, "finray")
+    SCENES[(_spec.name, "mug")] = SceneSpec(
+        f"{_spec.name}_mug", _hardened, _legacy, _hardened,
+        _instances, "between_fingers",
+        wrist_frame="between_fingers", fingertip_frame="between_fingers")
+    SCENES[(_spec.name, "pose")] = SceneSpec(
+        f"{_spec.name}_pose", _hardened, _legacy, _hardened,
+        _instances, _spec.tip_frame_name,
+        wrist_frame="hand", fingertip_frame="between_fingers")
+
+
+## The GVS push-rod arm's rungs, the same way. Same furniture, same gripper, same frames;
+## its tip frame is the SDF's `gvs_tip`, pitched so its z runs along the backbone.
+for _spec in _GVS_RUNGS.values():
     _hardened = f"models/{_spec.name}/{_spec.name}_collision_hardened.yaml"
     _legacy = f"models/{_spec.name}/{_spec.name}_collision.yaml"
     _instances = (_spec.name, "finray")

@@ -43,6 +43,7 @@ from pydrake.multibody.inverse_kinematics import MinimumDistanceLowerBoundConstr
 
 from src.generic_program import ProgramOptions
 from src.shelf_regions import PointInShelfCompartments, ShelfCompartmentRegions
+from src.gvs_arm.params import RUNGS as _GVS_RUNGS
 from src.soft_arm.params import RUNGS as _SOFT_RUNGS
 from src.target_screening import SCENES, FloatingMugScreen, SceneFile
 from src.utils import BuildEnv, HiddenPrints
@@ -52,7 +53,8 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--robots", default="panda,iiwa",
-                   help="the soft PCS arm's rungs (soft9/soft12/soft16) are valid too; "
+                   help="the soft PCS arm's rungs (soft9/soft12/soft16) and the GVS arm's "
+                        "(gvs_pushrod9_o0/o1/o2) are valid too; "
                         "they are not in the default because the default is the "
                         "record's two robots")
     p.add_argument("--tasks", default="mug,pose")
@@ -99,7 +101,18 @@ def probe_scene(robot, task, draws, seed, scene="hardened"):
     ## makes, and the slot map is the SAME helper, so the probe and the driver cannot
     ## disagree about the layout.
     soft_spec = _SOFT_RUNGS.get(robot)
-    if soft_spec is None:
+    gvs_spec = _GVS_RUNGS.get(robot)
+    if gvs_spec is not None:
+        ## The GVS push-rod arm: draw nine normalized rod forces, map through SoRoMoX's
+        ## equilibrium. Same slot-map helper as its program, so the two cannot disagree.
+        from src.gvs_arm.model import GetModel, PlantSlotMap as GvsPlantSlotMap
+
+        gvs_model = GetModel(gvs_spec)
+        picks = GvsPlantSlotMap(plant, gvs_spec)
+
+        def draw_plant_q():
+            return gvs_model.PlantQ(rng.uniform(-1.0, 1.0, size=gvs_spec.ninputs))[picks]
+    elif soft_spec is None:
         lower, upper = plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits()
 
         def draw_plant_q():
