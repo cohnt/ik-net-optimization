@@ -44,6 +44,14 @@ case "$ROBOT" in
         ## One thread per worker process: the builder is process-parallel, and a per-core
         ## BLAS/OpenMP pool in each of ~96 workers exhausts RLIMIT_NPROC (measured).
         export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 GVS_ARM_XLA_THREADS=1
+        ## ... and even so, every JAX process still creates XLA's own Eigen pool (one thread
+        ## per core, idle) and its compiler threads, which no flag in jax 0.11 turns off:
+        ## ~96 workers x ~100 threads against a SOFT process limit of 4096 killed the
+        ## second attempt at `GetPjRtCpuClient`. The hard limit is ~770k, so raise the
+        ## soft one (and the open-file one, which the symbolizer also complained about).
+        ulimit -u "$(ulimit -Hu)" 2>/dev/null || true
+        ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+        echo "process limit $(ulimit -u), open files $(ulimit -n), CPUs $(nproc)"
         "$PY" -u "$REPO/scripts/gvs_arm/build_dataset_parallel.py" \
             --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
         RC=$? ;;

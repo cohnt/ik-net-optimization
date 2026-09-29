@@ -89,6 +89,19 @@ def main():
                    help="always on; accepted so build_dataset_job.sh's command line is unchanged")
     args = p.parse_args()
 
+    ## Each JAX worker still owns ~100 threads (XLA's per-core Eigen pool, idle, plus its
+    ## compiler's), and a process limit that cannot hold `workers x 100` kills the build at
+    ## startup rather than slowing it. Cap the worker count by the SOFT limit, so a job whose
+    ## `ulimit -u` could not be raised runs slowly instead of dying; say so in the log.
+    import resource
+    soft, _ = resource.getrlimit(resource.RLIMIT_NPROC)
+    if soft != resource.RLIM_INFINITY:
+        allowed = max(1, (soft - 256) // 160)
+        if allowed < args.workers:
+            print(f"  process limit {soft} allows ~{allowed} JAX workers; using that instead of "
+                  f"{args.workers} (raise `ulimit -u` to use every CPU)", flush=True)
+            args.workers = allowed
+
     import torch
     from ikflow.utils import get_dataset_directory, get_dataset_filepaths, safe_mkdir
     from ikflow.utils import assert_joint_angle_tensor_in_joint_limits, print_tensor_stats
