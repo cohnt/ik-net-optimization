@@ -291,6 +291,38 @@ cannot be tuned later. Report the count either way -- a row with 3 capped cells 
 deliverable; re-measuring it at a raised cap is a separate task Thomas has taken out of scope for
 now. So do not hold the write-up waiting on a re-run, and do not spend cluster time on one unasked.
 
+## The two ladders form a CROSS, not a grid -- pre-registered before any cell is read
+
+The trained ladder is five charts: `p050` at `n4`/`n6`/`n8`, plus `p025` and `p100` at `n6`.
+HELIXCHART walks `nb_nodes` at pitch 0.050; HELIXPITCH walks pitch at `nb_nodes = 6`. They
+share the centre cell `(p050, n6)` and between them visit 5 of the 3 x 3 = 9 combinations. The
+four corners -- `p025`/`p100` x `n4`/`n8` -- are **unmeasured, and the interaction between
+pitch and chart depth is therefore not estimated by this design.** Say so wherever either
+ladder is reported; a one-factor-at-a-time design cannot speak about a corner.
+
+**The contingency, fixed here in advance.** If HELIXCHART's best rung is not `n6` AND
+HELIXPITCH's best pitch is not `p050`, then the configuration the two ladders jointly point at
+is a corner neither visited, and no measured row supports it. The minimum that would close it
+is **one chart** (that pitch at that depth -- the dataset already exists per robot, so it is a
+training run, not a datagen one) and **four logical runs** (2 experiments x 2 protocols, IPOPT
+only, same cap and seed), reported as a named followup stage rather than folded into either
+ladder. If only one ladder moves off the centre, no extra run is needed: that winner is already
+a measured cell.
+
+**What the extra run would and would not license.** It closes a REPORTING gap, not a selection
+one. The fielded rung is pre-registered at `n6` and the primary robot at `p050`, and both rules
+exist because picking whichever benchmarks best is selecting on the test set -- the record
+disqualified "take whichever benchmarks best" by measurement, and the pitch is part of the
+robot, fixed before any acceptance rate was read. So a corner that wins does **not** thereby
+become the fielded configuration; re-fielding is Thomas's call on the pre-registration, made
+explicitly, and would be stated as a deviation. Absent that, the corner is a reported cell.
+
+**It may well not be needed.** The screw arm's `pole/frac_gt_1000` is 0.0 at every checkpoint of
+both rungs measured so far, so the gain-ceiling criterion is satisfied vacuously exactly as it
+is on the soft PCS arm -- whose chart ladder came out FLAT, with a 3-10 cell spread of 480 and
+no rung separating from another. A flat HELIXCHART leaves nothing to disagree with and the
+question does not arise.
+
 ## Still to build
 
 * The cap ladder (45 / 180 / 360 s), before any verdict is reported. It needs trained
