@@ -370,6 +370,19 @@ def main(only):
     ## line in one table function was all that kept a retired row out of the campaign of
     ## record. Refusing them here means no table CAN show one.
     runs = load("sc_STATUSQUO_", cells=CELLS)
+
+    ## The soft arm joins the record from stage SOFT12 rather than from a re-run under
+    ## stage_STATUSQUO. Its twelve rows were measured at conditions IDENTICAL to this stage's
+    ## -- 180 s, seed 1, --compile, 60 x 8 contained cells at the fingertips, arms
+    ## learned,numerical, each solver at its adopted configuration -- so re-running them under
+    ## the STATUSQUO tag would re-measure the same thing on equivalent nodes (Thomas,
+    ## 2026-09-28: "I don't see 12-by-3 vs 36 as a substantial difference ... all nodes are
+    ## created equal on supercloud"). The tag grammar is the same, so every table below reads
+    ## them with no special case; only the PROVENANCE differs, which is why this is one
+    ## explicit merge rather than a wildcard prefix. The record is therefore 36 logical runs
+    ## across two stages, and says so.
+    runs.update(load("sc_SOFT12_", cells=CELLS))
+
     retired = [tag for tag in runs if tag.split("_")[5] not in STATUS_QUO_ROWS]
     for tag in retired:
         del runs[tag]
@@ -381,7 +394,8 @@ def main(only):
               "Merge shards first: cluster/merge_shard_summaries.py")
         return 1
 
-    print(f"STAGE STATUSQUO -- the campaign of record, {CELLS} cells, 180 s cap, seed 1")
+    print(f"THE CAMPAIGN OF RECORD -- {CELLS} cells, 180 s cap, seed 1")
+    print("Stages STATUSQUO (panda, iiwa) + SOFT12 (soft12), identical conditions.")
     print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")

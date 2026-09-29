@@ -444,9 +444,15 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         # xyz_rpy to the target exactly, so projecting the guess onto it replaced the
         # paired start with (target pose, psi(q_init)) outright -- the
         # archived pose tables show the analytic arm starting a median 2.7 rad from the
-        # shared q_init for exactly this reason, chart coverage notwithstanding. A Drake
-        # guess may sit outside the bounds; IPOPT's own projection is the solver's first
-        # move and its size is returned as the clip distance.
+        # shared q_init for exactly this reason, chart coverage notwithstanding.
+        #
+        # The returned distance is TWO quantities summed, and they are not the same kind.
+        # On the pose task `xyz_rpy_box` is an AddLinearEqualityConstraint, so `dist` is a
+        # pure diagnostic -- nothing projects it and iterate 0 is the guess as written. On
+        # the grasp task that region stays a genuine variable bound (hence `_BoxDistance`
+        # in the branch above), where the distance really is what IPOPT's `bound_push`
+        # will move at its first iterate. `psi` is bounded on both, so its term is always
+        # the projecting kind. Do not read the sum as either one alone.
         self.prog.SetInitialGuess(self.xyz_rpy, xyz_rpy)
         clipped = dist
         clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])

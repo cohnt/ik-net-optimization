@@ -35,7 +35,7 @@ PY="$ROOT/venv/bin/python"
 OUT="$ROOT/home/.cache/ikflow/datasets/$ROBOT"
 echo "building $ROBOT dataset: size=$SIZE seed=$SEED -> $OUT"
 
-"$PY" -u "$REPO/third_party/ikflow/scripts/build_dataset.py" \
+"$PY" -u "$REPO/scripts/training/ikflow_entry.py" build_dataset \
     --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
 RC=$?
 
