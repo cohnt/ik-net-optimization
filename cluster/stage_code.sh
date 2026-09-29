@@ -38,7 +38,17 @@ fi
 ## PREFIXES on purpose: LLstat truncates NAME to 15 characters, so a full job name
 ## like `lik_train_iiwa14_n6` shows as `lik_train_iiwa1` and would never match. Calibration
 ## and smoke are named lik_cal_* / smoke.sh and deliberately do not match.
-RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|train_flow\|lik_train\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
+##
+## `lik_bench` is listed EXPLICITLY, and its absence was a live hole until 2026-09-27.
+## submit_bench.sh sets `--job-name=lik_bench_<manifest>`, which LLstat truncates to
+## `lik_bench_manif` -- matching none of the other three patterns, since `lik_[A-Za-z]*_n[0-9]`
+## wants `_n<digit>` and this has `_manifest`. So a whole chained benchmark campaign was
+## invisible to this guard. That is the WORSE of the two cases it protects: a training job
+## produces a checkpoint, where a benchmark produces campaign records, and a mid-stage
+## restage silently builds one result set from two code versions. It went unseen because
+## submit.sh leaves its jobs unnamed, so the stages that ran through it showed as
+## `run_items.sh` and did match.
+RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|train_flow\|lik_train\|lik_bench\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
 if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
     echo "REFUSING: $RUNNING campaign job(s) are on the cluster right now." >&2
     echo "Restaging would change the code later items import mid-stage." >&2
@@ -84,13 +94,41 @@ sc_run "mkdir -p ~/$SC_ROOT/repo ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/
 ## This bit on 2026-09-10: iiwa14_n4's step-620000 export lived only on the cluster,
 ## a routine stage_code run deleted it, and the queued benchmark would have hit a
 ## missing checkpoint. models/ is NOT excluded (see the header), so it needs this.
+## What is never staged. rsync reads the WORKING TREE, not git, so .gitignore has NO
+## effect here -- anything present locally is pushed unless it is named below. That is
+## how `.venv-soromox` reached the cluster and stayed there: the JAX oracle venv was
+## committed by accident, then removed from history and gitignored, and none of that
+## touched the cluster, because none of it is something rsync reads. It cost 621 MB of
+## Lustre and about eleven minutes of every stage until it was named here (2026-09-26).
+##
+## An --exclude ALSO protects the path from --delete, so adding one stops future pushes
+## but does NOT remove a copy already on the cluster. That needs an explicit rm.
+EXCLUDES=(
+    '.git/' '.git' '.claude/' '.venv/' '.venv-soromox/'
+    'results/' 'logs/' 'notebooks/artifacts/'
+    '__pycache__/' '*.pyc' '.pytest_cache/'
+    'workshop-paper-draft.pdf'
+)
+
+## STAGE_EXTRA_EXCLUDES adds to the list for one run, space-separated:
+##   STAGE_EXTRA_EXCLUDES='models/panda/ scratch.npz' bash cluster/stage_code.sh
+## Same warning as above: an exclude added here suppresses the PUSH and the DELETE, so
+## it holds whatever is on the cluster frozen rather than removing it.
+if [ -n "${STAGE_EXTRA_EXCLUDES:-}" ]; then
+    read -r -a _EXTRA_EXCLUDES <<< "$STAGE_EXTRA_EXCLUDES"
+    EXCLUDES+=("${_EXTRA_EXCLUDES[@]}")
+fi
+
+EXCLUDE_ARGS=()
+for _e in "${EXCLUDES[@]}"; do
+    [ -n "$_e" ] && EXCLUDE_ARGS+=("--exclude=$_e")
+done
+echo "excluding: ${EXCLUDES[*]}"
+
 sc_rsync -az --delete \
     --filter='P models/*/*__step*.pkl' --filter='P models/*/*__step*.arch.json' \
     --filter='P models/*/*__global_step*.pkl' --filter='P models/*/*__global_step*.arch.json' \
-    --exclude='.git/' --exclude='.git' --exclude='.claude/' --exclude='.venv/' \
-    --exclude='results/' --exclude='logs/' --exclude='notebooks/artifacts/' \
-    --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' \
-    --exclude='workshop-paper-draft.pdf' \
+    "${EXCLUDE_ARGS[@]}" \
     "$REPO_ROOT/" "$SC_DEST:$SC_ROOT/repo/"
 
 sc_run "echo $COMMIT > ~/$SC_ROOT/repo/.staged-commit

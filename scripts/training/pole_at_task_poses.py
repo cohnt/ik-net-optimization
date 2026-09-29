@@ -37,12 +37,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__f
 sys.path.append(REPO_ROOT)
 sys.path.append(os.path.join(REPO_ROOT, "scripts/training"))
 
-from pole_metric import load_solver  # noqa: E402
+from pole_metric import ScreenDomain, SoftRungNames, load_solver  # noqa: E402
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--robot", default="iiwa14", choices=["iiwa14", "panda", "iiwa7"],
+    p.add_argument("--robot", default="iiwa14", choices=["iiwa14", "panda", "iiwa7"] + SoftRungNames(),
                    help="Robot the checkpoint was trained for. The Panda ladder needs "
                         "this; without --checkpoint it screens the upstream pretrained chart.")
     p.add_argument("--checkpoint", default=None,
@@ -83,7 +83,8 @@ def main():
     else:
         g = rng.normal(size=(args.n, width))
         g /= np.linalg.norm(g, axis=1, keepdims=True)
-        z = g * 4.3 * rng.uniform(size=(args.n, 1)) ** (1.0 / width)
+        _, _, latent_radius, _ = ScreenDomain(args.robot)
+        z = g * latent_radius * rng.uniform(size=(args.n, 1)) ** (1.0 / width)
 
     model = solver.nn_model.double().eval()
     dev = next(model.parameters()).device
@@ -105,8 +106,17 @@ def main():
            "rnvp_clamp": solver.arch["rnvp_clamp"],
            "dim_latent_space": solver.arch["dim_latent_space"],
            "n": args.n, "seed": args.seed, "z": args.z, "domain": "task_poses",
+           ## The literal-1000 keys keep their literal meaning FOREVER, so archived
+           ## screens stay comparable and the key never lies about what it counted.
+           ## `runaway_threshold` is the same quantity in this robot's own units -- 1000
+           ## radians against an iiwa limit of ~2.9 rad is ~345x, so 345 against a
+           ## normalized strain limit of 1 -- and is recorded beside the fraction it gates
+           ## rather than left for a reader to infer.
            "pole/frac_gt_1000": float((qinf > 1000).mean()),
            "pole/count_gt_1000": int((qinf > 1000).sum()),
+           "pole/runaway_threshold": float(ScreenDomain(args.robot)[3]),
+           "pole/frac_gt_threshold": float((qinf > ScreenDomain(args.robot)[3]).mean()),
+           "pole/latent_radius": float(ScreenDomain(args.robot)[2]),
            "pole/frac_gt_3": float((qinf > 3).mean()),
            "pole/p50": float(np.median(qinf)),
            "pole/p99": float(np.percentile(qinf, 99)),

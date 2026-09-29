@@ -35,14 +35,14 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__f
 sys.path.append(REPO_ROOT)
 sys.path.append(os.path.join(REPO_ROOT, "scripts/training"))
 
-from pole_metric import load_solver  # noqa: E402
+from pole_metric import ScreenDomain, SoftRungNames, load_solver  # noqa: E402
 
 RUNAWAY_RAD = 10.0
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--robot", default="iiwa14", choices=["iiwa14", "panda", "iiwa7"],
+    p.add_argument("--robot", default="iiwa14", choices=["iiwa14", "panda", "iiwa7"] + SoftRungNames(),
                    help="Robot the checkpoint was trained for. The Panda ladder needs "
                         "this; without --checkpoint it screens the upstream pretrained chart.")
     p.add_argument("--checkpoint", default=None)
