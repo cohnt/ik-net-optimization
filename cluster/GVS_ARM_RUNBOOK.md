@@ -127,6 +127,12 @@ lands.
   the soft process and open-file limits for `gvs_*`, and the builder caps its worker count
   by the soft limit so a job that cannot raise it runs slowly instead of dying. A cluster
   job's `nproc` prints 1 under `OMP_NUM_THREADS=1`; the builder reads `sched_getaffinity`.
+- **96 workers on a 48-core node is too many.** The first successful build (5780456) ran 96
+  workers on the hyperthreads: ~184 GB total RSS (each JAX+torch worker is ~1.9 GB with its
+  20000-sample batches in flight) against a 192 GB node, and ~30 cores busy on average --
+  the hyperthreads bought little and the memory nearly ran out. Size the next build at the
+  PHYSICAL core count (`--workers 48`, or `DATASET_WORKERS=48` once plumbed) and expect the
+  same throughput at half the memory.
 - **Two training-tooling hazards, reported by the screw-arm session (its runbook has the
   wording), not yet fixed in the shared scripts.** `status.json`'s `val_l2_error` (what
   `submit_ladder.sh --status` and `watch_ladder.sh` print) is the UNCLAMPED validation mean
