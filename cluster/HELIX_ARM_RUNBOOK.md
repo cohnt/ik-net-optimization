@@ -234,6 +234,43 @@ The rigid arms sit at 0.55-0.68% grasp and 0.23-0.37% pose acceptance, so this r
 their band. Acceptance falls monotonically with pitch on the grasp row, which is the stroke
 carrying more of the configuration box out of the shelves.
 
+## The cap check, PRE-REGISTERED before any cell is read
+
+Written 2026-09-29, while the chart ladder was still training and no benchmark row existed, so this
+rule cannot be shaped by the numbers it judges.
+
+**`max_iter` stays at `None`, i.e. IPOPT's own default of 3000.** Thomas's call, asked explicitly:
+*"Keep 3000 to match the record. Flag if that cap is binding -- rerunning cap-bound experiments is a
+followup task (out of scope for now)."* So these rows are measured under stage STATUSQUO's exact
+conditions and can stand beside them; raising the cap to pre-empt a budget-bound row was rejected,
+because differing conditions cost more than a possible re-run.
+
+**What must be read, on every row, before any verdict is stated.** The cap rule requires BOTH
+`timed_out` and `hit_iteration_cap`; `summarise` emits them per arm as `timeouts` and
+`iteration_capped`. Note which tool shows what:
+
+* `scripts/collate.py` prints both, as its `timeouts` and `icap` columns. **Use it.**
+* `scripts/report_statusquo.py` reads `iteration_capped` **nowhere at all** -- its own header
+  promises "with timeouts" and that is literally what it prints. This is why the record's
+  `max_iter` binding had to be discovered by hand after the fact rather than read off a table, and
+  it is a blind spot in accepted work rather than something this branch introduced. Do not infer a
+  clean cap from a reporter that cannot see half of it.
+
+**The rule, fixed in advance.** For each row, `capped = max(iteration_capped)` over the two arms:
+
+| condition | verdict |
+| --- | --- |
+| `timeouts` ~0 and `capped` ~0 | the budget is innocent; the row is a formulation result and carries its verdict |
+| either is material on the arm that LOST or floored | **the row carries NO verdict**; state it as budget-bound and name which budget |
+| either is material only on the WINNING arm | the verdict stands, and the margin is a lower bound |
+
+"Material" is not a fresh judgement per row: it is >=5% of 480 cells, i.e. 24, chosen now so it
+cannot be tuned later. Report the count either way -- a row with 3 capped cells says so.
+
+**And the obligation stops at flagging.** Detecting and reporting a budget-bound row is this push's
+deliverable; re-measuring it at a raised cap is a separate task Thomas has taken out of scope for
+now. So do not hold the write-up waiting on a re-run, and do not spend cluster time on one unasked.
+
 ## Still to build
 
 * The cap ladder (45 / 180 / 360 s), before any verdict is reported. It needs trained
