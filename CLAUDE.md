@@ -774,13 +774,13 @@ arms **adjacent**, bold the better of each pair, and **every row prints, zeros i
 
 ### What the tables say
 
-**Success. On the two rigid arms the learned arm wins 15 of 24 solver x experiment cells, ties 7 and
-loses 2** -- interior point 6/2/0, augmented Lagrangian 5/3/0, SQP 4/2/2 -- and interior point is the
-best entry in every row. **Both losses are iiwa contained grasp under SQP.** The soft arm adds
-**8 wins, 3 ties, 1 loss**, and its single loss is *also* contained grasp under SQP, which is useful
-corroboration on a robot whose configuration space is strain rather than joint angles: that weakness
-is a property of SQP on this problem class rather than of the rigid arms. Verdicts are by exact
-McNemar, which is also what decides a tie.
+**Success. Across all 36 solver x experiment cells the learned arm wins 23, ties 10 and loses 3** --
+interior point **10/2/0**, augmented Lagrangian **7/5/0**, SQP **6/3/3**. Interior point is the best
+entry in nearly every row and **loses nothing anywhere**. **All three losses are contained grasp
+under SQP** -- two on the iiwa, one on the soft arm -- so that weakness now reproduces on a robot
+whose configuration space is strain rather than joint angles, which makes it a property of SQP on
+this problem class rather than of the rigid arms. Verdicts are by exact McNemar, which is also what
+decides a tie; the reporter prints the tally beside the table so text and table cannot drift.
 
 **Cost splits by TASK, not by solver**: learned is cheaper on pose and ~1.4-1.8x more expensive on
 grasp, under every solver producing a comparison. `N/A` means fewer than 10 shared solved cells.
