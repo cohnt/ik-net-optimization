@@ -1285,6 +1285,75 @@ weights were deleted. Two fixes are known before spending a GPU hour: float32 fo
 for the screen and shipped weights, and a per-segment architecture composed analytically rather than
 one net over all 33 body poses.
 
+## The GVS push-rod arm: a robot with no closed-form forward model at all
+
+**On branch `gvs-actuated-arm`, 2026-09-29.** Built and tested locally; nothing submitted. Numbers:
+`docs/gvs-arm.md`. Operations: `cluster/GVS_ARM_RUNBOOK.md`. Thomas expects this experiment to
+**replace the soft PCS arm's in the final paper**, so the PCS rows are provisional.
+
+**What it is.** A spatial continuum arm driven in ACTUATION SPACE: three segments of a **tapered**
+(30 mm -> 15 mm) Geometric Variable Strain rod, strain a Legendre polynomial of order 0/1/2 per
+segment (rungs `gvs_pushrod9_o0/o1/o2`, primary `o1`), **three push-pull rods per segment at 120
+degrees**, each routed at 0.7 r(s) and acting only within its own segment. The configuration of every
+formulation is the **nine rod forces**, normalized to `[-1, 1]` (`F_max` = 13.2 / 7.2 / 3.4 N per
+segment, derived from one stated rule: a differential rod force reaches the PCS arm's 8.5 /m at the
+segment's mid-section). The forward map is **SoRoMoX's own GVS model solved to static equilibrium**
+(`src/gvs_arm/model.py`: Newton via optimistix, implicit differentiation, `jax.jacfwd` through the
+body poses), no gravity (a spec field, off, stated). LOInK's soft experiment is the reference
+(arXiv 2609.21275 sec. VII: SoRoMoX's planar HSA, 3 segments, 2 actuators each, simulated to
+equilibrium, IKFlow on the same data); ours is spatial, 9 inputs, with an optimization baseline they
+do not run, and Thomas rules the setups need not match: *"our contribution is orthogonal to LOInK."*
+
+**SoRoMoX IS the model, not an oracle.** Thomas: *"the point is to use that repo."* No torch
+re-derivation, no golden file; `soromox` + `jax[cpu]` + `optimistix` are runtime dependencies of the
+project venv (CPU jaxlib only -- the flow owns the GPU). What is tested is the WRAPPER: conventions,
+the rod input's sign, the implicit Jacobian, convergence, uniqueness. The PCS arm's torch map is the
+exception that motivated the old pattern, not a precedent.
+
+**Kinematic redundancy is in the inputs and is enforced.** Nine forces against a 6-D pose task
+(Thomas: *"at least one degree of kinematic redundancy"*); `GvsArmSpec.__post_init__` refuses a
+spec with `ninputs <= 6` and a test pins it. `dim_latent_space = 9` on every rung: the order ladder
+changes the forward model's fidelity, not the problem's width.
+
+**THE VACUITY TRAP, and why the backbone tapers.** With a uniform section, a straight-routed rod
+applies a uniform moment and the generalized stiffness is diagonal in the Legendre basis, so every
+coefficient above order 0 is EXACTLY zero at equilibrium -- an order ladder on such a rod would measure
+nothing. `EI(s) ~ r(s)^4` is what makes the strain variable. Measured and pinned by a test: a
+differential rod force gives 2.3 /m of Legendre-1 curvature on the taper and 1e-16 on a uniform rod.
+
+**Conventions are SoRoMoX's, deliberately.** Strains are `kappa_y, kappa_z, sigma_x` (local x is the
+backbone, `sigma_x = 1` the straight reference); with its default upright mounting the backbone runs
+along world +z at the origin, where every scene welds a robot, so nothing rotates a frame. Two
+consequences: the tip FRAME `gvs_tip` is declared in the SDF as `R_y(+90 deg)` on the tip body so its
+z runs along the rod (the gripper weld and the flow's conditioning pose are the same geometry as on
+every other robot), and body quaternions are canonicalised to `w >= 0`.
+
+**The discretization is an approximation and its size is measured**: at the fielded 7 Gauss points
+per segment the tip error against a 40-point reference is 0.009 mm max on order 1 and 0.0075 mm on
+order 2 (order 0 exact) -- two orders below the 1 mm task gate. The sphere union follows the taper
+(radius 1.4 r(s), 37 bodies, 259 plant positions) and contains the rod with ~2 mm to spare.
+
+**The forward model is a root-find, and that is the per-iteration price**: ~14 ms per evaluation and
+~18 ms per 259 x 9 Jacobian on one CPU core, beside the flow's ~17 ms. Newton converges in a median
+of 3 steps on 2000/2000 draws; random restarts reach the same equilibrium to 3e-15, so the cold start
+from the straight arm is a deterministic map and not a selection among alternatives. A draw that
+does not converge is REJECTED AND COUNTED in the dataset sampler, never written. The whole AutoDiffXd
+chain (flow `jacrev` -> implicit `dq*/du` -> poses -> Drake collision) matches central differences to
+7e-10. XLA takes every core unless `GVS_ARM_XLA_THREADS` pins it; `run_items.sh` pins 1 per worker,
+the dataset job leaves it unpinned.
+
+**The joint-space arm's failures are force saturation, not a wiring fault.** From the target, from
+straight and from random starts it converges to 1e-8; when it fails IPOPT reports local infeasibility
+with rod forces on the +-1 box. A property of the problem to report, like every other baseline's.
+
+**What is queued and what is not.** Stage `GVS` (`cluster/gen_manifest.py`: two trained rungs x two
+experiments x two protocols, IPOPT, status-quo shape) is generated by the selftest and not submitted.
+Datasets for `o1` and `o2` go through `cluster/chain_datasets.sh`, ONE AT A TIME, on the CPU partition
+of the branch's own tree `~/learned-ik-gvs`, and wait for Thomas's go-ahead; charts and the benchmark
+are out of this session's scope; `o0` is spec-only. The FK surrogate (`--fk learned`) is a cluster
+job not run. `scripts/gvs_arm/make_untrained_chart.py` writes a gitignored untrained chart so the
+pipeline can be smoked without training, and was: both tasks, both arms, end to end.
+
 ## Running on MIT SuperCloud (`cluster/`)
 
 `cluster/README.md` is the playbook and `~/.claude/skills/supercloud/SKILL.md` carries the standing
