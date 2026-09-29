@@ -6,17 +6,17 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-09-29 16:35 -- DATASET CHAIN QUEUED (one xeon-p8 node), second attempt
+## STATE AS OF 2026-09-29 17:10 -- FIRST DATASET BUILDING (one xeon-p8 node), third attempt
 
 | item | state |
 | --- | --- |
 | spec, model, SDF/scenes, shim, programs, driver, tests | done, all passing locally |
 | stage `GVS` in `cluster/gen_manifest.py`; `cluster/manifest_stageGVS.txt` | generated (64 items), never submitted |
 | cluster tree `~/learned-ik-gvs` | created; Drake, sysdeps and the drake_models cache symlinked read-only from `~/learned-ik`; its own venv built on `download` (job 5779961, `setup.DONE: OK`: torch cu126 with sm_70, jax 0.11.2 CPU, soromox 0.5.0, optimistix) |
-| staged commit | `8132dd0` |
+| staged commit | `97ef499` |
 | preflight `gvs_cal_preflight` (5780312, debug-cpu) | `PREFLIGHT OK`: 259 positions / 52 bodies, warm-up 15.8 s, PlantQ 20.1 ms, PlantJacobian 27.5 ms, 500-sample batch 18.4 s |
 | rate `gvs_cal_rate` (5780313, xeon-p8) | 14.9 ms/sample (batch 2000) and 11.9 ms/sample (batch 20000) single-process with XLA unpinned on 96 logical CPUs -- the batched JAX solve does not spread across cores; hence the process-parallel builder. Cancelled as stale once that was known |
-| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | QUEUED 16:33 as `lik_ds_gvs_pushrod9_o1` (5780422) then `lik_ds_gvs_pushrod9_o2` (5780423, `afterok`): 25M samples, 6 h wall, 48 CPUs, one node at a time, staged commit `8132dd0`. The first attempt (5780401/2, 16:12) died at startup -- see the trap below -- and was cancelled. Thomas released up to 4 xeon-p8 nodes at 15:40; the other three are free |
+| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | RUNNING since 16:39 as `lik_ds_gvs_pushrod9_o1` (5780456) then `lik_ds_gvs_pushrod9_o2` (5780457, `afterok`): 25M samples, 6 h wall, 48 CPUs (96 workers on the hyperthreads), one node at a time, staged commit `97ef499`. Test set 15,000 in 122 s including every worker's compile, 0 unconverged. Two earlier attempts (5780401/2 at 16:12, 5780422/3 at 16:33) died at startup on the thread limit -- the trap below -- and were cancelled. Thomas released up to 4 xeon-p8 nodes at 15:40; the other three are free |
 | charts `gvs_pushrod9_o{1,2}_n6` | NOT trained -- out of scope (behind the screw-arm queue and the PCS cleanup) |
 | FK surrogate (`--fk learned`) | NOT fitted -- a cluster job, not started |
 
@@ -115,13 +115,18 @@ lands.
   (`TipPose`), not the body.
 - **No chart ships.** The driver refuses without `--checkpoint`;
   `scripts/gvs_arm/make_untrained_chart.py` writes a gitignored untrained one for smoke runs.
-- **A process-parallel build must pin every numeric library to ONE thread per worker.**
+- **A process-parallel build needs one thread per worker AND a raised process limit.**
   The first cluster build spawned 96 workers whose OpenBLAS and torch OpenMP pools each
-  tried to create a thread per core; the node's `RLIMIT_NPROC 4096` ran out during
+  tried to create a thread per core; the node's soft `RLIMIT_NPROC 4096` ran out during
   `import numpy`, the pool kept respawning dying workers, and the job sat "RUNNING" writing
-  a 10 MB log of `pthread_create failed` while producing nothing. The builder now sets
-  `OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1` and `GVS_ARM_XLA_THREADS=1` before any import
-  (spawned children inherit it) and `build_dataset_job.sh` exports the same for `gvs_*`.
+  a 10 MB log of `pthread_create failed` while producing nothing. Pinning
+  `OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1` and `GVS_ARM_XLA_THREADS=1` was not enough: the
+  second attempt died the same way at `GetPjRtCpuClient`, because every JAX process still
+  creates XLA's per-core Eigen pool (idle) and its compiler threads, ~100 per process, and
+  no jax-0.11 flag turns that off. The hard limit is ~770k, so `build_dataset_job.sh` raises
+  the soft process and open-file limits for `gvs_*`, and the builder caps its worker count
+  by the soft limit so a job that cannot raise it runs slowly instead of dying. A cluster
+  job's `nproc` prints 1 under `OMP_NUM_THREADS=1`; the builder reads `sched_getaffinity`.
 - **Two training-tooling hazards, reported by the screw-arm session (its runbook has the
   wording), not yet fixed in the shared scripts.** `status.json`'s `val_l2_error` (what
   `submit_ladder.sh --status` and `watch_ladder.sh` print) is the UNCLAMPED validation mean
