@@ -3309,6 +3309,20 @@ def selftest():
             gvs_fails.append(f"stage GVS: {r['id']} is not IPOPT-only by default")
         if args[args.index("--rung") + 1] not in GVS_TRAINED_RUNGS:
             gvs_fails.append(f"stage GVS: {r['id']} fields a rung with no chart")
+    ## The COMMITTED manifest must be the stage as the selftest defines it. The generator's
+    ## CLI defaults (`--solvers`, `--starts`) belong to other stages, and a manifest written
+    ## with them once came out SNOPT-only and paired-only: 32 items that would have burnt a
+    ## campaign on the wrong solver. Generate with
+    ##   --wall-time 180 --targets 60 --guesses 8 --shards 8 --solvers ipopt --starts paired,native
+    committed = os.path.join(os.path.dirname(os.path.realpath(__file__)), "manifest_stageGVS.txt")
+    if os.path.exists(committed):
+        with open(committed) as f:
+            on_disk = sorted(line.split("|", 1)[0] for line in f if line.strip()
+                             and not line.startswith("#"))
+        if on_disk != sorted(gvs_ids):
+            gvs_fails.append(f"cluster/manifest_stageGVS.txt has {len(on_disk)} items and is not "
+                             f"stage GVS as defined here ({len(gvs_ids)} items); regenerate it "
+                             f"with --solvers ipopt --starts paired,native")
     if gvs_fails:
         for f in gvs_fails:
             print(f"FAIL {f}")
