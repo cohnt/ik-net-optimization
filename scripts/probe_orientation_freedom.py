@@ -53,7 +53,10 @@ def AchievedOrientations(robot, centre, radius, want, batch):
     while sum(len(k) for k in kept) < want:
         cfg = robot.sample_joint_angles(batch)
         drawn += batch
-        pose = robot.forward_kinematics(torch.as_tensor(cfg, dtype=torch.float64)).numpy()
+        ## Explicitly on the CPU: jrl sets torch's default device to cuda at import, and the
+        ## shim returns on the caller's device.
+        pose = robot.forward_kinematics(
+            torch.as_tensor(cfg, dtype=torch.float64, device="cpu")).cpu().numpy()
         near = np.linalg.norm(pose[:, :3] - centre, axis=1) < radius
         kept.append(pose[near, 3:])
         print(f"  drew {drawn:,}, kept {sum(len(k) for k in kept):,}", flush=True)

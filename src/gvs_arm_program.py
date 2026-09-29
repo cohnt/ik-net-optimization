@@ -96,7 +96,6 @@ class GvsArmIKProgram(SoftArmIKProgram):
                 return (jacobian(cfg).detach().cpu().numpy(),
                         forward(cfg).detach().cpu().numpy())
 
-            self._config_jacobian_np = None
             self._config_jacobian_torch = config_jacobian
         elif fk != "analytic":
             raise ValueError(f"unknown fk backend {fk!r}; expected 'analytic' or 'learned'")
