@@ -1328,6 +1328,25 @@ acceptance at inset 0.10 of **0.31-0.39% grasp and 0.33-0.34% pose**, inside the
 which is the stroke carrying more of the configuration box out of the shelves. The dataset builder,
 a 200-step training smoke and the export round trip all run clean.
 
+**This robot's pole screens are IN DISTRIBUTION, and that is now measured rather than argued.** The
+vendored fork's in-training callback draws its conditioning pose as a position and an orientation
+**independently**, which is a fair draw only where the arm reaches most of SO(3) at a given position.
+The soft arm does not, and its callback consequently read `pole/max` 2.4e8 against an
+in-distribution screen's 5.44 — eight orders, and a statement about unreachable poses rather than
+about the chart. The structural expectation here (7 DoF, roll-pitch-roll wrist) is that orientation
+is free, but that is exactly the kind of assumption the soft arm's experience says to stop leaving
+standing. `scripts/probe_orientation_freedom.py` settles it without an IK solver: hold the flange
+within 5 cm of the box centre `[0.4, 0, 0.5]` and measure how far an independently drawn orientation
+sits from the nearest one **achieved** there. A single such number is meaningless, being set by how
+sparsely SO(3) was sampled; **the SCALING is the measurement**, since a covering radius over a
+`d`-dimensional set falls as `N**(-1/d)`. Measured median degrees 24.1 / 16.8 / 11.7 at
+`N` = 200 / 600 / 1800 — **1.44x per 3x against the 1.44x a 3-dimensional set predicts, with no
+floor.** So the orientation set is full-dimensional, the callback's draw is reachable, and
+`ScreenDomain` returning the rigid tuple unchanged is correct. **Quote this robot's in-training pole
+curve directly beside the record's**, unlike the soft arm's. A lower-dimensional set would instead
+have plateaued at the distance from a random orientation to it — which is the general test, not a
+helix7 fact.
+
 ### Why a screw joint is a sensible thing to build
 
 Asked for directly (Thomas, 2026-09-25), because an invented robot has to be defensible as a
