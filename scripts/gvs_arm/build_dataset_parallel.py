@@ -30,7 +30,15 @@ import os
 import sys
 import time
 
-import numpy as np
+## ONE THREAD PER WORKER, set before numpy/torch/jax load in this process or any spawned
+## child (children inherit the environment). Without this every worker's OpenBLAS and
+## torch OpenMP pools spin up one thread per core: 96 workers x 64 threads blew through the
+## node's RLIMIT_NPROC of 4096 at startup on the first cluster run and killed the build.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+             "NUMEXPR_NUM_THREADS", "GVS_ARM_XLA_THREADS"):
+    os.environ[_var] = "1"
+
+import numpy as np  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 sys.path.insert(0, REPO)
@@ -45,6 +53,8 @@ def _worker(job):
     os.environ["GVS_ARM_XLA_THREADS"] = "1"
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
     np.random.seed(int(np.random.SeedSequence([seed, split, index]).generate_state(1)[0]))
+    import torch
+    torch.set_num_threads(1)
     import src.register_robots  # noqa: F401
     from jrl.robots import get_robot
     robot = get_robot(robot_name)

@@ -41,7 +41,9 @@ case "$ROBOT" in
         ## batched JAX solve does not spread across a node's cores (14.9 ms/sample measured
         ## on 96 cores with XLA unpinned). scripts/gvs_arm/build_dataset_parallel.py runs
         ## one single-threaded JAX per CPU the job owns and writes ikflow's exact files.
-        unset GVS_ARM_XLA_THREADS
+        ## One thread per worker process: the builder is process-parallel, and a per-core
+        ## BLAS/OpenMP pool in each of ~96 workers exhausts RLIMIT_NPROC (measured).
+        export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 GVS_ARM_XLA_THREADS=1
         "$PY" -u "$REPO/scripts/gvs_arm/build_dataset_parallel.py" \
             --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
         RC=$? ;;
