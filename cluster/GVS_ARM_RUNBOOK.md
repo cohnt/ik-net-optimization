@@ -55,12 +55,25 @@ not have its venv or code changed under them).
 
 ## The datagen rate, and what it sizes
 
-`GVS_ARM_XLA_THREADS=8 .venv/bin/python scripts/gvs_arm/probe_datagen_rate.py` measures
-seconds per sample through `sample_joint_angles_and_poses` (batched Newton + tip pose +
-self-collision screen). Record the number here when measured on the cluster's own node
-(48 cores, XLA threads unpinned in `build_dataset_job.sh`); the laptop figure, taken under a
-peer's load at nice 19, is an upper bound. LOInK used 2 x 10^6 samples; ikflow's default is
-25 x 10^6; `DATASET_SIZE` picks.
+`scripts/gvs_arm/probe_datagen_rate.py` measures seconds per sample through
+`sample_joint_angles_and_poses` (batched Newton + tip pose + self-collision screen), at
+nice 19 so it can share the machine. Laptop, 2026-09-29:
+
+| condition | us / sample | 2M samples | 25M samples |
+| --- | --- | --- | --- |
+| 2 XLA threads, machine idle (batch 2000) | ~3,400 | 1.9 h | 24 h |
+| 8 XLA threads, under a peer's 16-worker pool (batch 2000 / 20000) | 17,550 / 19,330 | 9.8 h | 122 h |
+
+Both are UPPER bounds for a dedicated 48-core `xeon-p8` node with XLA's pool unpinned, but
+the scaling is not measured, so the first build is sized like LOInK's dataset (2 x 10^6)
+with a generous wall time, and the second is sized from what the first one logged:
+
+    LEARNED_IK_ROOT=$HOME/learned-ik-gvs DATASET_SIZE=2000000 WALL=12:00:00 \
+        bash cluster/chain_datasets.sh gvs_pushrod9_o1 gvs_pushrod9_o2
+
+`rejected_unconverged` was 0 on 22,000 draws; the self-collision rate among uniform draws
+is ~0.25%. The ikflow default (25M) is what every other robot here trained on; whether
+this robot needs it is Thomas's call once the cluster rate is known.
 
 ## What a resuming session should check FIRST
 

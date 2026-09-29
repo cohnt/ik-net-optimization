@@ -33,6 +33,7 @@ robot-generic: the robot is resolved through `src.register_robots`, and its
     GVS_ARM_XLA_THREADS=8 python scripts/probe_orientation_freedom.py --robot gvs_pushrod9_o1
 """
 import argparse
+import os
 import pathlib
 import sys
 
@@ -40,6 +41,7 @@ import numpy as np
 import torch
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+os.nice(19)  # a probe; it shares the machine
 
 import src.register_robots as rr  # noqa: E402
 from jrl.robots import get_robot  # noqa: E402
