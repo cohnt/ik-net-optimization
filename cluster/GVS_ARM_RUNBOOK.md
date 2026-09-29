@@ -49,9 +49,14 @@ not have its venv or code changed under them).
    `ikflow_entry.py` retargets the pole screen to in-distribution poses for these rungs
    automatically (they have no torsion, so an independently drawn orientation is
    unreachable, exactly as on `soft12`).
-5. **Benchmark stage** (out of scope here): `python cluster/gen_manifest.py --stage GVS
-   --wall-time 180 --targets 60 --guesses 8 --shards 8 -o cluster/manifest_stageGVS.txt`,
-   then `submit_bench.sh`. IPOPT only; the solver axis is closed.
+5. **Benchmark stage** (out of scope here): the committed `cluster/manifest_stageGVS.txt`
+   (64 items: two rungs x two experiments x two protocols x 8 shards, IPOPT, 180 s), which
+   `gen_manifest.py --selftest` checks against the stage definition; regenerate ONLY with
+   `python cluster/gen_manifest.py --stage GVS --wall-time 180 --targets 60 --guesses 8
+   --shards 8 --solvers ipopt --starts paired,native -o cluster/manifest_stageGVS.txt` -- the
+   generator's CLI defaults belong to other stages and once produced a SNOPT-only,
+   paired-only file. Then `submit_bench.sh manifest_stageGVS.txt 4`, which refuses while
+   the checkpoints it names do not exist. IPOPT only; the solver axis is closed.
 
 ## The datagen rate, and what it sizes
 
@@ -96,3 +101,10 @@ this robot needs it is Thomas's call once the cluster rate is known.
   (`TipPose`), not the body.
 - **No chart ships.** The driver refuses without `--checkpoint`;
   `scripts/gvs_arm/make_untrained_chart.py` writes a gitignored untrained one for smoke runs.
+- **Two training-tooling hazards, reported by the screw-arm session (its runbook has the
+  wording), not yet fixed in the shared scripts.** `status.json`'s `val_l2_error` (what
+  `submit_ladder.sh --status` and `watch_ladder.sh` print) is the UNCLAMPED validation mean
+  and is tail-driven -- one out-of-limits sample moves it an order of magnitude; read
+  `val_clamped/l2_error` in `results/train/<rung>/metrics/version_0/metrics.csv` instead. And
+  an export log's LAST screen is not the final checkpoint: the export job iterates
+  checkpoints lexicographically, so `step80000` sorts after `step620000`.
