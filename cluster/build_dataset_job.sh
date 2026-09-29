@@ -35,9 +35,21 @@ PY="$ROOT/venv/bin/python"
 OUT="$ROOT/home/.cache/ikflow/datasets/$ROBOT"
 echo "building $ROBOT dataset: size=$SIZE seed=$SEED -> $OUT"
 
-"$PY" -u "$REPO/scripts/training/ikflow_entry.py" build_dataset \
-    --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
-RC=$?
+case "$ROBOT" in
+    gvs_*)
+        ## The GVS push-rod arm: every sample is a Newton solve on SoRoMoX's rod, and the
+        ## batched JAX solve does not spread across a node's cores (14.9 ms/sample measured
+        ## on 96 cores with XLA unpinned). scripts/gvs_arm/build_dataset_parallel.py runs
+        ## one single-threaded JAX per CPU the job owns and writes ikflow's exact files.
+        unset GVS_ARM_XLA_THREADS
+        "$PY" -u "$REPO/scripts/gvs_arm/build_dataset_parallel.py" \
+            --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
+        RC=$? ;;
+    *)
+        "$PY" -u "$REPO/scripts/training/ikflow_entry.py" build_dataset \
+            --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
+        RC=$? ;;
+esac
 
 if [ $RC -eq 0 ] && [ -d "$OUT" ]; then
     du -sh "$OUT"
