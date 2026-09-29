@@ -1,4 +1,4 @@
-# Soft arm: the run's own record
+# Soft PCS arm: the run's own record
 
 What is queued, what it depends on, and what a resuming session should check first. The
 design and the measured facts live in `CLAUDE.md`; this is the operational half.
@@ -28,8 +28,8 @@ target-major and its set does not complete. Do not promote or report them.
 **The cluster is now the screw-joint arm's.** Its smoke `5738845` exited COMPLETED, `5738846` (its
 pre-registered n6 rung) is training on all 4 nodes, and `5738847-50` are chained behind it. That is
 a single job at a time for as long as its ladder takes, so **this project has no nodes until it
-finishes or its owner parks a rung**. The remaining soft-arm work -- the FK surrogate fit -- is a
-cluster job and must wait for nodes or be negotiated with that agent and Thomas.
+finishes or its owner parks a rung**. The remaining work on the soft PCS arm -- the FK surrogate
+fit -- is a cluster job and must wait for nodes or be negotiated with that agent and Thomas.
 
 ### The one open item on this robot: the FK surrogate fit
 
@@ -204,7 +204,7 @@ the recorded staged-commit marker is orphaned. Trust the tree comparison, not th
 `mugshelf` lines of `manifest_stageSOFT12.txt`, so tags, shards and grid hashes match the pose
 half already on disk.
 
-## The soft arm's first real rows: stage SOFT12, pose half (2026-09-25)
+## The soft PCS arm's first real rows: stage SOFT12, pose half (2026-09-25)
 
 Six logical runs, 480 cells each, 2,880 cells, 180 s, seed 1, `soft12__n6__step620000`, arms
 `learned,numerical`. The grasp half of this stage died at construction (see above) and reruns
@@ -252,7 +252,7 @@ what the diagnostic should read.
 So the paired penalty is the DESIGNED behaviour the record describes -- the arm starts outside
 the latent region and the solver walks it in -- not a bound projecting a start it should not.
 What is worth reporting is its SIZE on this robot relative to the rigid arms, which is a
-result about the soft arm, not a bug.
+result about the soft PCS arm, not a bug.
 
 NLopt's joint-space column is at 51-52 of 480 with `median_max_violation` **1.37e-01**, which
 is the record's augmented-Lagrangian collapse reproduced on a third robot.
@@ -310,7 +310,7 @@ Table 2 has the learned arm cheaper on pose and ~1.4-1.8x more expensive on gras
 joint space is cheaper on **nine of the ten comparable rows**, pose included -- IPOPT pose native
 1.37 against 0.55 (2.5x), IPOPT grasp native 0.84 against 0.33 (2.6x), SNOPT pose essentially
 level at 1.02-1.04x. The single row where the learned arm is cheaper is NLopt pose paired (0.85
-against 0.98) on 41 shared cells, which is thin. So on the soft arm the learned formulation buys
+against 0.98) on 41 shared cells, which is thin. So on the soft PCS arm the learned formulation buys
 feasibility and pays for it in objective value on both tasks, where on the rigid arms it bought
 pose cost outright. State it as a robot-level difference, not as a task split.
 

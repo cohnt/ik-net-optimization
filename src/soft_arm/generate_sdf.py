@@ -1,4 +1,4 @@
-"""Emit the soft arm's Drake model from `params.py`, so the two cannot drift.
+"""Emit the soft PCS arm's Drake model from `params.py`, so the two cannot drift.
 
 The generated file is committed alongside this generator, and a test regenerates it and
 asserts byte-equality -- the discipline the repo already runs on the hardened scene YAMLs
@@ -14,7 +14,7 @@ dummy links:
   * one body per sub-link instead of six;
   * the plant's position limits are +-inf, so a sampler that draws uniformly over plant
     limits fails LOUDLY with nan instead of quietly producing nonsense. That sampler is
-    exactly what the existing benchmark scripts do, and the soft-arm script has to
+    exactly what the existing benchmark scripts do, and the soft PCS arm's script has to
     replace it.
 
 WHY SPHERES AND NOT CAPSULES.  Measured, and it is not a preference. Drake's proximity

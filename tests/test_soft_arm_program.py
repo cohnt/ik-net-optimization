@@ -1,4 +1,4 @@
-"""The soft arm's four programs: gradients, the paired start, and the two forward models.
+"""The soft PCS arm's four programs: gradients, the paired start, and the two forward models.
 
 `test_soft_arm_kinematics.py` pins the MAP. This pins what the PROGRAM does with it, which is
 where the robot meets the shared machinery:
@@ -217,7 +217,7 @@ def test_every_program_accepts_what_the_driver_passes():
         params = inspect.signature(cls.__init__).parameters
         missing = required - set(params) - {"diagram"}
         assert not missing, f"{cls.__name__}.__init__ does not accept {sorted(missing)}"
-    print("PASS all four soft-arm programs accept the driver's keyword set")
+    print("PASS all four soft PCS arm programs accept the driver's keyword set")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/bin/bash
-# LLsub payload: fit the soft arm's learned forward-kinematics surrogate.
+# LLsub payload: fit the soft PCS arm's learned forward-kinematics surrogate.
 #
 # ============================ STANDING REMINDER ============================
 # If even REMOTELY unsure about a SuperCloud action, STOP and ask Thomas.

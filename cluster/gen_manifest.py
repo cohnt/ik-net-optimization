@@ -34,7 +34,7 @@ import sys
 
 SCRIPTS = {"panda": "scripts/panda/panda_benchmark.py",
            "iiwa": "scripts/iiwa/iiwa_benchmark.py"}
-## The soft arm's three rungs share one driver, selected with --rung. Registered here so
+## The soft PCS arm's three rungs share one driver, selected with --rung. Registered here so
 ## `item()` can find a script for them like any other robot.
 SOFT_RUNGS = ("soft9", "soft12", "soft16")
 SCRIPTS.update({rung: "scripts/soft_arm/soft_arm_benchmark.py" for rung in SOFT_RUNGS})
@@ -1796,7 +1796,7 @@ STATUSQUO_WALL = 180.0
 STATUSQUO_ROWS = tuple(r for r in SOLVER2_ROWS if "free" not in r[2])
 
 
-#: The soft arm's chart, once trained. Pre-registered at nb_nodes = 6 BEFORE any cell was
+#: The soft PCS arm's chart, once trained. Pre-registered at nb_nodes = 6 BEFORE any cell was
 #: measured: the gain-ceiling rule admits both 4 (2.2e4) and 6 (3.2e6) below the ~1e7 runaway
 #: band, and 6 is the most expressive it allows. n4 and n8 are trained and REPORTED as the
 #: ladder measurement -- n8 above the ceiling being the control that the ceiling matters --
@@ -1820,9 +1820,9 @@ SOFT_CHART_RUNGS = tuple(
 
 def stage_SOFT12(wall, targets, guesses, shards, only=None, tag="SOFT12", seed=1,
                  solvers="ipopt,snopt,nlopt", starts="paired,native"):
-    """The soft arm's status-quo-shaped rows: 2 experiments x 2 protocols x 3 solvers.
+    """The soft PCS arm's status-quo-shaped rows: 2 experiments x 2 protocols x 3 solvers.
 
-    Deliberately the same shape, cap and seed as stage_STATUSQUO so the soft arm's rows can
+    Deliberately the same shape, cap and seed as stage_STATUSQUO so the soft PCS arm's rows can
     stand beside the record's without a caveat about conditions. It is a SEPARATE stage
     rather than a third entry in ADOPTED_RUNGS because the status quo is accepted work and
     this robot is not yet: adding it there would have silently changed what STATUSQUO means.
@@ -2340,7 +2340,7 @@ def _ladder_paths_match_export():
     # and already skipped.) Listed explicitly so a genuinely missing rung still fails.
     PRE_EXISTING = {"models/iiwa14/iiwa14__ddp-r1__step620000.pkl"}
 
-    ## The soft arm's charts are benchmarked through SOFT_ADOPTED rather than
+    ## The soft PCS arm's charts are benchmarked through SOFT_ADOPTED rather than
     ## LADDER_RUNGS -- it is a separate stage, because the status quo is accepted work and
     ## this robot is not yet -- so they are included here explicitly. Without this, every
     ## soft row in ladder_runs.txt reads as "trains but nothing benchmarks it", and the

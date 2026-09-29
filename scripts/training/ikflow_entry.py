@@ -1,6 +1,6 @@
 """Run a vendored-ikflow script with this project's robots registered first.
 
-ikflow resolves its robot through `jrl.robots.get_robot`, which scans a registry the soft
+ikflow resolves its robot through `jrl.robots.get_robot`, which scans a registry the soft PCS
 arm is not in until `src.soft_arm.register` is imported. The fork's own scripts do not
 import it -- and should not have to, since it is our robot and not theirs. This wrapper
 imports the registration and then runs the fork's script unchanged, so the fork stays

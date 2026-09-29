@@ -136,7 +136,7 @@ SCENES = {
         wrist_frame="hand", fingertip_frame="between_fingers"),
 }
 
-## The soft arm's rungs, built from the same description that emits their scenes rather
+## The soft PCS arm's rungs, built from the same description that emits their scenes rather
 ## than written out three times.  Its scenes carry the SAME four shelf welds and two tables
 ## as the rigid arms', which is what lets the compartment table, the containment predicate
 ## and the acceptance probe apply to it untouched.
@@ -147,7 +147,7 @@ SCENES = {
 ##
 ## The pose task targets `soft_tip`, the end of the backbone, which is also the frame the
 ## flow is conditioned on.  The containment points are the gripper's own, exactly as on
-## both rigid arms: the soft arm carries the SAME finray gripper, so `between_fingers` and
+## both rigid arms: the soft PCS arm carries the SAME finray gripper, so `between_fingers` and
 ## the 0.100 m step behind it are literally the same geometry on all three robots.
 for _spec in _SOFT_RUNGS.values():
     _hardened = f"models/{_spec.name}/{_spec.name}_collision_hardened.yaml"

@@ -45,7 +45,7 @@ STATIC_FURNITURE = {"table", "table2", "shelves", "shelves2", "shelves3", "shelv
 REMOVED = {
     ("panda", "mug"): ("binF",),
     ("iiwa", "mug"): ("binF",) + DECORATIVE_MUGS,
-    ## The soft arm's rungs. Their scenes are GENERATED, hardened and legacy from one
+    ## The soft PCS arm's rungs. Their scenes are GENERATED, hardened and legacy from one
     ## function, so the pair relation holds by construction -- but it is asserted on the
     ## file contents anyway, because a generated scene can drift from its generator as
     ## easily as a hand-written one, and nobody reads it. Only the bin: the generator never
@@ -55,7 +55,7 @@ REMOVED = {
     ("soft16", "mug"): ("binF",),
 }
 
-#: Rungs of the soft arm, for the tests that need a robot name rather than a SCENES sweep.
+#: Rungs of the soft PCS arm, for the tests that need a robot name rather than a SCENES sweep.
 SOFT_RUNGS = ("soft9", "soft12", "soft16")
 
 _CACHE = {}

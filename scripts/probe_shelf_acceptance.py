@@ -52,7 +52,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--robots", default="panda,iiwa",
-                   help="the soft arm's rungs (soft9/soft12/soft16) are valid too; "
+                   help="the soft PCS arm's rungs (soft9/soft12/soft16) are valid too; "
                         "they are not in the default because the default is the "
                         "record's two robots")
     p.add_argument("--tasks", default="mug,pose")
@@ -93,7 +93,7 @@ def probe_scene(robot, task, draws, seed, scene="hardened"):
 
     ## HOW A CONFIGURATION IS DRAWN depends on whether the plant's positions ARE the
     ## configuration. On the rigid arms they are, so a uniform draw over the plant's limits
-    ## is the robot's own box. On the soft arm the plant carries quaternion floating bodies
+    ## is the robot's own box. On the soft PCS arm the plant carries quaternion floating bodies
     ## whose limits are +-inf, so that draw is `nan`: the configuration is 9-16 normalized
     ## strains and has to be mapped through the kinematics. Same split the benchmark driver
     ## makes, and the slot map is the SAME helper, so the probe and the driver cannot

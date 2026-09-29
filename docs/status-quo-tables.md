@@ -1,7 +1,7 @@
 # The campaign of record: the tables
 
 Measured 2026-09-19/20 (stages STATUSQUO, panda + iiwa) and 2026-09-28 (stage SOFT12, soft12),
-accepted by Thomas on 2026-09-21 and extended to the soft arm on 2026-09-28. `CLAUDE.md` carries
+accepted by Thomas on 2026-09-21 and extended to the soft PCS arm on 2026-09-28. `CLAUDE.md` carries
 what these tables **say**; this file carries the tables themselves, so a session pays for them only
 when it needs a number.
 
@@ -15,21 +15,22 @@ shelf-contained targets at the fingertips, arms `learned,numerical`, both start 
 solvers at their adopted configurations, Drake nightly `0.0.20260918`. **36 logical runs**, three
 robots x two experiments x two protocols x three solvers.
 
-The soft arm joins from SOFT12 rather than from a re-run under `stage_STATUSQUO`, because the
+The soft PCS arm joins from SOFT12 rather than from a re-run under `stage_STATUSQUO`, because the
 conditions are identical and a re-run would re-measure the same thing on equivalent nodes (Thomas,
 2026-09-28: *"I don't see 12-by-3 vs 36 as a substantial difference ... all nodes are created equal
 on supercloud"*). Only the provenance is split.
 
 ## Read the grasp rows with the cap caveat
 
-**Four of the soft arm's rows and several of the rigid arms' are iteration-cap-bound and their
+**Four of the soft PCS arm's rows and several of the rigid arms' are iteration-cap-bound and their
 verdicts are PROVISIONAL.** `max_iter` defaults to `None`, so IPOPT runs at its own default of 3000
 and a cell can reach it well inside the 180 s wall clock -- which `timed_out` does not record and
 `hit_iteration_cap` does. Specifically: soft12 grasp under IPOPT has joint space 23 cap-bound with
 ~126 s unspent against a learned margin of 23-29 cells, so a decisive win could become a tie; soft12
-grasp under SNOPT has learned 27-43 and joint 42 cap-bound, and the soft arm's one loss sits there;
-and on the rigid arms the two iiwa contained-grasp ties and Panda grasp's joint-space arm (80 cells)
-are affected. **All pose rows are clean**, and they carry the record's largest effects. The re-run is
+grasp under SNOPT has learned 27-43 and joint 42 cap-bound, and the soft PCS arm's one loss sits
+there; and on the rigid arms the two iiwa contained-grasp ties and Panda grasp's joint-space arm
+(80 cells) are affected. **All pose rows are clean**, and they carry the record's largest effects.
+The re-run is
 a standing to-do; until it lands, quote the grasp verdicts with this attached.
 
 ---

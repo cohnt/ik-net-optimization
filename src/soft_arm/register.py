@@ -1,4 +1,4 @@
-"""Make the soft arm visible to `jrl.robots.get_robot`, and therefore to ikflow.
+"""Make the soft PCS arm visible to `jrl.robots.get_robot`, and therefore to ikflow.
 
 `get_robot` scans `jrl.robots.ALL_CLCS` for a class whose `name` matches, so appending to
 that list is the whole mechanism -- no fork of jrl, no edit to the vendored ikflow fork,

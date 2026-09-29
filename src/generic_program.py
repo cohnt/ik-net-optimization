@@ -977,7 +977,7 @@ class IKFlowProgram:
         which is both rigid arms -- `num_pos == num_arm_dof == 7` in every live scene --
         and the default returns the SAME OBJECT twice, so nothing downstream can tell the
         difference. They part company on a robot whose configuration parameterises
-        something else: the soft arm decides over 12 strains and drives 231 floating-body
+        something else: the soft PCS arm decides over 12 strains and drives 231 floating-body
         positions, where the plant vector carries quaternions and metres and its "limits"
         are +-inf.
 
@@ -1581,7 +1581,7 @@ class IKFlowProgram:
         # Shares the constraint binding's flow evaluation when share_flow_evaluations is
         # on; otherwise this is a second full forward pass / jacrev at the same point.
         ## Acts on the CONFIGURATION. Identical on the rigid arms, where the configuration
-        ## is the plant vector; on the soft arm this is a quadratic in strains, whose zero
+        ## is the plant vector; on the soft PCS arm this is a quadratic in strains, whose zero
         ## is the straight unstretched rod -- the elastic-energy analogue of joint
         ## centering, and the same shared objective either way.
         self.QAndPose(vars)

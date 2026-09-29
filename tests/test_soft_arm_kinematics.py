@@ -1,4 +1,4 @@
-"""The soft arm's kinematics, and the Drake model's agreement with them.
+"""The soft PCS arm's kinematics, and the Drake model's agreement with them.
 
 Each test can only fail for its own reason, so a failure names its own source:
 

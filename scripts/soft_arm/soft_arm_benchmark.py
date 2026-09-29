@@ -1,4 +1,5 @@
-"""Paired-grid benchmark on the soft continuum arm, learned against joint space.
+"""Paired-grid benchmark on the soft PCS (piecewise constant strain) arm, learned against joint
+space.
 
 The same harness as `scripts/iiwa/iiwa_benchmark.py`; there is no analytic arm, for the
 same reason there is none on the iiwa and a stronger one -- a redundant continuum arm has

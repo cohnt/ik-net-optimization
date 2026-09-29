@@ -1,4 +1,4 @@
-# The soft arm's two ladders: the chart ladder and the DOF ladder
+# The soft PCS arm's two ladders: the chart ladder and the DOF ladder
 
 Measured 2026-09-28 from stages `SOFTCHART` and `SOFTDOF`, both at the status-quo shape --
 hardened scene, shelf-contained targets at the fingertips, 180 s, 480 cells = 60 targets x 8
@@ -152,7 +152,7 @@ is partly an artifact of stopping early.
 **Pose native is clean on both arms** (`hit_iteration_cap` 0), and those are the rows carrying
 the largest effects (146-198 cells, p down to 5.0e-60). Those verdicts are safe.
 
-### This is not confined to the soft arm
+### This is not confined to the soft PCS arm
 
 The record's own IPOPT rows have it, and it was never checked, because the flag criteria read
 `timed_out` alone:
@@ -188,7 +188,7 @@ enough that the declared wall-clock cap is the binding budget. `ProgramOptions`'
 the wall clock is what binds". That premise is false on any row where a cell reaches 3000 inside
 the cap.
 
-**Thomas's ruling, 2026-09-28: do not re-run, on either the soft arm or the record.** The soft
+**Thomas's ruling, 2026-09-28: do not re-run, on either the soft PCS arm or the record.** The soft
 tables stand as measured with the losing row reported as budget-bound and carrying no verdict, and
 the status quo is left untouched with the caveat recorded against the two iiwa contained-grasp ties.
 No compute was spent on this. Do not re-open either question.
@@ -223,8 +223,8 @@ binds, and it is saturated.
 
 This agrees with the rigid arms and extends them: the iiwa grasp rows are 0-3 of 60 under *every*
 NLopt setting and at 180 s, and `docs/closed-axes.md` records that at NLopt's own defaults ten of
-twelve rows are identical between 45 s and 180 s. The soft arm now adds a 4x cap sweep on a row where
-every single cell is cap-bound, and it does not move.
+twelve rows are identical between 45 s and 180 s. The soft PCS arm now adds a 4x cap sweep on a row
+where every single cell is cap-bound, and it does not move.
 
 **The 180 s rung is also a same-configuration reproducibility control, and it lands exactly.** It was
 regenerated and resubmitted as its own stage rather than reused from SOFT12, and it reproduces SOFT12

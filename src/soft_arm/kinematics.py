@@ -1,4 +1,4 @@
-"""The soft arm's forward kinematics, in torch, once.
+"""The soft PCS arm's forward kinematics, in torch, once.
 
 This module is the ONLY implementation of the arm's kinematics that runs. The float path
 of `VarsToQ`, the AutoDiffXd path's Jacobian, the training dataset's poses, the jrl shim's
@@ -234,8 +234,9 @@ def config_to_plant_q(cfg, spec, dtype=torch.float64, device="cpu"):
 
     Every sub-link is a quaternion floating body, whose 7 positions Drake orders
     `[qw, qx, qy, qz, x, y, z]`; bodies appear in the order `spec.body_names()` gives,
-    which is segment-major with the tip mount last. `tests/test_soft_arm_drake.py` pins
-    both orderings against the plant rather than trusting this comment.
+    which is segment-major with the tip mount last.
+    `tests/test_soft_arm_kinematics.py::test_drake_matches_torch` pins both orderings against
+    the plant rather than trusting this comment.
     """
     quat, translation, tip_quat, tip_translation = sublink_poses(cfg, spec, dtype, device)
     quat = torch.cat([quat, tip_quat.unsqueeze(-2)], dim=-2)
