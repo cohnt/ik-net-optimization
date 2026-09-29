@@ -35,3 +35,5 @@ wandb/
 
 ## The SoRoMoX oracle venv: disposable, offline-only, and 300+ MB of jaxlib.
 .venv-soromox/
+## Untrained smoke-test charts (scripts/gvs_arm/make_untrained_chart.py): never tracked, sidecar included.
+models/*/*__untrained__*

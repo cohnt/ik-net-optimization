@@ -45,6 +45,12 @@ ALL_ARMS = {"panda": "learned,numerical,analytic,analytic8", "iiwa": "learned,nu
 ## Two arms, for a stronger reason than the iiwa's: a redundant continuum arm has no
 ## closed-form IK to write an analytic column from.
 ALL_ARMS.update({rung: "learned,numerical" for rung in SOFT_RUNGS})
+## The GVS push-rod arm's three rungs (backbone Legendre order 0/1/2) share one driver too.
+## Two arms for the same reason: an actuation-space arm whose forward map is SoRoMoX solved
+## to equilibrium has no closed form to write an analytic column from.
+GVS_RUNGS = ("gvs_pushrod9_o0", "gvs_pushrod9_o1", "gvs_pushrod9_o2")
+SCRIPTS.update({rung: "scripts/gvs_arm/gvs_arm_benchmark.py" for rung in GVS_RUNGS})
+ALL_ARMS.update({rung: "learned,numerical" for rung in GVS_RUNGS})
 
 # Seconds per (cell x arm), used only for the LPT ordering and the --summary
 # estimate. Deliberately pessimistic: the learned arm is the one that can sit at
@@ -1818,6 +1824,60 @@ SOFT_CHART_RUNGS = tuple(
     for label in ("n4", "n6", "n8"))
 
 
+#: The GVS push-rod arm's charts. Pre-registered at `n6` on every rung BEFORE any cell is
+#: read, by the gain-ceiling rule (the same choice as the soft PCS arm's); the latent is the
+#: 9-wide input on every rung. Path follows the export contract exactly.
+GVS_PRIMARY = "gvs_pushrod9_o1"
+GVS_ADOPTED = {rung: ("n6", f"models/{rung}/{rung}__n6__step620000.pkl")
+               for rung in GVS_RUNGS}
+#: The rungs that get a dataset and a chart: order 1 (primary) and order 2. Order 0 is the
+#: constant-strain control inside the same family, spec-only until Thomas asks for its chart.
+GVS_TRAINED_RUNGS = ("gvs_pushrod9_o1", "gvs_pushrod9_o2")
+
+
+def stage_GVS(wall, targets, guesses, shards, only=None, tag="GVS", seed=1,
+              solvers="ipopt", starts="paired,native"):
+    """The GVS push-rod arm's status-quo-shaped rows: 2 experiments x 2 protocols, per rung.
+
+    The same shape, cap and seed as stage_STATUSQUO and stage_SOFT12, so the rows can stand
+    beside the record's; IPOPT only by default, because the solver axis is closed and this
+    robot's question is the forward model, not the method class. `--rungs` selects among
+    the trained rungs (`--rungs gvs_pushrod9_o1` is the primary alone); order 0 is fielded
+    only if it has a chart, which the selftest does not assume. SEPARATE from ADOPTED_RUNGS
+    for the same reason the soft PCS arm's stage is: the status quo is accepted work.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_solvers = [x.strip() for x in solvers.split(",") if x.strip()]
+    for sv in want_solvers:
+        if sv not in SOLVER_CLASSES:
+            raise SystemExit(f"--solvers: {sv!r} is not one of the three method classes")
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    if float(wall) != STATUSQUO_WALL:
+        raise SystemExit(f"--wall-time must be {STATUSQUO_WALL:g} to stand beside the status "
+                         f"quo; got {wall}")
+    wall = float(wall)
+    items = []
+    for rung in GVS_TRAINED_RUNGS:
+        if wanted is not None and rung not in wanted:
+            continue
+        label, ckpt = GVS_ADOPTED[rung]
+        base = ["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+                "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
+                "--rung", rung, "--checkpoint", ckpt]
+        for solver in want_solvers:
+            item_shards = shards * STATUSQUO_SHARD_SCALE[solver]
+            for task, token, placement in STATUSQUO_ROWS:
+                for start in want_starts:
+                    items += item(rung,
+                                  f"sc_{tag}_{rung}_{label}_{solver}_{token}"
+                                  f"_{targets * guesses}_{int(wall)}_{start}",
+                                  ["--task", task, "--start", start, "--solver", solver]
+                                  + placement + base,
+                                  targets, guesses, ALL_ARMS[rung], wall, item_shards,
+                                  seed=seed)
+    return items
+
+
 def stage_SOFT12(wall, targets, guesses, shards, only=None, tag="SOFT12", seed=1,
                  solvers="ipopt,snopt,nlopt", starts="paired,native"):
     """The soft PCS arm's status-quo-shaped rows: 2 experiments x 2 protocols x 3 solvers.
@@ -2347,7 +2407,8 @@ def _ladder_paths_match_export():
     ## check that exists to catch a missing chart would be reporting a bookkeeping gap.
     benchmarked = ({c for _, _, c in LADDER_RUNGS if c}
                    | {c for _, c in SOFT_ADOPTED.values()}
-                   | {c for _, _, c in SOFT_CHART_RUNGS}) - PRE_EXISTING
+                   | {c for _, _, c in SOFT_CHART_RUNGS}
+                   | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
         fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt row would export it")
@@ -3221,6 +3282,41 @@ def selftest():
         print(f"ok   stage SOFTCAP: {2 * len(CAP_SWEEP)} logical runs over caps "
               f"{sorted(CAP_SWEEP)}, NLopt contained grasp only, every shard inside 4 h")
 
+    ## Stage GVS: the same invariants as the soft stages, on the GVS driver. Two trained
+    ## rungs x 2 experiments x 2 protocols at one solver = 8 logical runs; every item names a
+    ## rung and a checkpoint; contained placement only; the status-quo cap; two arms.
+    gvs_fails = []
+    gvs_runs = stage_GVS(180, 60, 8, 8)
+    gvs_ids = [r["id"] for r in gvs_runs]
+    if len(set(gvs_ids)) != len(gvs_ids):
+        gvs_fails.append("stage GVS: duplicate item ids")
+    gvs_logical = len({i.rsplit("_shard", 1)[0] for i in gvs_ids})
+    if gvs_logical != 8:
+        gvs_fails.append(f"stage GVS: {gvs_logical} logical runs, expected 8")
+    for r in gvs_runs:
+        args = r["args"]
+        if r["script"] != "scripts/gvs_arm/gvs_arm_benchmark.py":
+            gvs_fails.append(f"stage GVS: {r['id']} does not use the GVS driver")
+        if "free" in args:
+            gvs_fails.append(f"stage GVS: {r['id']} fields the retired free placement")
+        if "--rung" not in args or "--checkpoint" not in args:
+            gvs_fails.append(f"stage GVS: {r['id']} omits --rung or --checkpoint")
+        if args[args.index("--wall-time") + 1] != str(STATUSQUO_WALL):
+            gvs_fails.append(f"stage GVS: {r['id']} is not at the status-quo cap")
+        if args[args.index("--arms") + 1] != "learned,numerical":
+            gvs_fails.append(f"stage GVS: {r['id']} does not field exactly two arms")
+        if args[args.index("--solver") + 1] != "ipopt":
+            gvs_fails.append(f"stage GVS: {r['id']} is not IPOPT-only by default")
+        if args[args.index("--rung") + 1] not in GVS_TRAINED_RUNGS:
+            gvs_fails.append(f"stage GVS: {r['id']} fields a rung with no chart")
+    if gvs_fails:
+        for f in gvs_fails:
+            print(f"FAIL {f}")
+        fails += len(gvs_fails)
+    else:
+        print(f"ok   stage GVS: 8 logical runs over {GVS_TRAINED_RUNGS}, IPOPT, contained, "
+              f"status-quo cap, two arms")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -3238,7 +3334,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -3326,6 +3422,10 @@ def main():
                                                  args.guesses, args.shards,
                                                  only=args.rungs, solvers=args.solvers,
                                                  starts=args.starts),
+             "GVS": lambda: stage_GVS(args.wall_time, args.targets,
+                                      args.guesses, args.shards,
+                                      only=args.rungs, solvers=args.solvers,
+                                      starts=args.starts),
              "SOFT12": lambda: stage_SOFT12(args.wall_time, args.targets,
                                             args.guesses, args.shards,
                                             only=args.rungs, solvers=args.solvers,

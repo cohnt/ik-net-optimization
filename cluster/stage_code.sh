@@ -48,8 +48,20 @@ fi
 ## restage silently builds one result set from two code versions. It went unseen because
 ## submit.sh leaves its jobs unnamed, so the stages that ran through it showed as
 ## `run_items.sh` and did match.
+##
+## The guard protects the tree whose code queued items import, which is the DEFAULT tree.
+## An alternate SC_ROOT (a branch campaign's own ~/learned-ik-<branch>) is a separate tree:
+## nothing queued out of ~/learned-ik resolves its code from there, so another campaign's
+## jobs are not a reason to refuse -- and forcing past the guard to stage an isolated tree
+## would be exactly the wrong habit. Staging an alternate root that has ITS OWN jobs in
+## flight is still unsafe, and the notice says so rather than pretending otherwise.
 RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|train_flow\|lik_train\|lik_bench\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
-if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
+if [ "$SC_ROOT" != "learned-ik" ]; then
+    echo "NOTE: staging the ISOLATED tree ~/$SC_ROOT, not the default ~/learned-ik."
+    echo "      The live-campaign refusal is scoped to the default tree ($RUNNING campaign"
+    echo "      job(s) on the account right now). Make sure no job of your own reads"
+    echo "      ~/$SC_ROOT before continuing."
+elif [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
     echo "REFUSING: $RUNNING campaign job(s) are on the cluster right now." >&2
     echo "Restaging would change the code later items import mid-stage." >&2
     echo "Wait for the stage to drain, or re-run with FORCE_STAGE=1 if you are sure." >&2
