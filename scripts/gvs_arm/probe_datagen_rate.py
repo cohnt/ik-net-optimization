@@ -22,6 +22,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 
+## Low priority when sharing a laptop; a no-op cost on a dedicated node.
 os.nice(19)
 
 import src.register_robots  # noqa: E402,F401
