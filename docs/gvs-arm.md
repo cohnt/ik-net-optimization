@@ -61,9 +61,20 @@ the spec computes at the worst sub-link is 4.8 mm.
 straight arm reads 0.96 on the collision penalty and a fully curled one reads above 1.
 Uniform draws self-collide at ~0.25%.
 
-**Pipeline smoke** (untrained chart, pose task, 2 targets x 1 guess, 20 s): the sampler,
-shelf-contained targets, both arms, `verify()` and the summary all run;
-`results/gvs_pushrod9_o1/benchmark/smoke_pose/`. Says nothing about solve quality.
+**Shelf acceptance** (`scripts/probe_shelf_acceptance.py --robots gvs_pushrod9_o1`, 20000
+uniform draws, inset 0.10 m): 34.8% of uniform rod-force draws are collision-free in the
+hardened scene; of those, **1.70%** land in a compartment on the grasp task (0.59% of raw
+draws, ~169 draws per target) and **0.91%** on the pose task (0.32% of raw, ~317 per target).
+Higher than the rigid arms' 0.2-0.7% and in the soft PCS arm's range; `P(trip)` at the
+fielded guard of 50000 is 0 to machine precision on both tasks, so the grid cannot trip it.
+
+**Pipeline smoke** (untrained chart, 2 targets x 1 guess, 20 s, both tasks): the sampler,
+shelf-contained targets, mug diagrams, both arms, `verify()` and the summary all run
+(`results/gvs_pushrod9_o1/benchmark/smoke_{pose,mug}/`). Says nothing about solve quality.
+A 12-solve diagnostic of the joint-space arm alone: from the target, from straight and from
+random starts it converges to 1e-8 on 9 of 12; the 3 failures are IPOPT's "converged to a
+point of local infeasibility" with rod forces on the +-1 box -- force saturation, a property
+of the problem to report like every other baseline's.
 
 **Datagen rate** (`probe_datagen_rate.py`): see the runbook; the number sizes
 `DATASET_SIZE` and the job wall time. Measured under a peer's load at nice 19, so an upper
