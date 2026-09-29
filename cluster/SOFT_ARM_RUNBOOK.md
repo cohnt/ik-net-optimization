@@ -123,9 +123,11 @@ whatever the queue says, and resubmitting resumes from `last.ckpt`.
 
 * The FK surrogate fit, as a cluster job. Fit in float32, screen and ship in float64. The
   4k-step laptop attempt reached 11 mm median against a 1 mm task gate and was deleted.
-* The SoRoMoX golden-file equivalence test. `.venv-soromox` (soromox 0.5.0, jax 0.11.2 CPU)
-  is built; the generator and the test are not written. Until they are, "the analytic model
-  from the soft robot repo" is a provenance claim rather than a checked one.
+* Nothing else. The SoRoMoX golden-file equivalence test that stood here is DONE (`ea1940d`):
+  `scripts/soft_arm/generate_fk_golden.py` writes `tests/data/soft_arm_fk_golden.npz` from
+  `.venv-soromox` (soromox 0.5.0, jax 0.11.2 CPU, float64), and
+  `tests/test_soft_arm_kinematics.py::test_matches_soromox` checks it at 1.1e-15 up to
+  `R_y(90 deg)`. "The analytic model from the soft robot repo" is now a checked statement.
 
 ## Run record: the primary chart (added 2026-09-25)
 
