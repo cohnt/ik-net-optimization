@@ -1,4 +1,5 @@
-"""The soft continuum arm's four programs: learned and joint-space, pose and grasp.
+"""The soft PCS (piecewise constant strain) arm's four programs: learned and joint-space, pose
+and grasp.
 
 Modelled line for line on `src/iiwa_program.py`, which is the two-arm template -- this
 robot has no closed-form IK, so like the iiwa it has no analytic column and the comparison

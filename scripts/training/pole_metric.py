@@ -65,7 +65,7 @@ def ScreenDomain(robot):
 
 
 def SoftRungNames():
-    """The soft arm's rungs, imported lazily so this module stays cheap to import."""
+    """The soft PCS arm's rungs, imported lazily so this module stays cheap to import."""
     from src.soft_arm.params import RUNGS
 
     return sorted(RUNGS)

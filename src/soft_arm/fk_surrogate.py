@@ -1,4 +1,4 @@
-"""A learned forward model for the soft arm, and the honest machinery around it.
+"""A learned forward model for the soft PCS arm, and the honest machinery around it.
 
 WHY THIS EXISTS. The configuration-to-plant-positions map is the whole forward model: the
 IK constraint reads the task frame's pose out of it, and the collision constraint reads the

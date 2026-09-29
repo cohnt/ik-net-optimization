@@ -777,10 +777,11 @@ arms **adjacent**, bold the better of each pair, and **every row prints, zeros i
 **Success. Across all 36 solver x experiment cells the learned arm wins 23, ties 10 and loses 3** --
 interior point **10/2/0**, augmented Lagrangian **7/5/0**, SQP **6/3/3**. Interior point is the best
 entry in nearly every row and **loses nothing anywhere**. **All three losses are contained grasp
-under SQP** -- two on the iiwa, one on the soft arm -- so that weakness now reproduces on a robot
-whose configuration space is strain rather than joint angles, which makes it a property of SQP on
-this problem class rather than of the rigid arms. Verdicts are by exact McNemar, which is also what
-decides a tie; the reporter prints the tally beside the table so text and table cannot drift.
+under SQP** -- two on the iiwa, one on the soft PCS arm -- so that weakness now reproduces on a
+robot whose configuration space is strain rather than joint angles, which makes it a property of
+SQP on this problem class rather than of the rigid arms. Verdicts are by exact McNemar, which is
+also what decides a tie; the reporter prints the tally beside the table so text and table cannot
+drift.
 
 **Cost splits by TASK, not by solver**: learned is cheaper on pose and ~1.4-1.8x more expensive on
 grasp, under every solver producing a comparison. `N/A` means fewer than 10 shared solved cells.
@@ -789,8 +790,8 @@ grasp, under every solver producing a comparison. `N/A` means fewer than 10 shar
 SQP cell; the iiwa contained-grasp tie is bought at a **14x** premium (27.29 s against 1.90 s) while
 joint space is flat across the whole cap ladder. **Under the augmented Lagrangian the ordering
 inverts on five rows** -- the learned arm is genuinely faster there, because it converges while joint
-space burns the whole 180 s. The soft arm's premium is only 2.5-6.0x, and the reason must travel with
-it: **the baseline got more expensive, not the learned arm cheaper.**
+space burns the whole 180 s. The soft PCS arm's premium is only 2.5-6.0x, and the reason must travel
+with it: **the baseline got more expensive, not the learned arm cheaper.**
 
 **Iterations is where hardening shows**: on Panda grasp joint space needs 744 median iterations
 against the learned arm's 169, so the learned formulation wins on *iterations* there despite costing
@@ -1112,18 +1113,20 @@ it falls only in the four wide bundles, the two charts become identical (59/60 a
 and 34/60 pose, same iteration counts). **Nothing about the near-limit bundles makes the *solve*
 harder; they are simply configurations that arm cannot be given.**
 
-## The soft arm: a robot whose configuration is not the plant's position vector
+## The soft PCS arm: a robot whose configuration is not the plant's position vector
 
 **On branch `soft-manipulator`.** Model, kinematics, scenes, four programs and the ikflow shim have
 landed and are tested; all five charts are trained; stages SOFT12, SOFTCHART, SOFTDOF and SOFTCAP are
 measured. Only the FK surrogate fit remains. Tables: **`docs/soft-arm-ladders.md`**. Operations:
 **`cluster/SOFT_ARM_RUNBOOK.md`**.
 
-A spatial **Piecewise Constant Strain** continuum arm, defined with **SoRoMoX** and modelled on the
-soft experiment in **LOInK** (arXiv 2609.21275) -- whose baseline, IKFlow, is what we field, not
-their BiLipNet method. No closed-form IK, so a two-way comparison like the iiwa's; unlike either
-rigid arm its **configuration is strain**, the first robot here whose configuration is not the
-plant's position vector.
+**The name is deliberately "the soft PCS arm", never "the soft arm"**: other soft-arm models (a GVS
+arm) are being added, so "the soft arm" is no longer a unique referent. A spatial **Piecewise
+Constant Strain (PCS)** continuum arm, defined with **SoRoMoX** and modelled on the soft experiment
+in **LOInK** (arXiv 2609.21275) -- whose baseline, IKFlow, is what we field, not their BiLipNet
+method. No closed-form IK, so a two-way comparison like the iiwa's; unlike either rigid arm its
+**configuration is strain**, the first robot here whose configuration is not the plant's position
+vector.
 
 | rung | segments | strains per segment | DOF | decision vars | plant positions |
 | --- | --- | --- | --- | --- | --- |

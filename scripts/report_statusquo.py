@@ -371,7 +371,7 @@ def main(only):
     ## record. Refusing them here means no table CAN show one.
     runs = load("sc_STATUSQUO_", cells=CELLS)
 
-    ## The soft arm joins the record from stage SOFT12 rather than from a re-run under
+    ## The soft PCS arm joins the record from stage SOFT12 rather than from a re-run under
     ## stage_STATUSQUO. Its twelve rows were measured at conditions IDENTICAL to this stage's
     ## -- 180 s, seed 1, --compile, 60 x 8 contained cells at the fingertips, arms
     ## learned,numerical, each solver at its adopted configuration -- so re-running them under

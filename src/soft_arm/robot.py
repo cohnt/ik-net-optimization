@@ -1,4 +1,4 @@
-"""A `jrl.robot.Robot` for the soft arm, so ikflow can train on it unmodified.
+"""A `jrl.robot.Robot` for the soft PCS arm, so ikflow can train on it unmodified.
 
 ikflow reaches its robot through `jrl.robots.get_robot`, and jrl's `Robot` is URDF- and
 klampt-driven: its forward kinematics come from parsing a kinematic chain, which cannot
@@ -72,7 +72,7 @@ def _self_collision_pairs(spec):
 
 
 class SoftArmRobot(Robot):
-    """One rung of the soft arm, wearing jrl's interface."""
+    """One rung of the soft PCS arm, wearing jrl's interface."""
 
     name = "soft12"
     formal_robot_name = "Soft PCS continuum arm (12 DoF)"
@@ -116,7 +116,7 @@ class SoftArmRobot(Robot):
     def urdf_filepath(self):
         raise NotImplementedError(
             f"{self._name} has no URDF: its configuration is per-segment strain, which a "
-            f"kinematic chain cannot express. The Drake model in models/soft_arm/ is a "
+            f"kinematic chain cannot express. The Drake model in models/soft{9,12,16}/ is a "
             f"collision discretization driven from outside, not a description of the "
             f"degrees of freedom.")
 

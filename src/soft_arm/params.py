@@ -1,4 +1,5 @@
-"""The soft continuum arm's definition: one dataclass per rung, and nothing else.
+"""The soft PCS (piecewise constant strain) arm's definition: one dataclass per rung, and
+nothing else.
 
 Every other module in `src/soft_arm/` derives from these numbers -- the torch kinematics,
 the generated SDF, the jrl shim, the dataset sampler -- so the robot has exactly one
@@ -38,7 +39,7 @@ STRAIN_NAMES = ("kappa_x", "kappa_y", "kappa_z", "sigma_x", "sigma_y", "sigma_z"
 
 @dataclass(frozen=True)
 class SoftArmSpec:
-    """One rung of the soft arm.
+    """One rung of the soft PCS arm.
 
     `strain_basis` names the active strain indices *per segment*, so the configuration is
     `num_segments * len(strain_basis)` long, ordered segment-major:
@@ -284,4 +285,4 @@ def GetSpec(name: str) -> SoftArmSpec:
         return RUNGS[name]
     except KeyError:
         raise ValueError(
-            f"unknown soft-arm rung {name!r}; expected one of {sorted(RUNGS)}") from None
+            f"unknown soft PCS arm rung {name!r}; expected one of {sorted(RUNGS)}") from None

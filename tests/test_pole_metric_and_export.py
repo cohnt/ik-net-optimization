@@ -237,7 +237,7 @@ def test_pole_domain_is_injectable_and_its_default_is_the_recorded_one():
         "the default sampler moved; every recorded pole baseline is measured against it")
     assert np.linalg.norm(a_z, axis=1).max() <= LATENT_RADIUS + 1e-12
 
-    ## A soft-arm-shaped domain must actually take effect.
+    ## A soft-PCS-arm-shaped domain must actually take effect.
     c2, z2 = sample_conditioning_and_latents(
         128, 12, seed=0, position_base=(0.0, 0.0, 0.45), position_slack=0.25,
         latent_radius=4.96)

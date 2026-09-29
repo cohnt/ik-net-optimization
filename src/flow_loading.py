@@ -42,7 +42,7 @@ from ikflow.model import IkflowModelParameters
 from ikflow.ikflow_solver import IKFlowSolver
 from jrl.robots import get_robot
 
-## Registering the soft arm's rungs HERE, because `LoadFlowSolver` is the single funnel
+## Registering the soft PCS arm's rungs HERE, because `LoadFlowSolver` is the single funnel
 ## every robot-by-name lookup in this project passes through -- the programs, the three
 ## screening scripts, the export round-trip. Registering it only where the programs import
 ## it left `get_robot("soft12")` raising inside the screens, which is the sort of gap that
@@ -78,7 +78,7 @@ LEGACY_PANDA_ARCH = dict(LEGACY_IIWA_ARCH, dim_latent_space=7, softflow_noise_sc
 # sidecar for provenance without being enforced.
 ARCH_FIELDS = tuple(LEGACY_IIWA_ARCH.keys())
 
-#: The soft arm's rungs. `dim_latent_space` is the rung's own DoF count, which is not a
+#: The soft PCS arm's rungs. `dim_latent_space` is the rung's own DoF count, which is not a
 #: free choice: `InvertFlow` writes `x[0, :num_arm_dof]` into a buffer of width
 #: `network_width`, so a narrower latent would be a buffer overrun rather than a slow
 #: chart. Nothing else differs from the iiwa's architecture.

@@ -1,4 +1,4 @@
-"""Emit the soft arm's scene YAMLs, hardened and legacy, from one description.
+"""Emit the soft PCS arm's scene YAMLs, hardened and legacy, from one description.
 
 The repo's rigid-arm scenes are a hand-maintained pair -- a legacy file and a hardened
 twin defined as "the legacy one minus these removals" -- with a test enforcing the
@@ -8,7 +8,7 @@ than on somebody's diff discipline.
 
 The furniture is byte-identical to the iiwa's: the same two tables at [0.4, 0, 0] and
 [-0.2, 0, 0], the same four shelf units at the four welds `src/shelf_regions.py` hardcodes.
-That is what lets the soft arm reuse the shelf compartment table, the containment
+That is what lets the soft PCS arm reuse the shelf compartment table, the containment
 predicate and the acceptance probe without touching any of them.
 
 TWO THINGS THAT ARE NOT COSMETIC.

@@ -1,4 +1,4 @@
-"""Fit the learned forward model for one soft-arm rung, and report its accuracy.
+"""Fit the learned forward model for one rung of the soft PCS arm, and report its accuracy.
 
 Trained against the EXACT map, on uniformly drawn configurations -- the surrogate stands in
 for a forward model we happen to have, so that the optimization can be measured with a
