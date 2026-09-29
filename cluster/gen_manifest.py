@@ -1985,14 +1985,20 @@ def stage_HELIXCHART(wall, targets, guesses, shards, only=None, tag="HELIXCHART"
 
 def stage_HELIXPITCH(wall, targets, guesses, shards, only=None, tag="HELIXPITCH", seed=1,
                      starts="paired,native"):
-    """The pitch ladder: four rungs x 2 experiments x 2 protocols, IPOPT only.
+    """The pitch ladder: THREE rungs x 2 experiments x 2 protocols, IPOPT only.
 
     THE CONTROL THAT THE EFFECT IS THE COUPLING AND NOT THE GEOMETRY. Every rung is the same
     arm -- same links, same scene, same joint limits, same chart architecture -- differing
-    only in how many metres of axial travel one revolution of the screw joint buys.
-    `helix7_p000` is that arm with the coupling switched off, which makes it an ordinary
-    S-R-S arm for which a closed form exists; the ladder therefore runs from "an analytic
-    column could exist here" to "no analytic column can exist here".
+    only in how many metres of axial travel one revolution of the screw joint buys
+    (0.025 / 0.050 / 0.100 m/rev).
+
+    `helix7_p000` -- that arm with the coupling switched off, an ordinary S-R-S arm for which
+    a closed form exists -- IS A FULL SPEC AND IS NOT A RUNG HERE, because it was never given
+    a chart: the trained ladder is p050 at n4/n6/n8 plus p025 and p100 at n6. So this stage
+    measures a DOSE-RESPONSE among screw arms and does NOT reach the "an analytic column could
+    exist here" end of the scale; that end is held by the Panda and the iiwa, which have one.
+    Saying otherwise would claim a control the manifest does not contain. Training a p000
+    chart would restore it and is a followup, not a gap in this stage.
 
     THE RUNGS DO NOT PAIR CELL FOR CELL. The stroke changes the reachable set, so each rung
     draws its own grid and its `grid_hash` differs by design -- compare by target-level
@@ -3154,19 +3160,22 @@ def main():
                         "setting tokens to field, so a confirmation runs only the screen's "
                         "survivors without a code edit. Must include 'default' (and, for "
                         "SNOPTCOMBO, 'mstep0p5', which is its second pre-registered bar).")
-    p.add_argument("--starts", default="paired",
-                   help="STEP, SNOPTTUNE, SNOPTCOMBO and NLOPTTUNE stages: comma-separated "
-                        "start protocols. "
-                        "STEP's 60-cell screen is 'paired' (diagnostic) and its confirmation "
-                        "is 'paired,native'. SNOPTTUNE needs 'paired,native' explicitly -- "
-                        "the default here is the screen's, and a setting measured on one "
+    p.add_argument("--starts", default=None,
+                   help="comma-separated start protocols. UNSET means each stage's OWN "
+                        "default, which is what its docstring documents -- this flag used to "
+                        "default to 'paired' and that default silently overrode every stage's, "
+                        "so a stage defined as 'both protocols' generated half of itself and "
+                        "looked complete. STEP's 60-cell screen is 'paired' (diagnostic) and "
+                        "its confirmation is 'paired,native'; a setting measured on one "
                         "protocol cannot be fielded as SNOPT's configuration.")
     p.add_argument("--triage-solvers", default="nlopt",
                    help="SOLVER2 stage only: solvers fielded at the 60-cell triage grid "
                         "instead of full scale, so a column that may be near-empty costs "
                         "triage money. Must not overlap --solvers; '' fields none.")
-    p.add_argument("--solvers", default="snopt",
-                   help="SOLVER stage only: comma-separated solvers to field alongside the "
+    p.add_argument("--solvers", default=None,
+                   help="comma-separated solvers. UNSET means each stage's OWN default -- see "
+                        "--starts for why this is not a literal. For the SOLVER stage these "
+                        "are fielded alongside the "
                         "ipopt baseline, which is always generated. The axis is three METHOD "
                         "CLASSES -- ipopt interior point, snopt SQP, nlopt augmented "
                         "Lagrangian -- so adding one should be justified by the class it "
@@ -3206,49 +3215,56 @@ def main():
         raise SystemExit("--stage is required (or --selftest)")
 
     caps = [float(c) for c in args.caps.split(",")]
+    ## An UNSET --solvers/--starts must fall through to each stage's own default rather than
+    ## to this parser's. These two flags were written for the tuning stages and their old
+    ## literal defaults ('snopt', 'paired') were passed to EVERY stage, so a stage documented
+    ## as three solvers x two protocols generated 2 of its 12 logical runs from a bare
+    ## command line -- a manifest that is valid, plausible and a third of the measurement.
+    sv = {} if args.solvers is None else {"solvers": args.solvers}
+    st = {} if args.starts is None else {"starts": args.starts}
     items = {"SOLVER": lambda: stage_SOLVER(args.wall_time, args.targets, args.guesses,
                                            args.shards, only=args.rungs,
-                                           solvers=args.solvers),
+                                           **sv),
              "SOLVER2": lambda: stage_SOLVER2(args.wall_time, args.targets, args.guesses,
                                               args.shards, only=args.rungs,
-                                              solvers=args.solvers,
+                                              **sv,
                                               triage_solvers=args.triage_solvers),
              "SWEEP": lambda: stage_SWEEP(args.wall_time, args.targets, args.guesses,
                                           args.shards, only=args.rungs,
-                                          solvers=args.solvers),
+                                          **sv),
              "STEP": lambda: stage_STEP(args.wall_time, args.targets, args.guesses,
                                         args.shards, only=args.rungs,
-                                        solvers=args.solvers, settings=args.settings,
-                                        starts=args.starts),
+                                        **sv, settings=args.settings,
+                                        **st),
              "SNOPTTUNE": lambda: stage_SNOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,
                                                  settings=args.settings,
-                                                 starts=args.starts),
+                                                 **st),
              "SNOPTCOMBO": lambda: stage_SNOPTCOMBO(args.wall_time, args.targets,
                                                    args.guesses, args.shards,
                                                    only=args.rungs,
                                                    settings=args.settings,
-                                                   starts=args.starts),
+                                                   **st),
              "STATUSQUO": lambda: stage_STATUSQUO(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
-                                                 only=args.rungs, solvers=args.solvers,
-                                                 starts=args.starts),
+                                                 only=args.rungs, **sv,
+                                                 **st),
              "HELIX": lambda: stage_HELIX(args.wall_time, args.targets,
                                          args.guesses, args.shards,
-                                         only=args.rungs, solvers=args.solvers,
-                                         starts=args.starts),
+                                         only=args.rungs, **sv,
+                                         **st),
              "HELIXCHART": lambda: stage_HELIXCHART(args.wall_time, args.targets,
                                                    args.guesses, args.shards,
-                                                   only=args.rungs, starts=args.starts),
+                                                   only=args.rungs, **st),
              "HELIXPITCH": lambda: stage_HELIXPITCH(args.wall_time, args.targets,
                                                    args.guesses, args.shards,
-                                                   only=args.rungs, starts=args.starts),
+                                                   only=args.rungs, **st),
              "NLOPTTUNE": lambda: stage_NLOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,
                                                  settings=args.settings,
-                                                 starts=args.starts),
+                                                 **st),
              "HARD": lambda: stage_HARD(args.wall_time, args.targets,
                                         args.guesses, args.shards, only=args.rungs),
              "HARDTRI": lambda: stage_HARD(args.wall_time, args.targets, args.guesses,
