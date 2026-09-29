@@ -213,6 +213,26 @@ whatever the queue says, and resubmitting resumes from `last.ckpt`.
 * **The status quo is not this robot's to change.** Its rows stand beside the record's until
   Thomas merges to main, which is the acceptance gate.
 
+### Two ways to misread the training telemetry, both met on this ladder
+
+* **`val_l2_error` in `status.json` is the UNCLAMPED mean, and it is tail-driven.** It is
+  `val/l2_error` from the fork's pole callback (`third_party/ikflow/ikflow/training/pole_callback.py`),
+  a mean over a 4000-sample validation draw that includes samples the flow put outside the joint
+  limits. A single such sample moves it by an order of magnitude: `helix7_p050_n4` read 0.2093 at
+  step 360000 and **2.9880** at 380000, on the same row as `val/l2_error_std` **219.7**, while
+  `val_clamped/l2_error` went 0.2060 -> **0.2037** with a std of 0.179. The clamped series is smooth
+  on both rungs measured so far; the unclamped one spiked three times on `n4` alone (0.345 at 200k,
+  0.328 at 280k, 2.988 at 380k) and never on `n6`. **Read `val_clamped/l2_error` out of
+  `metrics/version_0/metrics.csv`; treat the `status.json` number and `submit_ladder.sh --status`'s
+  `val_l2` column as a liveness check only.** Both that helper and `watch_ladder.sh` print the
+  unclamped field, so the hazard is in the tooling a monitoring session will reach for first. It is
+  also NOT the pole screen saying anything: `pole/frac_gt_1000` was 0.0 at every one of those spikes.
+* **The last screen printed in an export log is not the final checkpoint.** The export job iterates
+  checkpoints in lexicographic order, so `step80000` sorts *after* `step620000` and is what a `tail`
+  shows. On `helix7_p050_n6` that is 81.7 mm against the final chart's **35.0 mm** — quoting the log
+  tail would report more than twice the true error. Select the screen by step number, never by
+  position in the log.
+
 ## Measured on the laptop, before anything was queued
 
 | quantity | value |
