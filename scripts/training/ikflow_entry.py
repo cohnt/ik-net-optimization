@@ -23,7 +23,7 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 sys.path.insert(0, REPO)
 
-import src.soft_arm.register  # noqa: E402,F401  -- before anything resolves a robot
+import src.register_robots  # noqa: E402,F401  -- before anything resolves a robot
 
 FORK_SCRIPTS = os.path.join(REPO, "third_party", "ikflow", "scripts")
 
@@ -45,7 +45,8 @@ def _with_pole_domain(script, argv):
     sqrt(width) + 1.5), and the fork should not carry it. So the fork grew two neutral
     flags and this appends them.
 
-    Only for the soft rungs, and only if the caller has not set them: the rigid arms keep
+    Only for the robots with normalized coordinates (the soft PCS arm's rungs and the
+    GVS push-rod arm's), and only if the caller has not set them: the rigid arms keep
     the defaults so their archived pole curves stay comparable, which is the whole reason
     the fork's defaults were left alone.
     """
@@ -60,8 +61,8 @@ def _with_pole_domain(script, argv):
         elif a == "--robot_name" and i + 1 < len(argv):
             robot = argv[i + 1]
     sys.path.insert(0, os.path.join(REPO, "scripts", "training"))
-    from pole_metric import ScreenDomain, SoftRungNames
-    if robot not in SoftRungNames():
+    from pole_metric import NormalizedRobotNames, ScreenDomain
+    if robot not in NormalizedRobotNames():
         return argv
     base, slack, radius, threshold = ScreenDomain(robot)
     domain = {"position_base": list(base), "position_slack": slack,
@@ -80,7 +81,7 @@ def main():
         available = sorted(f[:-3] for f in os.listdir(FORK_SCRIPTS) if f.endswith(".py"))
         raise SystemExit(f"no such ikflow script {name!r}; available: {available}")
     argv = _with_pole_domain(name, sys.argv[2:])
-    print(f"[ikflow_entry] registered {src.soft_arm.register.REGISTERED}, running {path}")
+    print(f"[ikflow_entry] registered {src.register_robots.REGISTERED}, running {path}")
     sys.argv = [path] + argv
     runpy.run_path(path, run_name="__main__")
 

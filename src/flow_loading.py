@@ -48,7 +48,7 @@ from jrl.robots import get_robot
 ## it left `get_robot("soft12")` raising inside the screens, which is the sort of gap that
 ## surfaces during an export job at the end of a 620k-step training run rather than now.
 ## Idempotent, and a no-op for every other robot.
-import src.soft_arm.register  # noqa: E402,F401
+import src.register_robots  # noqa: E402,F401  -- every project robot, one list
 
 # The architecture every pre-sidecar checkpoint in this repo was trained at
 # (iiwa14__lemon-haze-7, iiwa14__ddp-r1). Used only as the fallback for a checkpoint with
@@ -88,8 +88,13 @@ LEGACY_SOFT_ARCH = {name: dict(LEGACY_IIWA_ARCH, dim_latent_space=ndof)
 ## Without an entry here a sidecar-less checkpoint falls back to `LEGACY_IIWA_ARCH`
 ## SILENTLY -- a 12-DoF chart loaded against an 8-wide latent, which the shape check would
 ## catch, but a 9-DoF one against 8 would not be caught by anything.
+#: The GVS push-rod arm's rungs: the latent is the INPUT width (nine rod forces) on every
+#: rung, since the order ladder varies the backbone's fidelity and not the problem's width.
+LEGACY_GVS_ARCH = {name: dict(LEGACY_IIWA_ARCH, dim_latent_space=9)
+                   for name in ("gvs_pushrod9_o0", "gvs_pushrod9_o1", "gvs_pushrod9_o2")}
+
 LEGACY_ARCH_BY_ROBOT = {"iiwa14": LEGACY_IIWA_ARCH, "panda": LEGACY_PANDA_ARCH,
-                        **LEGACY_SOFT_ARCH}
+                        **LEGACY_SOFT_ARCH, **LEGACY_GVS_ARCH}
 
 
 def SidecarPath(checkpoint):
