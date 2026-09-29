@@ -76,17 +76,21 @@ random starts it converges to 1e-8 on 9 of 12; the 3 failures are IPOPT's "conve
 point of local infeasibility" with rod forces on the +-1 box -- force saturation, a property
 of the problem to report like every other baseline's.
 
-**Datagen rate** (`probe_datagen_rate.py`): see the runbook; the number sizes
-`DATASET_SIZE` and the job wall time. Measured under a peer's load at nice 19, so an upper
-bound.
+**Datagen rate.** One process through the batched JAX solve costs 12-15 ms/sample on a
+cluster node with XLA unpinned -- the vmapped Newton does not spread across cores, and
+`jax.pmap` over host devices is refused by lineax under optimistix -- so the dataset is
+built process-parallel (`scripts/gvs_arm/build_dataset_parallel.py`, one single-threaded JAX
+per CPU, ikflow's exact file layout); the runbook has the table and the launch.
 
 ## What is queued and what is not
 
 Built and tested locally: spec, model, generated SDF/scenes, jrl shim, registration seam,
-four programs, driver, probes, stage `GVS` in the manifest generator, the chained-dataset
-path and the preflight job. **Nothing has been submitted.** Data generation waits for the
-CPU nodes to free up and for Thomas's go-ahead; training and evaluation are out of this
-session's scope; the FK surrogate (`--fk learned`) is a cluster job that has not been run.
+four programs, driver, probes, stage `GVS` (manifest generated, not submitted), the
+chained-dataset path, the preflight and rate jobs. On the cluster: the branch's own tree
+`~/learned-ik-gvs` with its environment built, the preflight passed, and the two dataset
+builds queued one at a time on a single xeon-p8 node (2026-09-29 16:12). Training and
+evaluation are out of this session's scope; the FK surrogate (`--fk learned`) is a cluster
+job not run.
 
 ## How this compares to LOInK, once
 
