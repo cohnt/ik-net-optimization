@@ -19,11 +19,14 @@ of the repo is the three-way comparison of formulations for the same IK problem:
 | **numerical** (`...ProgramNumerical`) | joint angles `q` (7) | identity |
 | **analytic** (`PandaIKProgramAnalytic`, `PandaMugProgramAnalytic` — **Panda only**) | end-effector pose `xyz_rpy` (6) + redundancy parameter `psi` (1) | closed-form S-R-S IK (`src/*_analytic_ik.py`) |
 
-**There is no iiwa analytic *program*.** `src/iiwa_analytic_ik.py` holds the closed-form map and `src/iiwa_program.py` imports it, but no `Iiwa14IKProgramAnalytic` exists and
-`scripts/iiwa/iiwa_benchmark.py` registers only `learned` and `numerical`. The comparison is
-therefore three-way on the Panda and two-way on the iiwa. Writing that arm is future work or
-possibly not done at all (Thomas, 2026-09-19); the closed-form map that would have served it was
-deleted rather than maintained unreached, so only the joint limits remain in that file.
+**There is no iiwa analytic *program*, which is not a statement about the iiwa.** The iiwa14 is an
+S-R-S arm and has a closed-form solution (Faria et al.); what this repo lacks is an implementation of
+it. `src/iiwa_analytic_ik.py` is down to the joint limits -- the closed-form map was deleted rather
+than maintained unreached -- no `Iiwa14IKProgramAnalytic` exists, and `scripts/iiwa/iiwa_benchmark.py`
+registers only `learned` and `numerical`. Writing that arm is future work or possibly not done at all
+(Thomas, 2026-09-19). **Comparing against analytic IK is not the objective**: the Panda carries an
+analytic column only because we happen to have its solution implemented, so describe the asymmetry as
+an accident of implementation, never as three-way-vs-two-way being a property of the robots.
 
 All three go through the same `IKFlowProgram` machinery, so a change to constraints/costs affects
 all of them. `workshop-paper-draft.pdf` is the write-up — an early rough draft, orientation only,
