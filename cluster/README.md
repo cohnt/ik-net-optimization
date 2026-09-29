@@ -376,6 +376,37 @@ Sharding is only *legitimate* above one worker per node if the calibration says
 so — the benchmark is wall-clock capped, so contending workers change what is
 measured, not just how long it takes. `PROCS=1` is always safe.
 
+### A shard set that straddles collections, and why you must not "collect less often"
+
+Collection is incremental, so a collection that runs while a stage is in flight
+splits that stage: some of a run's shards land in that staging directory and the
+rest in a later one. A run whose shards straddle a split **looks exactly like data
+loss** — the merger reports shards "missing" — while every shard sits on local disk.
+
+`collect_results.sh` handles it: it passes `--also` for **every** timestamp-shaped
+prior staging directory, so a set spanning any number of collections merges
+normally. Fixed in `b2e932e` (2026-09-20) and verified then by re-merging the seven
+rows that had already merged normally, reproducing all seven exactly; confirmed
+again on 2026-09-28, when stage SOFTCAP's 180 s shard set straddled two
+collections and merged with no intervention.
+
+What triggered the fix: it used to pass only the single most recent prior
+directory, which covers a two-way split and nothing more. Stage STATUSQUO broke
+that — NLopt items ran 27-144 min while collections ran hourly, so one row's 24
+shards landed across **three** collections and the merger reported 22 of 24
+missing, from shard directories that existed, because incremental rsync creates
+the directory and skips a `summary.json` it already shipped.
+
+Two things to keep. The search is restricted to **timestamp-shaped** directory
+names, which also keeps a hand-made directory out: a `manualmerge-row12` once
+sorted after every `20260917-*`, became "the previous collection", and cost two
+stage SNOPTTUNE rows their merge with all sixteen shards on disk. And **do not
+adopt "collect less often than an item takes"** — the record carried that advice
+for a while and it is the expensive direction, delaying every row's results to
+avoid a condition the script already handles. Collect when you want results, then
+read the merger's report and intervene only on an actual `INCOMPLETE`.
+
+
 ## Traps that cost time here
 
 - **`source /etc/profile` before `set -u`.** `/etc/profile.d/Z97-byobu.sh` reads

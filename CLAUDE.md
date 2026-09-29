@@ -1607,23 +1607,17 @@ Number of Iterations Exceeded").
 The measured calibration — workers per node, GPU-vs-CPU, the cap ladder and process startup — is in
 `cluster/README.md`; it is a property of that hardware, not of the project.
 
-Three operational post-mortems live in `cluster/README.md` in more detail than a project record needs,
-and the transferable lesson of each is stated there. **A straddled shard set is HANDLED, and the old
-mitigation here was stale**: `collect_results.sh` passes `--also` for every timestamp-shaped prior
-staging directory (`b2e932e`, 2026-09-20), so a run whose shards span any number of collections merges
-normally — verified then by re-merging seven already-merged rows exactly, and again on stage SOFTCAP,
-whose 180 s shard set straddled two collections and needed no intervention. This file used to say such
-a set "cannot be merged by `collect_results.sh` alone, so collect less often than an item takes, or
-expect to build the union"; **delete that instinct.** It is the expensive direction — it delays every
-row's results to guard against something the script already does — and a stale MITIGATION costs more
-than a stale diagnosis, because it is acted on. Collect when you want results; just read the merger's
-report and intervene only on an actual `INCOMPLETE`. What remains true is only that each collection is
-a tar and rsync over Lustre, so do not collect in a tight loop. Next: per-cell solver logs go to
-node-local `$TMPDIR` and roll into one archive, because 35,596 small files on Lustre took a routine
-collection from three minutes to thirty; and **any cluster-wide check on a shared account must be scoped
-to this project's own jobs, by JOB name** — the fix that filtered the payload script's filename instead
-meant `--reclaim`'s guard was unconditionally 0 and never refused for its whole life, so **a guard nobody
-has observed refusing has not been tested.**
+Three operational post-mortems live in `cluster/README.md` in more detail than a project record
+needs, and the transferable lesson of each is stated there. **A shard set straddling any number of
+collections merges normally** — `collect_results.sh` passes `--also` for every prior staging
+directory — so collect when you want results and act only on an actual `INCOMPLETE`; the old advice
+here to "collect less often than an item takes" was stale, and a stale MITIGATION costs more than a
+stale diagnosis because it gets acted on. Per-cell solver logs go to node-local `$TMPDIR` and roll
+into one archive, because 35,596 small files on Lustre took a routine collection from three minutes
+to thirty. And **any cluster-wide check on a shared account must be scoped to this project's own
+jobs, by JOB name** — the fix that filtered the payload script's filename instead meant `--reclaim`'s
+guard was unconditionally 0 and never refused for its whole life, so **a guard nobody has observed
+refusing has not been tested.**
 
 **The laptop does NOT suspend on AC**, and no run here needs a sleep inhibitor. Thomas, 2026-09-28,
 having checked the power settings: *"I just went into my settings and confirmed that my computer
