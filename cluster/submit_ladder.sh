@@ -93,6 +93,7 @@ smoke_latent_arg() {
         soft9)  echo "--dim_latent_space=9" ;;
         soft12) echo "--dim_latent_space=12" ;;
         soft16) echo "--dim_latent_space=16" ;;
+        gvs_pushrod9_o*) echo "--dim_latent_space=9" ;;
         *)      echo "" ;;
     esac
 }

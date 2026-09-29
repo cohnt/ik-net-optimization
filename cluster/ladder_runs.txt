@@ -51,3 +51,10 @@ soft12  soft12_n4   --nb_nodes=4 --dim_latent_space=12
 soft12  soft12_n8   --nb_nodes=8 --dim_latent_space=12
 soft9   soft9_n6    --nb_nodes=6 --dim_latent_space=9
 soft16  soft16_n6   --nb_nodes=6 --dim_latent_space=16
+
+# The GVS push-rod arm (branch gvs-actuated-arm). Pre-registered at n6 like the soft PCS
+# arm; the latent is the INPUT width, nine rod forces, on every rung -- the order ladder
+# changes the backbone's fidelity, not the problem's width. Order 0 is spec-only (no chart)
+# until asked for. Datasets are built ONE AT A TIME (cluster/chain_datasets.sh).
+gvs_pushrod9_o1  gvs_pushrod9_o1_n6   --nb_nodes=6 --dim_latent_space=9
+gvs_pushrod9_o2  gvs_pushrod9_o2_n6   --nb_nodes=6 --dim_latent_space=9

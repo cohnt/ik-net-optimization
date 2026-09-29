@@ -138,6 +138,8 @@ Worker() {
     export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}"
     ## One thread per process: the node is filled with processes, not threads.
     export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+    ## The GVS push-rod arm's forward model is JAX on the CPU; pin XLA's pool per worker too.
+    export GVS_ARM_XLA_THREADS=1
     export TQDM_DISABLE=1 PYTHONUNBUFFERED=1
     export MPLBACKEND=Agg MPLCONFIGDIR="$TMPDIR/mpl.$LOCAL"
     export TORCHINDUCTOR_CACHE_DIR="$TMPDIR/inductor.$LOCAL"
