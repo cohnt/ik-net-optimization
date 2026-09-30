@@ -1334,9 +1334,14 @@ consequences: the tip FRAME `gvs_tip` is declared in the SDF as `R_y(+90 deg)` o
 z runs along the rod (the gripper weld and the flow's conditioning pose are the same geometry as on
 every other robot), and body quaternions are canonicalised to `w >= 0`. **Tip orientation
 given tip position is 3-dimensional here despite no torsional strain** (nearest-neighbour
-shrink 1.43x per tripling against 1.44x for a 3-D set), but does not cover SO(3), so the pole
-screen still draws in-distribution poses; "no torsion, so orientation is not free" was an
-inference, not a measurement.
+shrink 1.43x per tripling against 1.44x for a 3-D set) and covers a LARGE fraction of SO(3):
+measured over 8M draws at eight tip positions, **37-93% of SO(3) within 30 deg of a reached
+orientation and 54-99% within 45 deg** (medians 71% and 87%), against a uniform control that
+saturates at 100% by 20 deg, and every figure still rising with sample size. The backbone
+tangent covers 86-100% of the sphere; what is restricted is the ROLL about it, ~50-103 deg of
+360. So "no torsion, so orientation is not free" was an inference, right about the mechanism
+and wrong about the size. It is still not all of SO(3), so the pole screen draws
+in-distribution poses.
 
 **The discretization is an approximation and its size is measured**: at the fielded 7 Gauss points
 per segment the tip error against a 40-point reference is 0.009 mm max on order 1 and 0.0075 mm on
@@ -1355,7 +1360,9 @@ slice before JAX loads. **The dataset build is process-parallel and memory-bound
 vmapped solve peaks at ~2 GB + 0.7 MB per lane, so the batch is 512 and the worker count is
 capped by the node's memory (48 x 4096 was OOM-killed on 192 GB); the sampler solves each draw
 ONCE for both the tip pose and the collision screen. **The fielded build measured 436.8
-us/sample over a 48-worker xeon-p8 node, 3 h 6 min for 25M, `rejected_unconverged` 0.**
+us/sample over a 48-worker xeon-p8 node, 3 h 6 min for 25M, `rejected_unconverged` 0**; order 2
+costs 1.85x that per sample (27 generalized coordinates against 18), and a build's per-worker
+timeout must exceed `share x ms_each`, since the first result waits for a worker's whole share.
 
 **The joint-space arm's failures are force saturation, not a wiring fault.** From the target, from
 straight and from random starts it converges to 1e-8; when it fails IPOPT reports local infeasibility

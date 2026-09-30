@@ -157,9 +157,15 @@ def main():
                    help="samples per vmapped solve inside each worker; the solve's peak "
                         "memory is ~2.05 GB + 0.7 MB per lane (measured 2.38 GB at 512, "
                         "2.73 GB at 1024; 48 workers at 4096 were OOM-killed on 192 GB)")
-    p.add_argument("--worker_timeout", type=float, default=20000,
+    p.add_argument("--worker_timeout", type=float,
+                   default=float(os.environ.get("DATASET_WORKER_TIMEOUT", 39600)),
                    help="seconds to wait for any single worker's result before failing; "
-                        "the progress lines are the hang detector, this is the backstop")
+                        "the progress lines are the hang detector, this is the backstop. It "
+                        "must sit BELOW the Slurm wall and ABOVE the whole build: the FIRST "
+                        "`.next()` waits for a worker's entire share, not for one batch, so "
+                        "a value under `share x ms_each` kills a finished build at 99% "
+                        "(order 2 runs 38.7 ms/sample, 20,150 s per worker, against the old "
+                        "default of 20,000)")
     p.add_argument("--only_non_self_colliding", action="store_true", default=True,
                    help="always on; accepted so build_dataset_job.sh's command line is unchanged")
     args = p.parse_args()
