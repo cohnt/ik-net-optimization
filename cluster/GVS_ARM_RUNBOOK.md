@@ -6,7 +6,7 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-09-30 09:30 -- FIFTH DATASET ATTEMPT, after an OOM and a cluster outage
+## STATE AS OF 2026-09-30 12:45 -- FIRST DATASET DONE, second building
 
 | item | state |
 | --- | --- |
@@ -16,7 +16,7 @@ not have its venv or code changed under them).
 | staged commit | `79e7c00` |
 | preflight `gvs_cal_preflight` (5780312, debug-cpu) | `PREFLIGHT OK`: 259 positions / 52 bodies, warm-up 15.8 s, PlantQ 20.1 ms, PlantJacobian 27.5 ms, 500-sample batch 18.4 s |
 | rate `gvs_cal_rate` (5780313, xeon-p8) | 14.9 ms/sample (batch 2000) and 11.9 ms/sample (batch 20000) single-process with XLA unpinned on 96 logical CPUs -- the batched JAX solve does not spread across cores; hence the process-parallel builder. Cancelled as stale once that was known |
-| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | attempt 4 (5781015) ran 3 h 8 min and was **OUT_OF_MEMORY**: 48 pinned workers at batch 4096 peaked at a node-wide 191.8 GB and 14 were OOM-killed, after which the parent waited out its per-worker timeout; its `afterok` dependent 5781016 sat `DependencyNeverSatisfied` and was cancelled by hand. SuperCloud's login nodes were then unreachable from ~22:08 to ~09:05 (whole-site, reported by the screw-arm session and confirmed by Thomas). Attempt 5 fixes the two real defects -- the sampler solved every draw twice, and the batch was four times too large for 48 workers on 192 GB -- and adds per-worker progress lines every 10 min so a rate is on record within a quarter of an hour. Attempts 1-3 died or hung at startup (5780401/2 thread limit; 5780422/3 XLA thread limit; 5780456/7 ran 3.8 h with 96 unpinned workers and went idle on futexes) -- the traps below |
+| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | **`o1` COMPLETE** (5781386, `.DONE` at 2026-09-30T12:38): 25,000,000 train + 15,000 test, 3 h 6 min, **436.8 us/sample over the node** (21.0 ms/sample per worker x 48), peak 99.5 GB of 192, `rejected_unconverged` **0** on every draw; downloaded to the laptop's ikflow cache and verified (unit quaternions to 1.2e-7, 64 rows re-solved against the stored endpoints to 6.3e-8, the float32 storage floor). `o2` RUNNING as 5781387 since 12:38, same settings, expected ~15:45. Attempt 4 (5781015) was OUT_OF_MEMORY at batch 4096 and attempts 1-3 died or hung at startup -- the traps below |
 | charts `gvs_pushrod9_o{1,2}_n6` | NOT trained -- out of scope (behind the screw-arm queue and the PCS cleanup) |
 | FK surrogate (`--fk learned`) | NOT fitted -- a cluster job, not started |
 
@@ -89,6 +89,7 @@ Every sample is a Newton solve on SoRoMoX's rod, so the rate is measured, not as
 | laptop, 4 single-threaded worker PROCESSES (contended), 6000 samples | ~3,800 effective (~15,000 per worker) |
 | laptop, ONE worker on 2 CPUs under load 17, batch 4096, TWO solves per draw (before 2026-09-30) | 23,500 per worker |
 | laptop, ONE worker on 2 CPUs under load 17, batch 1024, one solve per draw | **11,200 per worker** |
+| **cluster xeon-p8, 48 pinned workers, batch 512, 25M samples (the fielded build)** | **437 over the node; 21,000 per worker** |
 
 Every row above the last two predates the single-solve sampler and counts two solves per
 draw.
@@ -99,7 +100,11 @@ out_structure`). So `scripts/gvs_arm/build_dataset_parallel.py` runs one single-
 JAX per CPU of the job's cpuset and writes ikflow's exact files; `build_dataset_job.sh`
 routes `gvs_*` robots to it. At 48 workers and the laptop's per-worker 5-11 ms/sample the
 effective rate would be 100-230 us/sample, i.e. 25M in 0.7-1.6 h; **no cluster per-worker
-number is on record yet**, which is what the progress lines now produce. `rejected_unconverged` was 0 on every draw so far
+number is on record yet**, which is what the progress lines now produce.
+
+**MEASURED, 2026-09-30**: 436.8 us/sample over the node, 21.0 ms/sample per worker, so 25M
+takes **3 h 6 min** on one xeon-p8 node. A 6 h wall is therefore ample and the 12 h used for
+attempt 5 was belt-and-braces; `rejected_unconverged` was 0 on all 25,015,000 draws. `rejected_unconverged` was 0 on every draw so far
 (22,000 on the laptop, 500 in the preflight, 7,500 in the local builder test). The build's
 own log prints the measured us/sample over the node; record it here when the first `.DONE`
 lands.

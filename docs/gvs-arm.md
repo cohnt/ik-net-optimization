@@ -88,6 +88,22 @@ drawn orientation is not guaranteed reachable, and the pole screen keeps drawing
 in-distribution poses. The soft PCS arm's "no torsion, so orientation is not free" was an
 inference that this measurement does not support in general; it is not re-measured here.
 
+**Redundancy is real, not just arithmetic** (`scripts/gvs_arm/probe_self_motion.py`). Nine
+inputs against a 6-D pose task gives three degrees of redundancy by construction; what makes
+it kinematic is the 6 x 9 spatial task Jacobian having rank 6, which it does on **400 of 400**
+uniform draws. The rotation rows are a genuine twist (`omega = 2 Im(conj(q) qdot)`), not four
+constrained quaternion components, so the singular values carry units: 3.29 / 2.69 / 1.70 /
+0.50 / 0.26 / 0.073 at the median, condition number median 46 and p95 142.
+
+The null space is also TRAVERSABLE, which rank alone does not show. Walking along it with a
+Gauss-Newton corrector that holds the tip pose to 0.1 mm and 0.06 deg, the arc length covered
+in normalized force units is **1.38 median (1.04 to 2.77)** from starts in the inner half of
+the box, and 0.44 median from starts drawn over the whole box. **All 40 walks stop at the
+force box, none at a singularity or a curvature failure**, and the difference between those
+two rows is the reason: the self-motion manifold is bounded by actuation limits, not by
+kinematics, which is the same saturation that makes the joint-space baseline fail. The box is
+2.0 wide per axis, so a median walk crosses a substantial part of it at a FIXED tip pose.
+
 **Datagen rate.** One process through the batched JAX solve costs 12-15 ms/sample on a
 cluster node with XLA unpinned -- the vmapped Newton does not spread across cores, and
 `jax.pmap` over host devices is refused by lineax under optimistix -- so the dataset is
@@ -98,7 +114,10 @@ found by the first cluster builds (2026-09-30): the sampler had solved every dra
 11.2 ms/sample per worker on the laptop; and the vmapped solve's peak resident memory is
 about 2.05 GB + 0.7 MB per lane (kernel high-water mark 2.38 GB at batch 512, 2.73 GB at
 1024), which is why 48 workers at batch 4096 were OOM-killed on a 192 GB node and the
-builder now runs batch 512 with a memory-derived worker cap.
+builder now runs batch 512 with a memory-derived worker cap. **Measured on the cluster**
+(48 workers, one xeon-p8 node, 25M samples): 436.8 us/sample over the node, 21.0 ms/sample
+per worker, 3 h 6 min wall, peak 99.5 GB of 192, `rejected_unconverged` 0 on all 25,000,000
+training and 15,000 test draws.
 
 ## What is queued and what is not
 

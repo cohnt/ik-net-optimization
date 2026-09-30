@@ -1310,9 +1310,15 @@ project venv (CPU jaxlib only -- the flow owns the GPU). What is tested is the W
 the rod input's sign, the implicit Jacobian, convergence, uniqueness. The PCS arm's torch map is the
 exception that motivated the old pattern, not a precedent.
 
-**Kinematic redundancy is in the inputs and is enforced.** Nine forces against a 6-D pose task
-(Thomas: *"at least one degree of kinematic redundancy"*); `GvsArmSpec.__post_init__` refuses a
-spec with `ninputs <= 6` and a test pins it. `dim_latent_space = 9` on every rung: the order ladder
+**Kinematic redundancy is in the inputs, enforced, and MEASURED.** Nine forces against a 6-D
+pose task (Thomas: *"at least one degree of kinematic redundancy"*); `GvsArmSpec.__post_init__`
+refuses a spec with `ninputs <= 6` and a test pins it. That is arithmetic; the kinematic claim
+is that the 6 x 9 spatial task Jacobian has rank 6, which it does on **400 of 400** uniform
+draws (condition number median 46, p95 142), and that the resulting 3-D null space can be
+TRAVELLED: a corrected walk holding the tip pose to 0.1 mm and 0.06 deg covers a median
+**1.38** of the 2.0-wide normalized force box, and **every walk stops at the force box, not at
+a singularity**. So the self-motion manifold is bounded by actuation limits rather than by
+kinematics -- the same saturation that makes the joint-space baseline fail. `dim_latent_space = 9` on every rung: the order ladder
 changes the forward model's fidelity, not the problem's width.
 
 **THE VACUITY TRAP, and why the backbone tapers.** With a uniform section, a straight-routed rod
@@ -1348,7 +1354,8 @@ chain (flow `jacrev` -> implicit `dq*/du` -> poses -> Drake collision) matches c
 slice before JAX loads. **The dataset build is process-parallel and memory-bound**: one worker's
 vmapped solve peaks at ~2 GB + 0.7 MB per lane, so the batch is 512 and the worker count is
 capped by the node's memory (48 x 4096 was OOM-killed on 192 GB); the sampler solves each draw
-ONCE for both the tip pose and the collision screen (~11 ms/sample per worker).
+ONCE for both the tip pose and the collision screen. **The fielded build measured 436.8
+us/sample over a 48-worker xeon-p8 node, 3 h 6 min for 25M, `rejected_unconverged` 0.**
 
 **The joint-space arm's failures are force saturation, not a wiring fault.** From the target, from
 straight and from random starts it converges to 1e-8; when it fails IPOPT reports local infeasibility
