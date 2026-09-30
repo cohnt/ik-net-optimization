@@ -1326,7 +1326,11 @@ backbone, `sigma_x = 1` the straight reference); with its default upright mounti
 along world +z at the origin, where every scene welds a robot, so nothing rotates a frame. Two
 consequences: the tip FRAME `gvs_tip` is declared in the SDF as `R_y(+90 deg)` on the tip body so its
 z runs along the rod (the gripper weld and the flow's conditioning pose are the same geometry as on
-every other robot), and body quaternions are canonicalised to `w >= 0`.
+every other robot), and body quaternions are canonicalised to `w >= 0`. **Tip orientation
+given tip position is 3-dimensional here despite no torsional strain** (nearest-neighbour
+shrink 1.43x per tripling against 1.44x for a 3-D set), but does not cover SO(3), so the pole
+screen still draws in-distribution poses; "no torsion, so orientation is not free" was an
+inference, not a measurement.
 
 **The discretization is an approximation and its size is measured**: at the fielded 7 Gauss points
 per segment the tip error against a 40-point reference is 0.009 mm max on order 1 and 0.0075 mm on

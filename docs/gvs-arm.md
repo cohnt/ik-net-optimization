@@ -76,6 +76,18 @@ random starts it converges to 1e-8 on 9 of 12; the 3 failures are IPOPT's "conve
 point of local infeasibility" with rod forces on the +-1 box -- force saturation, a property
 of the problem to report like every other baseline's.
 
+**Orientation given position** (`scripts/probe_orientation_freedom.py --robot gvs_pushrod9_o1`,
+17.1M uniform draws, 6004 tips within 5 cm of `[0, 0, 0.45]`): the nearest-neighbour
+distance between tip orientations shrinks by **1.43x per tripling** of the sample (24.3 /
+17.0 / 11.9 / 8.3 deg median at 200 / 600 / 1800 / 5400), against 1.44x for a 3-dimensional
+set and 1.0 for a floor. So the reachable orientations at a fixed tip position form a
+3-dimensional set even though no strain is torsional: three segments bending about
+different axes compose to a rotation about the tangent. It is NOT the whole of SO(3) -- the
+farthest sample still sits 56 deg from its nearest neighbour at 5400 -- so an independently
+drawn orientation is not guaranteed reachable, and the pole screen keeps drawing
+in-distribution poses. The soft PCS arm's "no torsion, so orientation is not free" was an
+inference that this measurement does not support in general; it is not re-measured here.
+
 **Datagen rate.** One process through the batched JAX solve costs 12-15 ms/sample on a
 cluster node with XLA unpinned -- the vmapped Newton does not spread across cores, and
 `jax.pmap` over host devices is refused by lineax under optimistix -- so the dataset is
