@@ -153,12 +153,14 @@ about 2.05 GB + 0.7 MB per lane (kernel high-water mark 2.38 GB at batch 512, 2.
 builder now runs batch 512 with a memory-derived worker cap. **Measured on the cluster**
 (48 workers, one xeon-p8 node, 25M samples): 436.8 us/sample over the node, 21.0 ms/sample
 per worker, 3 h 6 min wall, peak 99.5 GB of 192, `rejected_unconverged` 0 on all 25,000,000
-training and 15,000 test draws. **Order 2 costs 1.85x that per sample** (38.7 ms per worker,
-806 us over the node, 5 h 36 min for 25M) -- 27 generalized coordinates in the Newton system
-against 18 -- which is also what exposed the builder's per-result timeout: the first
-`imap_unordered.next()` waits for a worker's whole 521k share, so a 20,000 s timeout would
-have killed a 20,150 s build at 99%. Projected from the progress lines and fixed before it
-fired; the default is now 11 h, under the wall.
+training and 15,000 test draws. **Order 2 costs 1.83x that per sample** (801.5 us over the node,
+38.3-38.5 ms per worker, 5 h 37 min for 25M, peak 121.6 GB, `rejected_unconverged` 0) -- 27
+generalized coordinates in the Newton system against 18 -- which also exposed the builder's
+per-result timeout: the first `imap_unordered.next()` waits for a worker's whole 521k share,
+and at this rate that share takes ~20,000 s, the old default itself (the fastest worker
+finished 67 s under it). The default is now 11 h, under the wall. Both datasets are
+downloaded and verified: unit quaternions to 1.2e-7, 64 random rows each re-solved against the
+stored endpoints to 6.3e-8 (`o1`) and 5.8e-8 (`o2`), the float32 storage floor.
 
 ## What is queued and what is not
 

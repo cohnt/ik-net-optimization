@@ -59,7 +59,7 @@ case "$ROBOT" in
         grep MemTotal /proc/meminfo
         ## The builder's per-result timeout must exceed the WHOLE build, not one batch: the
         ## first `imap_unordered.next()` waits for a worker's entire share. Order 2 runs
-        ## 38.7 ms/sample = 20,150 s per worker, so the old 20,000 s default would have
+        ## ~38.5 ms/sample = ~20,000 s per worker, the old default itself, which would have
         ## killed a 99%-finished build. Keep it under the Slurm wall (`WALL`).
         export DATASET_WORKER_TIMEOUT="${DATASET_WORKER_TIMEOUT:-39600}"
         echo "per-worker result timeout ${DATASET_WORKER_TIMEOUT} s"
