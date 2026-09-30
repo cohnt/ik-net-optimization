@@ -51,7 +51,9 @@ case "$ROBOT" in
         ## soft one (and the open-file one, which the symbolizer also complained about).
         ulimit -u "$(ulimit -Hu)" 2>/dev/null || true
         ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
-        echo "process limit $(ulimit -u), open files $(ulimit -n), CPUs $(nproc)"
+        echo "process limit $(ulimit -u), open files $(ulimit -n), CPUs in cpuset $(taskset -cp $$ | cut -d: -f2)"
+        ## One worker per PHYSICAL core, each pinned to its own CPU slice (the builder's
+        ## default); DATASET_WORKERS overrides.
         "$PY" -u "$REPO/scripts/gvs_arm/build_dataset_parallel.py" \
             --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
         RC=$? ;;
