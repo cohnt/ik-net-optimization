@@ -113,10 +113,10 @@ the measured us/sample over the node; record each rung's here when its `.DONE` l
 
 ## What a resuming session should check FIRST
 
-- **Node budget: at most TWO nodes at once for this campaign, across every partition**
-  (Thomas, 2026-09-30: "Can you keep yourself to 2 nodes?"). The account's allotment is
-  shared with the peer campaigns. Count every queued or running `lik_ds_gvs_*` and
-  `gvs_cal_*` job before submitting anything.
+- **Node budget is set per session, not here.** On 2026-09-30 Thomas asked for at most two
+  nodes at once because of what the other agents were using that day; that cap is TEMPORARY.
+  Before submitting, look at the account's queue and ask if unsure, rather than inheriting a
+  number from this file.
 
 - `squeue -u $USER` for anything of ours (`lik_ds_gvs_*`, `gvs_cal_*`). Live at the
   2026-09-30 14:00 pause: **5783562** (`o2`, attempt 6, due ~19:40) and **5782975**
