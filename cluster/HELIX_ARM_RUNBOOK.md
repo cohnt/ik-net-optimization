@@ -263,6 +263,43 @@ intrinsic measure**, which is worth stating precisely because the record's own f
 intrinsic screens do not predict cells — it is a reason to trust the pre-registration, not a reason to
 select on it.
 
+### The p050 chart ladder, complete: training uses LESS of its ceiling the deeper the chart
+
+All three rungs of the primary pitch reached 620000 and exported `rc=0`. Screens selected by step
+number from `results/pole/helix7_p050_n*/`, chart error over 5000 held-out poses:
+
+| | `n4` | `n6` (pre-registered) | `n8` |
+| --- | --- | --- | --- |
+| median chart error | 148.9 mm | 35.0 mm | **28.9 mm** |
+| p90 / p99 | 468 / 780 mm | - / 654 mm | 173 / 559 mm |
+| `pole/max`, task pose / box | 7017 / 2052 | 33.5 / - | 22.4 / 21.0 |
+| `pole/frac_gt_1000` | 0.0001 | 0.0 | 0.0 |
+| `pole/frac_gt_3` | - | - | 0.599 |
+| log gain ceiling `exp(2.4976 * nb_nodes)` | 2.2e4 | 3.2e6 | 4.8e8 |
+| **fraction of that ceiling used, in log terms** | **89%** | **23%** | **16%** |
+| training wall clock | 10:44:51 | 14:53:56 | 19:26:55 |
+
+Two things to take from this, both of which bear on the record's gain-ceiling finding rather than on
+this robot alone.
+
+**The record's rule that "training walks 78-89% of the way up whatever log ceiling it is given" holds
+at `n4` and then fails progressively with depth.** 89% / 23% / 16% is monotone, so on this robot the
+ceiling is not a predictor of where a trained chart lands -- it is only a bound, which is the weaker
+of the two claims the record makes for it. Anyone quoting the 78-89% band should say which robots it
+was measured on.
+
+**`n8`'s ceiling is 4.8e8, far above the 1e7-1e16 band where solves actually die, and `n8` is
+nevertheless the CLEANEST rung on every intrinsic measure.** That is the soft PCS arm's result
+reproduced on a second constructed robot: an above-band rung does not degrade, where on the iiwa it
+is strictly worse. So the gain-ceiling selection criterion is again satisfied vacuously, because this
+robot has no runaway population for the criterion to protect against -- `frac_gt_1000` is 0.0 at
+every checkpoint of `n6` and `n8`, and 0.0001 at `n4`'s worst.
+
+**Accuracy is monotone in depth and the pre-registered rung is not the most accurate one.** `n8` beats
+`n6` by 6 mm of median error. The record's standing finding is that chart accuracy runs BACKWARDS to
+cells, so this is not a reason to revisit the pre-registration; HELIXCHART will benchmark all three and
+that is the measurement entitled to an opinion.
+
 ## Measured on the laptop, before anything was queued
 
 | quantity | value |
