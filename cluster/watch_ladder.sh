@@ -48,9 +48,12 @@ sync_wandb() {
 
 while true; do
     # The running rung, by job name. LLstat truncates NAME to 15 chars, so ask squeue.
-    rung=$(sc_run 'squeue -u tcohn -h -t RUNNING -o "%j" 2>/dev/null | grep "^lik_train_" | head -1' 2>/dev/null \
-           | tr -d '\r\n' | sed 's/^lik_train_//')
-    pending=$(sc_run 'squeue -u tcohn -h -t PENDING -o "%j" 2>/dev/null | grep -c "^lik_train_"' 2>/dev/null | tr -dc '0-9')
+    # Prefix and user are both derived: the prefix because job names are per cluster tree
+    # (SC_JOB_PREFIX), and $USER because hardcoding an account makes this silently print
+    # nothing for anyone else.
+    rung=$(sc_run "squeue -u \$USER -h -t RUNNING -o '%j' 2>/dev/null | grep '^${SC_JOB_PREFIX}_train_' | head -1" 2>/dev/null \
+           | tr -d '\r\n' | sed "s/^${SC_JOB_PREFIX}_train_//")
+    pending=$(sc_run "squeue -u \$USER -h -t PENDING -o '%j' 2>/dev/null | grep -c '^${SC_JOB_PREFIX}_train_'" 2>/dev/null | tr -dc '0-9')
 
     if [ -z "$rung" ]; then
         if [ "${pending:-0}" -eq 0 ]; then

@@ -52,7 +52,7 @@ cmd_status() {
           elif [ -d \"\$r\" ]; then printf '%-18s %s\n' \"\$r\" 'submitted, no status yet'
           else printf '%-18s %s\n' \"\$r\" '-'; fi
         done
-        echo '--- queue ---'; LLstat 2>/dev/null | grep -E 'lik_train|JOBID' || echo '(no lik_train jobs)'"
+        echo '--- queue ---'; squeue -u \$USER -h -o '%Z|%.10i %.9T %j  %R' 2>/dev/null | awk -F'|' -v d=\"\$HOME/$SC_ROOT/repo\" '\$1==d {print \$2; n++} END {if (!n) print \"(no jobs for this tree)\"}'"
 }
 
 # Prints the first rung whose status.json has not reached MAX_STEPS.
@@ -86,15 +86,17 @@ cmd_next() {
 ## dim_latent_space for a smoke run, per robot. The iiwa's 8 is train_ddp.py's default
 ## and needs no flag; every other robot does. A wrong value here trains happily and only
 ## fails much later, when a checkpoint is loaded against the real robot and the shape check
-## finally fires.
+## finally fires. The helix rungs are a PREFIX match, so adding a pitch needs no edit here --
+## they are all 7-wide, being a 7-DoF arm.
 smoke_latent_arg() {
     case "$1" in
-        panda)  echo "--dim_latent_space=7" ;;
-        soft9)  echo "--dim_latent_space=9" ;;
-        soft12) echo "--dim_latent_space=12" ;;
-        soft16) echo "--dim_latent_space=16" ;;
+        panda)     echo "--dim_latent_space=7" ;;
+        soft9)     echo "--dim_latent_space=9" ;;
+        soft12)    echo "--dim_latent_space=12" ;;
+        soft16)    echo "--dim_latent_space=16" ;;
+        helix7_*)  echo "--dim_latent_space=7" ;;
         gvs_pushrod9_o*) echo "--dim_latent_space=9" ;;
-        *)      echo "" ;;
+        *)         echo "" ;;
     esac
 }
 
