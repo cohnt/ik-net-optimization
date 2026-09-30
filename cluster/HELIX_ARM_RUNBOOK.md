@@ -233,6 +233,36 @@ whatever the queue says, and resubmitting resumes from `last.ckpt`.
   tail would report more than twice the true error. Select the screen by step number, never by
   position in the log.
 
+### The out-of-limits tail is CREATED by training, and only on the shallow rung
+
+Quantified once both `n4` and `n6` had reached 620000, so the statement is made on finished runs.
+Taking the per-checkpoint ratio `val/l2_error` divided by `val_clamped/l2_error` as the detector — how
+much of the unclamped mean is tail rather than fit:
+
+| rung | checkpoints with ratio > 1.3, first half | second half | largest ratio | steps at which it spiked |
+| --- | --- | --- | --- | --- |
+| `helix7_p050_n4` | 1 of 12 | **5 of 13** | 1.6 -> **14.7** | 200k, 280k, 380k, 440k, 460k, 480k |
+| `helix7_p050_n6` | 0 of 31 | 0 of 31 | 1.00 | none |
+
+So the out-of-limits tail is not a property of the validation draw, and not noise: on `n4` it is
+**created by training**, it arrives in the second half of the run, and it grows. On `n6` it never
+appears at all — the unclamped and clamped means agree to two decimal places at every one of 31
+checkpoints. **`pole/frac_gt_1000` reads 0.0 at every one of those six spikes**, so the
+unclamped-over-clamped ratio is a *more sensitive* detector of out-of-limits mass than the pole
+screen is at its fielded 1000-rad threshold — which is expected, since 1000 rad is a bimodality
+separator and a sample need only cross a joint limit to enter the clamped/unclamped gap.
+
+This is the same direction as the record's gain-ceiling finding and the same inversion of it. `n4`'s
+log ceiling is `2.4976 * 4` (gain 2.2e4) and its final task-pose `pole/max` is **7017**, or 89% of the
+way up in log terms — squarely inside the 78-89% band the record says training walks. `n6`'s ceiling
+is 3.2e6 and it reached only **33.5**, or 23%. So the *shallower* rung is the one that conforms to the
+rule here, and the deeper one has headroom it never uses. Read beside the screens, that is consistent:
+`n4` is the rung with 2 of 20000 task-pose samples above 1000 rad and a 148.9 mm median chart error,
+against `n6`'s zero and 35.0 mm. **The pre-registered rung `n6` is also the clean one on every
+intrinsic measure**, which is worth stating precisely because the record's own finding is that
+intrinsic screens do not predict cells — it is a reason to trust the pre-registration, not a reason to
+select on it.
+
 ## Measured on the laptop, before anything was queued
 
 | quantity | value |
