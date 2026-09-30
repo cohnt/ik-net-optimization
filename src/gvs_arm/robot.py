@@ -26,6 +26,8 @@ expected to stay zero; it is recorded so that a rung whose statics turn multi-va
 up as a number rather than as a quietly biased dataset.
 """
 
+import os
+
 import numpy as np
 import torch
 
@@ -108,7 +110,10 @@ class GvsArmRobot(Robot):
         converges, and the assembly is memory-light, so tens of thousands per call is the
         sweet spot measured on the laptop.
         """
-        batch = max(1, min(n, 20_000))
+        ## `GVS_ARM_SAMPLE_BATCH` lets a process-parallel build use smaller batches: the
+        ## vmapped solve's intermediates scale with the batch, and 96 workers at 20000 each
+        ## sat near a 187 GB node's memory limit.
+        batch = max(1, min(n, int(os.environ.get("GVS_ARM_SAMPLE_BATCH", "20000"))))
         configurations, poses = [], []
         remaining = n
         progress = None
