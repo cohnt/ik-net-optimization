@@ -164,8 +164,8 @@ def main():
                         "must sit BELOW the Slurm wall and ABOVE the whole build: the FIRST "
                         "`.next()` waits for a worker's entire share, not for one batch, so "
                         "a value under `share x ms_each` kills a finished build at 99% "
-                        "(order 2 runs 38.7 ms/sample, 20,150 s per worker, against the old "
-                        "default of 20,000)")
+                        "(order 2 runs ~38.5 ms/sample, ~20,000 s per worker, which WAS the old "
+                        "default)")
     p.add_argument("--only_non_self_colliding", action="store_true", default=True,
                    help="always on; accepted so build_dataset_job.sh's command line is unchanged")
     args = p.parse_args()
