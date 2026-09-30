@@ -6,7 +6,7 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-09-29 20:40 -- FIRST DATASET BUILDING (one xeon-p8 node), fourth attempt
+## STATE AS OF 2026-09-30 09:30 -- FIFTH DATASET ATTEMPT, after an OOM and a cluster outage
 
 | item | state |
 | --- | --- |
@@ -16,7 +16,7 @@ not have its venv or code changed under them).
 | staged commit | `79e7c00` |
 | preflight `gvs_cal_preflight` (5780312, debug-cpu) | `PREFLIGHT OK`: 259 positions / 52 bodies, warm-up 15.8 s, PlantQ 20.1 ms, PlantJacobian 27.5 ms, 500-sample batch 18.4 s |
 | rate `gvs_cal_rate` (5780313, xeon-p8) | 14.9 ms/sample (batch 2000) and 11.9 ms/sample (batch 20000) single-process with XLA unpinned on 96 logical CPUs -- the batched JAX solve does not spread across cores; hence the process-parallel builder. Cancelled as stale once that was known |
-| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | RUNNING since 20:38 as `lik_ds_gvs_pushrod9_o1` (5781015) then `lik_ds_gvs_pushrod9_o2` (5781016, `afterok`): 25M samples, 6 h wall, 48 CPUs, 48 affinity-pinned workers, batch 4096, staged commit `79e7c00`. Three earlier attempts died or hung at startup (5780401/2 thread limit; 5780422/3 XLA thread limit; 5780456/7 ran 3.8 h with 96 unpinned workers, went idle on futexes, cancelled) -- the traps below. Thomas released up to 4 xeon-p8 nodes at 15:40; the other three are free |
+| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | attempt 4 (5781015) ran 3 h 8 min and was **OUT_OF_MEMORY**: 48 pinned workers at batch 4096 peaked at a node-wide 191.8 GB and 14 were OOM-killed, after which the parent waited out its per-worker timeout; its `afterok` dependent 5781016 sat `DependencyNeverSatisfied` and was cancelled by hand. SuperCloud's login nodes were then unreachable from ~22:08 to ~09:05 (whole-site, reported by the screw-arm session and confirmed by Thomas). Attempt 5 fixes the two real defects -- the sampler solved every draw twice, and the batch was four times too large for 48 workers on 192 GB -- and adds per-worker progress lines every 10 min so a rate is on record within a quarter of an hour. Attempts 1-3 died or hung at startup (5780401/2 thread limit; 5780422/3 XLA thread limit; 5780456/7 ran 3.8 h with 96 unpinned workers and went idle on futexes) -- the traps below |
 | charts `gvs_pushrod9_o{1,2}_n6` | NOT trained -- out of scope (behind the screw-arm queue and the PCS cleanup) |
 | FK surrogate (`--fk learned`) | NOT fitted -- a cluster job, not started |
 
@@ -25,11 +25,14 @@ not have its venv or code changed under them).
     SC_ROOT=learned-ik-gvs bash cluster/stage_code.sh
     # then, on the login node:
     cd ~/learned-ik-gvs/repo && LEARNED_IK_ROOT=$HOME/learned-ik-gvs DATASET_SIZE=25000000 \
-        WALL=06:00:00 bash cluster/chain_datasets.sh gvs_pushrod9_o1 gvs_pushrod9_o2
+        WALL=12:00:00 CPUS=48 bash cluster/chain_datasets.sh gvs_pushrod9_o1 gvs_pushrod9_o2
 
 `CPUS=96` is refused: Slurm counts 48 CPUs on an xeon-p8 node (the 96 the rate job printed
-are hyperthreads); the builder sizes its workers from the job's cpuset. Expected ~1.5-3 h per
-rung at 25M. Sentinels: `~/learned-ik-gvs/home/.cache/ikflow/datasets/gvs_pushrod9_o*/.DONE`.
+are hyperthreads); the builder sizes its workers from the job's cpuset (48 workers) and then
+caps that by the node's memory. The 12 h wall is deliberately generous because no cluster
+per-worker rate is yet on record -- attempt 4 died before printing one. READ THE FIRST
+PROGRESS LINES ~15 min in ("worker k: n/N at t s (x ms each), RSS y GB") and project
+`521k x ms_each` per worker; cancel and resize if that exceeds the wall. Sentinels: `~/learned-ik-gvs/home/.cache/ikflow/datasets/gvs_pushrod9_o*/.DONE`.
 `DATASET_SIZE=2000000` (LOInK's) would take minutes if a smaller set is ever wanted.
 
 ## Order of operations, and why it is this order
@@ -84,13 +87,19 @@ Every sample is a Newton solve on SoRoMoX's rod, so the rate is measured, not as
 | laptop, 8 XLA threads, under a peer's 16-worker pool, batch 2000 / 20000 | 17,550 / 19,330 |
 | **cluster xeon-p8, XLA unpinned, ONE process, batch 2000 / 20000** | **14,900 / 11,900** |
 | laptop, 4 single-threaded worker PROCESSES (contended), 6000 samples | ~3,800 effective (~15,000 per worker) |
+| laptop, ONE worker on 2 CPUs under load 17, batch 4096, TWO solves per draw (before 2026-09-30) | 23,500 per worker |
+| laptop, ONE worker on 2 CPUs under load 17, batch 1024, one solve per draw | **11,200 per worker** |
+
+Every row above the last two predates the single-solve sampler and counts two solves per
+draw.
 
 The batched JAX solve does NOT spread across a node's cores, and `jax.pmap` over host CPU
 devices is refused by lineax inside optimistix's root-find (`pytree does not match
 out_structure`). So `scripts/gvs_arm/build_dataset_parallel.py` runs one single-threaded
 JAX per CPU of the job's cpuset and writes ikflow's exact files; `build_dataset_job.sh`
-routes `gvs_*` robots to it. With 48-96 workers the expected effective rate is ~150-300
-us/sample: 25M in one to two hours. `rejected_unconverged` was 0 on every draw so far
+routes `gvs_*` robots to it. At 48 workers and the laptop's per-worker 5-11 ms/sample the
+effective rate would be 100-230 us/sample, i.e. 25M in 0.7-1.6 h; **no cluster per-worker
+number is on record yet**, which is what the progress lines now produce. `rejected_unconverged` was 0 on every draw so far
 (22,000 on the laptop, 500 in the preflight, 7,500 in the local builder test). The build's
 own log prints the measured us/sample over the node; record it here when the first `.DONE`
 lands.
@@ -136,9 +145,28 @@ lands.
   on `pool.map`, no output -- until cancelled. Slurm's accounting (`sstat`/`sacct`) showed
   frozen CPU time throughout, so it cannot tell a hang from work; `ssh <node>` and look. The
   builder now pins each worker's affinity to its own CPU slice BEFORE JAX loads (one
-  worker per physical core by default, `DATASET_WORKERS` overrides), uses 4096-sample
-  batches, streams results with a per-worker timeout, and prints a line per finished
-  worker so the log shows progress.
+  worker per physical core by default, `DATASET_WORKERS` overrides), streams results with
+  a per-worker timeout, and prints a line per finished worker so the log shows progress.
+- **The vmapped solve's PEAK memory scales with the batch, and 48 x 4096 exceeds a node.**
+  The fourth attempt (5781015) ran 48 pinned workers at batch 4096: the test set (batch
+  capped at its 312 draws per worker) passed in 168 s, then the training set's first
+  4096-lane compile ran and 14 workers were OOM-killed at a node-wide 192 GB
+  (`sacct` state `OUT_OF_MEMORY`, `MaxRSS` 191.8 GB, `TotalCPU` 188 h over 3.1 h -- it was
+  computing, not hung). The parent saw nothing: a killed worker never returns, so
+  `imap_unordered` waited out the 3 h per-worker timeout and raised `TimeoutError` with no
+  rate on record. Measured on the laptop with the kernel's high-water mark: 0.96 GB after
+  import, **2.38 GB at batch 512 and 2.73 GB at batch 1024** -- about 2.05 GB of process
+  and jitted code plus 0.7 MB per lane, which extrapolates to 4.8 GB at 4096 and
+  48 x 4.8 = 230 GB on a 192 GB node, exactly what happened. The builder now defaults to
+  batch 512 (~2.4 GB peak per worker, 48 workers ~115 GB of 192 GB), caps the
+  worker count by `MemTotal`, prints the projection, and every worker reports its
+  progress, rate and RSS every ~10 minutes so a slow or growing worker is visible in the
+  log long before any limit. The dependent `o2` job (5781016) sat `DependencyNeverSatisfied`
+  and was cancelled by hand: an `afterok` chain does not clean up after a failed parent.
+- **The sampler solved every draw TWICE** -- once for the tip pose and once for the
+  self-collision screen's sphere centres -- until 2026-09-30. `TipAndCentresBatch` returns
+  both from one solve; measured on the laptop 23.5 -> 11.2 ms/sample per worker
+  (`tests/test_gvs_arm_model.py::test_sampler_path_is_one_solve` pins the agreement).
 - **Two training-tooling hazards, reported by the screw-arm session (its runbook has the
   wording), not yet fixed in the shared scripts.** `status.json`'s `val_l2_error` (what
   `submit_ladder.sh --status` and `watch_ladder.sh` print) is the UNCLAMPED validation mean

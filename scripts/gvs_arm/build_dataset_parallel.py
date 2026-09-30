@@ -46,6 +46,25 @@ sys.path.insert(0, REPO)
 TEST_SET_SIZE = 15000          # ikflow's build_dataset.py
 TAG = "non-self-colliding"     # ikflow.config.DATASET_TAG_NON_SELF_COLLIDING
 
+#: One worker's peak resident memory during the vmapped solve, from the kernel's high-water
+#: mark (VmHWM) on the laptop: 2.38 GB at batch 512 and 2.73 GB at 1024, i.e. ~2.0 GB of
+#: process and jitted code plus ~0.7 MB per lane. Extrapolated to batch 4096 that is 4.8 GB,
+#: and 48 workers x 4.8 GB is 230 GB on a 192 GB node -- exactly the attempt-4 OOM.
+_PEAK_BASE_GB = 2.05
+_PEAK_PER_LANE_GB = 0.7e-3
+
+
+def _node_memory_gb():
+    """`MemTotal` from /proc/meminfo, or 0 where it cannot be read."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / 2**20
+    except OSError:
+        pass
+    return 0.0
+
 
 def _worker(job):
     """One process: its own CPU slice, its own single-threaded JAX, its own seed and share."""
@@ -67,7 +86,25 @@ def _worker(job):
     from jrl.robots import get_robot
     robot = get_robot(robot_name)
     start = time.time()
-    samples, poses = robot.sample_joint_angles_and_poses(count, only_non_self_colliding=True)
+    page = os.sysconf("SC_PAGE_SIZE")
+    last_report = [0.0]
+
+    def report(done, total):
+        ## Every ~10 minutes per worker, so a 25M build shows its rate and its memory
+        ## in the log while it runs: attempt 4 was OOM-killed after three silent hours
+        ## and left no number behind.
+        now = time.time()
+        if now - last_report[0] < 600 and done < total:
+            return
+        last_report[0] = now
+        with open("/proc/self/statm") as f:
+            rss = int(f.read().split()[1]) * page / 2**30
+        print(f"      worker {index}: {done:,}/{total:,} at {now - start:.0f} s "
+              f"({(now - start) / max(done, 1) * 1e3:.1f} ms each), RSS {rss:.2f} GB",
+              flush=True)
+
+    samples, poses = robot.sample_joint_angles_and_poses(count, only_non_self_colliding=True,
+                                                         progress_callback=report)
     return (index, samples.astype(np.float32), poses.astype(np.float32),
             int(robot.rejected_unconverged), time.time() - start)
 
@@ -116,10 +153,13 @@ def main():
                    help="default: half the CPUs this process may run on (one worker per "
                         "physical core when the cpuset lists both hyperthreads), or "
                         "$DATASET_WORKERS")
-    p.add_argument("--batch", type=int, default=int(os.environ.get("GVS_ARM_SAMPLE_BATCH", 4096)),
-                   help="samples per vmapped solve inside each worker")
-    p.add_argument("--worker_timeout", type=float, default=3 * 3600,
-                   help="seconds to wait for any single worker's result before failing")
+    p.add_argument("--batch", type=int, default=int(os.environ.get("GVS_ARM_SAMPLE_BATCH", 512)),
+                   help="samples per vmapped solve inside each worker; the solve's peak "
+                        "memory is ~2.05 GB + 0.7 MB per lane (measured 2.38 GB at 512, "
+                        "2.73 GB at 1024; 48 workers at 4096 were OOM-killed on 192 GB)")
+    p.add_argument("--worker_timeout", type=float, default=20000,
+                   help="seconds to wait for any single worker's result before failing; "
+                        "the progress lines are the hang detector, this is the backstop")
     p.add_argument("--only_non_self_colliding", action="store_true", default=True,
                    help="always on; accepted so build_dataset_job.sh's command line is unchanged")
     args = p.parse_args()
@@ -138,6 +178,21 @@ def main():
             print(f"  process limit {soft} allows ~{allowed} JAX workers; using that instead of "
                   f"{args.workers} (raise `ulimit -u` to use every CPU)", flush=True)
             args.workers = allowed
+
+    ## MEMORY CAP. Each worker's solve peaks at about `_PEAK_BASE_GB + _PEAK_PER_LANE_GB x
+    ## batch` (measured on the laptop, kernel high-water mark). Attempt 4 ran 48 workers at
+    ## batch 4096 on a 192 GB node and 14 of them were OOM-killed three silent hours in.
+    per_worker = _PEAK_BASE_GB + _PEAK_PER_LANE_GB * args.batch
+    total_gb = _node_memory_gb()
+    if total_gb:
+        allowed = max(1, int(0.8 * total_gb / per_worker))
+        if allowed < args.workers:
+            print(f"  {args.workers} workers at batch {args.batch} would peak near "
+                  f"{args.workers * per_worker:.0f} GB on a {total_gb:.0f} GB node; using "
+                  f"{allowed} workers (or lower --batch)", flush=True)
+            args.workers = allowed
+        print(f"  memory: ~{per_worker:.2f} GB peak per worker x {args.workers} = "
+              f"{args.workers * per_worker:.0f} GB of {total_gb:.0f} GB", flush=True)
 
     import torch
     from ikflow.utils import get_dataset_directory, get_dataset_filepaths, safe_mkdir

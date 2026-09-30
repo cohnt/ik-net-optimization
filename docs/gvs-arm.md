@@ -92,7 +92,13 @@ inference that this measurement does not support in general; it is not re-measur
 cluster node with XLA unpinned -- the vmapped Newton does not spread across cores, and
 `jax.pmap` over host devices is refused by lineax under optimistix -- so the dataset is
 built process-parallel (`scripts/gvs_arm/build_dataset_parallel.py`, one single-threaded JAX
-per CPU, ikflow's exact file layout); the runbook has the table and the launch.
+per CPU, ikflow's exact file layout); the runbook has the table and the launch. Two facts
+found by the first cluster builds (2026-09-30): the sampler had solved every draw twice
+(tip pose, then sphere centres for the self-collision screen) and now solves once, 23.5 ->
+11.2 ms/sample per worker on the laptop; and the vmapped solve's peak resident memory is
+about 2.05 GB + 0.7 MB per lane (kernel high-water mark 2.38 GB at batch 512, 2.73 GB at
+1024), which is why 48 workers at batch 4096 were OOM-killed on a 192 GB node and the
+builder now runs batch 512 with a memory-derived worker cap.
 
 ## What is queued and what is not
 

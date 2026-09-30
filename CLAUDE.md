@@ -1343,8 +1343,12 @@ of 3 steps on 2000/2000 draws; random restarts reach the same equilibrium to 3e-
 from the straight arm is a deterministic map and not a selection among alternatives. A draw that
 does not converge is REJECTED AND COUNTED in the dataset sampler, never written. The whole AutoDiffXd
 chain (flow `jacrev` -> implicit `dq*/du` -> poses -> Drake collision) matches central differences to
-7e-10. XLA takes every core unless `GVS_ARM_XLA_THREADS` pins it; `run_items.sh` pins 1 per worker,
-the dataset job leaves it unpinned.
+7e-10. XLA sizes its pools from the process's CPU affinity (jax 0.11 ignores the threads flag), so
+`run_items.sh` sets `GVS_ARM_XLA_THREADS=1` and the dataset builder pins each worker to its own CPU
+slice before JAX loads. **The dataset build is process-parallel and memory-bound**: one worker's
+vmapped solve peaks at ~2 GB + 0.7 MB per lane, so the batch is 512 and the worker count is
+capped by the node's memory (48 x 4096 was OOM-killed on 192 GB); the sampler solves each draw
+ONCE for both the tip pose and the collision screen (~11 ms/sample per worker).
 
 **The joint-space arm's failures are force saturation, not a wiring fault.** From the target, from
 straight and from random starts it converges to 1e-8; when it fails IPOPT reports local infeasibility
