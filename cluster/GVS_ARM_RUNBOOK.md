@@ -38,9 +38,10 @@ PROGRESS LINES ~15 min in ("worker k: n/N at t s (x ms each), RSS y GB") and pro
 ## Order of operations, and why it is this order
 
 0. **Stage the isolated tree** (login node is fine; rsync only):
-   `SC_ROOT=learned-ik-gvs bash cluster/stage_code.sh`. Prints a NOTE that the
-   live-campaign refusal is scoped to the default tree; nothing queued out of
-   `~/learned-ik` reads this one.
+   `SC_ROOT=learned-ik-gvs bash cluster/stage_code.sh`. Its live-campaign refusal is
+   scoped to THIS tree by each job's submission directory (`squeue %Z`), so it refuses
+   while any non-calibration job of `~/learned-ik-gvs` runs (dataset builds included) and
+   ignores the other trees' jobs.
 1. **Build the tree's environment as a job on `download`** (the only non-login partition
    with internet; `MaxJobs=1`, so check nobody else has one queued first):
    `LEARNED_IK_ROOT=$HOME/learned-ik-gvs LLsub ./cluster/setup_supercloud.sh -s 8 -q download`.
@@ -61,20 +62,14 @@ PROGRESS LINES ~15 min in ("worker k: n/N at t s (x ms each), RSS y GB") and pro
    makes a finished build exit 1 without its `.DONE`). Set `DATASET_SIZE` from the measured
    rate (below) and `WALL` to cover it; the sampler solves an equilibrium per draw, so it is
    NOT the soft PCS arm's 11 minutes.
-   **BLOCKER FOR STEPS 4 AND 5, found 2026-09-30 by session `learned-ik-c3` and confirmed
-   here:** on this branch `submit_train.sh` and `submit_bench.sh` never forward
-   `LEARNED_IK_ROOT`, and `train_flow.sh:38` / `run_items.sh:87` fall back to
-   `$HOME/learned-ik`. So with `SC_ROOT=learned-ik-gvs` both would train and benchmark
-   against the DEFAULT tree's dataset cache, state and results, not this tree's. The dataset
-   step is unaffected (`chain_datasets.sh` passes it explicitly). Related: `stage_code.sh`
-   skips its live-campaign refusal for any non-default `SC_ROOT`, so nothing stops a restage
-   of `~/learned-ik-gvs` under its own jobs. The fix exists on `origin/cluster-multi-tree`
-   (submitters forward the root, a per-tree job prefix, a staging guard scoped by each job's
-   submission directory) and conflicts here in `ssh_common.sh`, `stage_code.sh` and
-   `submit_ladder.sh`; which route it lands by is Thomas's call. **Do not run 4 or 5 until it
-   has landed.**
-4. **Charts** (out of scope here): `ROBOT=gvs_pushrod9_o1 bash cluster/submit_train.sh
-   gvs_pushrod9_o1_n6 4 -- --nb_nodes=6 --dim_latent_space=9`, then `_o2`; the in-job
+   **Every command from here on needs `SC_ROOT=learned-ik-gvs`**: the submitters derive
+   the tree, the forwarded `LEARNED_IK_ROOT` and the job prefix (`gvs_`) from it, and
+   without it they target the DEFAULT tree outright. Before the merge of main at `0861127`
+   (cluster-multi-tree) they did not forward the root at all, so steps 4 and 5 would have
+   run against `~/learned-ik` even with `SC_ROOT` set.
+4. **Charts** (out of scope here): `SC_ROOT=learned-ik-gvs ROBOT=gvs_pushrod9_o1 bash
+   cluster/submit_train.sh gvs_pushrod9_o1_n6 4 -- --nb_nodes=6 --dim_latent_space=9`, then
+   `_o2`; the in-job
    export writes `models/<rung>/<rung>__n6__step620000.pkl` and the screens run.
    `ikflow_entry.py` retargets the pole screen to in-distribution poses for these rungs
    automatically. Measured (`docs/gvs-arm.md`): orientation given position IS 3-dimensional
@@ -86,7 +81,8 @@ PROGRESS LINES ~15 min in ("worker k: n/N at t s (x ms each), RSS y GB") and pro
    `python cluster/gen_manifest.py --stage GVS --wall-time 180 --targets 60 --guesses 8
    --shards 8 --solvers ipopt --starts paired,native -o cluster/manifest_stageGVS.txt` -- the
    generator's CLI defaults belong to other stages and once produced a SNOPT-only,
-   paired-only file. Then `submit_bench.sh manifest_stageGVS.txt 4`, which refuses while
+   paired-only file. Then `SC_ROOT=learned-ik-gvs bash cluster/submit_bench.sh
+   manifest_stageGVS.txt 4`, which refuses while
    the checkpoints it names do not exist. IPOPT only; the solver axis is closed.
 
 ## The datagen rate, and what it sizes
@@ -131,12 +127,17 @@ the measured us/sample over the node; record each rung's here when its `.DONE` l
   number from this file.
 
 - `squeue -u $USER` for anything of ours (`lik_ds_gvs_*`, `gvs_cal_*`). Live at the
-  2026-09-30 14:00 pause: **5783562** (`o2`, attempt 6, due ~19:40) and **5782975**
-  (`gvs_cal_cover`, the SO(3) coverage probe out of the temporary tree
-  `~/learned-ik-cover`, due ~14:10, writing `results/orientation_coverage_*.npz`).
-  Both are Slurm-side and survive a paused session; the local watchers do not.
+  2026-09-30 16:30: only **5783562** (`o2`, attempt 6, due ~19:35), still named
+  `lik_ds_*` because `chain_datasets.sh` runs on the login node and does not use the
+  derived prefix (a label only; no guard matches names any more). The coverage probe
+  (5782975) finished, its `.npz` is local and the temporary `~/learned-ik-cover` is
+  removed. Jobs are Slurm-side and survive a paused session; the local watchers do not.
 - `~/learned-ik-gvs/home/.cache/ikflow/datasets/gvs_pushrod9_o*/.DONE` -- the sentinels.
 - `~/learned-ik-gvs/repo/.staged-commit` against `git rev-parse HEAD` on `gvs-actuated-arm`.
+  **It is BEHIND on purpose as of 2026-09-30**: staged at `c674f41`, before the merge of
+  main (`0861127`), because restaging under the live o2 build is refused. Restage once
+  5783562 has finished, and before anything in steps 4-5, so the cluster tree carries the
+  multi-tree submitters.
 - That the default tree `~/learned-ik` was not touched: its venv has no `jax`.
 
 ## Traps specific to THIS robot
