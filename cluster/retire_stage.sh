@@ -100,8 +100,10 @@ LOCAL_MANIFEST="$HERE/$STEM.txt"
 [ -f "$LOCAL_MANIFEST" ] || { echo "retire_stage.sh: no manifest at $LOCAL_MANIFEST" >&2; exit 2; }
 
 ## The job name, derived the same way submit_bench.sh builds it. This is the
-## scoping handle: it carries the project prefix AND the stage.
-JOB_NAME="lik_bench_$STEM"
+## scoping handle: it carries the tree's prefix AND the stage. The prefix is
+## SC_JOB_PREFIX, derived from SC_ROOT in ssh_common.sh -- never write `lik` out,
+## or on any other tree this matches nothing and the retire sees no jobs.
+JOB_NAME="${SC_JOB_PREFIX}_bench_$STEM"
 
 ## One ssh for everything the operator needs to see. Read-only.
 REMOTE=$(cat <<REMOTE_EOF

@@ -98,7 +98,7 @@ sc_run "cat > $LAUNCH_R && chmod +x $LAUNCH_R" <<LAUNCH
 #SBATCH --partition=$PARTITION
 #SBATCH --exclusive
 #SBATCH --time=$WALL
-#SBATCH --job-name=lik_bench_${MANIFEST%.txt}${DEP_DIRECTIVE:+
+#SBATCH --job-name=${SC_JOB_PREFIX}_bench_${MANIFEST%.txt}${DEP_DIRECTIVE:+
 #SBATCH --dependency=$DEPENDENCY}${EXC_DIRECTIVE:+
 #SBATCH --exclude=$EXCLUDE_NODES}
 #SBATCH --output=../results/bench_${MANIFEST%.txt}.log-%j
@@ -108,6 +108,10 @@ cd "\$HOME/$SC_ROOT/repo" || exit 2
 for c in $CKPTS; do
     [ -f "\$c" ] || { echo "FATAL: checkpoint missing at job start: \$c" >&2; exit 3; }
 done
+## LEARNED_IK_ROOT explicitly, for the reason in submit_train.sh: run_items.sh takes its
+## state/ (the mkdir-based item claims) and results/ from it, and a fallback to the default
+## tree would have two campaigns claiming items in one state directory.
+LEARNED_IK_ROOT="\$HOME/$SC_ROOT" \
 MANIFEST=cluster/$MANIFEST PROCS=$PROCS "\$HOME/$SC_ROOT/repo/cluster/run_items.sh"
 LAUNCH
 
