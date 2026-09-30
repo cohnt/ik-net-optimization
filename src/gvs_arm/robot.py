@@ -103,16 +103,18 @@ class GvsArmRobot(Robot):
     def sample_joint_angles_and_poses(self, n: int, joint_limit_eps: float = 1e-6,
                                       only_non_self_colliding: bool = True,
                                       tqdm_enabled: bool = False,
-                                      return_torch: bool = False):
+                                      return_torch: bool = False,
+                                      progress_callback=None):
         """Rod-force draws and their equilibrium tip poses, batched through SoRoMoX.
 
-        The batch is sized for the JAX `vmap`: every lane runs Newton until the slowest lane
-        converges, and the assembly is memory-light, so tens of thousands per call is the
-        sweet spot measured on the laptop.
+        ONE equilibrium solve per draw yields the tip pose and the sphere centres together
+        (`TipAndCentresBatch`); solving separately for the pose and for the self-collision
+        screen doubled the cost of every sample. `progress_callback(done, n)` is called
+        after every batch so a long-running worker can report its rate and memory.
         """
-        ## `GVS_ARM_SAMPLE_BATCH` lets a process-parallel build use smaller batches: the
-        ## vmapped solve's intermediates scale with the batch, and 96 workers at 20000 each
-        ## sat near a 187 GB node's memory limit.
+        ## `GVS_ARM_SAMPLE_BATCH` sizes the vmapped solve. Its intermediates scale with
+        ## the batch: 48 workers at 4096 on a 192 GB node were OOM-killed (attempt 4),
+        ## so the parallel builder measures the per-worker footprint and sets this.
         batch = max(1, min(n, int(os.environ.get("GVS_ARM_SAMPLE_BATCH", "20000"))))
         configurations, poses = [], []
         remaining = n
@@ -123,12 +125,11 @@ class GvsArmRobot(Robot):
         rejected_in_a_row = 0
         while remaining > 0:
             draw = self.sample_joint_angles(batch, joint_limit_eps)
-            tips, converged = self._model.TipPoseBatch(draw)
+            tips, centres, converged = self._model.TipAndCentresBatch(draw)
             self.rejected_unconverged += int((~converged).sum())
             keep = converged
             if only_non_self_colliding:
-                collides, _ = self._model.SelfCollides(draw)
-                keep = keep & ~collides
+                keep = keep & ~self._model.CollidesFromCentres(centres)
             draw, tips = draw[keep], tips[keep]
             if draw.shape[0] == 0:
                 rejected_in_a_row += 1
@@ -145,6 +146,8 @@ class GvsArmRobot(Robot):
             remaining -= draw.shape[0]
             if progress is not None:
                 progress.update(draw.shape[0])
+            if progress_callback is not None:
+                progress_callback(n - remaining, n)
         if progress is not None:
             progress.close()
         samples = np.concatenate(configurations, axis=0)

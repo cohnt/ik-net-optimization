@@ -264,6 +264,24 @@ def test_a_curled_arm_collides_with_itself():
     print("PASS straight is clear and fully curled self-collides")
 
 
+def test_sampler_path_is_one_solve():
+    """`TipAndCentresBatch` (the dataset sampler's single solve per draw) agrees with the
+    separate tip-pose and sphere-centre paths, and its collision screen with `SelfCollides`."""
+    spec = PRIMARY
+    model = GetModel(spec)
+    cfgs = _configurations(spec, 64, seed=3)
+    tips, centres, ok = model.TipAndCentresBatch(cfgs)
+    tips_ref, ok_tip = model.TipPoseBatch(cfgs)
+    centres_ref, ok_centres = model.SphereCentresBatch(cfgs)
+    assert ok.all() and ok_tip.all() and ok_centres.all()
+    assert np.abs(tips - tips_ref).max() < 1e-12, np.abs(tips - tips_ref).max()
+    assert np.abs(centres - centres_ref).max() < 1e-12, np.abs(centres - centres_ref).max()
+    collides_ref, _ = model.SelfCollides(cfgs)
+    assert (model.CollidesFromCentres(centres) == collides_ref).all()
+    print(f"PASS one-solve sampler path matches the separate paths on 64 draws "
+          f"({int(collides_ref.sum())} self-colliding)")
+
+
 def test_generated_files_are_current():
     for spec in RUNGS.values():
         with open(GSDF.OutputPath(spec, RepoDir())) as handle:
@@ -296,6 +314,7 @@ if __name__ == "__main__":
     test_spheres_contain_the_backbone()
     test_collision_filters_are_what_they_claim()
     test_a_curled_arm_collides_with_itself()
+    test_sampler_path_is_one_solve()
     test_generated_files_are_current()
     test_redundancy_is_enforced()
     print("ALL PASS")

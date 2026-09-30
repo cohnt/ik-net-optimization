@@ -208,7 +208,16 @@ class GvsArmModel:
             q, ok, _ = solve(cfg)
             return poses(q)[:, :3, 3], ok
 
+        def tip_and_centres(cfg):
+            """Tip pose AND sphere centres from ONE equilibrium solve: the dataset sampler
+            needs both for every draw, and solving twice doubled its cost."""
+            q, ok, _ = solve(cfg)
+            g = poses(q)
+            quat = _canonical(_quaternion_from_rotation(g[-1, :3, :3] @ _R_TIP))
+            return jnp.concatenate([g[-1, :3, 3], quat]), g[:, :3, 3], ok
+
         self._solve = jax.jit(solve)
+        self._tip_and_centres_batch = jax.jit(jax.vmap(tip_and_centres))
         self._solve_from = jax.jit(solve_from)
         self._plant_q = jax.jit(plant_q)
         self._plant_jacobian = jax.jit(plant_jacobian)
@@ -283,10 +292,20 @@ class GvsArmModel:
         closer than the sum of THEIR radii.
         """
         centres, ok = self.SphereCentresBatch(cfgs)
+        return self.CollidesFromCentres(centres), ok
+
+    def CollidesFromCentres(self, centres):
+        """The self-collision screen on `(B, num_bodies, 3)` centres already in hand."""
         first, second = self.self_collision_pairs()
         separation = np.linalg.norm(centres[:, first, :] - centres[:, second, :], axis=-1)
         radii = np.asarray(self.spec.body_radii())
-        return (separation < radii[first] + radii[second]).any(axis=-1), ok
+        return (separation < radii[first] + radii[second]).any(axis=-1)
+
+    def TipAndCentresBatch(self, cfgs):
+        """`(B, 7)` tip poses, `(B, num_bodies, 3)` sphere centres and the converged mask,
+        from one solve per draw -- the dataset sampler's path."""
+        tips, centres, ok = self._tip_and_centres_batch(jnp.asarray(np.asarray(cfgs, dtype=float)))
+        return np.asarray(tips), np.asarray(centres), np.asarray(ok)
 
     def self_collision_pairs(self):
         spec = self.spec

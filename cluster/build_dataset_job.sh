@@ -53,7 +53,10 @@ case "$ROBOT" in
         ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
         echo "process limit $(ulimit -u), open files $(ulimit -n), CPUs in cpuset $(taskset -cp $$ | cut -d: -f2)"
         ## One worker per PHYSICAL core, each pinned to its own CPU slice (the builder's
-        ## default); DATASET_WORKERS overrides.
+        ## default); DATASET_WORKERS overrides. The builder also caps the worker count by
+        ## the node's memory: 48 workers at batch 4096 peaked past 192 GB and 14 were
+        ## OOM-killed (attempt 4); the default batch is now 512, ~1.9 GB peak per worker.
+        grep MemTotal /proc/meminfo
         "$PY" -u "$REPO/scripts/gvs_arm/build_dataset_parallel.py" \
             --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
         RC=$? ;;
