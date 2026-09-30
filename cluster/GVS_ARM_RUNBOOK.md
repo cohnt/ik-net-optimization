@@ -62,8 +62,9 @@ rung at 25M. Sentinels: `~/learned-ik-gvs/home/.cache/ikflow/datasets/gvs_pushro
    gvs_pushrod9_o1_n6 4 -- --nb_nodes=6 --dim_latent_space=9`, then `_o2`; the in-job
    export writes `models/<rung>/<rung>__n6__step620000.pkl` and the screens run.
    `ikflow_entry.py` retargets the pole screen to in-distribution poses for these rungs
-   automatically (they have no torsion, so an independently drawn orientation is
-   unreachable, exactly as on `soft12`).
+   automatically. Measured (`docs/gvs-arm.md`): orientation given position IS 3-dimensional
+   on this robot despite the absence of torsion, but it does not cover SO(3), so the
+   in-distribution screen stays the safe choice.
 5. **Benchmark stage** (out of scope here): the committed `cluster/manifest_stageGVS.txt`
    (64 items: two rungs x two experiments x two protocols x 8 shards, IPOPT, 180 s), which
    `gen_manifest.py --selftest` checks against the stage definition; regenerate ONLY with
