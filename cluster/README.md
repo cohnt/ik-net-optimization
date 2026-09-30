@@ -197,8 +197,13 @@ bash cluster/watch_ladder.sh
 ### The five things about this that are not obvious
 
 - **One rung at a time, at full 4-node parallelism.** Each rung takes the whole volta cap.
-  `submit_train.sh`'s one-at-a-time `lik_train` guard is what enforces it, and `--next`
-  relies on that guard rather than duplicating it. Two concurrent rungs would not merely
+  `submit_train.sh` enforces it with TWO separate checks, deliberately split because they
+  are different hazards at different scopes: a same-`RUN_NAME` check that is never
+  bypassable (two jobs on one `RUN_DIR` race its checkpoints), and a one-rung-at-a-time
+  check over this tree's training jobs that `ALLOW_CONCURRENT=1` bypasses.
+  `chain_ladder.sh` sets that flag legitimately: its rungs are submitted together but run
+  strictly one at a time, so Slurm enforces the property instead. `--next` relies on the
+  second check rather than duplicating it. Two concurrent rungs would not merely
   share the cap — they would halve each other's throughput inside a fixed step budget and
   make the wall-clock column meaningless.
 - **`ALLOW_CONCURRENT=1` is correct in `chain_ladder.sh` and essentially nowhere else.**
@@ -325,8 +330,10 @@ staged from the local checkout and `stage_code.sh`, never by asking the cluster.
 **Any check that asks the cluster whether it is busy must be scoped to this project.**
 The account is shared with Thomas's other campaigns, so `LLstat | grep -c RUNNI` refuses
 whenever anything at all is running — it fired on an unrelated `run_matrix.sh`. Filter by
-**`squeue -u $USER -n "lik_bench_$MANIFEST_NAME"`**, and count `PENDING` as well as
-`RUNNING`.
+**`squeue -u $USER -n "${SC_JOB_PREFIX}_bench_$MANIFEST_NAME"`**, and count `PENDING` as
+well as `RUNNING`. **The prefix is derived per cluster tree and must never be written out
+as `lik_`** — see the two-tree entry below, where hardcoding it reintroduced this exact
+bug.
 
 **Filter on the JOB name, not the script's filename.** `--reclaim`'s guard filtered
 `squeue -n run_items.sh` for its whole life and therefore matched nothing: a job's name is
@@ -339,6 +346,35 @@ for a manifest with no jobs). **A guard nobody has observed refusing has not bee
 tested.** Scoping per manifest is also tighter than the original intent: a worker only
 touches the manifest it was handed, so an unrelated `learned-ik` campaign is no reason to
 refuse.
+
+**Then a second TREE appeared, and "by job name" turned out to be one step too narrow.**
+When an exploration branch staged its own cluster tree (`~/learned-ik-helix` beside
+`~/learned-ik`), every name-based guard was still matching a prefix that BOTH campaigns
+shared. `stage_code.sh` refused to stage either tree because the other tree's jobs were
+running, and `submit_train.sh` — whose stated hazard is two jobs racing one `RUN_DIR` —
+refused a submission in one tree because of four `lik_train_*` jobs in the other, with no
+shared `RUN_DIR` anywhere. Two campaigns deadlocked each other's staging for as long as
+either ran. So: **scope a shared-account check to the TREE that owns the work.** Job names
+now carry a prefix derived from `SC_ROOT` (`learned-ik` -> `lik`, `learned-ik-helix` ->
+`helix`), and each guard matches only its own.
+
+**NEVER USE `LLstat` FOR A PROGRAMMATIC CHECK.** It truncates the `NAME` column to 15
+characters, so `lik_train_soft12_n4`, `lik_train_soft12_n8` and `lik_train_soft16_n6` all
+render as `lik_train_soft1`, and every rung of a ladder collapses into one string. A guard
+built on it cannot distinguish the run it is protecting from that run's siblings, and the
+project's own comments used to teach a prefix-matching workaround for the truncation —
+which quietly capped how finely anything could be scoped. The truncation is an `LLstat`
+display artifact, not a Slurm one: `squeue -u $USER -h -o '%j'` gives full names,
+`squeue -u $USER -h -n '<name>'` matches one exactly and prints nothing on a miss, and
+`sacct -j <id> -X --format=State` is exact for a single job.
+
+**And the rule from the entry above applies to its own repairs: a guard nobody has
+observed refusing has not been tested.** Both were made to refuse on purpose before being
+believed — the staging guard refused with 6 jobs of its own tree queued, the exact-name
+query returned 1 for a live run name and 0 for an invented one, each sibling rung matched
+only itself rather than all five, and the per-tree counts came back disjoint (6 `helix`,
+9 `lik`). The calibration and smoke exemptions were checked against the pattern directly,
+since no such job happened to be queued at the time.
 
 ## How work is claimed, and how to recover
 

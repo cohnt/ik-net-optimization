@@ -33,28 +33,41 @@ fi
 ## versions. That is the same hazard as changing a result schema mid-campaign,
 ## and it is invisible afterwards. Calibration and smoke jobs are exempt: they
 ## produce no campaign records.
-## Match on the payload script name, which LLstat shows when a job is submitted
-## without -J, AND on the lik_<stage>_n<i> convention used when it is. These are
-## PREFIXES on purpose: LLstat truncates NAME to 15 characters, so a full job name
-## like `lik_train_iiwa14_n6` shows as `lik_train_iiwa1` and would never match. Calibration
-## and smoke are named lik_cal_* / smoke.sh and deliberately do not match.
+## Scoped to THIS TREE, BY SUBMISSION DIRECTORY rather than by job name. The guard
+## protects the tree whose code queued items re-read when they start, so a sibling
+## campaign's jobs are none of its business -- an account-wide match had two campaigns
+## refusing each other's staging for as long as either ran.
 ##
-## `lik_bench` is listed EXPLICITLY, and its absence was a live hole until 2026-09-27.
-## submit_bench.sh sets `--job-name=lik_bench_<manifest>`, which LLstat truncates to
-## `lik_bench_manif` -- matching none of the other three patterns, since `lik_[A-Za-z]*_n[0-9]`
-## wants `_n<digit>` and this has `_manifest`. So a whole chained benchmark campaign was
-## invisible to this guard. That is the WORSE of the two cases it protects: a training job
-## produces a checkpoint, where a benchmark produces campaign records, and a mid-stage
-## restage silently builds one result set from two code versions. It went unseen because
-## submit.sh leaves its jobs unnamed, so the stages that ran through it showed as
-## `run_items.sh` and did match.
-RUNNING=$(sc_run 'LLstat 2>/dev/null | grep -c "run_items\|train_flow\|lik_train\|lik_bench\|lik_[A-Za-z]*_n[0-9]"' 2>/dev/null | tr -dc '0-9')
+## `%Z` is each job's submission directory, and every submitter here invokes through
+## `sc_run "cd ~/$SC_ROOT/repo && ..."`, so it identifies the tree BY CONSTRUCTION. Name
+## matching cannot: `submit.sh` submits `LLsub ./cluster/run_items.sh` with no
+## `--job-name`, so a whole benchmark campaign displays as its payload script name, and
+## `submit_export.sh` names jobs `<prefix>_export_*`. A pattern over `(train|bench)` misses
+## both, and would miss whatever submitter is added next -- enumerating the instances
+## cannot cover the class. Checked on the live queue: this account's three trees
+## (learned-ik, learned-ik-helix and another project's ik-tune) are cleanly separated by
+## `%Z`, including for a job submitted with no name at all.
+##
+## Calibration and smoke stay exempt (`*_cal_*`, `smoke.sh`): they produce no campaign
+## records. Everything else running out of this tree counts.
+##
+## A DELIBERATE WIDENING, so nobody is surprised by it: scoping by directory also catches
+## DATASET jobs, which run out of this tree on the CPU partition and matched no previous
+## pattern. That is correct -- datagen reads repo code through `ikflow_entry.py`, so
+## restaging under one is the same hazard as restaging under a training run -- but it does
+## refuse in a case the old guard let through.
+##
+## NEVER use LLstat for a programmatic check: it truncates NAME to 15 characters, so
+## `lik_train_soft12_n4`, `lik_train_soft12_n8` and `lik_train_soft16_n6` all render as
+## `lik_train_soft1` and every rung of a ladder collapses into one string. Measured.
+RUNNING=$(sc_run "squeue -u \$USER -h -o '%Z %j' 2>/dev/null | awk -v d=\"\$HOME/$SC_ROOT/repo\" '\$1==d && \$2 !~ /_cal_/ && \$2 != \"smoke.sh\"' | wc -l" 2>/dev/null | tr -dc '0-9')
 if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
-    echo "REFUSING: $RUNNING campaign job(s) are on the cluster right now." >&2
+    echo "REFUSING: $RUNNING campaign job(s) of THIS tree (~/$SC_ROOT) are running." >&2
     echo "Restaging would change the code later items import mid-stage." >&2
     echo "Wait for the stage to drain, or re-run with FORCE_STAGE=1 if you are sure." >&2
     exit 3
 fi
+[ "$SC_ROOT" = "learned-ik" ] || echo "NOTE: staging the ISOLATED tree ~/$SC_ROOT (job prefix '$SC_JOB_PREFIX')."
 
 ## An INCOMPLETE local tree is worse than a stale one, because the rsync below runs with
 ## --delete: anything missing here is deleted THERE. Two ways to arrive with one, both hit
