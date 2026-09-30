@@ -25,6 +25,7 @@ from pydrake.multibody.parsing import ModelDirective, AddModel
 
 from src.helix_arm.params import SPECS as _HELIX_SPECS
 from src.shelf_regions import PointInShelfCompartments
+from src.soft_arm.params import RUNGS as _SOFT_RUNGS
 from src.utils import BuildEnv, RepoDir
 
 MUG_URDF = "package://combining_kinematics/models/mug/mug_simple_red.urdf"
@@ -136,10 +137,11 @@ SCENES = {
         wrist_frame="hand", fingertip_frame="between_fingers"),
 }
 
-## The screw-joint arm's rungs, built from the same description that emits their scenes
-## rather than written out four times.  Their scenes carry the SAME four shelf welds and two
-## tables as the rigid arms', which is what lets the compartment table, the containment
-## predicate and the acceptance probe apply to them untouched.
+## The two constructed robots' rungs -- the screw-joint arm's and the soft PCS arm's -- each
+## built from the same description that emits their scenes rather than written out per rung.
+## Their scenes carry the SAME four shelf welds and two tables as the rigid arms', which is
+## what lets the compartment table, the containment predicate and the acceptance probe apply
+## to them untouched.
 ##
 ## `nobin` is the hardened scene, as on the Panda: these scenes never had decorative mugs,
 ## so there is no "bin removed, clutter kept" variant to distinguish -- the bin is the only
@@ -160,6 +162,23 @@ for _helix in _HELIX_SPECS.values():
     SCENES[(_helix.name, "pose")] = SceneSpec(
         f"{_helix.name}_pose", _hardened, _legacy, _hardened,
         _instances, _helix.flange_link,
+        wrist_frame="hand", fingertip_frame="between_fingers")
+
+## The pose task targets `soft_tip`, the end of the backbone, which is also the frame the
+## flow is conditioned on.  The containment points are the gripper's own, exactly as on
+## both rigid arms: the soft PCS arm carries the SAME finray gripper, so `between_fingers` and
+## the 0.100 m step behind it are literally the same geometry on all three robots.
+for _spec in _SOFT_RUNGS.values():
+    _hardened = f"models/{_spec.name}/{_spec.name}_collision_hardened.yaml"
+    _legacy = f"models/{_spec.name}/{_spec.name}_collision.yaml"
+    _instances = (_spec.name, "finray")
+    SCENES[(_spec.name, "mug")] = SceneSpec(
+        f"{_spec.name}_mug", _hardened, _legacy, _hardened,
+        _instances, "between_fingers",
+        wrist_frame="between_fingers", fingertip_frame="between_fingers")
+    SCENES[(_spec.name, "pose")] = SceneSpec(
+        f"{_spec.name}_pose", _hardened, _legacy, _hardened,
+        _instances, _spec.tip_frame_name,
         wrist_frame="hand", fingertip_frame="between_fingers")
 
 

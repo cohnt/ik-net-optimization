@@ -6,7 +6,8 @@ module is imported, so this is the seam where that happens -- ONE list, so the n
 robot adds one entry here and touches nothing else.
 
 It is robot-generic on purpose. The alternative, hardcoding a particular robot's register
-module at each of the three import sites, is how the same need was met before, and it means
+module at each of the three import sites, is how the soft PCS arm met the same need on
+main, and it means
 every new robot has to find all three. The three are:
 
   * `src/<robot>_program.py`, because the program resolves a chart by robot name;
@@ -23,7 +24,7 @@ its entire run.
 
 #: Modules whose import registers robots. Each is expected to be idempotent and to expose
 #: `REGISTERED`, a tuple of the names it added.
-MODULES = ("src.helix_arm.register",)
+MODULES = ("src.helix_arm.register", "src.soft_arm.register")
 
 
 def RegisterAll():

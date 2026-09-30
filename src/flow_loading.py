@@ -46,6 +46,8 @@ from jrl.robots import get_robot
 ## the single funnel every by-name lookup passes through -- the programs, all three
 ## checkpoint screens and the export round-trip -- so registering here is what stops
 ## `get_robot` raising inside a screen that runs at the END of a 620k-step training job.
+## `src.register_robots` imports every robot's register module, the soft PCS arm's
+## included, so a new robot adds one entry there and touches nothing here.
 from src.register_robots import ProjectRobotNames
 
 _PROJECT_ROBOT_NAMES = ProjectRobotNames()
@@ -78,14 +80,31 @@ LEGACY_PANDA_ARCH = dict(LEGACY_IIWA_ARCH, dim_latent_space=7, softflow_noise_sc
 # sidecar for provenance without being enforced.
 ARCH_FIELDS = tuple(LEGACY_IIWA_ARCH.keys())
 
-LEGACY_ARCH_BY_ROBOT = {"iiwa14": LEGACY_IIWA_ARCH, "panda": LEGACY_PANDA_ARCH}
+#: The soft PCS arm's rungs. `dim_latent_space` is the rung's own DoF count, which is not a
+#: free choice: `InvertFlow` writes `x[0, :num_arm_dof]` into a buffer of width
+#: `network_width`, so a narrower latent would be a buffer overrun rather than a slow
+#: chart. Nothing else differs from the iiwa's architecture.
+LEGACY_SOFT_ARCH = {name: dict(LEGACY_IIWA_ARCH, dim_latent_space=ndof)
+                    for name, ndof in (("soft9", 9), ("soft12", 12), ("soft16", 16))}
+
+## Without an entry here a sidecar-less checkpoint falls back to `LEGACY_IIWA_ARCH`
+## SILENTLY -- a 12-DoF chart loaded against an 8-wide latent, which the shape check would
+## catch, but a 9-DoF one against 8 would not be caught by anything.
+LEGACY_ARCH_BY_ROBOT = {"iiwa14": LEGACY_IIWA_ARCH, "panda": LEGACY_PANDA_ARCH,
+                        **LEGACY_SOFT_ARCH}
 
 # `helix7` is a 7-DoF arm, so its baseline latent width is the Panda's. Without an entry
 # here a sidecar-less checkpoint would fall back to the iiwa's `dim_latent_space = 8`
 # against a 7-wide robot: `InvertFlow` writes `x[0, :num_arm_dof]` into a buffer of width
 # `network_width`, so a mismatch is a silently different chart at best.
-LEGACY_ARCH_BY_ROBOT.update(
-    {name: LEGACY_PANDA_ARCH for name in _PROJECT_ROBOT_NAMES})
+#
+# Keyed on the screw-joint arm's OWN spec table, not on `_PROJECT_ROBOT_NAMES`: that covers
+# every robot this project defines, soft PCS rungs included, and an update over it would
+# overwrite `soft9`/`soft12`/`soft16` above with a 7-wide architecture -- which, for the
+# 9-wide rung, nothing downstream would catch.
+from src.helix_arm.params import SPECS as _HELIX_SPECS  # noqa: E402
+
+LEGACY_ARCH_BY_ROBOT.update({name: LEGACY_PANDA_ARCH for name in _HELIX_SPECS})
 
 
 def SidecarPath(checkpoint):

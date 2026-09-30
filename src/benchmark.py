@@ -390,7 +390,19 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
     if not np.all(np.isfinite(q)):
         return Verdict(False, "nan", {})
 
+    ## The point that is GRADED, which is not always the point the arm optimised against.
+    ## `VerificationQ` is the identity on every robot whose forward model is exact, so this
+    ## is `q` itself there. On a robot running a LEARNED forward model it re-derives the
+    ## plant positions from the EXACT kinematics: an arm that solves against its own
+    ## surrogate must not be scored by that surrogate. The collision check, the true
+    ## minimum distance and the task gate all read this vector; `detail["q"]` keeps the
+    ## returned one, so the difference between them stays recoverable per cell.
+    verify_q = np.asarray(getattr(program, "VerificationQ", lambda v: v)(q), dtype=float)
+
     detail = {"q": [float(v) for v in q]}
+    if not np.array_equal(verify_q, q):
+        detail["verify_q"] = [float(v) for v in verify_q]
+        detail["forward_model_error"] = float(np.max(np.abs(verify_q - q)))
 
     # Every binding's worst signed violation, unconditionally: this is the continuous
     # quantity from which any feasibility threshold can be recomputed later, so a change
@@ -405,7 +417,8 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
     relaxed_tol = tol if relaxed_tol is None else float(relaxed_tol)
     relaxed_violations = {k: v for k, v in worst.items() if v > relaxed_tol}
 
-    collision = float(np.asarray(program.collision_free_constraint_eval.Eval(q)).flatten()[0])
+    collision = float(np.asarray(
+        program.collision_free_constraint_eval.Eval(verify_q)).flatten()[0])
     detail["collision_value"] = collision
 
     # `collision_value` is the RAW value of Drake's MinimumDistanceLowerBoundConstraint: a
@@ -417,7 +430,7 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
     try:
         scene_graph = program.diagram.GetSubsystemByName("scene_graph")
         sg_context = scene_graph.GetMyContextFromRoot(program.diagram_context)
-        program.plant.SetPositions(program.plant_context, q)
+        program.plant.SetPositions(program.plant_context, verify_q)
         pairs = scene_graph.get_query_output_port().Eval(
             sg_context).ComputeSignedDistancePairwiseClosestPoints()
         if pairs:
@@ -440,7 +453,7 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
         detail["z_norm"] = float(np.linalg.norm(
             x[program.prog.FindDecisionVariableIndices(program.z)]))
 
-    ok, task_detail = task_gate(program, q)
+    ok, task_detail = task_gate(program, verify_q)
     detail.update(task_detail)
 
     # An interior-point method parks *on* an active constraint, so a converged solve
@@ -484,12 +497,31 @@ def start_diagnostics(program, q_init):
     onto the mug axis, which moves the configuration by radians. That is a property of the
     formulations, not a defect, but it has to be *reported* rather than assumed away, so
     every cell carries the number.
+
+    One caveat on `clip_distance` itself, because it is summed over start variables whose
+    regions are of two different kinds. Where the region is a genuine variable bound (the
+    joint-space arms' `q`, the analytic arm's `psi`, and its `xyz_rpy` on the grasp task)
+    the distance is what IPOPT's `bound_push` moves at iterate 0 -- a displacement that
+    really happens. Where it is a general constraint (the learned arm's `c` and `z`, the
+    analytic arm's `xyz_rpy` on the pose task) nothing projects and iterate 0 is the guess
+    as written, so the distance only says the start began outside the region -- which for
+    the latent is the intended behaviour, not a loss. `median_clip_distance` therefore
+    answers "how far outside their regions did the starts sit", NOT "how much of the
+    paired start the solver discarded"; the second reading is only valid on the arms whose
+    regions are bounds. Read it beside `start_q_error`, which is measured on the guess.
     """
     out = {"clip_distance": _finite(getattr(program, "clip_distance", None))}
     n = getattr(program, "num_arm_dof", 7)
     try:
         x0 = program.prog.GetInitialGuess(program.lumped_vars)
-        q0 = np.asarray([float(v) for v in program.VarsToQ(x0)], dtype=float)
+        ## The CONFIGURATION at the start, not the first `n` entries of a plant position
+        ## vector. The two are the same object on a robot whose configuration IS its plant
+        ## vector -- which is both rigid arms, where `Config` returns exactly what
+        ## `VarsToQ` produced -- and they are different things on one whose plant carries
+        ## floating-body quaternions. Comparing the slice there measures strains against
+        ## quaternion components, reads ~1.2 rad on an EXACT start, and scores every cell
+        ## `unrepresentable_start` before a single solve is attempted.
+        q0 = np.asarray([float(v) for v in program.Config(x0)], dtype=float)
         out["start_q_error"] = _finite(np.max(np.abs(q0[:n] - np.asarray(q_init, dtype=float)[:n])))
     except Exception:
         out["start_q_error"] = None

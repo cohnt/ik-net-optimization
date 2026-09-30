@@ -45,6 +45,7 @@ from src.helix_arm.limits import ApplyScrewJointLimits, RequireFiniteLimits
 from src.helix_arm.params import SPECS as HELIX_SPECS
 from src.generic_program import ProgramOptions
 from src.shelf_regions import PointInShelfCompartments, ShelfCompartmentRegions
+from src.soft_arm.params import RUNGS as _SOFT_RUNGS
 from src.target_screening import SCENES, FloatingMugScreen, SceneFile
 from src.utils import BuildEnv, HiddenPrints
 
@@ -54,7 +55,8 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--robots", default="panda,iiwa",
                    help="comma-separated; the record's two robots by default. The "
-                        "screw-joint rungs are named helix7_p000 / p025 / p050 / p100.")
+                        "soft PCS arm's rungs (soft9/soft12/soft16) and the screw-joint "
+                        "rungs (helix7_p000 / p025 / p050 / p100) are valid too.")
     p.add_argument("--tasks", default="mug,pose")
     p.add_argument("--insets", default="0,0.05,0.10,0.125")
     p.add_argument("--draws", type=int, default=20000)
@@ -98,12 +100,36 @@ def probe_scene(robot, task, draws, seed, scene="hardened"):
         plant_context=context)
 
     frame = plant.GetFrameByName(spec.target_frame)
-    lower, upper = plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits()
     rng = np.random.default_rng(seed)
+
+    ## HOW A CONFIGURATION IS DRAWN depends on whether the plant's positions ARE the
+    ## configuration. On the rigid arms they are, so a uniform draw over the plant's limits
+    ## is the robot's own box. On the soft PCS arm the plant carries quaternion floating bodies
+    ## whose limits are +-inf, so that draw is `nan`: the configuration is 9-16 normalized
+    ## strains and has to be mapped through the kinematics. Same split the benchmark driver
+    ## makes, and the slot map is the SAME helper, so the probe and the driver cannot
+    ## disagree about the layout.
+    soft_spec = _SOFT_RUNGS.get(robot)
+    if soft_spec is None:
+        lower, upper = plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits()
+
+        def draw_plant_q():
+            return rng.uniform(lower, upper)
+    else:
+        import torch
+
+        from src.soft_arm import kinematics as SK
+
+        picks = SK.PlantSlotMap(plant, soft_spec)
+
+        def draw_plant_q():
+            cfg = rng.uniform(-1.0, 1.0, size=soft_spec.ndof)
+            tensor = torch.as_tensor(cfg, dtype=torch.float64, device="cpu")
+            return SK.config_to_plant_q(tensor, soft_spec, device="cpu").numpy()[picks]
 
     points, start = [], time.time()
     for _ in range(draws):
-        q = rng.uniform(lower, upper)
+        q = draw_plant_q()
         plant.SetPositions(context, q)
         if collision.Eval(q) < 1:
             points.append(frame.CalcPoseInWorld(context))
