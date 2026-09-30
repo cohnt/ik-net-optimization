@@ -82,11 +82,47 @@ distance between tip orientations shrinks by **1.43x per tripling** of the sampl
 17.0 / 11.9 / 8.3 deg median at 200 / 600 / 1800 / 5400), against 1.44x for a 3-dimensional
 set and 1.0 for a floor. So the reachable orientations at a fixed tip position form a
 3-dimensional set even though no strain is torsional: three segments bending about
-different axes compose to a rotation about the tangent. It is NOT the whole of SO(3) -- the
-farthest sample still sits 56 deg from its nearest neighbour at 5400 -- so an independently
-drawn orientation is not guaranteed reachable, and the pole screen keeps drawing
-in-distribution poses. The soft PCS arm's "no torsion, so orientation is not free" was an
-inference that this measurement does not support in general; it is not re-measured here.
+different axes compose to a rotation about the tangent. The soft PCS arm's "no torsion, so
+orientation is not free" was an inference that this measurement does not support in general;
+it is not re-measured here.
+
+**How much of SO(3), in fractions** (`scripts/probe_orientation_coverage.py` via
+`cluster/orientation_coverage_job.sh`, job 5782975: 8,000,000 uniform force draws on 48
+xeon-p8 workers, 37,298 tips kept within 5 cm of 8 positions chosen as the densest pilot
+voxels, scored against 20,000 uniform probe orientations). Dimension is not fraction, so this
+is the question answered directly: what fraction of SO(3) lies within `tau` of an orientation
+the arm actually reaches at a fixed tip position.
+
+| tip position | N | within 10 deg | within 20 deg | within 30 deg | within 45 deg | median / p99 to nearest reached |
+| --- | --- | --- | --- | --- | --- | --- |
+| uniform control (not the robot) | 5,681 | 79.8% | 100.0% | 100.0% | 100.0% | 7.6 / 14.0 deg |
+| `[0.00, 0.00, 0.45]` (the pole screen's) | 3,012 | 50.1% | 85.2% | **93.3%** | 99.0% | 10.0 / 45.2 deg |
+| `[0.25, -0.35, 0.35]` | 4,797 | 39.1% | 65.0% | 79.4% | 92.4% | 12.9 / 63.8 deg |
+| `[-0.35, -0.25, 0.35]` | 4,743 | 38.6% | 64.9% | 79.4% | 92.2% | 12.9 / 64.9 deg |
+| `[0.35, -0.35, 0.10]` | 3,819 | 31.2% | 60.8% | 80.2% | 94.4% | 15.9 / 57.3 deg |
+| `[-0.10, -0.45, 0.40]` | 5,313 | 34.0% | 50.3% | 63.4% | 81.5% | 19.8 / 80.9 deg |
+| `[-0.15, -0.30, 0.55]` | 5,681 | 31.3% | 46.8% | 59.8% | 78.1% | 22.3 / 89.5 deg |
+| `[0.15, -0.45, 0.45]` | 5,361 | 26.0% | 39.5% | 51.1% | 69.1% | 29.1 / 94.0 deg |
+| `[0.25, 0.30, 0.60]` (worst) | 4,572 | 16.7% | 27.1% | **37.5%** | 54.2% | 41.3 / 111.7 deg |
+
+**It is a large fraction, not a sliver: 37-93% of SO(3) within 30 deg and 54-99% within
+45 deg, median 71% and 87% over the eight positions.** Three things make that readable. The
+uniform control is the estimator's ceiling at these sample sizes and it saturates (100% at
+20 deg), so the robot's shortfall is the robot's, not the sample's. The saturation ladder
+still RISES with N at every centre (the worst runs 28.7 -> 33.7 -> 37.5% at N = 508 / 1,524 /
+4,572), so every number here is a **lower bound** on what the arm reaches. And a geodesic ball
+of 30 deg is only 0.75% of SO(3) by Haar measure, so "93% within 30 deg" is a statement about
+a genuinely spread set rather than about a loose tolerance.
+
+**The structure is that the pointing direction is nearly free and the ROLL is what is
+restricted**: the backbone tangent covers 86-100% of the sphere within 20 deg at every
+centre, while the roll about that tangent spans only about 50-103 deg of 360 where enough
+samples share a tangent cell. So the torsion intuition was right about the mechanism and
+wrong about the size -- a quarter turn of roll is not "not free". Coverage is best at the pole
+screen's own position and worst at the far-reach corners, which is the force box saturating.
+The practical consequence is unchanged: an independently drawn orientation is not guaranteed
+reachable, so the pole screen keeps drawing in-distribution poses, and the benchmark restricts
+itself to known-feasible initial guesses.
 
 **Redundancy is real, not just arithmetic** (`scripts/gvs_arm/probe_self_motion.py`). Nine
 inputs against a 6-D pose task gives three degrees of redundancy by construction; what makes
@@ -117,7 +153,12 @@ about 2.05 GB + 0.7 MB per lane (kernel high-water mark 2.38 GB at batch 512, 2.
 builder now runs batch 512 with a memory-derived worker cap. **Measured on the cluster**
 (48 workers, one xeon-p8 node, 25M samples): 436.8 us/sample over the node, 21.0 ms/sample
 per worker, 3 h 6 min wall, peak 99.5 GB of 192, `rejected_unconverged` 0 on all 25,000,000
-training and 15,000 test draws.
+training and 15,000 test draws. **Order 2 costs 1.85x that per sample** (38.7 ms per worker,
+806 us over the node, 5 h 36 min for 25M) -- 27 generalized coordinates in the Newton system
+against 18 -- which is also what exposed the builder's per-result timeout: the first
+`imap_unordered.next()` waits for a worker's whole 521k share, so a 20,000 s timeout would
+have killed a 20,150 s build at 99%. Projected from the progress lines and fixed before it
+fired; the default is now 11 h, under the wall.
 
 ## What is queued and what is not
 

@@ -6,7 +6,7 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-09-30 12:45 -- FIRST DATASET DONE, second building
+## STATE AS OF 2026-09-30 14:00 -- FIRST DATASET DONE, second RELAUNCHED
 
 | item | state |
 | --- | --- |
@@ -16,7 +16,7 @@ not have its venv or code changed under them).
 | staged commit | `79e7c00` |
 | preflight `gvs_cal_preflight` (5780312, debug-cpu) | `PREFLIGHT OK`: 259 positions / 52 bodies, warm-up 15.8 s, PlantQ 20.1 ms, PlantJacobian 27.5 ms, 500-sample batch 18.4 s |
 | rate `gvs_cal_rate` (5780313, xeon-p8) | 14.9 ms/sample (batch 2000) and 11.9 ms/sample (batch 20000) single-process with XLA unpinned on 96 logical CPUs -- the batched JAX solve does not spread across cores; hence the process-parallel builder. Cancelled as stale once that was known |
-| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | **`o1` COMPLETE** (5781386, `.DONE` at 2026-09-30T12:38): 25,000,000 train + 15,000 test, 3 h 6 min, **436.8 us/sample over the node** (21.0 ms/sample per worker x 48), peak 99.5 GB of 192, `rejected_unconverged` **0** on every draw; downloaded to the laptop's ikflow cache and verified (unit quaternions to 1.2e-7, 64 rows re-solved against the stored endpoints to 6.3e-8, the float32 storage floor). `o2` RUNNING as 5781387 since 12:38, same settings, expected ~15:45. Attempt 4 (5781015) was OUT_OF_MEMORY at batch 4096 and attempts 1-3 died or hung at startup -- the traps below |
+| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | **`o1` COMPLETE** (5781386, `.DONE` at 2026-09-30T12:38): 25,000,000 train + 15,000 test, 3 h 6 min, **436.8 us/sample over the node** (21.0 ms/sample per worker x 48), peak 99.5 GB of 192, `rejected_unconverged` **0** on every draw; downloaded to the laptop's ikflow cache and verified (unit quaternions to 1.2e-7, 64 rows re-solved against the stored endpoints to 6.3e-8, the float32 storage floor). **`o2` is attempt 6, 5783562**, queued 14:00 with the timeout fix below; attempt 5 (5781387) ran correctly at 38.7 ms/sample per worker and was **cancelled at 1 h 08 because that rate projects 20,150 s per worker against the builder's 20,000 s per-result timeout** -- it would have raised `TimeoutError` at 99% and written nothing. Attempt 4 (5781015) was OUT_OF_MEMORY at batch 4096 and attempts 1-3 died or hung at startup -- the traps below |
 | charts `gvs_pushrod9_o{1,2}_n6` | NOT trained -- out of scope (behind the screw-arm queue and the PCS cleanup) |
 | FK surrogate (`--fk learned`) | NOT fitted -- a cluster job, not started |
 
@@ -89,7 +89,8 @@ Every sample is a Newton solve on SoRoMoX's rod, so the rate is measured, not as
 | laptop, 4 single-threaded worker PROCESSES (contended), 6000 samples | ~3,800 effective (~15,000 per worker) |
 | laptop, ONE worker on 2 CPUs under load 17, batch 4096, TWO solves per draw (before 2026-09-30) | 23,500 per worker |
 | laptop, ONE worker on 2 CPUs under load 17, batch 1024, one solve per draw | **11,200 per worker** |
-| **cluster xeon-p8, 48 pinned workers, batch 512, 25M samples (the fielded build)** | **437 over the node; 21,000 per worker** |
+| **cluster xeon-p8, 48 pinned workers, batch 512, 25M samples, ORDER 1 (the fielded build)** | **437 over the node; 21,000 per worker** |
+| **the same, ORDER 2** | **806 over the node; 38,700 per worker** |
 
 Every row above the last two predates the single-solve sampler and counts two solves per
 draw.
@@ -104,19 +105,33 @@ number is on record yet**, which is what the progress lines now produce.
 
 **MEASURED, 2026-09-30**: 436.8 us/sample over the node, 21.0 ms/sample per worker, so 25M
 takes **3 h 6 min** on one xeon-p8 node. A 6 h wall is therefore ample and the 12 h used for
-attempt 5 was belt-and-braces; `rejected_unconverged` was 0 on all 25,015,000 draws. `rejected_unconverged` was 0 on every draw so far
-(22,000 on the laptop, 500 in the preflight, 7,500 in the local builder test). The build's
-own log prints the measured us/sample over the node; record it here when the first `.DONE`
-lands.
+attempt 5 was belt-and-braces; `rejected_unconverged` was 0 on all 25,015,000 draws.
+**Order 2 costs 1.85x order 1 per sample** (38.7 against 21.0 ms per worker), which is the
+27 against 18 generalized coordinates in the Newton system, so 25M takes **5 h 36 min** --
+and that is what broke the per-worker timeout (the trap below). The build's own log prints
+the measured us/sample over the node; record each rung's here when its `.DONE` lands.
 
 ## What a resuming session should check FIRST
 
-- `squeue -u $USER` for anything of ours (`lik_ds_gvs_*`, `gvs_cal_preflight`).
+- `squeue -u $USER` for anything of ours (`lik_ds_gvs_*`, `gvs_cal_*`). Live at the
+  2026-09-30 14:00 pause: **5783562** (`o2`, attempt 6, due ~19:40) and **5782975**
+  (`gvs_cal_cover`, the SO(3) coverage probe out of the temporary tree
+  `~/learned-ik-cover`, due ~14:10, writing `results/orientation_coverage_*.npz`).
+  Both are Slurm-side and survive a paused session; the local watchers do not.
 - `~/learned-ik-gvs/home/.cache/ikflow/datasets/gvs_pushrod9_o*/.DONE` -- the sentinels.
 - `~/learned-ik-gvs/repo/.staged-commit` against `git rev-parse HEAD` on `gvs-actuated-arm`.
 - That the default tree `~/learned-ik` was not touched: its venv has no `jax`.
 
 ## Traps specific to THIS robot
+
+- **The builder's per-result timeout must exceed the WHOLE build, not one batch.** The first
+  `imap_unordered.next()` waits for a worker's ENTIRE share (521k samples), so
+  `--worker_timeout` has to sit above `share x ms_each` and below the Slurm wall. At order 2's
+  38.7 ms/sample that is 20,150 s against an old default of 20,000, i.e. a finished build
+  killed at 99% with nothing written -- caught from the progress lines before it fired, not
+  after. The default is now 39,600 s (11 h, under the 12 h wall) and
+  `DATASET_WORKER_TIMEOUT` overrides it. **Project `share x ms_each` from the first progress
+  lines against BOTH the wall and the timeout.**
 
 - **The forward model is a root-find.** `Equilibrium` raises on non-convergence in the
   solver; the sampler rejects and COUNTS such draws (`robot.rejected_unconverged`). Measured

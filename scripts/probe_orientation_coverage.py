@@ -287,20 +287,27 @@ def main():
         cos = (tp @ tangent.T).max(axis=1).clip(-1, 1)
         sphere = float((np.degrees(np.arccos(cos)) < taus[1]).mean())
         ## Roll available at a typical tangent: bin by tangent direction, take the span.
-        keys = np.round(tangent * 6).astype(int)
-        order = np.lexsort(keys.T)
-        spans, start = [], 0
-        for j in range(1, len(order) + 1):
-            if j == len(order) or (keys[order[j]] != keys[order[start]]).any():
-                if j - start >= 30:
-                    r = np.sort(roll[order[start:j]])
-                    gap = np.diff(np.concatenate([r, [r[0] + 360]]))
-                    spans.append(360.0 - gap.max())
-                start = j
+        ## The bin is COARSENED until some cell holds enough samples -- at a fixed
+        ## resolution most centres produced no qualifying cell and the statistic read `nan`.
+        spans, res = [], 0
+        for res in (6, 4, 3, 2):
+            keys = np.round(tangent * res).astype(int)
+            order = np.lexsort(keys.T)
+            spans, start = [], 0
+            for j in range(1, len(order) + 1):
+                if j == len(order) or (keys[order[j]] != keys[order[start]]).any():
+                    if j - start >= 20:
+                        r = np.sort(roll[order[start:j]])
+                        gap = np.diff(np.concatenate([r, [r[0] + 360]]))
+                        spans.append(360.0 - gap.max())
+                    start = j
+            if spans:
+                break
         span = float(np.median(spans)) if spans else float("nan")
+        shown = f"{span:.0f}d of 360" if spans else "unmeasured (no cell with 20 samples)"
         print(f"  {'structure':<22} tangent covers {sphere:.1%} of the sphere "
-              f"(within {taus[1]:.0f}d); roll spans {span:.0f}d of 360 at a typical tangent"
-              f"  [{len(spans)} tangent cells]")
+              f"(within {taus[1]:.0f}d); roll spans {shown} at a typical tangent"
+              f"  [{len(spans)} tangent cells at 1/{res}]")
         results[label] = dict(centre=centre, coverage=row, angles=angles,
                               sphere=sphere, roll_span=span, n=len(quats))
         print()
