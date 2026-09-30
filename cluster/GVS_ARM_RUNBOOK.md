@@ -61,6 +61,18 @@ PROGRESS LINES ~15 min in ("worker k: n/N at t s (x ms each), RSS y GB") and pro
    makes a finished build exit 1 without its `.DONE`). Set `DATASET_SIZE` from the measured
    rate (below) and `WALL` to cover it; the sampler solves an equilibrium per draw, so it is
    NOT the soft PCS arm's 11 minutes.
+   **BLOCKER FOR STEPS 4 AND 5, found 2026-09-30 by session `learned-ik-c3` and confirmed
+   here:** on this branch `submit_train.sh` and `submit_bench.sh` never forward
+   `LEARNED_IK_ROOT`, and `train_flow.sh:38` / `run_items.sh:87` fall back to
+   `$HOME/learned-ik`. So with `SC_ROOT=learned-ik-gvs` both would train and benchmark
+   against the DEFAULT tree's dataset cache, state and results, not this tree's. The dataset
+   step is unaffected (`chain_datasets.sh` passes it explicitly). Related: `stage_code.sh`
+   skips its live-campaign refusal for any non-default `SC_ROOT`, so nothing stops a restage
+   of `~/learned-ik-gvs` under its own jobs. The fix exists on `origin/cluster-multi-tree`
+   (submitters forward the root, a per-tree job prefix, a staging guard scoped by each job's
+   submission directory) and conflicts here in `ssh_common.sh`, `stage_code.sh` and
+   `submit_ladder.sh`; which route it lands by is Thomas's call. **Do not run 4 or 5 until it
+   has landed.**
 4. **Charts** (out of scope here): `ROBOT=gvs_pushrod9_o1 bash cluster/submit_train.sh
    gvs_pushrod9_o1_n6 4 -- --nb_nodes=6 --dim_latent_space=9`, then `_o2`; the in-job
    export writes `models/<rung>/<rung>__n6__step620000.pkl` and the screens run.
