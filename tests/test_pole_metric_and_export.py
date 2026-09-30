@@ -24,6 +24,12 @@ Three things are protected, each of which failed silently at least once in desig
    forward pass without changing any parameter shape, so a mismatch otherwise loads
    cleanly and is silently a different chart. A reduced-capacity chart (the depth/width
    ladder) must round-trip with a bit-identical forward pass.
+
+4. The sidecar's provenance commit must name the code that ran, not whatever repository
+   happens to enclose it. Git walks UP to find a repository, and on SuperCloud the home
+   directory is itself a stray clone of an unrelated project, so a staged tree with no
+   `.git` of its own had `rev-parse HEAD` answer for that project -- recorded as
+   `ikflow_commit`, a well-formed hash in the one field claiming to be provenance.
 """
 
 import os
@@ -217,6 +223,56 @@ def test_pole_metrics_shape():
     print("PASS pole_metrics machinery")
 
 
+def _staged_provenance(script_path):
+    """Run `_provenance_commit` as defined in `script_path`, with `__file__` pointing there,
+    without importing the module -- the function derives the tree root from its own file,
+    so it has to be evaluated from the staged copy, not from this checkout."""
+    import ast
+    import subprocess
+    src = open(script_path).read()
+    fn = next(n for n in ast.parse(src).body
+              if isinstance(n, ast.FunctionDef) and n.name == "_provenance_commit")
+    ns = {"os": os, "subprocess": subprocess, "__file__": os.path.realpath(script_path)}
+    exec(compile(ast.Module([fn], []), script_path, "exec"), ns)
+    return ns["_provenance_commit"]()
+
+
+def test_provenance_ignores_an_enclosing_repository():
+    import shutil
+    import subprocess
+    script = os.path.join(REPO, "scripts/training/export_ckpt_to_pkl.py")
+    with tempfile.TemporaryDirectory() as tmp:
+        # The cluster layout: an unrelated repository enclosing a staged tree that has no
+        # .git of its own, only the .staged-commit that cluster/stage_code.sh writes.
+        enclosing = os.path.join(tmp, "home")
+        git = ["git", "-C", enclosing, "-c", "user.email=t@t", "-c", "user.name=t"]
+        subprocess.run(["git", "init", "-q", enclosing], check=True)
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "unrelated"], check=True)
+        unrelated = subprocess.run(git + ["rev-parse", "HEAD"], check=True,
+                                   capture_output=True, text=True).stdout.strip()
+        staged = os.path.join(enclosing, "repo")
+        os.makedirs(os.path.join(staged, "scripts/training"))
+        os.makedirs(os.path.join(staged, "third_party/ikflow"))
+        shutil.copy(script, os.path.join(staged, "scripts/training"))
+        with open(os.path.join(staged, ".staged-commit"), "w") as f:
+            f.write("0123456789abcdef\n")
+
+        got = _staged_provenance(os.path.join(staged, "scripts/training/export_ckpt_to_pkl.py"))
+        assert unrelated not in got.values(), (
+            f"provenance recorded the ENCLOSING repository's HEAD {unrelated}: {got}")
+        assert got == {"staged_learned_ik_commit": "0123456789abcdef"}, got
+
+    # And where the fork IS its own repository, its own commit is still preferred.
+    fork = os.path.join(REPO, "third_party/ikflow")
+    top = subprocess.run(["git", "-C", fork, "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True)
+    if top.returncode == 0 and os.path.realpath(top.stdout.strip()) == os.path.realpath(fork):
+        head = subprocess.run(["git", "-C", fork, "rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        assert _staged_provenance(script) == {"ikflow_commit": head}
+    print("PASS provenance ignores an enclosing repository")
+
+
 if __name__ == "__main__":
     test_rpy_to_wxyz_matches_pydrake_exactly()
     test_sampler_stream_frozen()
@@ -224,4 +280,5 @@ if __name__ == "__main__":
     test_non_default_architecture_roundtrip()
     test_sidecar_weight_mismatch_raises()
     test_pole_metrics_shape()
+    test_provenance_ignores_an_enclosing_repository()
     print("ALL PASS")
