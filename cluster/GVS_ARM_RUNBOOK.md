@@ -6,17 +6,17 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-09-29 17:10 -- FIRST DATASET BUILDING (one xeon-p8 node), third attempt
+## STATE AS OF 2026-09-29 20:40 -- FIRST DATASET BUILDING (one xeon-p8 node), fourth attempt
 
 | item | state |
 | --- | --- |
 | spec, model, SDF/scenes, shim, programs, driver, tests | done, all passing locally |
 | stage `GVS` in `cluster/gen_manifest.py`; `cluster/manifest_stageGVS.txt` | generated (64 items), never submitted |
 | cluster tree `~/learned-ik-gvs` | created; Drake, sysdeps and the drake_models cache symlinked read-only from `~/learned-ik`; its own venv built on `download` (job 5779961, `setup.DONE: OK`: torch cu126 with sm_70, jax 0.11.2 CPU, soromox 0.5.0, optimistix) |
-| staged commit | `97ef499` |
+| staged commit | `79e7c00` |
 | preflight `gvs_cal_preflight` (5780312, debug-cpu) | `PREFLIGHT OK`: 259 positions / 52 bodies, warm-up 15.8 s, PlantQ 20.1 ms, PlantJacobian 27.5 ms, 500-sample batch 18.4 s |
 | rate `gvs_cal_rate` (5780313, xeon-p8) | 14.9 ms/sample (batch 2000) and 11.9 ms/sample (batch 20000) single-process with XLA unpinned on 96 logical CPUs -- the batched JAX solve does not spread across cores; hence the process-parallel builder. Cancelled as stale once that was known |
-| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | RUNNING since 16:39 as `lik_ds_gvs_pushrod9_o1` (5780456) then `lik_ds_gvs_pushrod9_o2` (5780457, `afterok`): 25M samples, 6 h wall, 48 CPUs (96 workers on the hyperthreads), one node at a time, staged commit `97ef499`. Test set 15,000 in 122 s including every worker's compile, 0 unconverged. Two earlier attempts (5780401/2 at 16:12, 5780422/3 at 16:33) died at startup on the thread limit -- the trap below -- and were cancelled. Thomas released up to 4 xeon-p8 nodes at 15:40; the other three are free |
+| datasets `gvs_pushrod9_o1`, `gvs_pushrod9_o2` | RUNNING since 20:38 as `lik_ds_gvs_pushrod9_o1` (5781015) then `lik_ds_gvs_pushrod9_o2` (5781016, `afterok`): 25M samples, 6 h wall, 48 CPUs, 48 affinity-pinned workers, batch 4096, staged commit `79e7c00`. Three earlier attempts died or hung at startup (5780401/2 thread limit; 5780422/3 XLA thread limit; 5780456/7 ran 3.8 h with 96 unpinned workers, went idle on futexes, cancelled) -- the traps below. Thomas released up to 4 xeon-p8 nodes at 15:40; the other three are free |
 | charts `gvs_pushrod9_o{1,2}_n6` | NOT trained -- out of scope (behind the screw-arm queue and the PCS cleanup) |
 | FK surrogate (`--fk learned`) | NOT fitted -- a cluster job, not started |
 
@@ -127,12 +127,17 @@ lands.
   the soft process and open-file limits for `gvs_*`, and the builder caps its worker count
   by the soft limit so a job that cannot raise it runs slowly instead of dying. A cluster
   job's `nproc` prints 1 under `OMP_NUM_THREADS=1`; the builder reads `sched_getaffinity`.
-- **96 workers on a 48-core node is too many.** The first successful build (5780456) ran 96
-  workers on the hyperthreads: ~184 GB total RSS (each JAX+torch worker is ~1.9 GB with its
-  20000-sample batches in flight) against a 192 GB node, and ~30 cores busy on average --
-  the hyperthreads bought little and the memory nearly ran out. Size the next build at the
-  PHYSICAL core count (`--workers 48`, or `DATASET_WORKERS=48` once plumbed) and expect the
-  same throughput at half the memory.
+- **Unpinned JAX workers hang the node.** The third attempt (5780456) ran 96 workers with
+  no affinity: XLA sizes its per-process Eigen and compiler pools from the CPUs the process
+  may run on (jax 0.11 ignores the `intra_op_parallelism_threads` flag), so every worker
+  grew ~420 threads, the node was oversubscribed ~10x with ~184 GB RSS, and after 3.8 h it
+  sat entirely idle -- load 0.11, every worker's main thread on a futex, the parent waiting
+  on `pool.map`, no output -- until cancelled. Slurm's accounting (`sstat`/`sacct`) showed
+  frozen CPU time throughout, so it cannot tell a hang from work; `ssh <node>` and look. The
+  builder now pins each worker's affinity to its own CPU slice BEFORE JAX loads (one
+  worker per physical core by default, `DATASET_WORKERS` overrides), uses 4096-sample
+  batches, streams results with a per-worker timeout, and prints a line per finished
+  worker so the log shows progress.
 - **Two training-tooling hazards, reported by the screw-arm session (its runbook has the
   wording), not yet fixed in the shared scripts.** `status.json`'s `val_l2_error` (what
   `submit_ladder.sh --status` and `watch_ladder.sh` print) is the UNCLAMPED validation mean
