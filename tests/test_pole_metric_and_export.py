@@ -273,6 +273,48 @@ def test_provenance_ignores_an_enclosing_repository():
     print("PASS provenance ignores an enclosing repository")
 
 
+def test_pole_domain_is_injectable_and_its_default_is_the_recorded_one():
+    """The domain overrides must change the draws AND leave the default bit-identical.
+
+    The second half is the load-bearing one. Every archived pole curve -- the iiwa's 3.34%
+    acceptance number among them -- was measured with the reference sampler, so a default
+    that drifts silently invalidates them all while still passing every other test here.
+    """
+    from ikflow.training.pole_callback import (POSITION_BASE, POSITION_SLACK, LATENT_RADIUS,
+                                               sample_conditioning_and_latents)
+
+    ## Default == explicitly passing the module constants, to the bit.
+    a_c, a_z = sample_conditioning_and_latents(128, 8, seed=0)
+    b_c, b_z = sample_conditioning_and_latents(
+        128, 8, seed=0, position_base=POSITION_BASE,
+        position_slack=POSITION_SLACK, latent_radius=LATENT_RADIUS)
+    assert np.array_equal(a_c, b_c) and np.array_equal(a_z, b_z), (
+        "the default sampler moved; every recorded pole baseline is measured against it")
+    assert np.linalg.norm(a_z, axis=1).max() <= LATENT_RADIUS + 1e-12
+
+    ## A soft-PCS-arm-shaped domain must actually take effect.
+    c2, z2 = sample_conditioning_and_latents(
+        128, 12, seed=0, position_base=(0.0, 0.0, 0.45), position_slack=0.25,
+        latent_radius=4.96)
+    assert not np.array_equal(a_c[:, :3], c2[:, :3]), "position_base/slack had no effect"
+    assert np.linalg.norm(z2, axis=1).max() <= 4.96 + 1e-12
+
+    ## Supplied poses are used verbatim -- this is what makes the screen in-distribution.
+    poses = np.tile(np.array([0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0]), (128, 1))
+    c3, _ = sample_conditioning_and_latents(128, 12, seed=0, poses=poses)
+    assert np.allclose(c3[:, :7], poses)
+    assert np.all(c3[:, 7] == 0.0), "softflow noise column must stay zero at test time"
+
+    ## A mis-shaped pose array must refuse rather than broadcast into nonsense.
+    try:
+        sample_conditioning_and_latents(128, 12, poses=np.zeros((10, 7)))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a wrong-shaped poses array was accepted")
+    print("PASS pole domain injectable, default unchanged")
+
+
 if __name__ == "__main__":
     test_rpy_to_wxyz_matches_pydrake_exactly()
     test_sampler_stream_frozen()
@@ -281,4 +323,5 @@ if __name__ == "__main__":
     test_sidecar_weight_mismatch_raises()
     test_pole_metrics_shape()
     test_provenance_ignores_an_enclosing_repository()
+    test_pole_domain_is_injectable_and_its_default_is_the_recorded_one()
     print("ALL PASS")

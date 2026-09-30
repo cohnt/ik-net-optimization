@@ -83,12 +83,17 @@ cmd_next() {
         bash "$(dirname "$0")/submit_train.sh" "$name" "$NNODES" "$WALL" -- $COMMON_ARGS $args
 }
 
+## dim_latent_space for a smoke run, per robot. The iiwa's 8 is train_ddp.py's default
+## and needs no flag; every other robot does. A wrong value here trains happily and only
+## fails much later, when a checkpoint is loaded against the real robot and the shape check
+## finally fires. The helix rungs are a PREFIX match, so adding a pitch needs no edit here --
+## they are all 7-wide, being a 7-DoF arm.
 smoke_latent_arg() {
-    ## The latent width a smoke run must be told, where it is not the iiwa's default of 8.
-    ## A PREFIX match on the helix rungs, so adding a pitch needs no edit here -- and they
-    ## are all 7-wide, being a 7-DoF arm.
     case "$1" in
         panda)     echo "--dim_latent_space=7" ;;
+        soft9)     echo "--dim_latent_space=9" ;;
+        soft12)    echo "--dim_latent_space=12" ;;
+        soft16)    echo "--dim_latent_space=16" ;;
         helix7_*)  echo "--dim_latent_space=7" ;;
         *)         echo "" ;;
     esac

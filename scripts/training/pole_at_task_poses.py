@@ -109,8 +109,17 @@ def main():
            "rnvp_clamp": solver.arch["rnvp_clamp"],
            "dim_latent_space": solver.arch["dim_latent_space"],
            "n": args.n, "seed": args.seed, "z": args.z, "domain": "task_poses",
+           ## The literal-1000 keys keep their literal meaning FOREVER, so archived
+           ## screens stay comparable and the key never lies about what it counted.
+           ## `runaway_threshold` is the same quantity in this robot's own units -- 1000
+           ## radians against an iiwa limit of ~2.9 rad is ~345x, so 345 against a
+           ## normalized strain limit of 1 -- and is recorded beside the fraction it gates
+           ## rather than left for a reader to infer.
            "pole/frac_gt_1000": float((qinf > 1000).mean()),
            "pole/count_gt_1000": int((qinf > 1000).sum()),
+           "pole/runaway_threshold": float(ScreenDomain(args.robot)[3]),
+           "pole/frac_gt_threshold": float((qinf > ScreenDomain(args.robot)[3]).mean()),
+           "pole/latent_radius": float(ScreenDomain(args.robot)[2]),
            "pole/frac_gt_3": float((qinf > 3).mean()),
            "pole/p50": float(np.median(qinf)),
            "pole/p99": float(np.percentile(qinf, 99)),
