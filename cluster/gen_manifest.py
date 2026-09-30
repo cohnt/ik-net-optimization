@@ -3246,19 +3246,22 @@ def main():
                         "setting tokens to field, so a confirmation runs only the screen's "
                         "survivors without a code edit. Must include 'default' (and, for "
                         "SNOPTCOMBO, 'mstep0p5', which is its second pre-registered bar).")
-    p.add_argument("--starts", default="paired",
-                   help="STEP, SNOPTTUNE, SNOPTCOMBO and NLOPTTUNE stages: comma-separated "
-                        "start protocols. "
-                        "STEP's 60-cell screen is 'paired' (diagnostic) and its confirmation "
-                        "is 'paired,native'. SNOPTTUNE needs 'paired,native' explicitly -- "
-                        "the default here is the screen's, and a setting measured on one "
+    p.add_argument("--starts", default=None,
+                   help="comma-separated start protocols. UNSET means each stage's OWN "
+                        "default, which is what its docstring documents -- this flag used to "
+                        "default to 'paired' and that default silently overrode every stage's, "
+                        "so a stage defined as 'both protocols' generated half of itself and "
+                        "looked complete. STEP's 60-cell screen is 'paired' (diagnostic) and "
+                        "its confirmation is 'paired,native'; a setting measured on one "
                         "protocol cannot be fielded as SNOPT's configuration.")
     p.add_argument("--triage-solvers", default="nlopt",
                    help="SOLVER2 stage only: solvers fielded at the 60-cell triage grid "
                         "instead of full scale, so a column that may be near-empty costs "
                         "triage money. Must not overlap --solvers; '' fields none.")
-    p.add_argument("--solvers", default="snopt",
-                   help="SOLVER stage only: comma-separated solvers to field alongside the "
+    p.add_argument("--solvers", default=None,
+                   help="comma-separated solvers. UNSET means each stage's OWN default -- see "
+                        "--starts for why this is not a literal. For the SOLVER stage these "
+                        "are fielded alongside the "
                         "ipopt baseline, which is always generated. The axis is three METHOD "
                         "CLASSES -- ipopt interior point, snopt SQP, nlopt augmented "
                         "Lagrangian -- so adding one should be justified by the class it "
@@ -3298,55 +3301,62 @@ def main():
         raise SystemExit("--stage is required (or --selftest)")
 
     caps = [float(c) for c in args.caps.split(",")]
+    ## An UNSET --solvers/--starts must fall through to each stage's own default rather than
+    ## to this parser's. These two flags were written for the tuning stages and their old
+    ## literal defaults ('snopt', 'paired') were passed to EVERY stage, so a stage documented
+    ## as three solvers x two protocols generated 2 of its 12 logical runs from a bare
+    ## command line -- a manifest that is valid, plausible and a third of the measurement.
+    sv = {} if args.solvers is None else {"solvers": args.solvers}
+    st = {} if args.starts is None else {"starts": args.starts}
     items = {"SOLVER": lambda: stage_SOLVER(args.wall_time, args.targets, args.guesses,
                                            args.shards, only=args.rungs,
-                                           solvers=args.solvers),
+                                           **sv),
              "SOLVER2": lambda: stage_SOLVER2(args.wall_time, args.targets, args.guesses,
                                               args.shards, only=args.rungs,
-                                              solvers=args.solvers,
+                                              **sv,
                                               triage_solvers=args.triage_solvers),
              "SWEEP": lambda: stage_SWEEP(args.wall_time, args.targets, args.guesses,
                                           args.shards, only=args.rungs,
-                                          solvers=args.solvers),
+                                          **sv),
              "STEP": lambda: stage_STEP(args.wall_time, args.targets, args.guesses,
                                         args.shards, only=args.rungs,
-                                        solvers=args.solvers, settings=args.settings,
-                                        starts=args.starts),
+                                        **sv, settings=args.settings,
+                                        **st),
              "SNOPTTUNE": lambda: stage_SNOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,
                                                  settings=args.settings,
-                                                 starts=args.starts),
+                                                 **st),
              "SNOPTCOMBO": lambda: stage_SNOPTCOMBO(args.wall_time, args.targets,
                                                    args.guesses, args.shards,
                                                    only=args.rungs,
                                                    settings=args.settings,
-                                                   starts=args.starts),
+                                                   **st),
              "STATUSQUO": lambda: stage_STATUSQUO(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
-                                                 only=args.rungs, solvers=args.solvers,
-                                                 starts=args.starts),
+                                                 only=args.rungs, **sv,
+                                                 **st),
              "SOFT12": lambda: stage_SOFT12(args.wall_time, args.targets,
                                             args.guesses, args.shards,
-                                            only=args.rungs, solvers=args.solvers,
-                                            starts=args.starts),
+                                            only=args.rungs, **sv,
+                                            **st),
              "SOFTDOF": lambda: stage_SOFTDOF(args.wall_time, args.targets,
                                               args.guesses, args.shards,
-                                              only=args.rungs, starts=args.starts),
+                                              only=args.rungs, **st),
              "SOFTCHART": lambda: stage_SOFTCHART(args.wall_time, args.targets,
                                                   args.guesses, args.shards,
-                                                  only=args.rungs, starts=args.starts),
+                                                  only=args.rungs, **st),
              "SOFTCAP": lambda: stage_SOFTCAP(args.wall_time, args.targets,
                                               args.guesses, args.shards,
-                                              only=args.rungs, starts=args.starts),
+                                              only=args.rungs, **st),
              "SOFTFK": lambda: stage_SOFTFK(args.wall_time, args.targets,
                                             args.guesses, args.shards,
-                                            only=args.rungs, starts=args.starts),
+                                            only=args.rungs, **st),
              "NLOPTTUNE": lambda: stage_NLOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,
                                                  settings=args.settings,
-                                                 starts=args.starts),
+                                                 **st),
              "HARD": lambda: stage_HARD(args.wall_time, args.targets,
                                         args.guesses, args.shards, only=args.rungs),
              "HARDTRI": lambda: stage_HARD(args.wall_time, args.targets, args.guesses,
