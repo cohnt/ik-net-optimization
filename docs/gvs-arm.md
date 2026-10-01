@@ -169,8 +169,10 @@ four programs, driver, probes, stage `GVS` (manifest generated, not submitted), 
 chained-dataset path, the preflight and rate jobs. On the cluster: the branch's own tree
 `~/learned-ik-gvs` with its environment built, the preflight passed, and the two dataset
 builds queued one at a time on a single xeon-p8 node (2026-09-29 16:12). Training and
-evaluation are out of this session's scope; the FK surrogate (`--fk learned`) is a cluster
-job not run.
+evaluation are out of this session's scope. The learned forward model (`--fk learned`) is
+CLOSED as not worth it (2026-09-30; `CLAUDE.md`, the soft PCS arm's section, has the
+reasoning). This robot's exact forward model is expensive, and that is what keeps a
+time-matched joint-space baseline from fitting cheap restarts into one learned solve.
 
 ## How this compares to LOInK, once
 

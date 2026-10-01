@@ -2014,6 +2014,10 @@ def stage_SOFTFK(wall, targets, guesses, shards, only=None, tag="SOFTFK", seed=1
                  starts="paired,native"):
     """Analytic against learned forward model, on the SAME grid, IPOPT only.
 
+    CLOSED 2026-09-30, NEVER RUN: Thomas closed learned FK on both soft arms as not worth it
+    (CLAUDE.md, the soft PCS arm's section). Kept so the selftest still exercises the
+    generator; do not submit it.
+
     The one axis on this robot that is not about the formulation at all. The surrogate
     replaces the forward model for the IK constraint and the collision geometry at once,
     because both read the same configuration-to-plant map -- and BOTH ARMS carry it, which
