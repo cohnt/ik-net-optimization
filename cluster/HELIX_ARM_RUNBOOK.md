@@ -255,7 +255,7 @@ separator and a sample need only cross a joint limit to enter the clamped/unclam
 This is the same direction as the record's gain-ceiling finding and the same inversion of it. `n4`'s
 log ceiling is `2.4976 * 4` (gain 2.2e4) and its final task-pose `pole/max` is **7017**, or 89% of the
 way up in log terms — squarely inside the 78-89% band the record says training walks. `n6`'s ceiling
-is 3.2e6 and it reached only **33.5**, or 23%. So the *shallower* rung is the one that conforms to the
+is 3.2e6 and it reached only **57.0**, or 27%. So the *shallower* rung is the one that conforms to the
 rule here, and the deeper one has headroom it never uses. Read beside the screens, that is consistent:
 `n4` is the rung with 2 of 20000 task-pose samples above 1000 rad and a 148.9 mm median chart error,
 against `n6`'s zero and 35.0 mm. **The pre-registered rung `n6` is also the clean one on every
@@ -272,18 +272,18 @@ number from `results/pole/helix7_p050_n*/`, chart error over 5000 held-out poses
 | --- | --- | --- | --- |
 | median chart error | 148.9 mm | 35.0 mm | **28.9 mm** |
 | p90 / p99 | 468 / 780 mm | - / 654 mm | 173 / 559 mm |
-| `pole/max`, task pose / box | 7017 / 2052 | 33.5 / - | 22.4 / 21.0 |
+| `pole/max`, task pose / box | 7017 / 2052 | 57.0 / 33.5 | 22.4 / 21.0 |
 | `pole/frac_gt_1000` | 0.0001 | 0.0 | 0.0 |
 | `pole/frac_gt_3` | - | - | 0.599 |
 | log gain ceiling `exp(2.4976 * nb_nodes)` | 2.2e4 | 3.2e6 | 4.8e8 |
-| **fraction of that ceiling used, in log terms** | **89%** | **23%** | **16%** |
+| **fraction of that ceiling used, in log terms** (task pose) | **89%** | **27%** | **16%** |
 | training wall clock | 10:44:51 | 14:53:56 | 19:26:55 |
 
 Two things to take from this, both of which bear on the record's gain-ceiling finding rather than on
 this robot alone.
 
 **The record's rule that "training walks 78-89% of the way up whatever log ceiling it is given" holds
-at `n4` and then fails progressively with depth.** 89% / 23% / 16% is monotone, so on this robot the
+at `n4` and then fails progressively with depth.** 89% / 27% / 16% is monotone, so on this robot the
 ceiling is not a predictor of where a trained chart lands -- it is only a bound, which is the weaker
 of the two claims the record makes for it. Anyone quoting the 78-89% band should say which robots it
 was measured on.
@@ -299,6 +299,35 @@ every checkpoint of `n6` and `n8`, and 0.0001 at `n4`'s worst.
 `n6` by 6 mm of median error. The record's standing finding is that chart accuracy runs BACKWARDS to
 cells, so this is not a reason to revisit the pre-registration; HELIXCHART will benchmark all three and
 that is the measurement entitled to an opinion.
+
+### The pitch moves runaway mass at a FIXED architecture: `p025_n6` against `p050_n6`
+
+`helix7_p025_n6` finished 620000 steps and exported `rc=0` (14:58:51, against `p050_n6`'s 14:53:56).
+Same architecture as the pre-registered rung, half the screw pitch -- so the closer of the two to the
+ordinary revolute arm at pitch 0. Screens selected by step number:
+
+| | `p050_n6` (pre-registered) | `p025_n6` |
+| --- | --- | --- |
+| median / p90 / p99 chart error | 35.0 / 226 / 654 mm | **24.4** / 183 / 656 mm |
+| task-pose `pole/max`, fraction of log ceiling | 57.0, 27% | **689, 44%** |
+| box `pole/max`, fraction of log ceiling | 33.5, 23% | **9.3e5, 92%** |
+| `pole/frac_gt_1000`, task pose / box | 0 / 0 | 0 / 0.00005 (1 of 20000) |
+| in-training checkpoints with any sample > 1000 rad | 0 of 31 | **8 of 31**, steps 320k-500k, gone by 520k |
+| worst in-training `pole/max` | 35.5 | 1.4e4 |
+| largest unclamped / clamped validation ratio | 1.00 | 1.05 |
+
+**At the same depth, the smaller pitch walks much further up its gain ceiling**: the box screen reaches
+92% of the log ceiling against 23%, which is inside the record's 78-89% band and above it, where
+`p050_n6` sits far below. So the architecture alone does not decide how much headroom training uses on
+this robot; the pitch does too, and in the direction that makes the more algebraic member the
+spikier one. The in-training tail came and went as `n4`'s did, rather than growing.
+
+What it does NOT show. The worst value anywhere is 9.3e5 rad, an order below the 1e7-1e16 band where
+solves die, and the validation draw shows no out-of-limits tail at all (ratio 1.05, against `n4`'s
+14.7). It is also more accurate than the pre-registered rung by 11 mm of median error, which the
+record says runs backwards to cells anyway. **None of this is a selection input**: the rung is fixed
+at `n6` and the pitch is part of the robot. HELIXPITCH's cells are the measurement entitled to say
+whether the difference matters to the optimization.
 
 ## Measured on the laptop, before anything was queued
 
