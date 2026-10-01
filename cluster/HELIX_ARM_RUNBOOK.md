@@ -242,11 +242,11 @@ much of the unclamped mean is tail rather than fit:
 | rung | checkpoints with ratio > 1.3, first half | second half | largest ratio | steps at which it spiked |
 | --- | --- | --- | --- | --- |
 | `helix7_p050_n4` | 1 of 12 | **5 of 13** | 1.6 -> **14.7** | 200k, 280k, 380k, 440k, 460k, 480k |
-| `helix7_p050_n6` | 0 of 31 | 0 of 31 | 1.00 | none |
+| `helix7_p050_n6` | 0 of 31 | 0 of 31 | 1.01 | none |
 
 So the out-of-limits tail is not a property of the validation draw, and not noise: on `n4` it is
 **created by training**, it arrives in the second half of the run, and it grows. On `n6` it never
-appears at all — the unclamped and clamped means agree to two decimal places at every one of 31
+appears at all — the unclamped mean is within 1.4% of the clamped mean at every one of 31 trained
 checkpoints. **`pole/frac_gt_1000` reads 0.0 at every one of those six spikes**, so the
 unclamped-over-clamped ratio is a *more sensitive* detector of out-of-limits mass than the pole
 screen is at its fielded 1000-rad threshold — which is expected, since 1000 rad is a bimodality
@@ -300,34 +300,49 @@ every checkpoint of `n6` and `n8`, and 0.0001 at `n4`'s worst.
 cells, so this is not a reason to revisit the pre-registration; HELIXCHART will benchmark all three and
 that is the measurement entitled to an opinion.
 
-### The pitch moves runaway mass at a FIXED architecture: `p025_n6` against `p050_n6`
+### The pitch ladder at a FIXED architecture: `p025_n6`, `p050_n6`, `p100_n6`
 
-`helix7_p025_n6` finished 620000 steps and exported `rc=0` (14:58:51, against `p050_n6`'s 14:53:56).
-Same architecture as the pre-registered rung, half the screw pitch -- so the closer of the two to the
-ordinary revolute arm at pitch 0. Screens selected by step number:
+All three pitches of HELIXPITCH reached 620000 at the pre-registered depth and exported `rc=0`. Same
+architecture throughout, so the screw pitch is the only thing that differs. Screens selected by step
+number and by label: task pose and box are different screens, and each standalone screen draws 20000
+samples where the in-training callback draws 4000, so one in-training sample is 0.00025.
 
-| | `p050_n6` (pre-registered) | `p025_n6` |
-| --- | --- | --- |
-| median / p90 / p99 chart error | 35.0 / 226 / 654 mm | **24.4** / 183 / 656 mm |
-| task-pose `pole/max`, fraction of log ceiling | 57.0, 27% | **689, 44%** |
-| box `pole/max`, fraction of log ceiling | 33.5, 23% | **9.3e5, 92%** |
-| `pole/frac_gt_1000`, task pose / box | 0 / 0 | 0 / 0.00005 (1 of 20000) |
-| in-training checkpoints with any sample > 1000 rad | 0 of 31 | **8 of 31**, steps 320k-500k, gone by 520k |
-| worst in-training `pole/max` | 35.5 | 1.4e4 |
-| largest unclamped / clamped validation ratio | 1.00 | 1.05 |
+| | `p025_n6` | `p050_n6` (pre-registered) | `p100_n6` |
+| --- | --- | --- | --- |
+| median / p90 / p99 chart error | **24.4** / 183 / 656 mm | 35.0 / 226 / 654 mm | 50.0 / 307 / 718 mm |
+| final task-pose `pole/max`, fraction of log ceiling | 689, 44% | 57.0, 27% | 55.7, 27% |
+| final box `pole/max`, fraction of log ceiling | **9.3e5, 92%** | 33.5, 23% | 21.2, 20% |
+| final `pole/frac_gt_1000`, task pose / box | 0 / 0.00005 (1 of 20000) | 0 / 0 | 0 / 0 |
+| standalone task-pose screens with any sample > 1000 rad | **19 of 31**, 80k-460k | 0 of 31 | 2 of 31, 60k and 100k |
+| standalone box screens with any sample > 1000 rad | **21 of 31**, 80k-620k | 0 of 31 | 2 of 31, 60k and 260k |
+| worst standalone `pole/max`, any checkpoint | **1.7e7** (task pose, 340k) | 33.5 | 6.8e4 (task pose, 60k) |
+| in-training checkpoints with any sample > 1000 rad | 8 of 31, 320k-500k | 0 of 31 | 1 of 31, 60k |
+| largest unclamped / clamped validation ratio | 1.03 | 1.01 | 1.22 (120k) |
+| training wall clock | 14:58:51 | 14:53:56 | 15:25:42 |
 
-**At the same depth, the smaller pitch walks much further up its gain ceiling**: the box screen reaches
-92% of the log ceiling against 23%, which is inside the record's 78-89% band and above it, where
-`p050_n6` sits far below. So the architecture alone does not decide how much headroom training uses on
-this robot; the pitch does too, and in the direction that makes the more algebraic member the
-spikier one. The in-training tail came and went as `n4`'s did, rather than growing.
+The ratio row covers the 31 trained checkpoints. It leaves out the step-0 validation of the untrained
+network, which reads 1.05 on every rung. An earlier version of this table quoted that 1.05 for
+`p025_n6` and 1.00 for `p050_n6`.
 
-What it does NOT show. The worst value anywhere is 9.3e5 rad, an order below the 1e7-1e16 band where
-solves die, and the validation draw shows no out-of-limits tail at all (ratio 1.05, against `n4`'s
-14.7). It is also more accurate than the pre-registered rung by 11 mm of median error, which the
-record says runs backwards to cells anyway. **None of this is a selection input**: the rung is fixed
-at `n6` and the pitch is part of the robot. HELIXPITCH's cells are the measurement entitled to say
-whether the difference matters to the optimization.
+**Chart error is monotone in pitch**: 24.4 / 35.0 / 50.0 mm median. The larger the screw term, the
+harder the map is to fit at a fixed depth. That fits the robot's design, since pitch is the only
+non-algebraic term, but the record's finding is that accuracy runs backwards to cells, so it is not a
+prediction.
+
+**Runaway mass is NOT monotone in pitch.** The smallest pitch is by far the spikiest, and the middle
+pitch is the cleanest. `p025_n6`'s box screen ends 92% of the way up its log ceiling, inside and above
+the record's 78-89% band. `p050_n6` and `p100_n6` end at 20-27%. During training `p025_n6` peaked at
+**1.7e7 rad on the task-pose screen at 340k**, which is inside the lower edge of the 1e7-1e16 band where
+iiwa solves died. That peak is 2-3 samples of 20000. The final chart is an order of magnitude lower, at
+9.3e5. An earlier version of this section said "the worst value anywhere is 9.3e5". That was the
+final checkpoint only, and the intermediate screens contradict it. `p100_n6`'s excursions are early
+(60k-260k) and small, and its final screens are as clean as `p050_n6`'s.
+
+So the architecture alone does not decide how much headroom training uses on this robot. The pitch
+does too, but not as a dose curve: of the three, only `p025_n6` populates the tail. **None of this is a
+selection input.** The rung is fixed at `n6` and the pitch is part of the robot. HELIXPITCH's cells are
+the measurement entitled to say whether any of it matters to the optimization. If `p025` does
+underperform, its final chart is the one carrying a 9.3e5-rad box tail, and that is where to look first.
 
 ## Measured on the laptop, before anything was queued
 
