@@ -28,18 +28,16 @@ target-major and its set does not complete. Do not promote or report them.
 **The cluster is now the screw-joint arm's.** Its smoke `5738845` exited COMPLETED, `5738846` (its
 pre-registered n6 rung) is training on all 4 nodes, and `5738847-50` are chained behind it. That is
 a single job at a time for as long as its ladder takes, so **this project has no nodes until it
-finishes or its owner parks a rung**. The remaining work on the soft PCS arm -- the FK surrogate
-fit -- is a cluster job and must wait for nodes or be negotiated with that agent and Thomas.
+finishes or its owner parks a rung**. No work remains on the soft PCS arm.
 
-### The one open item on this robot: the FK surrogate fit
+### The FK surrogate: CLOSED, not worth it (2026-09-30)
 
-A cluster job, never local (Thomas, 2026-09-24: *"we shouldn't train models locally"*). Two fixes
-are known before spending a GPU hour: **float32 for the fit and float64 for the screen and the
-shipped weights** (the surrogate's own error lands near 1e-4 m, four orders above float32's noise
-floor, so the precision buys nothing and costs ~an order of magnitude), and a **per-segment
-architecture composed analytically** rather than one net learning all 33 body poses from 12 inputs,
-since each segment's relative transform depends on only its own three strains. The code work is
-local and free; only the fit needs nodes.
+It was this robot's last open item, and Thomas closed it for both soft arms; `CLAUDE.md`'s soft PCS
+arm section has the reasoning. In short, a surrogate moves both arms alike, so it cannot change who
+wins. And by making FK cheap it hands a time-matched joint space its cheap restarts back, which is
+exactly where the record's success advantage fails to survive. Do not fit it and do not run stage
+SOFTFK. The code (`fk_surrogate.py`, `train_fk_surrogate.py`, `fk_surrogate_job.sh`, the
+`fk="learned"` hook) stays in the tree unused.
 
 ## Order of operations, and why it is this order
 
@@ -55,7 +53,7 @@ chart ladder, sequential at 4 nodes:
         soft16_n6
         |
         v   export + screening run INSIDE each training job, on node 0, on rc=0
-benchmark stages: SOFT12, SOFTCHART, SOFTDOF   (SOFTFK needs the surrogate)
+benchmark stages: SOFT12, SOFTCHART, SOFTDOF   (SOFTFK closed 2026-09-30, never run)
 ```
 
 Datagen goes to `xeon-g6-volta` rather than `xeon-p8` because another project's
@@ -121,9 +119,7 @@ whatever the queue says, and resubmitting resumes from `last.ckpt`.
 
 ## Still to build
 
-* The FK surrogate fit, as a cluster job. Fit in float32, screen and ship in float64. The
-  4k-step laptop attempt reached 11 mm median against a 1 mm task gate and was deleted.
-* Nothing else. The SoRoMoX golden-file equivalence test that stood here is DONE (`ea1940d`):
+* Nothing. The FK surrogate fit that stood here is CLOSED as not worth it (2026-09-30, above). The SoRoMoX golden-file equivalence test that stood here is DONE (`ea1940d`):
   `scripts/soft_arm/generate_fk_golden.py` writes `tests/data/soft_arm_fk_golden.npz` from
   `.venv-soromox` (soromox 0.5.0, jax 0.11.2 CPU, float64), and
   `tests/test_soft_arm_kinematics.py::test_matches_soromox` checks it at 1.1e-15 up to
