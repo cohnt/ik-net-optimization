@@ -807,6 +807,37 @@ are solved by the learned arm**, on every row of both rigid robots and both prot
 failures available to rescue. The iiwa grasp ties are not even the same cells (31-35 each way), so
 the arms are complementary where the totals agree.
 
+**CAVEAT, added 2026-09-30: every success win above is against SINGLE-START joint space, and a
+time-matched joint space takes back most of the rigid arms'.** The time-matched baseline gives joint
+space best-of-k from each target's 8 recorded starts, in random order and stopping at the first
+success, within the wall time the learned arm spent on the same cell. It is computed from the
+record's own cells by `scripts/report_time_matched.py`, with no new runs.
+
+| | learned | time-matched joint space | verdict |
+| --- | --- | --- | --- |
+| **IPOPT, rigid arms** | | | |
+| Panda contained grasp, native / paired | 99.2 / 98.1% | 54.0 / 67.7% | **survives**, the only rigid row that does |
+| iiwa contained grasp | 93-94% | 92-94% | tie |
+| pose, paired: iiwa / Panda | 87.9 / 84.8% | 97.8 / 96.5% | **joint space wins** |
+| pose, native: iiwa / Panda | 97.9 / 96.0% | >= 89.2 / >= 78.5% | unestablished (see below) |
+| **SQP, rigid arms** | | | survives only on Panda grasp native (91.9% against 68.2%) |
+| **Augmented Lagrangian, all robots** | | | survives on every row with a comparison: joint space does not converge, and restarts cannot fix that |
+| **IPOPT, soft PCS arm** | | | |
+| grasp, native / paired | 98.8 / 97.5% | 71.9 / 69.2% | **survives** |
+| pose native | 99.4% | 74.8% | **survives** |
+| pose paired | 90.8% | 90.6% | tie |
+
+Native pose is unestablished because joint space ran out of its 8 starts on 44-57% of those cells
+before the budget did, so its true multi-start figure is higher. The mechanism is the per-iteration
+premium: the advantage survives exactly where a joint-space solve is expensive. That is containment
+on the Panda, a costlier FK on the soft arm, and non-convergence under NLopt. On the cheap rigid pose
+rows several restarts fit into one learned solve. The rescue rate shares the limitation: joint space
+solves 95-100% of these targets from at least ONE of its 8 starts under IPOPT and SNOPT. So **state
+rigid-arm success wins as against single-start joint space, and rest any time-matched claim on Panda
+contained grasp, the augmented Lagrangian and the soft arms.** This is also why the GVS arm, whose
+exact FK is the most expensive, is the most promising robot for a time-matched claim, and why
+learned FK is closed (the soft PCS arm's section).
+
 **Under NLopt all four rigid pose rows are decisive learned wins** (p from 5.4e-26 to 5.1e-68) with
 the joint-space arm never exceeding 31 of 480. **Panda contained grasp is the cleanest statement the
 project contains: learned 327 of 480 against joint space ZERO**, p = 7.3e-99. Report it as the result
