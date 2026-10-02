@@ -12,7 +12,7 @@ against an in-distribution screen's 5.44 at a STRICTER threshold, eight orders o
 magnitude apart and a statement about unreachable poses rather than about the
 chart.
 
-`helix7` is a 7-DoF arm with a roll-pitch-roll wrist, so the structural
+`screw7` is a 7-DoF arm with a roll-pitch-roll wrist, so the structural
 expectation is that orientation IS free -- but "probably spans SO(3)" is an
 assumption, and the soft arm's experience is what it costs to leave one standing.
 This measures it.
@@ -27,7 +27,7 @@ orientation set that fills 3-dimensional SO(3) shrinks by 3**(1/3) = 1.44x per
 3x in N and never reaches a floor, while one confined to a lower-dimensional
 subset PLATEAUS at the distance from a random orientation to that subset.
 
-Measured for helix7_p050 at [0.4, 0, 0.5] (the callback's box centre), 22.5M
+Measured for screw7_p050 at [0.4, 0, 0.5] (the callback's box centre), 22.5M
 draws, 6,505 of them landing within 5 cm: median degrees to the nearest achieved
 orientation 24.71 / 16.85 / 11.58 / 8.12 at N = 200 / 600 / 1800 / 5400, i.e.
 1.47x, 1.45x and 1.43x per 3x against the predicted 1.44x.  No floor, so the
@@ -44,8 +44,8 @@ import torch
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from src.helix_arm.kinematics import forward_kinematics
-from src.helix_arm.params import PRIMARY, SPECS, GetSpec
+from src.screw_arm.kinematics import forward_kinematics
+from src.screw_arm.params import PRIMARY, SPECS, GetSpec
 
 
 def AchievedOrientations(spec, centre, radius, want, rng, batch=2_500_000):

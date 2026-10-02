@@ -6,7 +6,7 @@
 # ===========================================================================
 #
 # Usage, from the repo root:
-#   LEARNED_IK_ROOT=$HOME/learned-ik-helix bash cluster/chain_datasets.sh helix7_p050 helix7_p000
+#   LEARNED_IK_ROOT=$HOME/learned-ik-screw bash cluster/chain_datasets.sh screw7_p050 screw7_p000
 #
 # WHY A CHAIN AND NOT A BATCH. ikflow's end-of-run summary walks the WHOLE dataset
 # directory and torch.load()s every tensor it finds, so a sibling build's half-written

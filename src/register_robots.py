@@ -24,7 +24,7 @@ its entire run.
 
 #: Modules whose import registers robots. Each is expected to be idempotent and to expose
 #: `REGISTERED`, a tuple of the names it added.
-MODULES = ("src.helix_arm.register", "src.soft_arm.register")
+MODULES = ("src.screw_arm.register", "src.soft_arm.register")
 
 
 def RegisterAll():

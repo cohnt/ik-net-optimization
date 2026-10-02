@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pydrake.geometry import SceneGraph  # noqa: F401  (documents what BuildEnv returns)
 from pydrake.multibody.parsing import ModelDirective, AddModel
 
-from src.helix_arm.params import SPECS as _HELIX_SPECS
+from src.screw_arm.params import SPECS as _SCREW_SPECS
 from src.shelf_regions import PointInShelfCompartments
 from src.soft_arm.params import RUNGS as _SOFT_RUNGS
 from src.utils import BuildEnv, RepoDir
@@ -151,17 +151,17 @@ SCENES = {
 ## flow is conditioned on -- the iiwa's arrangement exactly.  The containment points are the
 ## gripper's own, as on every other robot: this arm carries the SAME finray, so
 ## `between_fingers` and the 0.100 m step behind it are literally the same geometry.
-for _helix in _HELIX_SPECS.values():
-    _hardened = f"models/{_helix.name}/{_helix.name}_collision_hardened.yaml"
-    _legacy = f"models/{_helix.name}/{_helix.name}_collision.yaml"
-    _instances = (_helix.name, "finray")
-    SCENES[(_helix.name, "mug")] = SceneSpec(
-        f"{_helix.name}_mug", _hardened, _legacy, _hardened,
+for _screw in _SCREW_SPECS.values():
+    _hardened = f"models/{_screw.name}/{_screw.name}_collision_hardened.yaml"
+    _legacy = f"models/{_screw.name}/{_screw.name}_collision.yaml"
+    _instances = (_screw.name, "finray")
+    SCENES[(_screw.name, "mug")] = SceneSpec(
+        f"{_screw.name}_mug", _hardened, _legacy, _hardened,
         _instances, "between_fingers",
         wrist_frame="between_fingers", fingertip_frame="between_fingers")
-    SCENES[(_helix.name, "pose")] = SceneSpec(
-        f"{_helix.name}_pose", _hardened, _legacy, _hardened,
-        _instances, _helix.flange_link,
+    SCENES[(_screw.name, "pose")] = SceneSpec(
+        f"{_screw.name}_pose", _hardened, _legacy, _hardened,
+        _instances, _screw.flange_link,
         wrist_frame="hand", fingertip_frame="between_fingers")
 
 ## The pose task targets `soft_tip`, the end of the backbone, which is also the frame the

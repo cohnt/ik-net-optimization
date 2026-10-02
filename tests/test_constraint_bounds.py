@@ -240,7 +240,7 @@ def main():
         # it must SAY so rather than passing silently.
         print(f"  SKIP  iiwa checks unavailable: {type(exc).__name__}: {exc}")
 
-    # ----------------------------------------------------------------- helix7
+    # ----------------------------------------------------------------- screw7
     # The screw-joint arm, on the same base rows. It is here for one reason the other
     # robots cannot supply: its screw coordinate's joint-limit row is the row every Drake
     # parser leaves at `+-inf`, silently (`ParseJointLimits` is reached only for revolute
@@ -251,7 +251,7 @@ def main():
     #
     # Unlike the iiwa's, this block cannot skip: the chart is built UNTRAINED, which
     # exercises every bound-forming path and says nothing about solve quality.
-    print("\n--- helix7: the same base rows, and a joint-limit row that must be FINITE ---")
+    print("\n--- screw7: the same base rows, and a joint-limit row that must be FINITE ---")
     try:
         import torch
         from ikflow.ikflow_solver import IKFlowSolver
@@ -259,9 +259,9 @@ def main():
         from jrl.robots import get_robot
 
         from src.flow_loading import LEGACY_ARCH_BY_ROBOT
-        from src.helix_arm.params import PRIMARY, GetSpec
-        from src.helix_arm_program import (HelixArmIKProgram, HelixArmIKProgramNumerical,
-                                           HelixArmMugProgram, HelixArmMugProgramNumerical)
+        from src.screw_arm.params import PRIMARY, GetSpec
+        from src.screw_arm_program import (ScrewArmIKProgram, ScrewArmIKProgramNumerical,
+                                           ScrewArmMugProgram, ScrewArmMugProgramNumerical)
 
         spec = GetSpec(PRIMARY)
         hopts = ProgramOptions(collision_avoidance=True, joint_limits=True, use_float64=True,
@@ -274,15 +274,15 @@ def main():
             hsolver = IKFlowSolver(parameters, get_robot(PRIMARY))
 
             hdiagram = BuildEnv(meshcat=None, directives_file=scene)
-            hsampler = HelixArmIKProgram(hdiagram, options=hopts, robot=PRIMARY, model=hsolver)
+            hsampler = ScrewArmIKProgram(hdiagram, options=hopts, robot=PRIMARY, model=hsolver)
             hsampler.create_prog()
             q_h = rng.uniform(hsampler.plant.GetPositionLowerLimits(),
                               hsampler.plant.GetPositionUpperLimits())
             htarget = np.concatenate(hsampler.fk(q_h))
 
         n_q_h = hsampler.plant.num_positions()
-        for cls, label in ((HelixArmIKProgram, "helix learned"),
-                           (HelixArmIKProgramNumerical, "helix numerical")):
+        for cls, label in ((ScrewArmIKProgram, "screw learned"),
+                           (ScrewArmIKProgramNumerical, "screw numerical")):
             with HiddenPrints():
                 hp = cls(hdiagram, options=hopts, robot=PRIMARY, model=hsolver)
                 hp.create_prog(htarget)
@@ -324,14 +324,14 @@ def main():
                   f"equal rows at {np.flatnonzero(ub[limit_rows] <= lb[limit_rows]).tolist()}")
 
         with HiddenPrints():
-            hmug_sampler = HelixArmMugProgram(hdiagram, options=hopts, robot=PRIMARY,
+            hmug_sampler = ScrewArmMugProgram(hdiagram, options=hopts, robot=PRIMARY,
                                               model=hsolver)
             hmug_sampler.create_prog()
             q_hm = rng.uniform(hmug_sampler.plant.GetPositionLowerLimits(),
                                hmug_sampler.plant.GetPositionUpperLimits())
             hdiagram_with_mug, hmug = GenerateDiagramWithMug(q_hm, hmug_sampler, scene, None)
-        for cls, label in ((HelixArmMugProgram, "helix mug learned"),
-                           (HelixArmMugProgramNumerical, "helix mug numerical")):
+        for cls, label in ((ScrewArmMugProgram, "screw mug learned"),
+                           (ScrewArmMugProgramNumerical, "screw mug numerical")):
             with HiddenPrints():
                 hpm = cls(hdiagram_with_mug, options=hopts, robot=PRIMARY, model=hsolver)
                 hpm.create_prog(target_mug=hmug)
@@ -348,7 +348,7 @@ def main():
     except (ImportError, FileNotFoundError, RuntimeError) as exc:
         # The chart is built in-process, so nothing here depends on a gitignored pickle.
         # A skip therefore means the robot itself failed to build, and must SAY so.
-        print(f"  SKIP  helix7 checks unavailable: {type(exc).__name__}: {exc}")
+        print(f"  SKIP  screw7 checks unavailable: {type(exc).__name__}: {exc}")
 
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failures")
     for f in FAILURES:

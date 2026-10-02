@@ -72,14 +72,14 @@ def ScreenDomain(robot):
     """
     import math
 
-    from src.helix_arm.params import SPECS as HELIX_SPECS
+    from src.screw_arm.params import SPECS as SCREW_SPECS
     from src.soft_arm.params import RUNGS
 
     if robot in RUNGS:
         spec = RUNGS[robot]
         return ((0.0, 0.0, 0.45), 0.25, round(math.sqrt(spec.ndof) + 1.5, 2), 345.0)
-    if robot in HELIX_SPECS:
-        return ((0.4, 0.0, 0.5), 0.25, HELIX_SPECS[robot].latent_trust_region, 1000.0)
+    if robot in SCREW_SPECS:
+        return ((0.4, 0.0, 0.5), 0.25, SCREW_SPECS[robot].latent_trust_region, 1000.0)
     return ((0.4, 0.0, 0.5), 0.25, 4.3, 1000.0)
 
 
