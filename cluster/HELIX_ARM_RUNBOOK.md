@@ -3,9 +3,12 @@
 What would be queued, what it depends on, and what a resuming session should check first.
 The design and the measured facts live in `CLAUDE.md`; this is the operational half.
 
-**STATUS: datasets BUILT; the training ladder is QUEUED behind the soft arm's campaign.**
-No benchmark stage is submitted. The rest of this file is written out so it can be
-launched deliberately.
+**STATUS (2026-10-02): CAMPAIGN COMPLETE.** All five charts trained and exported; stages HELIX,
+HELIXCHART and HELIXPITCH ran as jobs 5792792-5792803 (submitted 2026-10-01 19:56, drained
+2026-10-02 07:30, 352 items, zero worker failures, all on `xeon-g6-volta`). Merged summaries are
+under `results/helix_arm/benchmark/sc_HELIX*`; the tables, with the cap check and the runaway count
+inline, come from `python scripts/report_helix.py`, and the findings are in CLAUDE.md's screw-arm
+section. Nothing is queued.
 
 ### The queued chain, 2026-09-25
 

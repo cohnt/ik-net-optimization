@@ -1290,10 +1290,8 @@ one net over all 33 body poses.
 
 ## The screw-joint arm: a robot no algebraic method can chart
 
-**Branch `non-analytic-arm`. CHARTS TRAINED, NO BENCHMARK CELL READ YET.** The five-chart ladder
-is on the cluster: the three `p050` architectures (`n4`/`n6`/`n8`) are trained, exported and screened,
-and `p025_n6` and `p100_n6` are training. The three eval stages go out once all five exist.
-`cluster/HELIX_ARM_RUNBOOK.md` holds the live state and the screens. Merging to main is Thomas's
+**Branch `non-analytic-arm`. ALL FIVE CHARTS TRAINED AND ALL THREE EVAL STAGES MEASURED** (2026-10-02); results below.
+`cluster/HELIX_ARM_RUNBOOK.md` holds the operations and the screens. Merging to main is Thomas's
 acceptance gate, and until then no row here stands beside the status quo's.
 
 **OWED BEFORE THE PUSH CLOSES: purge "helix" from the identifiers.** The joint is a **screw** joint —
@@ -1476,24 +1474,54 @@ attaching loads — the only rotating/non-rotating distinction Newport actually 
 *rotary-output* actuator, which is the opposite. Note also that only the BNS/SPBR/PBSA-type models
 have both nuts rotatable; THK's NS type and NB's SPBF have a fixed spline nut and are linear-only.
 
-**What is wired and not run.** `stage_HELIX` (status-quo-shaped: 2 experiments x 2 protocols x 3
-solvers, 12 logical runs, 180 s, seed 1, refusing any other cap), `stage_HELIXCHART` (`nb_nodes`
-4/6/8 on the primary, IPOPT only) and `stage_HELIXPITCH` (the three trained pitches at `n6`, IPOPT only), all self-tested;
-`cluster/HELIX_ARM_RUNBOOK.md` is the operational half. **Separate stages, never entries in
-`ADOPTED_RUNGS`** — the status quo is accepted work and this robot is not. The fielded rung is
-**pre-registered at `nb_nodes = 6`**, the Panda's adopted rung, this being a 7-DoF arm; 4 and 8 are
-reported, never selected from. **The pitch rungs do not pair**: the stroke changes the reachable
-set, so each draws its own grid and its `grid_hash` differs by design — compare by target-level
-success rate with a bootstrap CI over targets, and keep McNemar within a rung, between the arms.
+### What the three stages measured (2026-10-01/02)
 
-**Cost, to decide before launching.** Each pitch is a different robot, so the full ladder is **4
-datasets and **5 training runs** — three architectures on the primary rung plus the two other
-pitches at the adopted one, with the zero-pitch member deliberately untrained.
-Narrowing further to the primary rung alone is 3 runs and drops the dose-response. **Build datasets one at a time** — ikflow's end-of-run
-summary scans the shared cache directory, so a concurrent sibling's half-written tensor makes a
-finished job exit 1 with its data correct on disk and its `.DONE` sentinel missing, which
-`train_flow.sh` hard-fails without. And **run a cap ladder (45 / 180 / 360 s) before reporting any
-verdict**, per the record's own precedent.
+Stages `HELIX` (status-quo-shaped: 2 experiments x 2 protocols x 3 solvers), `HELIXCHART` (`nb_nodes`
+4/6/8 on `p050`, IPOPT) and `HELIXPITCH` (the three trained pitches at `n6`, IPOPT): 36 logical runs
+of 480 cells at 180 s, seed 1, `--compile`, contained placement, Drake nightly `0.0.20260918`,
+352 items with zero worker failures. **Separate stages, never entries in `ADOPTED_RUNGS`.** Tables,
+with the cap and runaway columns inline: `python scripts/report_helix.py`; operations and screens:
+`cluster/HELIX_ARM_RUNBOOK.md`. **The pitch rungs do not pair** (each draws its own grid), so
+McNemar stays within a pitch, between the arms.
+
+**Stage HELIX reproduces the record's pattern on a third robot class: learned wins 5, ties 5,
+loses 2.** Interior point 2/2/0, augmented Lagrangian 2/2/0, SQP 1/1/2, and **both losses are
+contained grasp under SQP** (161 and 211 against 298) — the same weakness as the iiwa's and the soft
+PCS arm's. The learned arm takes every pose row except SQP paired (a clean tie): IPOPT 457 and 421
+against 313, NLopt **303 against 30**. It rescues 84-93% of joint space's IPOPT failures. Cost splits
+by task again, ~2.2x dearer on grasp (7.8 against 3.5) and cheaper on pose; the per-iteration
+premium is ~14x (48 against 3.3 ms). NLopt grasp is 0-3 of 480 on both arms and carries no verdict.
+
+**The cap check finds the two IPOPT grasp ties BUDGET-BOUND.** 59-66 of the learned arm's 61-69
+failures stop at IPOPT's default 3000 iterations with almost no timeouts — the iiwa contained-grasp
+caveat exactly, so those ties are **not established**. The SQP grasp losses stand (53 and 31
+cap-bound failures cannot close 137- and 87-cell gaps); the NLopt rows are wall-clock-bound on both
+arms. **A 45/180/360 s wall-clock ladder would not move the IPOPT rows**, which stop on iterations,
+not seconds; whether to re-measure them at a raised `max_iter` is Thomas's call (none was run).
+
+**The chart ladder is NOT flat, and `n4` is the WORST rung** — the iiwa's best. `n6` and `n8` agree
+(both win both pose rows and tie both grasp rows); `n4` loses three of four (365-368 against 419
+grasp, 198 against 313 pose paired). Its failures are not the gain-ceiling runaway: they end at a
+median `|q|_inf` of 30 rad against ±3 rad limits, none above 1000 — moderate out-of-limits
+excursions that IPOPT walks for 3000 iterations, which is what `n4`'s training-time validation
+ratio (up to 14.7, unclamped over clamped) had flagged. Budget-bound, so stated, not established.
+The pre-registered `n6` stands. `p050_n6` was measured in all three stages and reproduces to
+411/412/411 and 419/420/420 on grasp and exactly on pose.
+
+**The pitch ladder found the GAIN-CEILING RUNAWAY on this robot, at the SMALLEST pitch.** `p025_n6`
+loses grasp native (356 against 406) and only ties pose paired (292 against 294), and **91 of its 124
+grasp failures and 158 of 188 pose-paired failures return `|q|_inf > 1000` rad, 73 and 58 above
+1e7** — the record's 1e7-1e16 band. `p050` has none and `p100` some (55 of 132 on pose paired, still
+a learned win). Unlike the iiwa's single ray, it is a two-joint family, shoulder pitch against wrist
+roll at opposite sign, not the screw coordinate. **This is the one place a screen predicted
+cells**: `p025_n6` is the chart whose box screen ended at 9.3e5 rad, 92% of its log ceiling, against
+20-27% for the other two. One chart is not a reversal of "the screen is a smoke test", but it is
+the first agreement, and it says the runaway is a property of the trained chart rather than of the
+robot class. Joint space climbs with pitch on grasp (406 / 419 / 432) and is flat on pose.
+
+**Build datasets one at a time** — ikflow's end-of-run summary scans the shared cache directory, so
+a concurrent sibling's half-written tensor makes a finished job exit 1 with its data correct on
+disk and its `.DONE` sentinel missing, which `train_flow.sh` hard-fails without.
 
 **The curvilinear rail is deferred, not dropped.** `<drake:joint type="curvilinear">` parses in the
 pinned build with finite limits. Two things to know on return: on each piece the map is algebraic (a
