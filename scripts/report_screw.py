@@ -32,7 +32,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from report_statusquo import arm_stats, by_cell, load, mcnemar, verdict  # noqa: E402
 
-STAGES = ("SCREW", "SCREWCHART", "SCREWPITCH")
+STAGES = ("SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP")
 
 
 def qinf(record):
@@ -59,8 +59,68 @@ def row(tag, s, prefix):
                f(L["wall"], 2), f(J["wall"], 2), budget, len(fails), runaway, lo, j_fails))
 
 
+def original_of(cap_tag, originals):
+    """The row a SCREWCAP run re-measures: same run name under its own stage's prefix."""
+    run = cap_tag[len("sc_SCREWCAP_"):]
+    for stage in ("SCREW", "SCREWCHART", "SCREWPITCH"):
+        tag = f"sc_{stage}_{run}"
+        if tag in originals:
+            return tag
+    return None
+
+
+def cap_section():
+    """Stage SCREWCAP against the rows it re-measures, cell for cell.
+
+    Same seed, grid, chart and 180 s clock; only the iteration budgets were lifted. So per arm,
+    `gained`/`lost` count cells that flipped between the two runs on IDENTICAL cells, and the
+    exact McNemar on them says whether lifting the budget moved that arm at all. `still capped`
+    must be 0 -- if not, an iteration budget was still binding and the row is not re-measured.
+    """
+    caps = load("sc_SCREWCAP_", cells=480)
+    originals = {}
+    for stage in ("SCREW", "SCREWCHART", "SCREWPITCH"):
+        originals.update(load(f"sc_{stage}_", cells=480))
+    print(f"\n### Stage SCREWCAP against the originals: {len(caps)} runs, iteration budgets lifted, 180 s\n")
+    print("| run | was L / J (verdict) | now L / J (verdict) | learned gained / lost (p) "
+          "| joint gained / lost (p) | still capped L / J | timeouts L / J |")
+    print("| --- | --- | --- | --- | --- | --- | --- |")
+    for tag, s in sorted(caps.items()):
+        otag = original_of(tag, originals)
+        if otag is None:
+            print(f"| {tag} | no original found | | | | | |")
+            continue
+        o = originals[otag]
+        if s["metadata"]["grid_hash"] != o["metadata"]["grid_hash"]:
+            print(f"| {tag} | GRID MISMATCH against {otag} | | | | | |")
+            continue
+        cells = []
+        for summ in (o, s):
+            A, B = by_cell(summ, "learned"), by_cell(summ, "numerical")
+            L = sum(r["feasible"] for r in A.values()); J = sum(r["feasible"] for r in B.values())
+            lo = sum(1 for k in A if k in B and A[k]["feasible"] and not B[k]["feasible"])
+            jo = sum(1 for k in A if k in B and B[k]["feasible"] and not A[k]["feasible"])
+            p = mcnemar(lo, jo)
+            cells.append("%d / %d (%s, p = %.2g)" % (L, J, verdict(L, J, p), p))
+        moved = []
+        for arm in ("learned", "numerical"):
+            O, N = by_cell(o, arm), by_cell(s, arm)
+            g = sum(1 for k in N if N[k]["feasible"] and not O[k]["feasible"])
+            l = sum(1 for k in N if O[k]["feasible"] and not N[k]["feasible"])
+            moved.append("%d / %d (p = %.2g)" % (g, l, mcnemar(g, l)))
+        capped = " / ".join(str(sum(bool(r.get("hit_iteration_cap")) for r in s["records"][a]))
+                            for a in ("learned", "numerical"))
+        tos = " / ".join(str(sum(bool(r.get("timed_out")) for r in s["records"][a]))
+                         for a in ("learned", "numerical"))
+        name = tag.replace("sc_SCREWCAP_", "").replace("screw7_", "").replace("_480_180", "")
+        print(f"| {name} | {cells[0]} | {cells[1]} | {moved[0]} | {moved[1]} | {capped} | {tos} |")
+
+
 def main(stages):
     for stage in stages:
+        if stage == "SCREWCAP":
+            cap_section()
+            continue
         prefix = f"sc_{stage}_"
         runs = load(prefix, cells=480)
         print(f"\n### Stage {stage}: {len(runs)} logical runs of 480 cells\n")

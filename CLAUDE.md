@@ -1491,32 +1491,43 @@ against 313, NLopt **303 against 30**. It rescues 84-93% of joint space's IPOPT 
 by task again, ~2.2x dearer on grasp (7.8 against 3.5) and cheaper on pose; the per-iteration
 premium is ~14x (48 against 3.3 ms). NLopt grasp is 0-3 of 480 on both arms and carries no verdict.
 
-**The cap check finds the two IPOPT grasp ties BUDGET-BOUND.** 59-66 of the learned arm's 61-69
-failures stop at IPOPT's default 3000 iterations with almost no timeouts — the iiwa contained-grasp
-caveat exactly, so those ties are **not established**. The SQP grasp losses stand (53 and 31
-cap-bound failures cannot close 137- and 87-cell gaps); the NLopt rows are wall-clock-bound on both
-arms. **A 45/180/360 s wall-clock ladder would not move the IPOPT rows**, which stop on iterations,
-not seconds; whether to re-measure them at a raised `max_iter` is Thomas's call (none was run).
+**Stage SCREWCAP re-measured every budget-bound row with the iteration budgets lifted**
+(2026-10-02): the 17 rows where either arm had >= 24 of 480 cells at a budget, each regenerated from
+its own builder -- same seed, grid, chart and **180 s clock** -- with `max_iter` 100000 and, for SNOPT,
+`snopt_iterations_limit` too (both its INFO 31 and 32 count as the iteration cap). The clock stays
+because Thomas ruled it the usability limit: *"Don't raise the wall clock timeout. If it's that slow,
+it's not usable."* So the remaining failures are 180 s stops, and each verdict below is a result at the
+fielded clock rather than budget-bound. Iteration-capped cells are now 0 on every IPOPT row; SNOPT keeps
+10 per row that reached 100000 majors on a few thousand minors -- cycling, not under-budgeted, and under
+the 24-cell threshold. Cell-for-cell table against the originals: `python scripts/report_screw.py
+SCREWCAP`.
 
-**The chart ladder is NOT flat, and `n4` is the WORST rung** — the iiwa's best. `n6` and `n8` agree
-(both win both pose rows and tie both grasp rows); `n4` loses three of four (365-368 against 419
-grasp, 198 against 313 pose paired). Its failures are not the gain-ceiling runaway: they end at a
-median `|q|_inf` of 30 rad against ±3 rad limits, none above 1000 — moderate out-of-limits
-excursions that IPOPT walks for 3000 iterations, which is what `n4`'s training-time validation
-ratio (up to 14.7, unclamped over clamped) had flagged. Budget-bound, so stated, not established.
-The pre-registered `n6` stands. `p050_n6` was measured in all three stages and reproduces to
-411/412/411 and 419/420/420 on grasp and exactly on pose.
+**The IPOPT grasp ties are now ESTABLISHED ties** (427 v 424, 429 v 424; the learned arm gains 16 and
+10 cells, losing none). The SQP grasp losses stand unchanged (163 and 212 against 300), so stage SCREW's
+tally is unchanged at 5 / 5 / 2.
+
+**The chart ladder: `n4` is still the WORST rung, but by less** -- the iiwa's best. Its two grasp
+losses were the iteration cap, not the chart: lifted, `n4` gains 43 and 50 cells (losing 1) and ties
+(410 and 415 against 424). It wins pose native and still loses pose paired decisively (200 against
+313, p = 3.6e-15, at 0 capped cells and 246 timeouts). `n6` and `n8` agree (both pose rows won, both
+grasp rows tied). `n4`'s failures are not the gain-ceiling runaway: on pose paired they end at a
+median `|q|_inf` of 30 rad against ±3 rad limits, none above 1000 -- moderate out-of-limits excursions,
+what its training-time validation ratio (up to 14.7, unclamped over clamped) had flagged. The
+pre-registered `n6` stands. `p050_n6` reproduces across all three stages (411/412/411 and
+419/420/420 on grasp, exactly on pose).
 
 **The pitch ladder found the GAIN-CEILING RUNAWAY on this robot, at the SMALLEST pitch.** `p025_n6`
-loses grasp native (356 against 406) and only ties pose paired (292 against 294), and **91 of its 124
-grasp failures and 158 of 188 pose-paired failures return `|q|_inf > 1000` rad, 73 and 58 above
-1e7** — the record's 1e7-1e16 band. `p050` has none and `p100` some (55 of 132 on pose paired, still
-a learned win). Unlike the iiwa's single ray, it is a two-joint family, shoulder pitch against wrist
-roll at opposite sign, not the screw coordinate. **This is the one place a screen predicted
-cells**: `p025_n6` is the chart whose box screen ended at 9.3e5 rad, 92% of its log ceiling, against
-20-27% for the other two. One chart is not a reversal of "the screen is a smoke test", but it is
-the first agreement, and it says the runaway is a property of the trained chart rather than of the
-robot class. Joint space climbs with pitch on grasp (406 / 419 / 432) and is flat on pose.
+is the one rung the lifted budget does not rescue: it still loses grasp native (363 against 420,
+p = 3.5e-6, 111 timeouts), ties grasp paired (398 against 420, p = 0.053) and pose paired, and wins
+pose native. **91 of its 124 original grasp failures and 158 of 188 pose-paired failures return
+`|q|_inf > 1000` rad, 73 and 58 above 1e7** — the record's 1e7-1e16 band. `p050` has none and `p100`
+some (55 of 132 on pose paired, a learned win, 359 against 310 lifted). Unlike the iiwa's single ray,
+it is a two-joint family, shoulder pitch against wrist roll at opposite sign, not the screw
+coordinate. **This is the one place a screen predicted cells**: `p025_n6` is the chart whose box
+screen ended at 9.3e5 rad, 92% of its log ceiling, against 20-27% for the other two. One chart is not
+a reversal of "the screen is a smoke test", but it is the first agreement, and it says the runaway is
+a property of the trained chart rather than of the robot class. Joint space climbs with pitch on
+grasp (420 / 424 / 434 lifted) and is flat on pose; it too gains 2-14 cells when the cap lifts.
 
 **Build datasets one at a time** — ikflow's end-of-run summary scans the shared cache directory, so
 a concurrent sibling's half-written tensor makes a finished job exit 1 with its data correct on

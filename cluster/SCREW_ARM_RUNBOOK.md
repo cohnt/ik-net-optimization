@@ -10,6 +10,11 @@ under `results/screw_arm/benchmark/sc_SCREW*`; the tables, with the cap check an
 inline, come from `python scripts/report_screw.py`, and the findings are in CLAUDE.md's screw-arm
 section. Nothing is queued.
 
+**Then stage SCREWCAP (2026-10-02, jobs 5795689-5795692, 136 items, from `~/learned-ik-screw`)**
+re-measured the 17 budget-bound rows at the same 180 s with the iteration budgets lifted; findings in
+CLAUDE.md, table from `python scripts/report_screw.py SCREWCAP`. Merged summaries are under
+`results/screw_arm/benchmark/sc_SCREWCAP_*`.
+
 ### The queued chain, 2026-09-25
 
 ```
