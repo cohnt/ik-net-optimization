@@ -68,7 +68,7 @@ if [ "${1:-}" = "--reclaim" ]; then
 # tested, and a job's name is a property of the submitter, not of the script it runs.
 #
 # THE NAME ALSO CARRIES THE TREE. Job names are prefixed per cluster tree (SC_JOB_PREFIX:
-# learned-ik -> lik, learned-ik-helix -> helix), so a hardcoded `lik_bench_` here would
+# learned-ik -> lik, learned-ik-screw -> screw), so a hardcoded `lik_bench_` here would
 # match nothing for any campaign but the first -- reintroducing, exactly, the
 # unconditionally-0 guard described above. It must be derived, never written out.
     sc_run "cd ~/$SC_ROOT/state/$MANIFEST_NAME 2>/dev/null || { echo 'no such manifest state'; exit 1; }

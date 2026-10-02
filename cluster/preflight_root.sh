@@ -6,8 +6,8 @@
 # ===========================================================================
 #
 # Submit as a job (never on a login node):
-#   LEARNED_IK_ROOT=$HOME/learned-ik-helix ROBOT=helix7_p050 \
-#     LLsub ./cluster/preflight_root.sh -s 8 -q debug-cpu -T 00:20:00 -J helix_cal_preflight
+#   LEARNED_IK_ROOT=$HOME/learned-ik-screw ROBOT=screw7_p050 \
+#     LLsub ./cluster/preflight_root.sh -s 8 -q debug-cpu -T 00:20:00 -J screw_cal_preflight
 #
 # WHY IT EXISTS. An isolated tree can be complete enough to build datasets and still be
 # missing what a BENCHMARK worker needs, because run_items.sh -- not the payload -- is what
@@ -22,7 +22,7 @@ set -uo pipefail
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
-ROBOT="${ROBOT:-helix7_p050}"
+ROBOT="${ROBOT:-screw7_p050}"
 
 ## Exactly what run_items.sh:125-142 sets up for a worker, minus the per-worker TMPDIR.
 export HOME="$ROOT/home"
@@ -59,8 +59,8 @@ plant = diagram.GetSubsystemByName("plant")
 print("   positions:", plant.num_positions(), " bodies:", plant.num_bodies())
 
 print("--- the screw joint's limits, which no parser preserves")
-from src.helix_arm.limits import ApplyScrewJointLimits
-from src.helix_arm.params import GetSpec
+from src.screw_arm.limits import ApplyScrewJointLimits
+from src.screw_arm.params import GetSpec
 spec = GetSpec(robot)
 print("   before repair:", plant.GetPositionLowerLimits()[:3], "...")
 ApplyScrewJointLimits(plant, spec)

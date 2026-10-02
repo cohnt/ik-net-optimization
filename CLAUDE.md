@@ -1291,19 +1291,16 @@ one net over all 33 body poses.
 ## The screw-joint arm: a robot no algebraic method can chart
 
 **Branch `non-analytic-arm`. ALL FIVE CHARTS TRAINED AND ALL THREE EVAL STAGES MEASURED** (2026-10-02); results below.
-`cluster/HELIX_ARM_RUNBOOK.md` holds the operations and the screens. Merging to main is Thomas's
+`cluster/SCREW_ARM_RUNBOOK.md` holds the operations and the screens. Merging to main is Thomas's
 acceptance gate, and until then no row here stands beside the status quo's.
 
-**OWED BEFORE THE PUSH CLOSES: purge "helix" from the identifiers.** The joint is a **screw** joint —
-the name URDF, SDFormat and Drake's `ScrewJoint` all use — and the prose says so everywhere. The
-symbols do not yet: robot `helix7_p*`, `src/helix_arm/`, `src/helix_arm_program.py`,
-`scripts/helix_arm/`, `models/helix7_p*/`, stages HELIX / HELIXCHART / HELIXPITCH, the
-`helix_train_*` job names and `cluster/HELIX_ARM_RUNBOOK.md`. They are vestigial and were left alone
-**only** because Slurm items are queued against them and the ikflow datasets and checkpoint paths
-carry the old spelling. Thomas, 2026-09-28: *"by the end of this push, I do want to purge mentions of
-a 'helix arm' everywhere. That will include updating the source, etc."* So this is a deliverable, not
-a nicety; do it once the campaign's jobs have drained, and regenerate the models rather than renaming
-their contents by hand.
+**The identifiers say `screw` everywhere, as the prose does** -- robot `screw7_p*`, `src/screw_arm/`,
+stages SCREW / SCREWCHART / SCREWPITCH, cluster tree `~/learned-ik-screw`. Until 2026-10-02 they
+were spelled `helix`; the rename (Thomas, 2026-09-28, *"purge mentions of a 'helix arm'
+everywhere"*) moved the code, regenerated the models and manifests from the renamed generators
+(byte-identical modulo the name), and migrated every dataset, checkpoint, screen and result on the
+cluster and locally. The one place the old name survives is the wandb runs, which are not ours to
+rename. `git log --follow` crosses the rename.
 
 **Why the robot exists.** An analytic column needs `FK(q)` to be *algebraic*: for a revolute arm
 every entry is a polynomial in `(cos q_i, sin q_i)`, and `c^2 + s^2 = 1` turns IK into a polynomial
@@ -1323,9 +1320,9 @@ and neither is an arm DOF. Given the arm must be invented it is invented **from 
 perturbing a benchmark arm — which would carry a real robot's name and published identity while no
 longer being that robot.
 
-**`helix7`.** A 7-DoF S-R-S arm whose **upper-arm roll is a screw joint**: the upper arm telescopes as it
+**`screw7`.** A 7-DoF S-R-S arm whose **upper-arm roll is a screw joint**: the upper arm telescopes as it
 rolls, and every downstream link is offset from that axis, which is what makes the coupling
-irreducible. `src/helix_arm/params.py` **is** the robot; the SDFormat model and the batched torch FK
+irreducible. `src/screw_arm/params.py` **is** the robot; the SDFormat model and the batched torch FK
 are two renderings of it and a test says they agree, so there is no second source of truth and
 nothing to drift. The screw coordinate is `±2π`, deliberately symmetric about zero because
 **ikflow's first layer is `x_i / max(|lo_i|, |hi_i|)` — a pure scaling with no offset** — so a
@@ -1334,14 +1331,14 @@ rotation at a different extension, so the solution set is richly multimodal, whi
 flow is supposed to capture. Reach matches the iiwa (flange at z 1.26 home, 0.89 m horizontal from a
 shoulder at z 0.42), so every shelf weld, table and containment screen applies untouched.
 
-**Four rungs, one robot: pitch `{0, 0.025, 0.050, 0.100}` m/rev, primary `helix7_p050`, fixed before
+**Four rungs, one robot: pitch `{0, 0.025, 0.050, 0.100}` m/rev, primary `screw7_p050`, fixed before
 any number was read.** Every other number is shared, so the ladder is a dose-response rather than
-four robots. **`helix7_p000` is a full spec, not a code path** — a control that takes a different
+four robots. **`screw7_p000` is a full spec, not a code path** — a control that takes a different
 code path is not a control — and at pitch 0 the arm is an ordinary S-R-S arm for which the closed
 form is standard, so the family contains its own degenerate, algebraic member.
 
 **That member is NOT trained, by decision** (Thomas, 2026-09-25: *"Seems like a waste of time to
-train a model for helix7_p000. We already have analytic arms, we don't need a specific control
+train a model for [screw7_p000]. We already have analytic arms, we don't need a specific control
 example here."*). The project already fields two S-R-S arms **with** analytic columns, so a seventh
 chart would spend 620k steps rediscovering that an algebraic arm is algebraic. The spec and its
 dataset stay — the tests use it, and it is what makes the pitch a *parameter* rather than a fact
@@ -1355,7 +1352,7 @@ everywhere else.
 reached only for revolute and prismatic joints, in URDF and SDFormat alike, so the plant reports
 `[-inf, inf]` on that coordinate and nothing raises. The joint-limit row — the one row this robot
 exists to stress — goes vacuous, the joint-space arm's box goes unbounded, and the target sampler's
-`rng.uniform(lower, upper)` returns `nan` and spins for ever. `src/helix_arm/limits.py` repairs it
+`rng.uniform(lower, upper)` returns `nan` and spins for ever. `src/screw_arm/limits.py` repairs it
 in the program's `__init__`, after `Finalize()` and **before `ToAutoDiffXd()`**, which takes an
 independent copy that would otherwise carry the infinities for ever. Anything that builds this plant
 without constructing a program must repair it itself; `scripts/probe_shelf_acceptance.py` does.
@@ -1371,10 +1368,10 @@ a test pins it.
 Three smaller ones worth not rediscovering. **Capsules hang Drake's proximity engine**, so collision
 geometry is a sphere union along each capsule's segment. A `<drake:collision_filter_group>` named
 after its own link raises "Non-unique name detected 2 times", hence the `cfg_` prefix. And `jrl`
-cannot parse or evaluate a screw joint at all, so `src/helix_arm/robot.py` follows the soft arm's
+cannot parse or evaluate a screw joint at all, so `src/screw_arm/robot.py` follows the soft arm's
 shim pattern — no `super().__init__()`, and every jrl method we do not implement raises
 `NotImplementedError` naming why. `RationalForwardKinematics` refusing this arm is **not** a test:
-it keys on the joint *type*, so it refuses `helix7_p000` just as readily and distinguishes nothing.
+it keys on the joint *type*, so it refuses `screw7_p000` just as readily and distinguishes nothing.
 
 **Measured on the laptop, before anything was queued.** Torch FK against Drake 4.4e-16 position and
 1.3e-15 rotation, every link frame under 1e-12; all twelve AutoDiffXd constraint gradient blocks
@@ -1403,7 +1400,7 @@ floor.** So the orientation set is full-dimensional, the callback's draw is reac
 `ScreenDomain` returning the rigid tuple unchanged is correct. **Quote this robot's in-training pole
 curve directly beside the record's**, unlike the soft arm's. A lower-dimensional set would instead
 have plateaued at the distance from a random orientation to it — which is the general test, not a
-helix7 fact.
+screw7 fact.
 
 ### Why a screw joint is a sensible thing to build
 
@@ -1416,7 +1413,7 @@ tempting version of this story is more confident than the evidence.
 symbol **H**, with **one** degree of freedom — the same as R and P, imposing five constraints
 between two spatial bodies (Lynch & Park, *Modern Robotics*, §2.2.1 and Table 2.1). It is the
 general case of which R and P are the degenerate limits: pitch 0 is a pure rotation and pitch → ∞ a
-pure translation (ibid., Def. 3.24). So `helix7`'s pitch ladder is a sweep along a standard
+pure translation (ibid., Def. 3.24). So `screw7`'s pitch ladder is a sweep along a standard
 one-parameter family, and its zero-pitch member is the R end of it.
 
 **Mind the pitch units; three conventions are in play.** Drake's `screw_pitch` — and this repo's
@@ -1461,7 +1458,7 @@ The joint is a standard pair, buildable, and first-class in Drake, DART, Simbody
 nobody has put one in an arm. The C-pair alternative would not have served: a screw in series with a
 prismatic or revolute joint **on the same axis** is a cylindrical pair, and its IK re-coordinatises
 back to an algebraic problem under an invertible linear map — so it would look non-algebraic and not
-be. What makes `helix7`'s coupling irreducible is that the H pair is the upper-arm **roll**, so its
+be. What makes `screw7`'s coupling irreducible is that the H pair is the upper-arm **roll**, so its
 translation telescopes the link it rotates about, and every downstream link is offset from that
 axis.
 
@@ -1476,15 +1473,15 @@ have both nuts rotatable; THK's NS type and NB's SPBF have a fixed spline nut an
 
 ### What the three stages measured (2026-10-01/02)
 
-Stages `HELIX` (status-quo-shaped: 2 experiments x 2 protocols x 3 solvers), `HELIXCHART` (`nb_nodes`
-4/6/8 on `p050`, IPOPT) and `HELIXPITCH` (the three trained pitches at `n6`, IPOPT): 36 logical runs
+Stages `SCREW` (status-quo-shaped: 2 experiments x 2 protocols x 3 solvers), `SCREWCHART` (`nb_nodes`
+4/6/8 on `p050`, IPOPT) and `SCREWPITCH` (the three trained pitches at `n6`, IPOPT): 36 logical runs
 of 480 cells at 180 s, seed 1, `--compile`, contained placement, Drake nightly `0.0.20260918`,
 352 items with zero worker failures. **Separate stages, never entries in `ADOPTED_RUNGS`.** Tables,
-with the cap and runaway columns inline: `python scripts/report_helix.py`; operations and screens:
-`cluster/HELIX_ARM_RUNBOOK.md`. **The pitch rungs do not pair** (each draws its own grid), so
+with the cap and runaway columns inline: `python scripts/report_screw.py`; operations and screens:
+`cluster/SCREW_ARM_RUNBOOK.md`. **The pitch rungs do not pair** (each draws its own grid), so
 McNemar stays within a pitch, between the arms.
 
-**Stage HELIX reproduces the record's pattern on a third robot class: learned wins 5, ties 5,
+**Stage SCREW reproduces the record's pattern on a third robot class: learned wins 5, ties 5,
 loses 2.** Interior point 2/2/0, augmented Lagrangian 2/2/0, SQP 1/1/2, and **both losses are
 contained grasp under SQP** (161 and 211 against 298) — the same weakness as the iiwa's and the soft
 PCS arm's. The learned arm takes every pose row except SQP paired (a clean tie): IPOPT 457 and 421

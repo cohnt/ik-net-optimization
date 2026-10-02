@@ -93,7 +93,7 @@ LEGACY_SOFT_ARCH = {name: dict(LEGACY_IIWA_ARCH, dim_latent_space=ndof)
 LEGACY_ARCH_BY_ROBOT = {"iiwa14": LEGACY_IIWA_ARCH, "panda": LEGACY_PANDA_ARCH,
                         **LEGACY_SOFT_ARCH}
 
-# `helix7` is a 7-DoF arm, so its baseline latent width is the Panda's. Without an entry
+# `screw7` is a 7-DoF arm, so its baseline latent width is the Panda's. Without an entry
 # here a sidecar-less checkpoint would fall back to the iiwa's `dim_latent_space = 8`
 # against a 7-wide robot: `InvertFlow` writes `x[0, :num_arm_dof]` into a buffer of width
 # `network_width`, so a mismatch is a silently different chart at best.
@@ -102,9 +102,9 @@ LEGACY_ARCH_BY_ROBOT = {"iiwa14": LEGACY_IIWA_ARCH, "panda": LEGACY_PANDA_ARCH,
 # every robot this project defines, soft PCS rungs included, and an update over it would
 # overwrite `soft9`/`soft12`/`soft16` above with a 7-wide architecture -- which, for the
 # 9-wide rung, nothing downstream would catch.
-from src.helix_arm.params import SPECS as _HELIX_SPECS  # noqa: E402
+from src.screw_arm.params import SPECS as _SCREW_SPECS  # noqa: E402
 
-LEGACY_ARCH_BY_ROBOT.update({name: LEGACY_PANDA_ARCH for name in _HELIX_SPECS})
+LEGACY_ARCH_BY_ROBOT.update({name: LEGACY_PANDA_ARCH for name in _SCREW_SPECS})
 
 
 def SidecarPath(checkpoint):

@@ -45,7 +45,7 @@ fi
 ## `submit_export.sh` names jobs `<prefix>_export_*`. A pattern over `(train|bench)` misses
 ## both, and would miss whatever submitter is added next -- enumerating the instances
 ## cannot cover the class. Checked on the live queue: this account's three trees
-## (learned-ik, learned-ik-helix and another project's ik-tune) are cleanly separated by
+## (learned-ik, learned-ik-screw and another project's ik-tune) are cleanly separated by
 ## `%Z`, including for a job submitted with no name at all.
 ##
 ## Calibration and smoke stay exempt (`*_cal_*`, `smoke.sh`): they produce no campaign
