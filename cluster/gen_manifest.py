@@ -2200,6 +2200,65 @@ def stage_SCREW(wall, targets, guesses, shards, only=None, tag="SCREW", seed=1,
     return items
 
 
+#: The rows stages SCREW / SCREWCHART / SCREWPITCH measured as BUDGET-BOUND under the
+#: pre-registered cap rule (cluster/SCREW_ARM_RUNBOOK.md): either arm has >= 24 of 480 cells
+#: stopped at a budget. Listed here rather than derived, so the manifest cannot move when a
+#: results file does. All are iteration-cap-bound (IPOPT's default 3000, SNOPT's 3000 majors
+#: or its total minor budget); the NLopt rows are wall-clock-bound and are NOT here, because
+#: the clock stays at 180 s (Thomas: "Don't raise the wall clock timeout. If it's that slow,
+#: it's not usable."). The p050_n6 IPOPT grasp rows were measured in all three stages and
+#: appear once.
+SCREWCAP_ROWS = (
+    "screw7_p050_n6_ipopt_mugshelf_480_180_native", "screw7_p050_n6_ipopt_mugshelf_480_180_paired",
+    "screw7_p050_n6_snopt_mugshelf_480_180_native", "screw7_p050_n6_snopt_mugshelf_480_180_paired",
+    "screw7_p050_n4_ipopt_mugshelf_480_180_native", "screw7_p050_n4_ipopt_mugshelf_480_180_paired",
+    "screw7_p050_n4_ipopt_posetip_480_180_native", "screw7_p050_n4_ipopt_posetip_480_180_paired",
+    "screw7_p050_n8_ipopt_mugshelf_480_180_native", "screw7_p050_n8_ipopt_mugshelf_480_180_paired",
+    "screw7_p025_n6_ipopt_mugshelf_480_180_native", "screw7_p025_n6_ipopt_mugshelf_480_180_paired",
+    "screw7_p025_n6_ipopt_posetip_480_180_native", "screw7_p025_n6_ipopt_posetip_480_180_paired",
+    "screw7_p100_n6_ipopt_mugshelf_480_180_native", "screw7_p100_n6_ipopt_mugshelf_480_180_paired",
+    "screw7_p100_n6_ipopt_posetip_480_180_paired",
+)
+
+#: High enough that no iteration count can bind inside 180 s on either arm: the joint-space
+#: arm runs ~3 ms per iteration, so ~60k at most. SNOPT has TWO iteration budgets and both
+#: count as `hit_iteration_cap` -- majors (max_iter, INFO 32) and the total minor budget
+#: ('Iterations limit', INFO 31) -- so both are lifted, or the row stays bound on 31.
+SCREWCAP_MAX_ITER = 100000
+SCREWCAP_SNOPT_ITERATIONS = 100000000
+
+
+def stage_SCREWCAP(wall, targets, guesses, shards, only=None, tag="SCREWCAP", seed=1):
+    """Re-measure every budget-bound screw-arm row with the ITERATION budgets lifted.
+
+    Each row is regenerated from its own stage's builder, so it is that row exactly -- same
+    seed, grid, chart, solver configuration and 180 s wall clock -- plus `max_iter` (and, for
+    SNOPT, its total iteration budget) raised past anything reachable in 180 s. So the wall
+    clock is the ONLY budget, which is what ProgramOptions' own note says was intended, and
+    the rows pair cell-for-cell with their originals on `grid_hash`. `max_iter` is one field
+    feeding three solvers (IPOPT max_iter, SNOPT majors, NLopt max_eval), which is safe here
+    only because every row is IPOPT or SNOPT; the selftest holds that.
+    """
+    wall = _screw_require_statusquo_wall(wall, "stage SCREWCAP")
+    wanted = set(only.split(",")) if only else None
+    built = (stage_SCREW(wall, targets, guesses, shards, tag=tag, seed=seed)
+             + stage_SCREWCHART(wall, targets, guesses, shards, tag=tag, seed=seed)
+             + stage_SCREWPITCH(wall, targets, guesses, shards, tag=tag, seed=seed))
+    items, seen = [], set()
+    for it in built:
+        run = it["id"].split("_shard")[0][len(f"sc_{tag}_"):]
+        if run not in SCREWCAP_ROWS or it["id"] in seen:
+            continue
+        if wanted is not None and run not in wanted:
+            continue
+        seen.add(it["id"])
+        args = list(it["args"]) + ["--set", f"max_iter={SCREWCAP_MAX_ITER}"]
+        if args[args.index("--solver") + 1] == "snopt":
+            args += ["--set", f"snopt_iterations_limit={SCREWCAP_SNOPT_ITERATIONS}"]
+        items.append(dict(it, args=args))
+    return items
+
+
 def stage_SCREWCHART(wall, targets, guesses, shards, only=None, tag="SCREWCHART", seed=1,
                      starts="paired,native"):
     """The chart ladder on the primary rung: nb_nodes 4 / 6 / 8, IPOPT only.
@@ -3380,6 +3439,39 @@ def selftest():
         screw_fails.append("stage SCREWPITCH does not include the primary rung %s, so it "
                            "is not a control on what stage SCREW reports" % SCREW_PRIMARY)
 
+    ## Stage SCREWCAP: exactly the listed rows, each IDENTICAL to its original item apart
+    ## from the tag and the lifted iteration budgets -- so it re-measures that row and
+    ## nothing else -- and never an NLopt row, where max_iter would become max_eval.
+    cap = stage_SCREWCAP(STATUSQUO_WALL, 60, 8, 8)
+    cap_runs = {r["id"].split("_shard")[0] for r in cap}
+    if cap_runs != {f"sc_SCREWCAP_{run}" for run in SCREWCAP_ROWS}:
+        screw_fails.append("stage SCREWCAP covers %d runs, not the %d listed"
+                           % (len(cap_runs), len(SCREWCAP_ROWS)))
+    originals = {}
+    for builder, stage in ((stage_SCREW, "SCREW"), (stage_SCREWCHART, "SCREWCHART"),
+                           (stage_SCREWPITCH, "SCREWPITCH")):
+        for r in builder(STATUSQUO_WALL, 60, 8, 8):
+            originals.setdefault(r["id"][len(f"sc_{stage}_"):], r)
+    for r in cap:
+        key = r["id"][len("sc_SCREWCAP_"):]
+        o = originals.get(key)
+        if o is None:
+            screw_fails.append("stage SCREWCAP: %s has no original item" % r["id"])
+            continue
+        a, b = list(r["args"]), list(o["args"])
+        a[a.index("--tag") + 1] = b[b.index("--tag") + 1] = "TAG"
+        solver = a[a.index("--solver") + 1]
+        extra = ["--set", f"max_iter={SCREWCAP_MAX_ITER}"] + (
+            ["--set", f"snopt_iterations_limit={SCREWCAP_SNOPT_ITERATIONS}"] if solver == "snopt" else [])
+        if a != b + extra:
+            screw_fails.append("stage SCREWCAP: %s differs from its original by more than the "
+                               "iteration budgets" % r["id"])
+        if solver == "nlopt":
+            screw_fails.append("stage SCREWCAP: %s is NLopt, where max_iter is max_eval" % r["id"])
+    if not any(f.startswith("stage SCREWCAP") for f in screw_fails):
+        print("ok   stage SCREWCAP: %d runs / %d items, each its original row plus lifted "
+              "iteration budgets, wall clock unchanged" % (len(cap_runs), len(cap)))
+
     for line in screw_fails:
         print("FAIL " + line)
     if not screw_fails:
@@ -3507,7 +3599,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -3615,6 +3707,9 @@ def main():
              "SCREWPITCH": lambda: stage_SCREWPITCH(args.wall_time, args.targets,
                                                    args.guesses, args.shards,
                                                    only=args.rungs, **st),
+             "SCREWCAP": lambda: stage_SCREWCAP(args.wall_time, args.targets,
+                                               args.guesses, args.shards,
+                                               only=args.rungs),
              "SOFT12": lambda: stage_SOFT12(args.wall_time, args.targets,
                                             args.guesses, args.shards,
                                             only=args.rungs, **sv,
