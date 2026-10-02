@@ -73,6 +73,13 @@ the five final step-620000 charts with their sidecars' `robot_name` set to the n
 provenance entry pointing at the original file; the weights are byte-identical. A dataset is not
 needed to benchmark; to train again, build a new one under the new name rather than linking the old.
 
+**The new tree is VERIFIED against the old one, cell for cell** (2026-10-02). `preflight_root.sh`
+passed (job 5795679), and stage SCREWREPRO (job 5795678) re-ran 16 cells of the campaign under the
+new names -- the two fastest-converging learned cells of eight runs spanning all three solvers, both
+tasks, both protocols and all five charts -- and **all 32 cell-arm records match the originals
+exactly**: `q`, iterations, cost and `max_violation` identical, `grid_hash` identical. So a new run
+here pairs cell-for-cell with the archive in `~/learned-ik-helix`.
+
 **Job names carry a prefix derived from the tree** (`learned-ik` -> `lik`,
 `learned-ik-screw` -> `screw`), because `stage_code.sh`'s live-campaign guard and
 `submit_train.sh`'s RUN_DIR guard both match on job NAMES. Unscoped, two campaigns refuse

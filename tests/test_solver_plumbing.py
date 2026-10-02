@@ -300,6 +300,9 @@ IPOPT_ECHO_KNOBS = {
 }
 SNOPT_ECHO_KNOBS = {
     "snopt_hessian_frequency": (50, "Hessian frequency......        50"),
+    ## The TOTAL minor budget (INFO 31), echoed as "Iteration limit" -- singular, and a
+    ## different option from "Minor iterations limit", which is per QP subproblem.
+    "snopt_iterations_limit": (123456, "Iteration limit........    123456"),
     "snopt_elastic_weight": (100.0, "Elastic weight.........  1.00E+02"),
     "snopt_crash_option": (0, "Crash option...........         0"),
     ## SNOPT capitalises the second word here and nowhere else nearby.
