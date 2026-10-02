@@ -1,4 +1,4 @@
-# `screw7`, the helical-joint arm: the run's own record
+# `screw7`, the screw-joint arm: the run's own record
 
 What would be queued, what it depends on, and what a resuming session should check first.
 The design and the measured facts live in `CLAUDE.md`; this is the operational half.
@@ -53,12 +53,25 @@ submitting; `LEARNED_IK_ROOT` is what the job-side scripts read, and the submitt
 forward it (they used to build paths from `SC_ROOT` while the payload silently fell back to
 the default tree).
 
-Its own: `repo/`, `home/` (its own ikflow dataset cache), `state/`, `results/`.
+Its own: `repo/`, `home/` (its own ikflow dataset cache, empty until a dataset is built), `state/`, `results/`.
 Symlinked to the default tree and used **strictly read-only**: `venv/`, `drake/`,
 `sysdeps/`, `home/.cache/drake`. Read-only means no `pip install` of any kind — the other
 campaign runs out of that venv, and a package added here would land inside its run
 invisibly. If this branch ever needs a package the default tree lacks, **copy** the venv.
 `rm -rf ~/learned-ik-screw` removes the tree without touching anything else.
+
+**THE CAMPAIGN OF 2026-09-25 TO 10-02 LIVES IN `~/learned-ik-helix`, AND IS LEFT AS IT RAN.** This
+robot was called `helix7` until 2026-10-02. The rename moved the code and the downloaded results;
+the cluster tree that trained and measured it was deliberately **not** migrated (Thomas's call), so it
+is the archive, in the old spelling throughout: the four datasets
+(`home/.cache/ikflow/datasets/helix7_p*/`), the five training runs with every checkpoint
+(`results/train/helix7_p*_n*/`), the screens (`results/pole/`), and the 352 benchmark items
+(`results/helix_arm/benchmark/sc_HELIX*`, state under `state/manifest_stageHELIX*`). **Do not stage
+renamed code into it** -- `stage_code.sh` runs `rsync --delete` and nothing in that tree would match
+the new names. New work runs from `~/learned-ik-screw`, whose `repo/models/screw7_p*/` holds COPIES of
+the five final step-620000 charts with their sidecars' `robot_name` set to the new name and a
+provenance entry pointing at the original file; the weights are byte-identical. A dataset is not
+needed to benchmark; to train again, build a new one under the new name rather than linking the old.
 
 **Job names carry a prefix derived from the tree** (`learned-ik` -> `lik`,
 `learned-ik-screw` -> `screw`), because `stage_code.sh`'s live-campaign guard and
@@ -125,7 +138,7 @@ and it is the degenerate member that makes the family a family — and its datas
 built, so the rung can be added later for the price of one training run. The ladder is
 therefore **5 training runs**: three architectures on the primary rung, plus the two other
 pitches at the adopted architecture. What the pitch ladder measures is a dose-response
-among helical arms; the "an analytic column could exist here" end of the scale is held by
+among screw-joint arms; the "an analytic column could exist here" end of the scale is held by
 the Panda and the iiwa, which already have one.
 
 ## Submitting
@@ -443,6 +456,6 @@ question does not arise.
   charts, so it is the campaign's first methodological step rather than part of this
   infrastructure push.
 
-The record's own section for this robot is written: **"The helical-joint arm: a robot no
+The record's own section for this robot is written: **"The screw-joint arm: a robot no
 algebraic method can chart"** in `CLAUDE.md`, which holds the design, the two traps and the
 locally measured numbers. This file stays the operational half.

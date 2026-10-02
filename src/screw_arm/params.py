@@ -1,7 +1,7 @@
 """The `screw7` arm: one definition, from which everything else is rendered.
 
-A 7-DoF spherical-revolute-spherical arm whose **upper-arm roll is a helical (screw)
-pair** -- the upper arm telescopes as it rolls, at a fixed pitch, driven by one
+A 7-DoF spherical-revolute-spherical arm whose **upper-arm roll is a screw
+joint** -- the upper arm telescopes as it rolls, at a fixed pitch, driven by one
 coordinate. That is what takes the arm out of the algebraic class: a revolute joint
 contributes `cos q` and `sin q`, which the tangent half-angle substitution makes
 rational, but a screw joint contributes `cos q`, `sin q` AND `q`, and `q` is
@@ -9,8 +9,8 @@ algebraically independent of `exp(i q)`. Abban, Li and Schicho (arXiv:1312.1060)
 plainly: algebraic methods "have failed so far for the study of linkages with helical
 joints ... because of the presence of some non-algebraic relations".
 
-WHY THE ROBOT IS INVENTED. No real arm with a lone helical joint exists, in hardware or
-in any public model, and the reason is structural rather than accidental: a lone helical
+WHY THE ROBOT IS INVENTED. No real arm with a lone screw joint exists, in hardware or
+in any public model, and the reason is structural rather than accidental: a lone screw
 pair makes the drive torque and the load's reaction torque the same torque, so every real
 screw actuator either grounds the nut against rotation (becoming a prismatic joint behind
 a gearbox) or adds a co-axial second motor (becoming a CYLINDRICAL pair, which
@@ -18,7 +18,7 @@ re-coordinatises back to an algebraic inverse kinematics by an invertible linear
 Every SCARA ball-screw-spline shaft is the latter; the spline groove exists precisely to
 decouple rotation from translation. The joint itself is an ordinary machine element --
 a THK ball-screw/spline quill in "spiral mode", spline nut driven and screw nut braked,
-is a lone helical pair at the ball screw's lead -- and it is first-class in Drake, DART,
+is a lone screw pair at the ball screw's lead -- and it is first-class in Drake, DART,
 Simbody, Pinocchio and Simscape. Nobody has put one in an arm. That is the finding; this
 file is the response to it.
 
@@ -129,7 +129,7 @@ class LinkSpec:
 ## furniture would not be comparable with the record's rows.
 ## ---------------------------------------------------------------------------------------
 
-#: The upper arm is a TELESCOPING TUBE running through a collar, which is what a helical
+#: The upper arm is a TELESCOPING TUBE running through a collar, which is what a screw
 #: joint at an upper-arm roll physically means: `upper_housing` is fixed to the shoulder and
 #: `upper_arm` rolls and slides through it. The tube's 0.06 m tail is what keeps it captive
 #: -- at full extension it still overlaps the collar by 0.07 m -- and that overlap, together

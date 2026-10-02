@@ -54,10 +54,10 @@ _CPU = "cpu"
 
 
 class ScrewArmRobot(Robot):
-    """One rung of the helical-joint arm, wearing jrl's interface."""
+    """One rung of the screw-joint arm, wearing jrl's interface."""
 
     name = "screw7_p050"
-    formal_robot_name = "Helical-joint 7-DoF arm (0.050 m/rev)"
+    formal_robot_name = "Screw-joint 7-DoF arm (0.050 m/rev)"
     spec: ScrewArmSpec = SPECS["screw7_p050"]
 
     def __init__(self, verbose: bool = False):
@@ -272,7 +272,7 @@ def _make_rung(spec: ScrewArmSpec):
     return type(f"ScrewArmRobot_{spec.name}", (ScrewArmRobot,),
                 {"name": spec.name, "spec": spec,
                  "formal_robot_name":
-                     f"Helical-joint 7-DoF arm ({spec.pitch:.3f} m/rev)"})
+                     f"Screw-joint 7-DoF arm ({spec.pitch:.3f} m/rev)"})
 
 
 #: One `Robot` subclass per rung, so `get_robot("screw7_p100")` works like any other robot.

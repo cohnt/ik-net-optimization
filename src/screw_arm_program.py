@@ -9,7 +9,7 @@ serial chain; the only thing unusual about it is one joint's motion.
 
 There is no analytic column, and unlike the iiwa's that is not a matter of effort. A
 closed-form inverse kinematics needs the forward kinematics to be an ALGEBRAIC function of
-the joint variables, and a helical joint contributes `cos q`, `sin q` and `q` at once.
+the joint variables, and a screw joint contributes `cos q`, `sin q` and `q` at once.
 `ALL_ARMS` records this robot as `learned,numerical` for that reason.
 
 THE ONE THING THAT MUST HAPPEN IN A PARTICULAR ORDER is the screw-limit repair; see

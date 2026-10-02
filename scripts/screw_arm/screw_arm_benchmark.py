@@ -1,4 +1,4 @@
-"""Paired-grid benchmark on `screw7`, the helical-joint arm: learned against joint space.
+"""Paired-grid benchmark on `screw7`, the screw-joint arm: learned against joint space.
 
 The same harness as `scripts/iiwa/iiwa_benchmark.py`; only the robot, the scene and the
 program classes differ.
@@ -7,7 +7,7 @@ THERE IS NO ANALYTIC ARM HERE, and unlike the iiwa's absence that is not a matte
 effort. A closed-form inverse kinematics needs the forward kinematics to be an ALGEBRAIC
 function of the joint variables -- for a revolute arm every entry of `FK(q)` is a polynomial
 in `(cos q, sin q)`, and the tangent half-angle substitution turns the whole problem into a
-polynomial system. A helical joint contributes `cos q`, `sin q` AND `q` at once, and `q` is
+polynomial system. A screw joint contributes `cos q`, `sin q` AND `q` at once, and `q` is
 algebraically independent of `exp(i q)`, so there is no such system to solve. Abban, Li and
 Schicho (arXiv:1312.1060) state the obstruction from the algebra side.
 
