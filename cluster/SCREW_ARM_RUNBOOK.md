@@ -65,25 +65,27 @@ campaign runs out of that venv, and a package added here would land inside its r
 invisibly. If this branch ever needs a package the default tree lacks, **copy** the venv.
 `rm -rf ~/learned-ik-screw` removes the tree without touching anything else.
 
-**THE CAMPAIGN OF 2026-09-25 TO 10-02 LIVES IN `~/learned-ik-helix`, AND IS LEFT AS IT RAN.** This
-robot was called `helix7` until 2026-10-02. The rename moved the code and the downloaded results;
-the cluster tree that trained and measured it was deliberately **not** migrated (Thomas's call), so it
-is the archive, in the old spelling throughout: the four datasets
-(`home/.cache/ikflow/datasets/helix7_p*/`), the five training runs with every checkpoint
-(`results/train/helix7_p*_n*/`), the screens (`results/pole/`), and the 352 benchmark items
-(`results/helix_arm/benchmark/sc_HELIX*`, state under `state/manifest_stageHELIX*`). **Do not stage
-renamed code into it** -- `stage_code.sh` runs `rsync --delete` and nothing in that tree would match
-the new names. New work runs from `~/learned-ik-screw`, whose `repo/models/screw7_p*/` holds COPIES of
-the five final step-620000 charts with their sidecars' `robot_name` set to the new name and a
-provenance entry pointing at the original file; the weights are byte-identical. A dataset is not
-needed to benchmark; to train again, build a new one under the new name rather than linking the old.
+**THE TREE THE CAMPAIGN RAN IN, `~/learned-ik-helix`, WAS DELETED ON 2026-10-02** (Thomas's call),
+after the rename and after `~/learned-ik-screw` was verified against it. What survives, and where:
+
+* **The five final charts**: `~/learned-ik-screw/repo/models/screw7_p*/`, weights byte-identical to
+  the originals (sha256-checked by `cluster/import_chart.py`), sidecars carrying the new robot name and
+  a provenance entry naming the original path.
+* **Every benchmark result, the training metrics and wandb logs, and all 465 pole screens**: locally,
+  under the new names, in `results/screw_arm/`, `results/_cluster_staging/20261002-*/` and
+  `results/pole/screw7_*/`. Both reporters and the record's tables regenerate from them.
+
+**What is gone**: the four datasets (5.3 GB; rebuilding one is ~6 minutes on `xeon-p8`, and must be
+done under the new name), the intermediate Lightning checkpoints and per-step exports (61 GB), and
+the per-node worker logs. So **retraining or re-exporting any rung starts from a new dataset**, and no
+intermediate checkpoint can be re-screened. A dataset is not needed to benchmark.
 
 **The new tree is VERIFIED against the old one, cell for cell** (2026-10-02). `preflight_root.sh`
 passed (job 5795679), and stage SCREWREPRO (job 5795678) re-ran 16 cells of the campaign under the
 new names -- the two fastest-converging learned cells of eight runs spanning all three solvers, both
 tasks, both protocols and all five charts -- and **all 32 cell-arm records match the originals
 exactly**: `q`, iterations, cost and `max_violation` identical, `grid_hash` identical. So a new run
-here pairs cell-for-cell with the archive in `~/learned-ik-helix`.
+here pairs cell-for-cell with the campaign's records.
 
 **Job names carry a prefix derived from the tree** (`learned-ik` -> `lik`,
 `learned-ik-screw` -> `screw`), because `stage_code.sh`'s live-campaign guard and
