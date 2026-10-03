@@ -92,7 +92,7 @@ def f(x, prec=0):
 
 # ------------------------------------------------------------------------------ pre-check
 
-def precheck():
+def precheck(prem_prefix="sc_GVSPREM2_"):
     js = {t: s for t, s in load_any("sc_GVSJS_").items()
           if len(s["records"].get("numerical", [])) == CELLS}
     print("=== PRE-CHECK 1: room to win -- single-start joint-space success (stage GVS's own "
@@ -113,7 +113,7 @@ def precheck():
     if not js:
         print("  (no merged 480-cell sc_GVSJS_ runs yet)")
 
-    prem = load_any("sc_GVSPREM_")
+    prem = load_any(prem_prefix)
     print("\n=== PRE-CHECK 2: the per-evaluation premium (untrained n6 chart: cost is set by the")
     print("architecture, not the weights; its solve quality is meaningless here)")
     print("Proceed criterion proposed: below ~2x. Predicted ~1.3-1.5x.")
@@ -130,7 +130,7 @@ def precheck():
               f"{f(le, 1):>8}{f(je, 1):>9}{f(ratio(le, je), 2):>7}{f(ratio(lw, jw), 2):>8}"
               f"{f(li, 1):>8}{f(ji, 1):>9}{f(ratio(li, ji), 2):>7}")
     if not prem:
-        print("  (no sc_GVSPREM_ runs yet)")
+        print(f"  (no {prem_prefix} runs yet)")
 
     ## The split check: the same joint-space solves, in a mixed-arm job (GVSPREM) and in a
     ## joint-space-only job (GVSJS). Agreement within ~10% licenses running the learned cells
@@ -254,9 +254,12 @@ def main():
     p.add_argument("what", choices=("precheck", "stage"))
     p.add_argument("--root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     p.add_argument("--prefix", default="sc_GVS_")
+    p.add_argument("--prem-prefix", default="sc_GVSPREM2_",
+                   help="the premium probe: GVSPREM2 is at the stages' PROCS=2; GVSPREM was "
+                        "PROCS=8, the contention reading")
     args = p.parse_args()
     os.chdir(args.root)
-    return precheck() if args.what == "precheck" else stage(args.prefix)
+    return precheck(args.prem_prefix) if args.what == "precheck" else stage(args.prefix)
 
 
 if __name__ == "__main__":
