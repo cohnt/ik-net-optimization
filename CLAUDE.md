@@ -756,7 +756,7 @@ refuted too, so the containment verdicts stand as measured under IPOPT.
 
 **Stage STATUSQUO, measured 2026-09-19/20 and accepted by Thomas 2026-09-21**, joined by the soft
 arm's stage SOFT12 (identical conditions) on 2026-09-28 and the screw-joint arm's stage SCREW on
-2026-10-02 (identical conditions; accepted when its branch merges). Hardened scene, shelf-contained targets at
+2026-10-02 (identical conditions, accepted with its merge). Hardened scene, shelf-contained targets at
 the **fingertips for both tasks**, **180 s**, 480 cells = 60 targets x 8 guesses, seed 1 (out of
 sample), `--compile`, adopted rungs (Panda `n6`, iiwa `n4`, soft `n6`, screw `screw7_p050` `n6`), arms `learned,numerical`,
 both start protocols, all three solvers at their adopted configurations, Drake nightly
@@ -1296,10 +1296,11 @@ one net over all 33 body poses.
 
 ## The screw-joint arm: a robot no algebraic method can chart
 
-**Branch `non-analytic-arm`. ALL FIVE CHARTS TRAINED AND ALL THREE EVAL STAGES MEASURED** (2026-10-02); results below.
+**MERGED TO MAIN 2026-10-02 from branch `non-analytic-arm` (closed). All five charts trained, stages
+SCREW / SCREWCHART / SCREWPITCH / SCREWCAP measured**; results below.
 `cluster/SCREW_ARM_RUNBOOK.md` holds the operations and the screens. **Stage SCREW's twelve rows
-are in the campaign of record** (end of push, 2026-10-02: 48 logical runs, four robots); merging to
-main is Thomas's acceptance gate for them.
+are in the campaign of record** (end of push, 2026-10-02: 48 logical runs, four robots), accepted
+with the merge.
 
 **The identifiers say `screw` everywhere, as the prose does** -- robot `screw7_p*`, `src/screw_arm/`,
 stages SCREW / SCREWCHART / SCREWPITCH, cluster tree `~/learned-ik-screw`. Until 2026-10-02 they
