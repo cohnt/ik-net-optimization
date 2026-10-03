@@ -6,7 +6,25 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-09-30 19:40 -- BOTH DATASETS DONE, downloaded, verified; nothing running
+## STATE AS OF 2026-10-02 21:20 -- GO/NO-GO PRE-CHECK RUNNING; no chart trained
+
+Session of 2026-10-02 (worktree `.claude/worktrees/gvs`, branch merged with main at `42766ec`).
+Node budget for this session: up to 4 `xeon-g6-volta` nodes. That is TEMPORARY; ask again next
+session. Solvers: **IPOPT and SNOPT, no NLopt** (Thomas, 2026-10-02).
+
+| job | what | state |
+| --- | --- | --- |
+| 5800707 `gvs_cal_gpu` | `calibrate.sh` gpu-procs, GVS o1, both arms, pinned, 1/2/4/8/20/40 workers | submitted 21:15 |
+| 5800708 `gvs_bench_manifest_stageGVSPREM` | 8 premium-probe items at PROCS=8 | submitted 21:15 |
+| GVSJS (64 items) | the pre-check's joint-space cells | queued after the calibration confirms PROCS |
+
+Staged commit `3b46773`. Resume checks: `squeue -u $USER -h -o '%i %j %T %Z' | grep learned-ik-gvs`;
+`~/learned-ik-gvs/calibrate.gpu-procs.DONE`; `~/learned-ik-gvs/state/manifest_stageGVSPREM/*.done`.
+Read everything with `scripts/report_gvs.py precheck --root <checkout holding results/>` after
+`collect_results.sh` and `merge_shard_summaries.py`. **Training waits for Thomas's go** on the
+pre-check numbers.
+
+## STATE AS OF 2026-09-30 19:40 (superseded above) -- BOTH DATASETS DONE, downloaded, verified
 
 | item | state |
 | --- | --- |
@@ -67,7 +85,7 @@ PROGRESS LINES ~15 min in ("worker k: n/N at t s (x ms each), RSS y GB") and pro
    without it they target the DEFAULT tree outright. Before the merge of main at `0861127`
    (cluster-multi-tree) they did not forward the root at all, so steps 4 and 5 would have
    run against `~/learned-ik` even with `SC_ROOT` set.
-4. **Charts** (out of scope here): `SC_ROOT=learned-ik-gvs ROBOT=gvs_pushrod9_o1 bash
+4. **Charts** (gated on the pre-check): `SC_ROOT=learned-ik-gvs ROBOT=gvs_pushrod9_o1 bash
    cluster/submit_train.sh gvs_pushrod9_o1_n6 4 -- --nb_nodes=6 --dim_latent_space=9`, then
    `_o2`; the in-job
    export writes `models/<rung>/<rung>__n6__step620000.pkl` and the screens run.
@@ -75,15 +93,16 @@ PROGRESS LINES ~15 min in ("worker k: n/N at t s (x ms each), RSS y GB") and pro
    automatically. Measured (`docs/gvs-arm.md`): orientation given position IS 3-dimensional
    on this robot despite the absence of torsion, but it does not cover SO(3), so the
    in-distribution screen stays the safe choice.
-5. **Benchmark stage** (out of scope here): the committed `cluster/manifest_stageGVS.txt`
-   (64 items: two rungs x two experiments x two protocols x 8 shards, IPOPT, 180 s), which
-   `gen_manifest.py --selftest` checks against the stage definition; regenerate ONLY with
-   `python cluster/gen_manifest.py --stage GVS --wall-time 180 --targets 60 --guesses 8
-   --shards 8 --solvers ipopt --starts paired,native -o cluster/manifest_stageGVS.txt` -- the
-   generator's CLI defaults belong to other stages and once produced a SNOPT-only,
-   paired-only file. Then `SC_ROOT=learned-ik-gvs bash cluster/submit_bench.sh
+5. **Benchmark stage**: the committed `cluster/manifest_stageGVS.txt` (128 items: two rungs x
+   two experiments x two protocols x IPOPT/SNOPT x 8 shards, 180 s), or GVSL joined to GVSJS
+   (`cluster/join_arm_runs.py`) if the pre-check's split check passes. `gen_manifest.py
+   --selftest` checks all of them against the stage definition and against one another;
+   regenerate ONLY with `python cluster/gen_manifest.py --stage GVS[JS|L|PREM] --wall-time 180
+   --targets 60 --guesses 8 --shards 8 -o cluster/manifest_stage<STAGE>.txt` and NO
+   `--solvers`/`--starts`, so the stages' own defaults apply (the generator's CLI defaults once
+   produced a SNOPT-only, paired-only file). Then `SC_ROOT=learned-ik-gvs bash cluster/submit_bench.sh
    manifest_stageGVS.txt 4`, which refuses while
-   the checkpoints it names do not exist. IPOPT only; the solver axis is closed.
+   the checkpoints it names do not exist. IPOPT and SNOPT at their adopted settings; the solver axis stays closed (no re-sweep).
 
 ## The datagen rate, and what it sizes
 
