@@ -275,6 +275,32 @@ Order 2's premium is smaller because its equilibrium solve is costlier while the
 same. Uncontended, the calibration's o1 grasp ratio is 1.62x, so contention compresses the
 premium as well. GVSPREM2 re-measures it at PROCS=2.
 
+## The trained charts
+
+These are smoke tests, not a selection criterion; `n6` was pre-registered.
+
+**`gvs_pushrod9_o1__n6__step620000`** (job 5802077: 620k steps on 4 nodes in 17.5 h,
+2026-10-03 01:31-19:04, exit 0):
+- **Sidecar:** `nb_nodes` 6, `dim_latent_space` 9, `rnvp_clamp` 2.5.
+- **Tip error** over 5000 held-out poses: median **1.76 mm**, p90 3.68 mm, p99 12.4 mm.
+- **In-distribution pole screen** (task-pose domain, 20k draws, latent radius 4.5):
+  - `frac_gt_threshold` **0.0** at threshold 345;
+  - `pole/max` **3.65**;
+  - p99 1.58.
+
+  There is no runaway population, as on the soft PCS arm. The box-domain screen is skipped by
+  design, because it is iiwa-shaped.
+- **`val_clamped/l2_error` 0.0126**, flat since 320k (0.0136). Unclamped it is 0.0024: 29.7% of
+  validation samples put a rod force outside its limits, and clamping those costs ~5x. The
+  program carries the limits as rows, so this describes the start, not the solution.
+- **Proof on the stage grid** (laptop, IPOPT, paired, learned only, cells 0:0/0:1/1:0/1:1):
+  - grasp **4/4**, 80 median iterations;
+  - pose **4/4**, 87 median iterations;
+  - `|q(start) - q_init|` 0.0;
+  - `grid_hash` `bdc69d9a378d-mug` and `b0083a15b347-pose`, identical to GVSJS.
+
+**`gvs_pushrod9_o2__n6__step620000`**: job 5802078, started 2026-10-03 19:04.
+
 ## What is queued and what is not
 
 Built, tested and on the cluster: the robot and its programs, both datasets (25M + 15k,
