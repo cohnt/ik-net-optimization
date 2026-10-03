@@ -755,13 +755,14 @@ refuted too, so the containment verdicts stand as measured under IPOPT.
 ## Results: the campaign of record
 
 **Stage STATUSQUO, measured 2026-09-19/20 and accepted by Thomas 2026-09-21**, joined by the soft
-arm's stage SOFT12 (identical conditions) on 2026-09-28. Hardened scene, shelf-contained targets at
+arm's stage SOFT12 (identical conditions) on 2026-09-28 and the screw-joint arm's stage SCREW on
+2026-10-02 (identical conditions; accepted when its branch merges). Hardened scene, shelf-contained targets at
 the **fingertips for both tasks**, **180 s**, 480 cells = 60 targets x 8 guesses, seed 1 (out of
-sample), `--compile`, adopted rungs (Panda `n6`, iiwa `n4`, soft `n6`), arms `learned,numerical`,
+sample), `--compile`, adopted rungs (Panda `n6`, iiwa `n4`, soft `n6`, screw `screw7_p050` `n6`), arms `learned,numerical`,
 both start protocols, all three solvers at their adopted configurations, Drake nightly
 `0.0.20260918`.
 
-**THE RECORD IS 36 LOGICAL RUNS: three robots x TWO experiments x two protocols x three solvers.**
+**THE RECORD IS 48 LOGICAL RUNS: four robots x TWO experiments x two protocols x three solvers.**
 The experiments are grasp and pose, both shelf-contained at the fingertips, and there are no others.
 The run also produced 12 logical runs on `--target-placement free`, which **is a vestigial setting of
 the grasp experiment and not a third experiment** (Thomas: *"preserving old settings and old
@@ -777,23 +778,25 @@ arms **adjacent**, bold the better of each pair, and **every row prints, zeros i
 
 ### What the tables say
 
-**Success. Across all 36 solver x experiment cells the learned arm wins 23, ties 10 and loses 3** --
-interior point **10/2/0**, augmented Lagrangian **7/5/0**, SQP **6/3/3**. Interior point is the best
-entry in nearly every row and **loses nothing anywhere**. **All three losses are contained grasp
-under SQP** -- two on the iiwa, one on the soft PCS arm -- so that weakness now reproduces on a
-robot whose configuration space is strain rather than joint angles, which makes it a property of
-SQP on this problem class rather than of the rigid arms. Verdicts are by exact McNemar, which is
+**Success. Across all 48 solver x experiment cells the learned arm wins 28, ties 15 and loses 5** --
+interior point **12/4/0**, augmented Lagrangian **9/7/0**, SQP **7/4/5**. Interior point is the best
+entry in nearly every row and **loses nothing anywhere**. **All five losses are contained grasp
+under SQP** -- two on the iiwa, one on the soft PCS arm, two on the screw-joint arm -- so that
+weakness reproduces on a strain-configured robot and on a non-algebraic one, which makes it a
+property of SQP on this problem class rather than of any one arm. Verdicts are by exact McNemar, which is
 also what decides a tie; the reporter prints the tally beside the table so text and table cannot
 drift.
 
-**Cost splits by TASK, not by solver**: learned is cheaper on pose and ~1.4-1.8x more expensive on
-grasp, under every solver producing a comparison. `N/A` means fewer than 10 shared solved cells.
+**Cost splits by TASK, not by solver**: learned is cheaper on pose and ~1.4-2.2x more expensive on
+grasp, under every solver producing a comparison -- with one exception, the screw arm's NLopt pose
+native row (10.1 against 4.9, on only 23 shared cells). `N/A` means fewer than 10 shared solved cells.
 
 **Runtime is the per-iteration price stated as a number.** Joint space wins every interior-point and
 SQP cell; the iiwa contained-grasp tie is bought at a **14x** premium (27.29 s against 1.90 s) while
 joint space is flat across the whole cap ladder. **Under the augmented Lagrangian the ordering
-inverts on five rows** -- the learned arm is genuinely faster there, because it converges while joint
-space burns the whole 180 s. The soft PCS arm's premium is only 2.5-6.0x, and the reason must travel
+inverts on every pose row of all four robots and on Panda grasp native** -- the learned arm is
+genuinely faster there, because it converges while joint space burns the whole 180 s. The screw
+arm's IPOPT grasp premium is the record's largest, ~26x (50.7 s against 2.0 s, mean over cells). The soft PCS arm's premium is only 2.5-6.0x, and the reason must travel
 with it: **the baseline got more expensive, not the learned arm cheaper.**
 
 **Iterations is where hardening shows**: on Panda grasp joint space needs 744 median iterations
@@ -804,21 +807,22 @@ comparable across arms.
 
 **The rescue rate is the quantity the success counts hide: 82-99% of the joint-space arm's failures
 are solved by the learned arm**, on every row of both rigid robots and both protocols, with 157-263
-failures available to rescue. The iiwa grasp ties are not even the same cells (31-35 each way), so
+failures available to rescue, and 81-93% on the screw arm's IPOPT rows. The iiwa grasp ties are not even the same cells (31-35 each way), so
 the arms are complementary where the totals agree.
 
-**Under NLopt all four rigid pose rows are decisive learned wins** (p from 5.4e-26 to 5.1e-68) with
-the joint-space arm never exceeding 31 of 480. **Panda contained grasp is the cleanest statement the
+**Under NLopt all six rigid pose rows are decisive learned wins** (p from 2.1e-08 to 2.4e-73; the
+screw arm's are 303 and 87 against 30) with the joint-space arm never exceeding 31 of 480. **Panda contained grasp is the cleanest statement the
 project contains: learned 327 of 480 against joint space ZERO**, p = 7.3e-99. Report it as the result
 it is: only the solver differs and joint space is the *easier* problem, so its collapse is a property
-of NLopt on this program. Two caveats travel with it -- both iiwa grasp rows are 0-2 of 480 on BOTH
-arms and carry no comparison, and **the augmented Lagrangian is extraordinarily start-sensitive**
+of NLopt on this program. Two caveats travel with it -- the iiwa and screw-arm grasp rows are 0-3 of 480 on
+BOTH arms and carry no comparison, and **the augmented Lagrangian is extraordinarily start-sensitive**
 (Panda contained grasp 327 native against **zero** paired), so that column is read per protocol and
 never pooled.
 
-**Timeouts are essentially gone at 180 s** -- at most 2 cells of 480 on any IPOPT or SNOPT row -- but
+**Timeouts are essentially gone at 180 s** -- at most 6 cells of 480 on any IPOPT or SNOPT row -- but
 that is **not** enough to call these formulation rather than cap results: see the cap check above,
-where `hit_iteration_cap` shows the grasp rows sitting at IPOPT's default `max_iter`. The cap effect
+where `hit_iteration_cap` shows the grasp rows sitting at IPOPT's default `max_iter`. (The screw
+arm's were re-measured with it lifted, stage SCREWCAP, and its IPOPT grasp ties hold.) The cap effect
 is one-directional and diagnostic: from the 45 s pairing reference to 180 s, IPOPT's learned arm gains
 +5 to +55 cells on every grasp row and **exactly +0 on every pose row**. Every row with no timeouts at
 45 s reproduces its 45 s count exactly (sole exception: Panda pose tip paired, +2), the campaign's
@@ -827,8 +831,10 @@ tightest reproducibility statement.
 **Acceptance checks all pass**, including the decisive one: iiwa `n4` contained grasp under IPOPT
 reproduces `sc_CAP_iiwa_n4_mug_180_*` exactly on all four numbers, across a different stage, the
 raised cluster caps and the Drake pin move. `median_start_q_error` is 0.0 on every paired row, joint
-space is bit-identical between protocols on every solver x row pair, and every row has 480 cells on
-both arms.
+space is bit-identical between protocols on every solver x row pair -- one exception, the screw arm's
+NLopt pose row, where a single cell that timed out under both protocols stopped at a different
+iterate (2898 against 2961 Jacobians at the 180 s cutoff), verdict-identical -- and every row has
+480 cells on both arms.
 
 ### The honest caveats, and what is closed
 
@@ -1291,8 +1297,9 @@ one net over all 33 body poses.
 ## The screw-joint arm: a robot no algebraic method can chart
 
 **Branch `non-analytic-arm`. ALL FIVE CHARTS TRAINED AND ALL THREE EVAL STAGES MEASURED** (2026-10-02); results below.
-`cluster/SCREW_ARM_RUNBOOK.md` holds the operations and the screens. Merging to main is Thomas's
-acceptance gate, and until then no row here stands beside the status quo's.
+`cluster/SCREW_ARM_RUNBOOK.md` holds the operations and the screens. **Stage SCREW's twelve rows
+are in the campaign of record** (end of push, 2026-10-02: 48 logical runs, four robots); merging to
+main is Thomas's acceptance gate for them.
 
 **The identifiers say `screw` everywhere, as the prose does** -- robot `screw7_p*`, `src/screw_arm/`,
 stages SCREW / SCREWCHART / SCREWPITCH, cluster tree `~/learned-ik-screw`. Until 2026-10-02 they
