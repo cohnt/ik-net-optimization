@@ -3,7 +3,7 @@
 What would be queued, what it depends on, and what a resuming session should check first.
 The design and the measured facts live in `CLAUDE.md`; this is the operational half.
 
-**STATUS (2026-10-02): CAMPAIGN COMPLETE.** All five charts trained and exported; stages SCREW,
+**STATUS (2026-10-02): CAMPAIGN COMPLETE, MERGED TO MAIN, BRANCH CLOSED.** All five charts trained and exported; stages SCREW,
 SCREWCHART and SCREWPITCH ran as jobs 5792792-5792803 (submitted 2026-10-01 19:56, drained
 2026-10-02 07:30, 352 items, zero worker failures, all on `xeon-g6-volta`). Merged summaries are
 under `results/screw_arm/benchmark/sc_SCREW*`; the tables, with the cap check and the runaway count

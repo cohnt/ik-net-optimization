@@ -2,7 +2,7 @@
 
 Measured 2026-09-19/20 (stages STATUSQUO, panda + iiwa), 2026-09-28 (stage SOFT12, soft12) and
 2026-10-01/02 (stage SCREW, screw7_p050), accepted by Thomas on 2026-09-21, extended to the soft PCS
-arm on 2026-09-28 and to the screw-joint arm on 2026-10-02 (accepted when its branch merges). `CLAUDE.md` carries
+arm on 2026-09-28 and to the screw-joint arm on 2026-10-02 (accepted with its merge). `CLAUDE.md` carries
 what these tables **say**; this file carries the tables themselves, so a session pays for them only
 when it needs a number.
 
