@@ -348,15 +348,15 @@ touches the manifest it was handed, so an unrelated `learned-ik` campaign is no 
 refuse.
 
 **Then a second TREE appeared, and "by job name" turned out to be one step too narrow.**
-When an exploration branch staged its own cluster tree (`~/learned-ik-helix` beside
+When an exploration branch staged its own cluster tree (`~/learned-ik-screw` beside
 `~/learned-ik`), every name-based guard was still matching a prefix that BOTH campaigns
 shared. `stage_code.sh` refused to stage either tree because the other tree's jobs were
 running, and `submit_train.sh` — whose stated hazard is two jobs racing one `RUN_DIR` —
 refused a submission in one tree because of four `lik_train_*` jobs in the other, with no
 shared `RUN_DIR` anywhere. Two campaigns deadlocked each other's staging for as long as
 either ran. So: **scope a shared-account check to the TREE that owns the work.** Job names
-now carry a prefix derived from `SC_ROOT` (`learned-ik` -> `lik`, `learned-ik-helix` ->
-`helix`), and each guard matches only its own.
+now carry a prefix derived from `SC_ROOT` (`learned-ik` -> `lik`, `learned-ik-screw` ->
+`screw`), and each guard matches only its own.
 
 **NEVER USE `LLstat` FOR A PROGRAMMATIC CHECK.** It truncates the `NAME` column to 15
 characters, so `lik_train_soft12_n4`, `lik_train_soft12_n8` and `lik_train_soft16_n6` all
@@ -372,7 +372,7 @@ display artifact, not a Slurm one: `squeue -u $USER -h -o '%j'` gives full names
 observed refusing has not been tested.** Both were made to refuse on purpose before being
 believed — the staging guard refused with 6 jobs of its own tree queued, the exact-name
 query returned 1 for a live run name and 0 for an invented one, each sibling rung matched
-only itself rather than all five, and the per-tree counts came back disjoint (6 `helix`,
+only itself rather than all five, and the per-tree counts came back disjoint (6 `screw`,
 9 `lik`). The calibration and smoke exemptions were checked against the pattern directly,
 since no such job happened to be queued at the time.
 

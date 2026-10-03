@@ -34,18 +34,29 @@ def _provenance_commit():
     """Which code produced this checkpoint.
 
     Prefers the ikflow fork's own commit, but the cluster copy is an rsync of the working
-    tree with .git excluded, so `git rev-parse` finds nothing there. cluster/stage_code.sh
-    writes the staged learned-ik commit to `.staged-commit` for exactly this reason, so
-    fall back to it rather than recording null -- a checkpoint whose provenance is "null"
-    is the case the sidecar exists to prevent.
+    tree with .git excluded. cluster/stage_code.sh writes the staged learned-ik commit to
+    `.staged-commit` for exactly this reason, so fall back to it rather than recording
+    null -- a checkpoint whose provenance is "null" is the case the sidecar exists to
+    prevent.
+
+    **Git walks UP until it finds a repository**, so a tree with no `.git` of its own does
+    not make `rev-parse` find nothing -- it makes it answer for whatever repository encloses
+    the tree. On SuperCloud the home directory is itself a stray clone of an unrelated
+    project, and from a login shell this function used to record that project's HEAD as
+    `ikflow_commit`: a well-formed hash in the one field that claims to be provenance. Jobs
+    escaped it only because they reassign HOME, which hides `safe.directory` and makes git
+    refuse the root-owned home. So the hash is accepted only if git's own top level IS the
+    fork's directory.
     """
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+    fork = os.path.join(root, "third_party/ikflow")
     try:
-        out = subprocess.run(["git", "-C", os.path.join(root, "third_party/ikflow"),
-                              "rev-parse", "HEAD"],
+        out = subprocess.run(["git", "-C", fork, "rev-parse", "--show-toplevel", "HEAD"],
                              capture_output=True, text=True, timeout=10)
-        if out.stdout.strip():
-            return {"ikflow_commit": out.stdout.strip()}
+        lines = out.stdout.split()
+        if (out.returncode == 0 and len(lines) == 2
+                and os.path.realpath(lines[0]) == os.path.realpath(fork)):
+            return {"ikflow_commit": lines[1]}
     except Exception:
         pass
     try:

@@ -42,13 +42,15 @@ from ikflow.model import IkflowModelParameters
 from ikflow.ikflow_solver import IKFlowSolver
 from jrl.robots import get_robot
 
-## Registering the soft PCS arm's rungs HERE, because `LoadFlowSolver` is the single funnel
-## every robot-by-name lookup in this project passes through -- the programs, the three
-## screening scripts, the export round-trip. Registering it only where the programs import
-## it left `get_robot("soft12")` raising inside the screens, which is the sort of gap that
-## surfaces during an export job at the end of a 620k-step training run rather than now.
-## Idempotent, and a no-op for every other robot.
-import src.soft_arm.register  # noqa: E402,F401
+## Register this project's own robots BEFORE anything resolves one by name. This module is
+## the single funnel every by-name lookup passes through -- the programs, all three
+## checkpoint screens and the export round-trip -- so registering here is what stops
+## `get_robot` raising inside a screen that runs at the END of a 620k-step training job.
+## `src.register_robots` imports every robot's register module, the soft PCS arm's
+## included, so a new robot adds one entry there and touches nothing here.
+from src.register_robots import ProjectRobotNames
+
+_PROJECT_ROBOT_NAMES = ProjectRobotNames()
 
 # The architecture every pre-sidecar checkpoint in this repo was trained at
 # (iiwa14__lemon-haze-7, iiwa14__ddp-r1). Used only as the fallback for a checkpoint with
@@ -90,6 +92,19 @@ LEGACY_SOFT_ARCH = {name: dict(LEGACY_IIWA_ARCH, dim_latent_space=ndof)
 ## catch, but a 9-DoF one against 8 would not be caught by anything.
 LEGACY_ARCH_BY_ROBOT = {"iiwa14": LEGACY_IIWA_ARCH, "panda": LEGACY_PANDA_ARCH,
                         **LEGACY_SOFT_ARCH}
+
+# `screw7` is a 7-DoF arm, so its baseline latent width is the Panda's. Without an entry
+# here a sidecar-less checkpoint would fall back to the iiwa's `dim_latent_space = 8`
+# against a 7-wide robot: `InvertFlow` writes `x[0, :num_arm_dof]` into a buffer of width
+# `network_width`, so a mismatch is a silently different chart at best.
+#
+# Keyed on the screw-joint arm's OWN spec table, not on `_PROJECT_ROBOT_NAMES`: that covers
+# every robot this project defines, soft PCS rungs included, and an update over it would
+# overwrite `soft9`/`soft12`/`soft16` above with a 7-wide architecture -- which, for the
+# 9-wide rung, nothing downstream would catch.
+from src.screw_arm.params import SPECS as _SCREW_SPECS  # noqa: E402
+
+LEGACY_ARCH_BY_ROBOT.update({name: LEGACY_PANDA_ARCH for name in _SCREW_SPECS})
 
 
 def SidecarPath(checkpoint):

@@ -1,10 +1,12 @@
 """Run a vendored-ikflow script with this project's robots registered first.
 
-ikflow resolves its robot through `jrl.robots.get_robot`, which scans a registry the soft PCS
-arm is not in until `src.soft_arm.register` is imported. The fork's own scripts do not
-import it -- and should not have to, since it is our robot and not theirs. This wrapper
-imports the registration and then runs the fork's script unchanged, so the fork stays
-generic and there is no third-party edit to carry.
+ikflow resolves its robot through `jrl.robots.get_robot`, which scans a registry a robot
+this project defines is not in until its register module is imported. `src.register_robots`
+imports every one of them -- the soft PCS arm's and the screw-joint arm's -- so a new robot
+adds one entry there and touches nothing here. The fork's own scripts do not import it --
+and should not have to, since these are our robots and not theirs. This wrapper imports the
+registration and then runs the fork's script unchanged, so the fork stays generic and there
+is no third-party edit to carry.
 
 IMPORT ORDER IS LOAD-BEARING, for the same reason `cluster/train_flow.sh` reassigns HOME
 before anything imports ikflow: ikflow resolves DATASET_DIR from `expanduser("~")` AT
@@ -12,7 +14,7 @@ IMPORT. A path bug of exactly that shape once cost a rung its entire 620k-step r
 registration happens before the delegated script is even located.
 
     python scripts/training/ikflow_entry.py build_dataset --robot_name=soft12 ...
-    python scripts/training/ikflow_entry.py train_ddp --robot_name=soft12 ...
+    python scripts/training/ikflow_entry.py train_ddp     --robot_name=screw7_p050 ...
 """
 
 import json
@@ -23,7 +25,7 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 sys.path.insert(0, REPO)
 
-import src.soft_arm.register  # noqa: E402,F401  -- before anything resolves a robot
+import src.register_robots  # noqa: E402,F401  -- before anything resolves a robot
 
 FORK_SCRIPTS = os.path.join(REPO, "third_party", "ikflow", "scripts")
 
@@ -48,6 +50,12 @@ def _with_pole_domain(script, argv):
     Only for the soft rungs, and only if the caller has not set them: the rigid arms keep
     the defaults so their archived pole curves stay comparable, which is the whole reason
     the fork's defaults were left alone.
+
+    The screw-joint arm keeps the defaults too, deliberately. Its orientation set is
+    full-dimensional (scripts/probe_orientation_freedom.py), so the independent draw is
+    reachable and the callback is in distribution as it stands -- and its whole chart ladder
+    trained against those defaults, so retargeting it would split one ladder's pole curves
+    across two domains.
     """
     if not script.startswith("train_ddp"):
         return argv
@@ -80,7 +88,7 @@ def main():
         available = sorted(f[:-3] for f in os.listdir(FORK_SCRIPTS) if f.endswith(".py"))
         raise SystemExit(f"no such ikflow script {name!r}; available: {available}")
     argv = _with_pole_domain(name, sys.argv[2:])
-    print(f"[ikflow_entry] registered {src.soft_arm.register.REGISTERED}, running {path}")
+    print(f"[ikflow_entry] registered {src.register_robots.REGISTERED}, running {path}")
     sys.argv = [path] + argv
     runpy.run_path(path, run_name="__main__")
 
