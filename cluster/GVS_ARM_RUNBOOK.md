@@ -16,9 +16,14 @@ session. Solvers: **IPOPT and SNOPT, no NLopt** (Thomas, 2026-10-02).
 | --- | --- | --- |
 | 5800707 `gvs_cal_gpu` | `calibrate.sh` gpu-procs, GVS o1, both arms, pinned, 1/2/4/8/20/40 workers | submitted 21:15 |
 | 5800708 `gvs_bench_manifest_stageGVSPREM` | 8 premium-probe items at PROCS=8 | submitted 21:15 |
-| GVSJS (64 items) | the pre-check's joint-space cells | queued after the calibration confirms PROCS |
+| 5800896-98 (3 jobs) | GVSJS, 64 items, **PROCS=2** | submitted 21:53; ~3-4 h |
+| 5800899 | GVSPREM2, the premium probe again at PROCS=2 | submitted 21:53; ~1 h |
 
-Staged commit `3b46773`. Resume checks: `squeue -u $USER -h -o '%i %j %T %Z' | grep learned-ik-gvs`;
+**PROCS=2 for every GVS stage** (Thomas, 2026-10-02): at 8 workers joint-space evaluations cost
++24% and learned ones +11% (docs/gvs-arm.md), which biases the time-matched column.
+GVSPREM's PROCS=8 results are the contention reading only.
+
+Staged commit `3124dfa`. Resume checks: `squeue -u $USER -h -o '%i %j %T %Z' | grep learned-ik-gvs`;
 `~/learned-ik-gvs/calibrate.gpu-procs.DONE`; `~/learned-ik-gvs/state/manifest_stageGVSPREM/*.done`.
 Read everything with `scripts/report_gvs.py precheck --root <checkout holding results/>` after
 `collect_results.sh` and `merge_shard_summaries.py`. **Training waits for Thomas's go** on the
