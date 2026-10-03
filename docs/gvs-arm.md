@@ -216,6 +216,33 @@ Proposed thresholds: proceed if joint space leaves real room (below ~90% on the 
 premium is below ~2x. `cluster/calibrate.sh` measures workers per node for this robot in the same
 allocation, with both arms. Read all three with `scripts/report_gvs.py precheck`.
 
+### Pre-check results so far (cluster, 2026-10-02)
+
+**Contention, and why every GVS stage runs at PROCS=2.** `calibrate.sh` gpu-procs (o1 grasp,
+IPOPT, both arms, pinned, the same 8 cells at every level) gives this, with iterations at a
+median of 62 on every level:
+
+| workers per node | learned ms/eval | joint-space ms/eval |
+| --- | --- | --- |
+| 1 | 37.8 | 23.3 |
+| 2 | 34.8 | 22.9 |
+| 4 | 38.5 | 25.8 |
+| 8 | 42.1 | 28.9 |
+
+The joint-space arm is pure JAX on the CPU, so it degrades about twice as fast: +24% at 8
+workers against +11% for the learned arm. At the record's 8 workers that would inflate every
+joint-space solve relative to a learned one and bias the time-matched column toward the
+learned arm by ~12%. Thomas chose **PROCS=2** (2026-10-02), where both arms are within ~2% of
+uncontended. GVS runtime columns are therefore at a different PROCS from the record's rows;
+timing is not compared across robots.
+
+**The per-evaluation premium is 1.17-1.54x** (stage GVSPREM, untrained n6 chart, 8 cells per
+row, at PROCS=8): IPOPT 1.54 / 1.51 (o1 grasp / pose) and 1.36 / 1.35 (o2); SNOPT 1.27 / 1.29
+(o1) and 1.17 / 1.20 (o2). That is inside the predicted 1.3-1.5x and under the ~2x threshold.
+Order 2's premium is smaller because its equilibrium solve is costlier while the flow is the
+same. Uncontended, the calibration's o1 grasp ratio is 1.62x, so contention compresses the
+premium as well. GVSPREM2 re-measures it at PROCS=2.
+
 ## What is queued and what is not
 
 Built, tested and on the cluster: the robot and its programs, both datasets (25M + 15k,
