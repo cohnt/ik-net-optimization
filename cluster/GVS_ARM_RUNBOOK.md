@@ -6,28 +6,29 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-10-02 21:20 -- GO/NO-GO PRE-CHECK RUNNING; no chart trained
+## STATE AS OF 2026-10-03 01:50 -- PRE-CHECK DONE; CHARTS TRAINING
 
-Session of 2026-10-02 (worktree `.claude/worktrees/gvs`, branch merged with main at `42766ec`).
-Node budget for this session: up to 4 `xeon-g6-volta` nodes. That is TEMPORARY; ask again next
-session. Solvers: **IPOPT and SNOPT, no NLopt** (Thomas, 2026-10-02).
+Node budget for the 2026-10-02 session: up to 4 `xeon-g6-volta` nodes. That is TEMPORARY; ask
+again next session. Solvers: **IPOPT and SNOPT, no NLopt**. **PROCS=2 for every GVS stage.**
 
 | job | what | state |
 | --- | --- | --- |
-| 5800707 `gvs_cal_gpu` | `calibrate.sh` gpu-procs, GVS o1, both arms, pinned, 1/2/4/8/20/40 workers | submitted 21:15 |
-| 5800708 `gvs_bench_manifest_stageGVSPREM` | 8 premium-probe items at PROCS=8 | submitted 21:15 |
-| 5800896-98 (3 jobs) | GVSJS, 64 items, **PROCS=2** | submitted 21:53; ~3-4 h |
-| 5800899 | GVSPREM2, the premium probe again at PROCS=2 | submitted 21:53; ~1 h |
+| 5800707 | calibration (gpu-procs, both arms, 1-40 workers) | done |
+| 5800708 / 5800899 | GVSPREM (PROCS=8) / GVSPREM2 (PROCS=2) | done, merged, promoted |
+| 5800896-98, 5802411 | GVSJS, 64 items | done, merged, promoted |
+| 5802076 | training smoke, 200 steps | COMPLETED; retarget, loss and checkpoints verified |
+| **5802077** | **`gvs_pushrod9_o1_n6`**, 4 nodes, 620k steps, `afterok` on the smoke | started 2026-10-03 01:33 |
+| **5802078** | **`gvs_pushrod9_o2_n6`**, `afterok` smoke + `afterany` o1 | queued |
 
-**PROCS=2 for every GVS stage** (Thomas, 2026-10-02): at 8 workers joint-space evaluations cost
-+24% and learned ones +11% (docs/gvs-arm.md), which biases the time-matched column.
-GVSPREM's PROCS=8 results are the contention reading only.
+Pre-check numbers: docs/gvs-arm.md. **NOT YET STAGED: `896acef`** (the driver compiles the
+equilibrium map before the grid). Staging is refused while training is queued, and the fix
+matters only for stage GVS. Stage it after `o2` finishes and before the trained-chart proof
+cells.
 
-Staged commit `3124dfa`. Resume checks: `squeue -u $USER -h -o '%i %j %T %Z' | grep learned-ik-gvs`;
-`~/learned-ik-gvs/calibrate.gpu-procs.DONE`; `~/learned-ik-gvs/state/manifest_stageGVSPREM/*.done`.
-Read everything with `scripts/report_gvs.py precheck --root <checkout holding results/>` after
-`collect_results.sh` and `merge_shard_summaries.py`. **Training waits for Thomas's go** on the
-pre-check numbers.
+**Then stage GVS** runs as the committed two-arm `manifest_stageGVS.txt` at **PROCS=2**, so
+every cell is measured with the warmup fix. GVSJS stays the pre-check only. Resume checks:
+`bash cluster/submit_ladder.sh --status` (with `SC_ROOT=learned-ik-gvs`); read
+`val_clamped/l2_error` in `metrics.csv`, not `val_l2_error`.
 
 ## STATE AS OF 2026-09-30 19:40 (superseded above) -- BOTH DATASETS DONE, downloaded, verified
 

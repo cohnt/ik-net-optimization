@@ -236,8 +236,40 @@ learned arm by ~12%. Thomas chose **PROCS=2** (2026-10-02), where both arms are 
 uncontended. GVS runtime columns are therefore at a different PROCS from the record's rows;
 timing is not compared across robots.
 
-**The per-evaluation premium is 1.17-1.54x** (stage GVSPREM, untrained n6 chart, 8 cells per
-row, at PROCS=8): IPOPT 1.54 / 1.51 (o1 grasp / pose) and 1.36 / 1.35 (o2); SNOPT 1.27 / 1.29
+**Room to win (stage GVSJS, 480 cells per row, PROCS=2, merged 2026-10-03)**: single-start
+joint-space success.
+
+| row | IPOPT | SNOPT (timed out / iteration cap) |
+| --- | --- | --- |
+| o1 grasp | 454 = **94.6%** | 308 = 64.2% (81 / 4) |
+| o2 grasp | 447 = **93.1%** | 322 = 67.1% (102 / 5) |
+| o1 pose | 311 = 64.8% | 252 = 52.5% (4 / 0) |
+| o2 pose | 315 = 65.6% | 275 = 57.3% (7 / 1) |
+
+Joint-space timeouts on IPOPT are 0-15 cells per row. **The IPOPT grasp rows fail the proposed
+"below ~90%" room criterion**; every other row clears it widely. That is not a verdict on
+the time-matched column: the soft PCS arm's IPOPT grasp rows also had joint space at 92.7%
+single-start, and still survived time-matching (98.8% against 71.9%), because the matched
+budget is the learned cell's own wall time. The SNOPT grasp rows are partly budget-bound on
+the joint-space arm.
+
+**Go/no-go: flagged as a split verdict, and Thomas had training start either way**
+(2026-10-02: *"Flag the go/no go decision, but then start the training either way"*). The
+200-step smoke passed at 23:41 and `o1_n6` started at 01:33 on 2026-10-03.
+
+**The split check passes on all 8 rows**: GVSPREM2 (both arms in each worker) against GVSJS
+(joint space only), on the same 8 cells per row, has identical outcomes and median wall-time
+ratios of 0.98-1.00. Iterations differ only on 3 SNOPT cells that stopped at the clock.
+
+**The per-evaluation premium at PROCS=2 (GVSPREM2) is 1.16-1.52x**, matching the PROCS=8
+reading below:
+- IPOPT: 1.52 / 1.49 (o1 grasp / pose) and 1.34 / 1.34 (o2);
+- SNOPT: 1.26 / 1.30 (o1) and 1.16 / 1.16 (o2).
+
+Per iteration it is 0.9-3.3x, because the untrained chart takes more evaluations per
+iteration; that ratio is the one a trained chart can change.
+
+**The PROCS=8 reading** (stage GVSPREM, untrained n6 chart, 8 cells per row): IPOPT 1.54 / 1.51 (o1 grasp / pose) and 1.36 / 1.35 (o2); SNOPT 1.27 / 1.29
 (o1) and 1.17 / 1.20 (o2). That is inside the predicted 1.3-1.5x and under the ~2x threshold.
 Order 2's premium is smaller because its equilibrium solve is costlier while the flow is the
 same. Uncontended, the calibration's o1 grasp ratio is 1.62x, so contention compresses the
