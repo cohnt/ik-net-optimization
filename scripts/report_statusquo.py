@@ -188,11 +188,26 @@ def verdict(l, j, p):
     return "learned" if l > j else "joint space"
 
 
+def parse_tag(tag):
+    """`sc_<STAGE>_<robot>_<rung>_<solver>_<row>_<cells>_<cap>_<start>` -> its fields.
+
+    Parsed FROM THE RIGHT, because a robot name may itself contain underscores
+    (`screw7_p050`): read left to right at fixed positions, that robot's tags shift every field
+    by one and its solver token lands where the row is expected -- silently, since the row
+    filter then drops it as a "retired placement" rather than raising.
+    """
+    p = tag.split("_")
+    rung, solver, row, cells, cap, start = p[-6:]
+    assert p[0] == "sc" and solver in SOLVERS, f"not a record tag: {tag}"
+    return dict(stage=p[1], robot="_".join(p[2:-6]), rung=rung, solver=solver, row=row,
+                cells=cells, cap=cap, start=start)
+
+
 def row_table(runs, solver, tokens, title):
     rows = []
     for tag, s in sorted(runs.items()):
-        p = tag.split("_")
-        if p[4] != solver or p[5] not in tokens:
+        t = parse_tag(tag)
+        if t["solver"] != solver or t["row"] not in tokens:
             continue
         L = arm_stats(s, "learned", "numerical")
         J = arm_stats(s, "numerical", "learned")
@@ -200,8 +215,7 @@ def row_table(runs, solver, tokens, title):
         shared = [k for k in A if k in B]
         b = sum(1 for k in shared if A[k]["feasible"] and not B[k]["feasible"])
         w = sum(1 for k in shared if B[k]["feasible"] and not A[k]["feasible"])
-        ## Fields: sc | STATUSQUO | robot | rung | solver | row | cells | cap | start
-        rows.append(dict(tag=tag, robot=p[2], rung=p[3], row=p[5], start=p[8],
+        rows.append(dict(tag=tag, robot=t["robot"], rung=t["rung"], row=t["row"], start=t["start"],
                          L=L, J=J, lonly=b, jonly=w, p=mcnemar(b, w)))
     if not rows:
         return rows
@@ -217,7 +231,7 @@ def row_table(runs, solver, tokens, title):
               "\n  successes: this column times out most cells, so a median over successes would"
               "\n  describe the handful it got right. 'jac/cell' is the program's own network-Jacobian"
               "\n  counter and is NOT comparable across arms (identity map on the joint-space arm).")
-    print(f"  {'row':<36}{'L':>5}{'JS':>5}{'L+':>5}{'JS+':>5}{'p':>9}{'verdict':>13}"
+    print(f"  {'row':<40}{'L':>5}{'JS':>5}{'L+':>5}{'JS+':>5}{'p':>9}{'verdict':>13}"
           f"{'L ' + itcol:>9}{('JS jc' if allcells else 'JS it'):>7}{'L s':>8}{'JS s':>7}{'Lcost':>8}{'JScost':>8}"
           f"{'n':>5}{'LTO':>5}{'JTO':>5}")
     for r in rows:
@@ -227,7 +241,7 @@ def row_table(runs, solver, tokens, title):
         lwall = L["wall_all"] if allcells else L["wall"]
         jwall = J["wall_all"] if allcells else J["wall"]
         label = f"{r['robot']} {ROW_NAME[r['row']]} {r['start']}"
-        print(f"  {label:<36}{L['succ']:>5}{J['succ']:>5}{r['lonly']:>5}{r['jonly']:>5}"
+        print(f"  {label:<40}{L['succ']:>5}{J['succ']:>5}{r['lonly']:>5}{r['jonly']:>5}"
               f"{r['p']:>9.3g}{verdict(L['succ'], J['succ'], r['p']):>13}"
               f"{num(lwork, 9)}{num(jwork, 7)}{num(lwall, 8, 2)}{num(jwall, 7, 2)}"
               f"{num(L['cost'], 8, 3)}{num(J['cost'], 8, 3)}{L['n_both']:>5}"
@@ -249,8 +263,8 @@ def metric_tables(runs):
     """The four headline tables: success rate, cost, runtime, iterations."""
     cells, pvals = {}, {}
     for tag, s in runs.items():
-        p = tag.split("_")
-        if p[5] not in STATUS_QUO_ROWS:
+        t = parse_tag(tag)
+        if t["row"] not in STATUS_QUO_ROWS:
             continue
         L = arm_stats(s, "learned", "numerical")
         J = arm_stats(s, "numerical", "learned")
@@ -258,8 +272,9 @@ def metric_tables(runs):
         shared = [k for k in A if k in B]
         b = sum(1 for k in shared if A[k]["feasible"] and not B[k]["feasible"])
         w = sum(1 for k in shared if B[k]["feasible"] and not A[k]["feasible"])
-        cells[(p[2], p[5], p[8], p[4])] = (L, J)
-        pvals[(p[2], p[5], p[8], p[4])] = mcnemar(b, w)
+        key = (t["robot"], t["row"], t["start"], t["solver"])
+        cells[key] = (L, J)
+        pvals[key] = mcnemar(b, w)
     exps = sorted({(r, row, st) for (r, row, st, _) in cells},
                   key=lambda k: (k[0], ROW_ORDER[k[1]], k[2]))
 
@@ -267,7 +282,7 @@ def metric_tables(runs):
         print(f"\n  {title}")
         print(f"  {note}")
         head = "".join(f"{b + ' L':>13}{b + ' JS':>13}" for _, b in METRIC_BLOCKS)
-        print(f"  {'experiment':<30}{head}")
+        print(f"  {'experiment':<36}{head}")
         for e in exps:
             vals = {}
             for solver, _ in METRIC_BLOCKS:
@@ -310,7 +325,7 @@ def metric_tables(runs):
                     fj += "*"
                 out += [fl, fj]
             label = f"{e[0]} {ROW_NAME[e[1]].split(' (')[0]} {e[2]}"
-            print(f"  {label:<30}" + "".join(f"{c:>13}" for c in out))
+            print(f"  {label:<36}" + "".join(f"{c:>13}" for c in out))
 
     f3 = lambda v: "N/A" if v is None else f"{v:.3f}"
     fi = lambda v: "N/A" if v is None else f"{v:.0f}"
@@ -383,19 +398,27 @@ def main(only):
     ## across two stages, and says so.
     runs.update(load("sc_SOFT12_", cells=CELLS))
 
-    retired = [tag for tag in runs if tag.split("_")[5] not in STATUS_QUO_ROWS]
+    ## The screw-joint arm joins the same way, from stage SCREW: 180 s, seed 1, --compile,
+    ## 60 x 8 contained cells at the fingertips, arms learned,numerical, each solver at its
+    ## adopted configuration and IPOPT at its default max_iter -- STATUSQUO's conditions exactly
+    ## (cluster/gen_manifest.py, stage_SCREW, refuses any other cap). Its robot name carries an
+    ## underscore, which is why every table reads tags through parse_tag. The record is 48
+    ## logical runs across three stages.
+    runs.update(load("sc_SCREW_", cells=CELLS))
+
+    retired = [tag for tag in runs if parse_tag(tag)["row"] not in STATUS_QUO_ROWS]
     for tag in retired:
         del runs[tag]
     if retired:
         print(f"  ({len(retired)} run(s) on a retired placement ignored: "
-              f"{sorted({t.split('_')[5] for t in retired})})")
+              f"{sorted({parse_tag(t)['row'] for t in retired})})")
     if not runs:
         print("no merged 480-cell sc_STATUSQUO_ runs found (staged or promoted). "
               "Merge shards first: cluster/merge_shard_summaries.py")
         return 1
 
     print(f"THE CAMPAIGN OF RECORD -- {CELLS} cells, 180 s cap, seed 1")
-    print("Stages STATUSQUO (panda, iiwa) + SOFT12 (soft12), identical conditions.")
+    print("Stages STATUSQUO (panda, iiwa) + SOFT12 (soft12) + SCREW (screw7_p050), identical conditions.")
     print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")
@@ -458,12 +481,12 @@ def flags(all_rows, want):
     if "ipopt" in want and "snopt" in want:
         ip = {(r["robot"], r["row"], r["start"]): r for r in all_rows.get("ipopt", [])}
         sn = {(r["robot"], r["row"], r["start"]): r for r in all_rows.get("snopt", [])}
-        print(f"  {'row':<36}{'IPOPT':>7}{'SNOPT':>7}{'gap':>6}{'ITO':>6}{'STO':>6}")
+        print(f"  {'row':<40}{'IPOPT':>7}{'SNOPT':>7}{'gap':>6}{'ITO':>6}{'STO':>6}")
         gaps = []
         for k in sorted(ip.keys() & sn.keys(), key=lambda k: (k[0], ROW_ORDER[k[1]], k[2])):
             a, b = ip[k]["L"]["succ"], sn[k]["L"]["succ"]
             gaps.append(a - b)
-            print(f"  {k[0] + ' ' + ROW_NAME[k[1]] + ' ' + k[2]:<36}{a:>7}{b:>7}{a - b:>6}"
+            print(f"  {k[0] + ' ' + ROW_NAME[k[1]] + ' ' + k[2]:<40}{a:>7}{b:>7}{a - b:>6}"
                   f"{ip[k]['L']['to']:>6}{sn[k]['L']['to']:>6}")
         if gaps:
             print(f"  => IPOPT ahead on {sum(g > 0 for g in gaps)}/{len(gaps)} rows, "
