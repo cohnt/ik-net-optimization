@@ -1940,7 +1940,8 @@ def stage_GVSJS(wall, targets, guesses, shards, only=None, seed=1, solvers=GVS_S
 GVS_PREM_CELLS = ",".join(f"{t}:{g}" for t in range(2) for g in range(4))
 
 
-def stage_GVSPREM(wall, targets, guesses, shards=1, only=None, seed=1, solvers=GVS_SOLVERS):
+def stage_GVSPREM(wall, targets, guesses, shards=1, only=None, seed=1, solvers=GVS_SOLVERS,
+                  tag="GVSPREM"):
     """The pre-check's per-evaluation premium, measured with BOTH arms beside each other.
 
     A chart's cost per evaluation is set by its architecture, not its weights, so the
@@ -1950,8 +1951,14 @@ def stage_GVSPREM(wall, targets, guesses, shards=1, only=None, seed=1, solvers=G
     check that a joint-space solve costs the same in a joint-space-only job as beside a
     learned arm, which decides whether stage GVS may be run as GVSL + GVSJS. One item per
     rung x task x solver (8), one protocol, unsharded.
+
+    `GVSPREM` ran at PROCS=8 (2026-10-02) and is kept as the contention reading: at 8 workers
+    a joint-space evaluation costs +24% against one worker and a learned one +11%, which
+    would bias the time-matched column toward the learned arm. Thomas chose PROCS=2 for
+    every GVS stage, so `GVSPREM2` is the same items at PROCS=2 -- a separate TAG, because
+    the item id is the results directory and the metadata does not record PROCS.
     """
-    return stage_GVS(wall, targets, guesses, 1, only=only, tag="GVSPREM", seed=seed,
+    return stage_GVS(wall, targets, guesses, 1, only=only, tag=tag, seed=seed,
                      solvers=solvers, starts="paired", checkpoints=GVS_UNTRAINED,
                      label="untrained", extra=("--cells", GVS_PREM_CELLS))
 
@@ -3837,7 +3844,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -3959,6 +3966,9 @@ def main():
                                         only=args.rungs, **sv, **st),
              "GVSPREM": lambda: stage_GVSPREM(args.wall_time, args.targets,
                                               args.guesses, only=args.rungs, **sv),
+             "GVSPREM2": lambda: stage_GVSPREM(args.wall_time, args.targets,
+                                               args.guesses, only=args.rungs, **sv,
+                                               tag="GVSPREM2"),
              "SOFT12": lambda: stage_SOFT12(args.wall_time, args.targets,
                                             args.guesses, args.shards,
                                             only=args.rungs, **sv,
