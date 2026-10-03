@@ -21,6 +21,7 @@ import hashlib
 import math
 import os
 import sys
+import time
 from ast import literal_eval
 from dataclasses import fields, replace
 
@@ -240,6 +241,18 @@ def main():
     if args.compile:
         compile_seconds = sampler.WarmUpJacobian()
         print(f"compiled the flow Jacobian in {compile_seconds:.1f} s")
+    ## The equilibrium map's jits compile on first use, and drawing the grid exercises only
+    ## the forward solve -- so the implicit Jacobian used to compile INSIDE the first timed
+    ## solve of every process, ~7 s on whichever arm ran first. Measured on stage GVSJS
+    ## (2026-10-02): cell (t, 0) of each shard's first target took 7.5-9.7 s against 1.1 s
+    ## for the same solve, same iterations, in a process that had already compiled. That
+    ## lands on one joint-space solve in 8 of every 60 targets, which tilts the time-matched
+    ## column toward the learned arm. Paid here instead, for every arm alike, as the flow's
+    ## torch.compile is above.
+    start = time.time()
+    sampler.model.WarmUp()
+    map_warmup_seconds = time.time() - start
+    print(f"compiled the equilibrium map in {map_warmup_seconds:.1f} s")
 
     if args.task == "mug":
         mug_meshcat = Meshcat() if base_options.visualize else None
@@ -345,6 +358,7 @@ def main():
                       target_candidates_drawn=target_stats["drawn"],
                       target_accept_rate=target_stats["accept_rate"],
                       compile_seconds=compile_seconds,
+                      map_warmup_seconds=map_warmup_seconds,
                       overrides=overrides, start=args.start,
                       n_targets=args.targets, n_guesses=args.guesses,
                       shard=args.shard, checkpoint=args.checkpoint,
