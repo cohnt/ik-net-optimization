@@ -377,6 +377,7 @@ class ProgramOptions:
     snopt_major_optimality_tol: float = field(default=None, metadata={"help": "SNOPT 'Major optimality tolerance' (SNOPT default 1e-6)"})
     snopt_minor_feasibility_tol: float = field(default=None, metadata={"help": "SNOPT 'Minor feasibility tolerance'"})
     snopt_minor_iterations_limit: int = field(default=None, metadata={"help": "SNOPT 'Minor iterations limit'"})
+    snopt_iterations_limit: int = field(default=None, metadata={"help": "SNOPT 'Iterations limit': the TOTAL minor-iteration budget, INFO 31 when it binds. Distinct from 'Minor iterations limit' (per QP subproblem) and from max_iter (majors, INFO 32); both 31 and 32 count as hit_iteration_cap, so lifting the iteration budget means raising this too"})
     snopt_scale_option: int = field(default=None, metadata={"help": "SNOPT 'Scale option' (0 none, 1 linear, 2 all). The counterpart of ipopt_nlp_scaling_method, which measured inert"})
     snopt_verify_level: int = field(default=None, metadata={"help": "SNOPT 'Verify level'; -1 disables the derivative check. Our gradients are analytic, so a check costs evaluations for nothing"})
     snopt_linesearch_tolerance: float = field(default=None, metadata={"help": "SNOPT 'Linesearch tolerance' (default 0.9); smaller means a more accurate line search"})
@@ -1686,6 +1687,7 @@ class IKFlowProgram:
                 ("Major optimality tolerance", self.options.snopt_major_optimality_tol, float),
                 ("Minor feasibility tolerance", self.options.snopt_minor_feasibility_tol, float),
                 ("Minor iterations limit", self.options.snopt_minor_iterations_limit, int),
+                ("Iterations limit", self.options.snopt_iterations_limit, int),
                 ("Scale option", self.options.snopt_scale_option, int),
                 ("Verify level", self.options.snopt_verify_level, int),
                 ("Linesearch tolerance", self.options.snopt_linesearch_tolerance, float),

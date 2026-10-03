@@ -32,6 +32,9 @@ sys.path.append(REPO_ROOT)
 
 from ikflow.training.pole_callback import pole_metrics, sample_conditioning_and_latents  # noqa: E402
 
+from src.register_robots import ProjectRobotNames  # noqa: E402
+
+
 # The adopted chart, matching the defaults in chart_accuracy.py and pole_at_task_poses.py.
 # (This used to point at lemon-haze-7 while its two siblings pointed here, so the three
 # scripts silently measured different networks when run without --checkpoint.)
@@ -53,14 +56,30 @@ DEFAULT_IIWA_CKPT = os.path.join(REPO_ROOT, "models/iiwa14/iiwa14__ddp-r1__step6
 ## screen reported in the wrong units is not a weak signal, it is a number that reads 0.000
 ## forever.
 def ScreenDomain(robot):
-    """`(position_base, position_slack, latent_radius, runaway_threshold)` for a robot."""
+    """`(position_base, position_slack, latent_radius, runaway_threshold)` for a robot.
+
+    Three cases. The soft PCS arm's rungs get the quantities in their own units, above. The
+    screw-joint arm's rungs deliberately get the rigid tuple UNCHANGED except for the latent
+    radius, which is the point worth recording: its coordinates are radians, its limits are
+    the rigid arms' band, the [0.4, 0, 0.5] +- 0.25 conditioning box is inside its
+    workspace, and 1000 rad is the same threshold it has always been -- so its screens are
+    directly quotable beside the record's, with none of the labelling hazard a robot in other
+    units carries. Its latent radius is `sqrt(width) + 1.5`, 4.15 at seven coordinates
+    against the iiwa's 4.3 at eight. Everything else is a rigid arm, at its previous values.
+
+    Each branch keys on ITS OWN robot's spec table, never on `ProjectRobotNames()`, which
+    covers every robot this project defines and would route one robot into another's spec.
+    """
     import math
 
+    from src.screw_arm.params import SPECS as SCREW_SPECS
     from src.soft_arm.params import RUNGS
 
     if robot in RUNGS:
         spec = RUNGS[robot]
         return ((0.0, 0.0, 0.45), 0.25, round(math.sqrt(spec.ndof) + 1.5, 2), 345.0)
+    if robot in SCREW_SPECS:
+        return ((0.4, 0.0, 0.5), 0.25, SCREW_SPECS[robot].latent_trust_region, 1000.0)
     return ((0.4, 0.0, 0.5), 0.25, 4.3, 1000.0)
 
 
@@ -133,7 +152,8 @@ def crosscheck(nn_model, width: int, ndof: int, n: int = 100, seed: int = 0) -> 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--robot", type=str, default="iiwa14", choices=["iiwa14", "panda", "iiwa7"] + SoftRungNames())
+    parser.add_argument("--robot", type=str, default="iiwa14",
+                        choices=["iiwa14", "panda", "iiwa7"] + ProjectRobotNames())
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a .pkl state dict (iiwa default: the shipped lemon-haze-7)")
     parser.add_argument("--nb_nodes", type=int, default=12)
     parser.add_argument("--dim_latent_space", type=int, default=8)
