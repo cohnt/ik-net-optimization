@@ -1858,17 +1858,32 @@ GVS_ADOPTED = {rung: ("n6", f"models/{rung}/{rung}__n6__step620000.pkl")
 GVS_TRAINED_RUNGS = ("gvs_pushrod9_o1", "gvs_pushrod9_o2")
 
 
+#: Stage GVS's solvers: interior point and SQP at their adopted settings, NO augmented
+#: Lagrangian. Thomas, 2026-10-02: "IPOPT and SNOPT, no more NLOPT (it's a waste of time)".
+#: Two classes rather than SOFT12's three, so these rows replace the soft PCS arm's IPOPT
+#: and SNOPT rows and have no NLopt counterpart. Not a re-sweep: each solver keeps its
+#: fielded configuration (`snopt_major_step_limit=0.5` is the ProgramOptions default).
+GVS_SOLVERS = "ipopt,snopt"
+
+
 def stage_GVS(wall, targets, guesses, shards, only=None, tag="GVS", seed=1,
-              solvers="ipopt", starts="paired,native"):
+              solvers=GVS_SOLVERS, starts="paired,native", arms=None, checkpoints=None,
+              label=None, extra=()):
     """The GVS push-rod arm's status-quo-shaped rows: 2 experiments x 2 protocols, per rung.
 
     The same shape, cap and seed as stage_STATUSQUO and stage_SOFT12, so the rows can stand
-    beside the record's; IPOPT only by default, because the solver axis is closed and this
-    robot's question is the forward model, not the method class. `--rungs` selects among
-    the trained rungs (`--rungs gvs_pushrod9_o1` is the primary alone); order 0 is fielded
-    only if it has a chart, which the selftest does not assume. SEPARATE from ADOPTED_RUNGS
-    for the same reason the soft PCS arm's stage is: the status quo is accepted work.
+    beside the record's; IPOPT and SNOPT (`GVS_SOLVERS`). `--rungs` selects among the
+    trained rungs (`--rungs gvs_pushrod9_o1` is the primary alone); order 0 is fielded only
+    if it has a chart, which the selftest does not assume. SEPARATE from ADOPTED_RUNGS for
+    the same reason the soft PCS arm's stage is: the status quo is accepted work.
+
+    `arms`, `checkpoints` and `label` exist for the two derived stages below and change
+    nothing that enters `grid_hash`: the grid is drawn from the seed, the task, the scene and
+    the placement, never from the chart (the flow-frame calibration draws from its own
+    fixed-seed generator), so every form of this stage solves the SAME cells.
     """
+    arms = arms or ALL_ARMS[GVS_PRIMARY]
+    checkpoints = checkpoints or {r: GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}
     wanted = set(only.split(",")) if only else None
     want_solvers = [x.strip() for x in solvers.split(",") if x.strip()]
     for sv in want_solvers:
@@ -1883,22 +1898,73 @@ def stage_GVS(wall, targets, guesses, shards, only=None, tag="GVS", seed=1,
     for rung in GVS_TRAINED_RUNGS:
         if wanted is not None and rung not in wanted:
             continue
-        label, ckpt = GVS_ADOPTED[rung]
+        rung_label = label or GVS_ADOPTED[rung][0]
         base = ["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
                 "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
-                "--rung", rung, "--checkpoint", ckpt]
+                "--rung", rung, "--checkpoint", checkpoints[rung]]
         for solver in want_solvers:
             item_shards = shards * STATUSQUO_SHARD_SCALE[solver]
             for task, token, placement in STATUSQUO_ROWS:
                 for start in want_starts:
                     items += item(rung,
-                                  f"sc_{tag}_{rung}_{label}_{solver}_{token}"
+                                  f"sc_{tag}_{rung}_{rung_label}_{solver}_{token}"
                                   f"_{targets * guesses}_{int(wall)}_{start}",
                                   ["--task", task, "--start", start, "--solver", solver]
-                                  + placement + base,
-                                  targets, guesses, ALL_ARMS[rung], wall, item_shards,
+                                  + placement + base + list(extra),
+                                  targets, guesses, arms, wall, item_shards,
                                   seed=seed)
     return items
+
+
+#: The untrained chart `scripts/gvs_arm/make_untrained_chart.py` writes (gitignored; staged
+#: by stage_code.sh). Its only job in GVSJS is to satisfy the driver's `--checkpoint`.
+GVS_UNTRAINED = {rung: f"models/{rung}/{rung}__untrained__step0.pkl" for rung in GVS_RUNGS}
+
+
+def stage_GVSJS(wall, targets, guesses, shards, only=None, seed=1, solvers=GVS_SOLVERS):
+    """Stage GVS's JOINT-SPACE cells alone, run before any chart exists: the go/no-go
+    pre-check's "room to win" number (Thomas agreed the gate, 2026-09-30).
+
+    Exactly stage GVS's arguments with `--arms numerical`, one protocol (joint space is
+    bit-identical between the two: its native start IS the random configuration the paired
+    protocol hands it) and the untrained chart, which joint space never evaluates. So these
+    are the final stage's joint-space cells, not throwaway ones, and `grid_hash` proves it
+    when the trained-chart cells arrive. `label="js"` keeps the tag from claiming a chart.
+    """
+    return stage_GVS(wall, targets, guesses, shards, only=only, tag="GVSJS", seed=seed,
+                     solvers=solvers, starts="paired", arms="numerical",
+                     checkpoints=GVS_UNTRAINED, label="js")
+
+
+#: The pre-check's premium probe: targets 0-1 x guesses 0-3 of the stage grid itself.
+GVS_PREM_CELLS = ",".join(f"{t}:{g}" for t in range(2) for g in range(4))
+
+
+def stage_GVSPREM(wall, targets, guesses, shards=1, only=None, seed=1, solvers=GVS_SOLVERS):
+    """The pre-check's per-evaluation premium, measured with BOTH arms beside each other.
+
+    A chart's cost per evaluation is set by its architecture, not its weights, so the
+    untrained n6 chart gives the true number; its solve QUALITY is meaningless here. The
+    cells are `GVS_PREM_CELLS` of the stage grid at the stage's own cap and arguments, so
+    their joint-space solves are bit-for-bit GVSJS's: comparing the two wall times is the
+    check that a joint-space solve costs the same in a joint-space-only job as beside a
+    learned arm, which decides whether stage GVS may be run as GVSL + GVSJS. One item per
+    rung x task x solver (8), one protocol, unsharded.
+    """
+    return stage_GVS(wall, targets, guesses, 1, only=only, tag="GVSPREM", seed=seed,
+                     solvers=solvers, starts="paired", checkpoints=GVS_UNTRAINED,
+                     label="untrained", extra=("--cells", GVS_PREM_CELLS))
+
+
+def stage_GVSL(wall, targets, guesses, shards, only=None, seed=1, solvers=GVS_SOLVERS,
+               starts="paired,native"):
+    """Stage GVS's LEARNED cells alone, to be joined with GVSJS's joint-space cells by
+    `cluster/join_arm_runs.py` into `sc_GVS_...` rows. Fielded ONLY if the pre-check shows a
+    joint-space solve costs the same wall time in a joint-space-only job as beside a learned
+    arm, because the time-matched column compares exactly those wall times; otherwise the
+    committed two-arm manifest_stageGVS.txt runs instead and GVSJS stays the pre-check."""
+    return stage_GVS(wall, targets, guesses, shards, only=only, tag="GVSL", seed=seed,
+                     solvers=solvers, starts=starts, arms="learned")
 
 
 def stage_SOFT12(wall, targets, guesses, shards, only=None, tag="SOFT12", seed=1,
@@ -3648,53 +3714,111 @@ def selftest():
               f"{sorted(CAP_SWEEP)}, NLopt contained grasp only, every shard inside 4 h")
 
     ## Stage GVS: the same invariants as the soft stages, on the GVS driver. Two trained
-    ## rungs x 2 experiments x 2 protocols at one solver = 8 logical runs; every item names a
-    ## rung and a checkpoint; contained placement only; the status-quo cap; two arms.
+    ## rungs x 2 experiments x 2 protocols x 2 solvers (IPOPT, SNOPT; no NLopt) = 16 logical
+    ## runs; every item names a rung and a checkpoint; contained placement only; the
+    ## status-quo cap. Its two derived forms are checked beside it: GVSJS (the pre-check's
+    ## joint-space cells, one protocol, untrained chart) and GVSL (learned cells, joined to
+    ## GVSJS's). The three must agree on EVERY argument that enters the grid, or the joined
+    ## rows would pair different cells -- which `collate.py --pair` would refuse only later.
     gvs_fails = []
-    gvs_runs = stage_GVS(180, 60, 8, 8)
-    gvs_ids = [r["id"] for r in gvs_runs]
-    if len(set(gvs_ids)) != len(gvs_ids):
-        gvs_fails.append("stage GVS: duplicate item ids")
-    gvs_logical = len({i.rsplit("_shard", 1)[0] for i in gvs_ids})
-    if gvs_logical != 8:
-        gvs_fails.append(f"stage GVS: {gvs_logical} logical runs, expected 8")
-    for r in gvs_runs:
-        args = r["args"]
-        if r["script"] != "scripts/gvs_arm/gvs_arm_benchmark.py":
-            gvs_fails.append(f"stage GVS: {r['id']} does not use the GVS driver")
-        if "free" in args:
-            gvs_fails.append(f"stage GVS: {r['id']} fields the retired free placement")
-        if "--rung" not in args or "--checkpoint" not in args:
-            gvs_fails.append(f"stage GVS: {r['id']} omits --rung or --checkpoint")
-        if args[args.index("--wall-time") + 1] != str(STATUSQUO_WALL):
-            gvs_fails.append(f"stage GVS: {r['id']} is not at the status-quo cap")
+    want_solvers = set(GVS_SOLVERS.split(","))
+    forms = {"GVS": (stage_GVS(180, 60, 8, 8), "learned,numerical", 16, GVS_ADOPTED),
+             "GVSJS": (stage_GVSJS(180, 60, 8, 8), "numerical", 8, None),
+             "GVSL": (stage_GVSL(180, 60, 8, 8), "learned", 16, GVS_ADOPTED)}
+    ## Arguments that do not enter the grid, and so may differ between the forms.
+    NON_GRID = {"--arms", "--tag", "--checkpoint", "--start", "--shard"}
+
+    def _grid_args(args):
+        out, i = [], 0
+        while i < len(args):
+            if args[i] in NON_GRID:
+                i += 2
+            else:
+                out.append(args[i])
+                i += 1
+        return tuple(out)
+
+    grid_by_row = {}
+    for form, (runs, arms_want, logical_want, adopted) in forms.items():
+        ids = [r["id"] for r in runs]
+        if len(set(ids)) != len(ids):
+            gvs_fails.append(f"stage {form}: duplicate item ids")
+        logical = len({i.rsplit("_shard", 1)[0] for i in ids})
+        if logical != logical_want:
+            gvs_fails.append(f"stage {form}: {logical} logical runs, expected {logical_want}")
+        for r in runs:
+            args = r["args"]
+            if r["script"] != "scripts/gvs_arm/gvs_arm_benchmark.py":
+                gvs_fails.append(f"stage {form}: {r['id']} does not use the GVS driver")
+            if "free" in args:
+                gvs_fails.append(f"stage {form}: {r['id']} fields the retired free placement")
+            if "--rung" not in args or "--checkpoint" not in args:
+                gvs_fails.append(f"stage {form}: {r['id']} omits --rung or --checkpoint")
+                continue
+            if args[args.index("--wall-time") + 1] != str(STATUSQUO_WALL):
+                gvs_fails.append(f"stage {form}: {r['id']} is not at the status-quo cap")
+            if args[args.index("--arms") + 1] != arms_want:
+                gvs_fails.append(f"stage {form}: {r['id']} does not field {arms_want}")
+            if args[args.index("--solver") + 1] not in want_solvers:
+                gvs_fails.append(f"stage {form}: {r['id']} fields a solver outside {GVS_SOLVERS}")
+            rung = args[args.index("--rung") + 1]
+            if rung not in GVS_TRAINED_RUNGS:
+                gvs_fails.append(f"stage {form}: {r['id']} fields a rung with no chart")
+            ckpt = args[args.index("--checkpoint") + 1]
+            want_ckpt = adopted[rung][1] if adopted else GVS_UNTRAINED[rung]
+            if ckpt != want_ckpt:
+                gvs_fails.append(f"stage {form}: {r['id']} names {ckpt}, expected {want_ckpt}")
+            key = (rung, args[args.index("--solver") + 1], args[args.index("--task") + 1],
+                   args[args.index("--shard") + 1])
+            grid_by_row.setdefault(key, set()).add(_grid_args(args))
+    for key, variants in grid_by_row.items():
+        if len(variants) != 1:
+            gvs_fails.append(f"stages GVS/GVSJS/GVSL disagree on grid arguments for {key}")
+    prem = stage_GVSPREM(180, 60, 8)
+    if len(prem) != 8:
+        gvs_fails.append(f"stage GVSPREM: {len(prem)} items, expected 8")
+    for r in prem:
+        args = list(r["args"])
+        if "--cells" not in args or "--shard" in args:
+            gvs_fails.append(f"stage GVSPREM: {r['id']} must name --cells and no --shard")
+            continue
+        i = args.index("--cells")
+        cells = args[i + 1]
+        del args[i:i + 2]
+        key = (args[args.index("--rung") + 1], args[args.index("--solver") + 1],
+               args[args.index("--task") + 1], "0/8")
+        if {_grid_args(args)} != grid_by_row.get(key):
+            gvs_fails.append(f"stage GVSPREM: {r['id']} is not on stage GVS's grid")
         if args[args.index("--arms") + 1] != "learned,numerical":
-            gvs_fails.append(f"stage GVS: {r['id']} does not field exactly two arms")
-        if args[args.index("--solver") + 1] != "ipopt":
-            gvs_fails.append(f"stage GVS: {r['id']} is not IPOPT-only by default")
-        if args[args.index("--rung") + 1] not in GVS_TRAINED_RUNGS:
-            gvs_fails.append(f"stage GVS: {r['id']} fields a rung with no chart")
-    ## The COMMITTED manifest must be the stage as the selftest defines it. The generator's
-    ## CLI defaults (`--solvers`, `--starts`) belong to other stages, and a manifest written
-    ## with them once came out SNOPT-only and paired-only: 32 items that would have burnt a
-    ## campaign on the wrong solver. Generate with
-    ##   --wall-time 180 --targets 60 --guesses 8 --shards 8 --solvers ipopt --starts paired,native
-    committed = os.path.join(os.path.dirname(os.path.realpath(__file__)), "manifest_stageGVS.txt")
-    if os.path.exists(committed):
+            gvs_fails.append(f"stage GVSPREM: {r['id']} must field both arms")
+    ## The COMMITTED manifests must be the stages as defined here. The generator's CLI
+    ## defaults belong to other stages, and a manifest written with them once came out
+    ## SNOPT-only and paired-only: 32 items that would have burnt a campaign on the wrong
+    ## solver. Generate with
+    ##   --stage GVS[JS|L] --wall-time 180 --targets 60 --guesses 8 --shards 8
+    ## and NO --solvers/--starts, so the stages' own defaults apply.
+    for form in ("GVS", "GVSJS", "GVSL"):
+        committed = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                 f"manifest_stage{form}.txt")
+        if not os.path.exists(committed):
+            if form != "GVSL":   # GVSL is generated only if the split design is fielded
+                gvs_fails.append(f"cluster/manifest_stage{form}.txt is missing")
+            continue
         with open(committed) as f:
             on_disk = sorted(line.split("|", 1)[0] for line in f if line.strip()
                              and not line.startswith("#"))
-        if on_disk != sorted(gvs_ids):
-            gvs_fails.append(f"cluster/manifest_stageGVS.txt has {len(on_disk)} items and is not "
-                             f"stage GVS as defined here ({len(gvs_ids)} items); regenerate it "
-                             f"with --solvers ipopt --starts paired,native")
+        want_ids = sorted(r["id"] for r in forms[form][0])
+        if on_disk != want_ids:
+            gvs_fails.append(f"cluster/manifest_stage{form}.txt has {len(on_disk)} items and is "
+                             f"not stage {form} as defined here ({len(want_ids)} items); "
+                             f"regenerate it without --solvers/--starts")
     if gvs_fails:
         for f in gvs_fails:
             print(f"FAIL {f}")
         fails += len(gvs_fails)
     else:
-        print(f"ok   stage GVS: 8 logical runs over {GVS_TRAINED_RUNGS}, IPOPT, contained, "
-              f"status-quo cap, two arms")
+        print(f"ok   stages GVS/GVSJS/GVSL: 16/8/16 logical runs over {GVS_TRAINED_RUNGS}, "
+              f"{GVS_SOLVERS}, contained, status-quo cap, one grid across all three")
 
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
@@ -3713,7 +3837,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -3827,6 +3951,14 @@ def main():
              "GVS": lambda: stage_GVS(args.wall_time, args.targets,
                                       args.guesses, args.shards,
                                       only=args.rungs, **sv, **st),
+             "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
+                                          args.guesses, args.shards,
+                                          only=args.rungs, **sv),
+             "GVSL": lambda: stage_GVSL(args.wall_time, args.targets,
+                                        args.guesses, args.shards,
+                                        only=args.rungs, **sv, **st),
+             "GVSPREM": lambda: stage_GVSPREM(args.wall_time, args.targets,
+                                              args.guesses, only=args.rungs, **sv),
              "SOFT12": lambda: stage_SOFT12(args.wall_time, args.targets,
                                             args.guesses, args.shards,
                                             only=args.rungs, **sv,

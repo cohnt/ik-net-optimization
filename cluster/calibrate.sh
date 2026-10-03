@@ -95,16 +95,35 @@ REAL_HOME="$HOME"
 # roughly 40% of cells exit at the cap, so iterations achieved inside a fixed cap
 # is a direct throughput measurement and contention is visible in it.
 WORKLOAD=(--task mug --targets 4 --guesses 2 --arms learned --config latent --compile --seed 0)
+SCRIPT=scripts/panda/panda_benchmark.py
+RESULTS=panda
+## A robot other than the Panda overrides the three above, and the defaults reproduce the
+## Panda calibration exactly. CALIB_PIN=1 pins each worker to its own physical cores
+## (cluster/cpu_slice.py), as run_items.sh does for the GVS push-rod arm, whose JAX forward
+## model would otherwise grow ~5 threads per visible CPU per process. For that robot
+## BOTH arms are measured: its joint-space arm pays the same equilibrium solve per
+## evaluation, so its contention is as much a part of the measurement as the learned arm's.
+##   CALIB_SCRIPT=scripts/gvs_arm/gvs_arm_benchmark.py CALIB_RESULTS=gvs_pushrod9_o1 CALIB_PIN=1 \
+##   CALIB_WORKLOAD="--rung gvs_pushrod9_o1 --checkpoint models/gvs_pushrod9_o1/gvs_pushrod9_o1__untrained__step0.pkl ..."
+if [ -n "${CALIB_WORKLOAD:-}" ]; then read -r -a WORKLOAD <<<"$CALIB_WORKLOAD"; fi
+SCRIPT="${CALIB_SCRIPT:-$SCRIPT}"
+RESULTS="${CALIB_RESULTS:-$RESULTS}"
+PIN_WORKERS="${CALIB_PIN:-0}"
+echo "workload: $SCRIPT ${WORKLOAD[*]} (results/$RESULTS, pin=$PIN_WORKERS)"
 
-RunOne() {   # RunOne <local-index> <tag> <device> <wall-time>
-    local i=$1 tag=$2 device=$3 wall=$4
+RunOne() {   # RunOne <local-index> <tag> <device> <wall-time> [<workers sharing the node>]
+    local i=$1 tag=$2 device=$3 wall=$4 nworkers=${5:-1}
+    local pin=()
+    if [ "$PIN_WORKERS" = "1" ]; then
+        pin=(taskset -c "$("$PY" "$REPO/cluster/cpu_slice.py" "$nworkers" "$i")")
+    fi
     export HOME="${TMPDIR:-/tmp}/home.$i"
     mkdir -p "$HOME/.cache"
     ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null || true
     ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null || true
     export PYTHONPATH="$BASE_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
     export LD_LIBRARY_PATH="$BASE_LDPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+    export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 GVS_ARM_XLA_THREADS=1
     export TQDM_DISABLE=1 PYTHONUNBUFFERED=1 MPLBACKEND=Agg
     export MPLCONFIGDIR="${TMPDIR:-/tmp}/mpl.$i"
     export TORCHINDUCTOR_CACHE_DIR="${TMPDIR:-/tmp}/inductor.$i"
@@ -112,7 +131,7 @@ RunOne() {   # RunOne <local-index> <tag> <device> <wall-time>
     mkdir -p "$MPLCONFIGDIR" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
     if [ "$device" = "cpu" ]; then export CUDA_VISIBLE_DEVICES=""
     else PinGpu "$i"; fi
-    "$PY" -u scripts/panda/panda_benchmark.py "${WORKLOAD[@]}" \
+    "${pin[@]}" "$PY" -u "$SCRIPT" "${WORKLOAD[@]}" \
         --wall-time "$wall" --tag "$tag" > "$OUT/$tag.log" 2>&1
     HOME="$REAL_HOME"
 }
@@ -124,7 +143,7 @@ Sweep() {    # Sweep <device>
         local T0=$SECONDS
         local pids=()
         for ((i = 0; i < P; i++)); do
-            RunOne "$i" "calib_${device}_p${P}_w${i}" "$device" 20 & pids+=($!)
+            RunOne "$i" "calib_${device}_p${P}_w${i}" "$device" 20 "$P" & pids+=($!)
         done
         WaitPids "${pids[@]}"
         echo "    $P worker(s) took $((SECONDS - T0)) s wall"
@@ -174,11 +193,50 @@ esac
 ## --- the verdict ----------------------------------------------------------
 echo; echo "===== summary [$ARM] ====="
 HOME="$REAL_HOME" PYTHONPATH="$BASE_PYTHONPATH" LD_LIBRARY_PATH="$BASE_LDPATH" \
-CUDA_VISIBLE_DEVICES="" "$PY" - "$ARM" <<'PYEOF'
+CUDA_VISIBLE_DEVICES="" "$PY" - "$ARM" "$RESULTS" <<'PYEOF'
 import glob, json, os, re, statistics, sys
-arm = sys.argv[1]
+arm, results = sys.argv[1], sys.argv[2]
 rows = {}
-for path in sorted(glob.glob("results/panda/benchmark/calib_*/summary.json")):
+paths = sorted(glob.glob(f"results/{results}/benchmark/calib_*/summary.json"))
+
+## Per-arm cost per network-and-map evaluation, for robots whose records count them
+## (`eval_counts["map_jacobian"]`, the AutoDiffXd evaluations the solver asked for). A
+## converged solve's iterations do not move under contention, but its milliseconds per
+## evaluation do, so this is the contention measure that works on every cell, capped or
+## not -- and it is the per-evaluation premium of the learned arm over the joint-space one.
+per_eval = {}
+for path in paths:
+    tag = os.path.basename(os.path.dirname(path))
+    payload = json.load(open(path))
+    for name, recs in payload["records"].items():
+        ms = [1e3 * r["solver_seconds"] / r["eval_counts"]["map_jacobian"]
+              for r in recs if r.get("solver_seconds") is not None
+              and (r.get("eval_counts") or {}).get("map_jacobian")]
+        its = [1e3 * r["solver_seconds"] / r["iterations"] for r in recs
+               if r.get("solver_seconds") is not None and r.get("iterations")]
+        if ms:
+            per_eval.setdefault(tag, {})[name] = (ms, its)
+if per_eval:
+    ## Pooled over the workers that ran together (calib_<dev>_p<P>_w<i>); any other run
+    ## (caps, parity) is its own group.
+    pooled = {}
+    for tag, arms in per_eval.items():
+        m = re.match(r"calib_(\w+?)_p(\d+)_w\d+$", tag)
+        group = (m.group(1), int(m.group(2))) if m else (tag, 0)
+        for name, (ms, its) in arms.items():
+            acc = pooled.setdefault(group, {}).setdefault(name, ([], []))
+            acc[0].extend(ms)
+            acc[1].extend(its)
+    print(f"{'run':<22} {'workers':>7} {'arm':<10} {'cells':>5} {'ms/eval':>8} {'ms/iter':>8}")
+    for (label, p), arms in sorted(pooled.items()):
+        for name, (ms, its) in sorted(arms.items()):
+            print(f"{label:<22} {p:>7} {name:<10} {len(ms):>5} {statistics.median(ms):>8.1f} "
+                  f"{statistics.median(its) if its else float('nan'):>8.1f}")
+    print("The usable worker count is the largest whose ms/eval is within ~10% of one")
+    print("worker's for EVERY arm; the learned/numerical ms/eval ratio is the premium.")
+    print()
+
+for path in paths:
     tag = os.path.basename(os.path.dirname(path))
     payload = json.load(open(path))
     recs = payload["records"].get("learned", [])
