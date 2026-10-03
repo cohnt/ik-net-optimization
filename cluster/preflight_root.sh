@@ -8,6 +8,8 @@
 # Submit as a job (never on a login node) -- a smoke test, so debug-cpu is the right pool:
 #   LEARNED_IK_ROOT=$HOME/learned-ik-gvs ROBOT=gvs_pushrod9_o1 \
 #     LLsub ./cluster/preflight_root.sh -s 8 -q debug-cpu -T 00:20:00 -J gvs_cal_preflight
+#   LEARNED_IK_ROOT=$HOME/learned-ik-screw ROBOT=screw7_p050 \
+#     LLsub ./cluster/preflight_root.sh -s 8 -q debug-cpu -T 00:20:00 -J screw_cal_preflight
 #
 # WHY IT EXISTS. An isolated tree can be complete enough to build datasets and still be
 # missing what a BENCHMARK worker needs, because run_items.sh -- not the payload -- is what
@@ -47,11 +49,12 @@ print("--- Drake")
 import pydrake.all as drake
 print("   pydrake from", os.path.dirname(drake.__file__))
 
-print("--- the forward model's runtime: SoRoMoX on a CPU jaxlib, float64")
-import jax, soromox, optimistix
-print("   jax", jax.__version__, "backend", jax.default_backend(), "soromox", soromox.__version__,
-      "optimistix", optimistix.__version__)
-assert jax.default_backend() == "cpu", "the forward model must run on the CPU beside the flow"
+if robot.startswith("gvs_"):
+    print("--- the forward model's runtime: SoRoMoX on a CPU jaxlib, float64")
+    import jax, soromox, optimistix
+    print("   jax", jax.__version__, "backend", jax.default_backend(), "soromox", soromox.__version__,
+          "optimistix", optimistix.__version__)
+    assert jax.default_backend() == "cpu", "the forward model must run on the CPU beside the flow"
 
 print("--- this project's robots")
 import src.register_robots as rr
@@ -85,6 +88,18 @@ if robot.startswith("gvs_"):
     from jrl.robots import get_robot
     r = get_robot(robot)
     start = time.time(); s, p = r.sample_joint_angles_and_poses(500); print(f"   500 samples: {time.time() - start:.1f} s, shapes {s.shape} {p.shape}")
+elif robot.startswith("screw7_"):
+    print("--- the screw joint's limits, which no parser preserves")
+    import numpy as np
+    from src.screw_arm.limits import ApplyScrewJointLimits
+    from src.screw_arm.params import GetSpec
+    spec = GetSpec(robot)
+    print("   before repair:", plant.GetPositionLowerLimits()[:3], "...")
+    ApplyScrewJointLimits(plant, spec)
+    lo, hi = plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits()
+    assert np.all(np.isfinite(lo)) and np.all(np.isfinite(hi)), "limits still non-finite"
+    print("   after repair: all finite, screw row +-%.4f" % hi[
+        plant.GetJointByName(spec.screw_joint_names[0]).position_start()])
 
 print("--- the dataset this tree will train on")
 from ikflow.config import DATASET_DIR

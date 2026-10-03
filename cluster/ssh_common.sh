@@ -33,7 +33,7 @@ SC_ROOT="${SC_ROOT:-learned-ik}"
 ## one account, and stage_code.sh's live-campaign guard matches job NAMES -- so if an
 ## isolated tree kept the default `lik` prefix, each campaign's staging would refuse
 ## because of the other campaign's jobs, deadlocking both for as long as either runs.
-## `learned-ik` -> `lik`; `learned-ik-helix` -> `helix`.
+## `learned-ik` -> `lik`; `learned-ik-screw` -> `screw`.
 case "$SC_ROOT" in
     learned-ik)   SC_JOB_PREFIX="${SC_JOB_PREFIX:-lik}" ;;
     learned-ik-*) SC_JOB_PREFIX="${SC_JOB_PREFIX:-${SC_ROOT#learned-ik-}}" ;;

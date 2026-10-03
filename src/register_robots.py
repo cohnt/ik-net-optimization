@@ -6,8 +6,9 @@ module is imported, so this is the seam where that happens -- ONE list, so the n
 robot adds one entry here and touches nothing else.
 
 It is robot-generic on purpose. The alternative, hardcoding a particular robot's register
-module at each of the three import sites, is how the soft PCS arm was wired, and it means
-every new robot has to find all three:
+module at each of the three import sites, is how the soft PCS arm met the same need on
+main, and it means
+every new robot has to find all three. The three are:
 
   * `src/<robot>_program.py`, because the program resolves a chart by robot name;
   * `src/flow_loading.py`, because `LoadFlowSolver` is the SINGLE funnel every by-name
@@ -17,15 +18,17 @@ every new robot has to find all three:
   * `scripts/training/ikflow_entry.py`, before the vendored fork's script is even located.
 
 IMPORT ORDER IS LOAD-BEARING at that third site: ikflow resolves `DATASET_DIR` from
-`expanduser("~")` AT IMPORT.
+`expanduser("~")` AT IMPORT, and a path bug of exactly that shape once cost a training rung
+its entire run.
 
 Registering a robot must stay CHEAP: `src.gvs_arm.register` imports the JAX model module but
 builds no model (`GetModel` is lazy), so importing this from a Panda benchmark costs a JAX
 import and nothing else.
 """
 
-#: Modules whose import registers robots. Each is idempotent and exposes `REGISTERED`.
-MODULES = ("src.soft_arm.register", "src.gvs_arm.register")
+#: Modules whose import registers robots. Each is expected to be idempotent and to expose
+#: `REGISTERED`, a tuple of the names it added.
+MODULES = ("src.screw_arm.register", "src.soft_arm.register", "src.gvs_arm.register")
 
 
 def RegisterAll():
@@ -40,7 +43,11 @@ def RegisterAll():
 
 
 def ProjectRobotNames():
-    """Sorted names of the robots this project defines -- for `--robot` choice lists."""
+    """Sorted names of the robots this project defines.
+
+    For `--robot` choices in the checkpoint screens, so a new robot does not have to be
+    spelled into three argument parsers.
+    """
     return sorted(RegisterAll())
 
 

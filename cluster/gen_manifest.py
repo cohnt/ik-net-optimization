@@ -32,6 +32,8 @@ import re
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
 SCRIPTS = {"panda": "scripts/panda/panda_benchmark.py",
            "iiwa": "scripts/iiwa/iiwa_benchmark.py"}
 ## The soft PCS arm's three rungs share one driver, selected with --rung. Registered here so
@@ -51,6 +53,27 @@ ALL_ARMS.update({rung: "learned,numerical" for rung in SOFT_RUNGS})
 GVS_RUNGS = ("gvs_pushrod9_o0", "gvs_pushrod9_o1", "gvs_pushrod9_o2")
 SCRIPTS.update({rung: "scripts/gvs_arm/gvs_arm_benchmark.py" for rung in GVS_RUNGS})
 ALL_ARMS.update({rung: "learned,numerical" for rung in GVS_RUNGS})
+
+## The screw-joint arm's pitch rungs. TWO ARMS, and unlike the iiwa's that is not a matter
+## of effort: a closed-form inverse kinematics needs the forward kinematics to be an
+## ALGEBRAIC function of the joint variables, and a screw joint contributes cos q, sin q
+## and q at once. There is no analytic column to write.
+from src.screw_arm.params import SPECS as _SCREW_SPECS  # noqa: E402
+
+SCREW_ROBOTS = tuple(sorted(_SCREW_SPECS))
+
+#: The rungs that get a CHART. `screw7_p000` is deliberately absent: at pitch 0 the
+#: arm is an ordinary S-R-S manipulator, and the project already fields two of those
+#: WITH analytic columns, so training a seventh chart to rediscover that an
+#: algebraic arm is algebraic buys nothing. The zero-pitch spec stays -- the tests
+#: use it, and it is the degenerate member that makes the family a family -- but it
+#: is not a row. Thomas, 2026-09-25: "Seems like a waste of time to train a model
+#: for screw7_p000. We already have analytic arms, we do not need a specific control
+#: example here."
+SCREW_UNTRAINED = ("screw7_p000",)
+SCREW_TRAINED_ROBOTS = tuple(r for r in SCREW_ROBOTS if r not in SCREW_UNTRAINED)
+SCRIPTS.update({r: "scripts/screw_arm/screw_arm_benchmark.py" for r in SCREW_ROBOTS})
+ALL_ARMS.update({r: "learned,numerical" for r in SCREW_ROBOTS})
 
 # Seconds per (cell x arm), used only for the LPT ordering and the --summary
 # estimate. Deliberately pessimistic: the learned arm is the one that can sit at
@@ -2160,6 +2183,221 @@ def stage_STATUSQUO(wall, targets, guesses, shards, only=None, tag="STATUSQUO", 
     return items
 
 
+## ------------------------------------------------------------------------------- SCREW --
+##
+## The screw-joint arm. THREE SEPARATE STAGES rather than entries in ADOPTED_RUNGS,
+## because the status quo is accepted work and this robot is not: adding it there would
+## silently change what STATUSQUO means, which is the same reason the soft arm's stages
+## stand apart. Every stage is shaped like the record's rows -- same cap, same seed, same
+## contained placement -- so a row here can stand beside one of the record's without a
+## caveat about conditions.
+
+SCREW_PRIMARY = "screw7_p050"
+
+#: The fielded rung, PRE-REGISTERED at n6 before any cell is read -- the Panda's adopted
+#: rung, this being a 7-DoF arm. n4 and n8 are trained and REPORTED, never selected from.
+SCREW_ADOPTED = ("n6", f"models/{SCREW_PRIMARY}/{SCREW_PRIMARY}__n6__step620000.pkl")
+
+SCREW_CHART_RUNGS = tuple(
+    (SCREW_PRIMARY, label, f"models/{SCREW_PRIMARY}/{SCREW_PRIMARY}__{label}__step620000.pkl")
+    for label in ("n4", "n6", "n8"))
+
+#: The pitch ladder: the three SCREW rungs, each carrying its own chart, because each is
+#: a different robot and cannot borrow another's network. The zero-pitch member is not here
+#: -- see SCREW_UNTRAINED. What the ladder measures is therefore a DOSE-RESPONSE among
+#: screw-joint arms (0.025 / 0.050 / 0.100 m/rev), and the "could an analytic column exist"
+#: end of the scale is held by the Panda and the iiwa, which already have one.
+SCREW_PITCH_RUNGS = tuple(
+    (robot, "n6", f"models/{robot}/{robot}__n6__step620000.pkl")
+    for robot in SCREW_TRAINED_ROBOTS)
+
+
+def _screw_base(robot, ckpt):
+    return ["--config", "latent", "--set", f"correction_cost_weight={CORR_COST}",
+            "--scene", "hardened", "--shelf-inset", str(HARD_SHELF_INSET),
+            "--robot", robot, "--checkpoint", ckpt]
+
+
+def _screw_require_statusquo_wall(wall, stage):
+    if float(wall) != STATUSQUO_WALL:
+        raise SystemExit(
+            f"--wall-time must be {STATUSQUO_WALL:g} for {stage}; got {wall}. These rows are "
+            f"shaped to stand beside the status quo, and a different cap makes them a "
+            f"different measurement rather than a comparable one.")
+    return float(wall)
+
+
+def stage_SCREW(wall, targets, guesses, shards, only=None, tag="SCREW", seed=1,
+                solvers="ipopt,snopt,nlopt", starts="paired,native"):
+    """The screw arm's status-quo-shaped rows: 2 experiments x 2 protocols x 3 solvers.
+
+    Twelve logical runs on the primary rung at its adopted chart, deliberately the same
+    shape, cap and seed as stage_STATUSQUO so the rows are directly comparable with the
+    record's. Each solver at its own adopted configuration and NO settings axis: the solver
+    axis is closed, and this stage is about a robot.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_solvers = [x.strip() for x in solvers.split(",") if x.strip()]
+    for name in want_solvers:
+        if name not in SOLVER_CLASSES:
+            raise SystemExit(f"--solvers: {name!r} is not one of the three method classes "
+                             f"{sorted(SOLVER_CLASSES)}")
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    wall = _screw_require_statusquo_wall(wall, "stage SCREW")
+
+    if wanted is not None and SCREW_PRIMARY not in wanted:
+        return []
+    label, ckpt = SCREW_ADOPTED
+    base = _screw_base(SCREW_PRIMARY, ckpt)
+    items = []
+    for solver in want_solvers:
+        item_shards = shards * STATUSQUO_SHARD_SCALE[solver]
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(SCREW_PRIMARY,
+                              f"sc_{tag}_{SCREW_PRIMARY}_{label}_{solver}_{token}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", solver]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[SCREW_PRIMARY], wall, item_shards,
+                              seed=seed)
+    return items
+
+
+#: The rows stages SCREW / SCREWCHART / SCREWPITCH measured as BUDGET-BOUND under the
+#: pre-registered cap rule (cluster/SCREW_ARM_RUNBOOK.md): either arm has >= 24 of 480 cells
+#: stopped at a budget. Listed here rather than derived, so the manifest cannot move when a
+#: results file does. All are iteration-cap-bound (IPOPT's default 3000, SNOPT's 3000 majors
+#: or its total minor budget); the NLopt rows are wall-clock-bound and are NOT here, because
+#: the clock stays at 180 s (Thomas: "Don't raise the wall clock timeout. If it's that slow,
+#: it's not usable."). The p050_n6 IPOPT grasp rows were measured in all three stages and
+#: appear once.
+SCREWCAP_ROWS = (
+    "screw7_p050_n6_ipopt_mugshelf_480_180_native", "screw7_p050_n6_ipopt_mugshelf_480_180_paired",
+    "screw7_p050_n6_snopt_mugshelf_480_180_native", "screw7_p050_n6_snopt_mugshelf_480_180_paired",
+    "screw7_p050_n4_ipopt_mugshelf_480_180_native", "screw7_p050_n4_ipopt_mugshelf_480_180_paired",
+    "screw7_p050_n4_ipopt_posetip_480_180_native", "screw7_p050_n4_ipopt_posetip_480_180_paired",
+    "screw7_p050_n8_ipopt_mugshelf_480_180_native", "screw7_p050_n8_ipopt_mugshelf_480_180_paired",
+    "screw7_p025_n6_ipopt_mugshelf_480_180_native", "screw7_p025_n6_ipopt_mugshelf_480_180_paired",
+    "screw7_p025_n6_ipopt_posetip_480_180_native", "screw7_p025_n6_ipopt_posetip_480_180_paired",
+    "screw7_p100_n6_ipopt_mugshelf_480_180_native", "screw7_p100_n6_ipopt_mugshelf_480_180_paired",
+    "screw7_p100_n6_ipopt_posetip_480_180_paired",
+)
+
+#: High enough that no iteration count can bind inside 180 s on either arm: the joint-space
+#: arm runs ~3 ms per iteration, so ~60k at most. SNOPT has TWO iteration budgets and both
+#: count as `hit_iteration_cap` -- majors (max_iter, INFO 32) and the total minor budget
+#: ('Iterations limit', INFO 31) -- so both are lifted, or the row stays bound on 31.
+SCREWCAP_MAX_ITER = 100000
+SCREWCAP_SNOPT_ITERATIONS = 100000000
+
+
+def stage_SCREWCAP(wall, targets, guesses, shards, only=None, tag="SCREWCAP", seed=1):
+    """Re-measure every budget-bound screw-arm row with the ITERATION budgets lifted.
+
+    Each row is regenerated from its own stage's builder, so it is that row exactly -- same
+    seed, grid, chart, solver configuration and 180 s wall clock -- plus `max_iter` (and, for
+    SNOPT, its total iteration budget) raised past anything reachable in 180 s. So the wall
+    clock is the ONLY budget, which is what ProgramOptions' own note says was intended, and
+    the rows pair cell-for-cell with their originals on `grid_hash`. `max_iter` is one field
+    feeding three solvers (IPOPT max_iter, SNOPT majors, NLopt max_eval), which is safe here
+    only because every row is IPOPT or SNOPT; the selftest holds that.
+    """
+    wall = _screw_require_statusquo_wall(wall, "stage SCREWCAP")
+    wanted = set(only.split(",")) if only else None
+    built = (stage_SCREW(wall, targets, guesses, shards, tag=tag, seed=seed)
+             + stage_SCREWCHART(wall, targets, guesses, shards, tag=tag, seed=seed)
+             + stage_SCREWPITCH(wall, targets, guesses, shards, tag=tag, seed=seed))
+    items, seen = [], set()
+    for it in built:
+        run = it["id"].split("_shard")[0][len(f"sc_{tag}_"):]
+        if run not in SCREWCAP_ROWS or it["id"] in seen:
+            continue
+        if wanted is not None and run not in wanted:
+            continue
+        seen.add(it["id"])
+        args = list(it["args"]) + ["--set", f"max_iter={SCREWCAP_MAX_ITER}"]
+        if args[args.index("--solver") + 1] == "snopt":
+            args += ["--set", f"snopt_iterations_limit={SCREWCAP_SNOPT_ITERATIONS}"]
+        items.append(dict(it, args=args))
+    return items
+
+
+def stage_SCREWCHART(wall, targets, guesses, shards, only=None, tag="SCREWCHART", seed=1,
+                     starts="paired,native"):
+    """The chart ladder on the primary rung: nb_nodes 4 / 6 / 8, IPOPT only.
+
+    BENCHMARKED, NOT MERELY SCREENED, and REPORTED rather than selected from. The record is
+    explicit that neither intrinsic screen predicts cells in either direction, so a ladder
+    reported on screens alone would report the one thing already known not to matter; and
+    the fielded rung is pre-registered at n6 before any cell is read, because picking
+    whichever benchmarks best is selecting on the test set.
+
+    IPOPT only: the solver axis is closed, and this question is about the chart.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    wall = _screw_require_statusquo_wall(wall, "stage SCREWCHART")
+    items = []
+    for robot, label, ckpt in SCREW_CHART_RUNGS:
+        if wanted is not None and label not in wanted and f"{robot}:{label}" not in wanted:
+            continue
+        base = _screw_base(robot, ckpt)
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(robot,
+                              f"sc_{tag}_{robot}_{label}_ipopt_{token}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", "ipopt"]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[robot], wall, shards, seed=seed)
+    return items
+
+
+def stage_SCREWPITCH(wall, targets, guesses, shards, only=None, tag="SCREWPITCH", seed=1,
+                     starts="paired,native"):
+    """The pitch ladder: THREE rungs x 2 experiments x 2 protocols, IPOPT only.
+
+    THE CONTROL THAT THE EFFECT IS THE COUPLING AND NOT THE GEOMETRY. Every rung is the same
+    arm -- same links, same scene, same joint limits, same chart architecture -- differing
+    only in how many metres of axial travel one revolution of the screw joint buys
+    (0.025 / 0.050 / 0.100 m/rev).
+
+    `screw7_p000` -- that arm with the coupling switched off, an ordinary S-R-S arm for which
+    a closed form exists -- IS A FULL SPEC AND IS NOT A RUNG HERE, because it was never given
+    a chart: the trained ladder is p050 at n4/n6/n8 plus p025 and p100 at n6. So this stage
+    measures a DOSE-RESPONSE among screw arms and does NOT reach the "an analytic column could
+    exist here" end of the scale; that end is held by the Panda and the iiwa, which have one.
+    Saying otherwise would claim a control the manifest does not contain. Training a p000
+    chart would restore it and is a followup, not a gap in this stage.
+
+    THE RUNGS DO NOT PAIR CELL FOR CELL. The stroke changes the reachable set, so each rung
+    draws its own grid and its `grid_hash` differs by design -- compare by target-level
+    success rate with a bootstrap CI over targets. McNemar applies WITHIN a rung, between
+    the learned and joint-space arms, and not across rungs. This is the same mistake the
+    soft arm's DOF ladder had to avoid.
+
+    IPOPT only: the solver axis is closed, and this question is about the robot.
+    """
+    wanted = set(only.split(",")) if only else None
+    want_starts = [x.strip() for x in starts.split(",") if x.strip()]
+    wall = _screw_require_statusquo_wall(wall, "stage SCREWPITCH")
+    items = []
+    for robot, label, ckpt in SCREW_PITCH_RUNGS:
+        if wanted is not None and robot not in wanted:
+            continue
+        base = _screw_base(robot, ckpt)
+        for task, token, placement in STATUSQUO_ROWS:
+            for start in want_starts:
+                items += item(robot,
+                              f"sc_{tag}_{robot}_{label}_ipopt_{token}"
+                              f"_{targets * guesses}_{int(wall)}_{start}",
+                              ["--task", task, "--start", start, "--solver", "ipopt"]
+                              + placement + base,
+                              targets, guesses, ALL_ARMS[robot], wall, shards, seed=seed)
+    return items
+
+
 def stage_INSET(wall, targets, guesses, shards, only=None, tag="INSET", seed=1):
     """Sweep the compartment depth inset, on both tasks, at reduced scale.
 
@@ -2404,12 +2642,16 @@ def _ladder_paths_match_export():
     # and already skipped.) Listed explicitly so a genuinely missing rung still fails.
     PRE_EXISTING = {"models/iiwa14/iiwa14__ddp-r1__step620000.pkl"}
 
-    ## The soft PCS arm's charts are benchmarked through SOFT_ADOPTED rather than
-    ## LADDER_RUNGS -- it is a separate stage, because the status quo is accepted work and
-    ## this robot is not yet -- so they are included here explicitly. Without this, every
-    ## soft row in ladder_runs.txt reads as "trains but nothing benchmarks it", and the
-    ## check that exists to catch a missing chart would be reporting a bookkeeping gap.
+    ## The screw-joint arm's and the soft PCS arm's charts are benchmarked by their own
+    ## stages rather than by LADDER_RUNGS -- separate stages, because the status quo is
+    ## accepted work and neither robot is yet -- so they are unioned in here explicitly.
+    ## Without this, every one of their rows in ladder_runs.txt reads as "trains but nothing
+    ## benchmarks it", and the check that exists to catch a missing chart would be reporting a
+    ## bookkeeping gap. It stays two-directional: a chart a stage names with no
+    ## ladder_runs.txt row to export it still fails.
     benchmarked = ({c for _, _, c in LADDER_RUNGS if c}
+                   | {c for _, _, c in SCREW_CHART_RUNGS}
+                   | {c for _, _, c in SCREW_PITCH_RUNGS}
                    | {c for _, c in SOFT_ADOPTED.values()}
                    | {c for _, _, c in SOFT_CHART_RUNGS}
                    | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}) - PRE_EXISTING
@@ -3183,6 +3425,125 @@ def selftest():
         print("ok   stage HARDMUG: 30 iiwa runs, every item on the nobin scene")
     fails += len(hm_fails)
 
+    ## Stage SCREW / SCREWCHART / SCREWPITCH. The invariants are about what must be true of
+    ## a row for it to stand beside the record's, plus the two things this robot can lose
+    ## silently: a missing checkpoint (a column of zeros, not an error) and a stage that
+    ## quietly fields the retired `free` placement.
+    screw_fails = []
+    screw_expected = {"SCREW": 12, "SCREWCHART": 12, "SCREWPITCH": 12}
+    screw_stages = {"SCREW": stage_SCREW, "SCREWCHART": stage_SCREWCHART,
+                    "SCREWPITCH": stage_SCREWPITCH}
+    for name, builder in sorted(screw_stages.items()):
+        runs = builder(STATUSQUO_WALL, 60, 8, 8)
+        logical = {r["id"].split("_shard")[0] for r in runs}
+        if len(logical) != screw_expected[name]:
+            screw_fails.append("stage %s has %d logical runs, expected %d"
+                               % (name, len(logical), screw_expected[name]))
+        ids = [r["id"] for r in runs]
+        if len(ids) != len(set(ids)):
+            screw_fails.append("stage %s has duplicate item ids" % name)
+        solvers_seen = set()
+        for r in runs:
+            args = r["args"]
+            if r["script"] != "scripts/screw_arm/screw_arm_benchmark.py":
+                screw_fails.append("stage %s: %s uses %s" % (name, r["id"], r["script"]))
+            if "free" in args:
+                screw_fails.append("stage %s: %s fields the retired `free` placement"
+                                   % (name, r["id"]))
+            if "--robot" not in args or "--checkpoint" not in args:
+                screw_fails.append("stage %s: %s is missing --robot or --checkpoint -- a "
+                                   "missing chart is a column of zeros, not an error"
+                                   % (name, r["id"]))
+            else:
+                robot = args[args.index("--robot") + 1]
+                ckpt = args[args.index("--checkpoint") + 1]
+                if r["robot"] != robot:
+                    screw_fails.append("stage %s: %s names robot %r but is filed under %r"
+                                       % (name, r["id"], robot, r["robot"]))
+                if not ckpt.startswith("models/%s/" % robot):
+                    screw_fails.append("stage %s: %s loads %s, which is another robot's "
+                                       "chart" % (name, r["id"], ckpt))
+            if args[args.index("--wall-time") + 1] != str(STATUSQUO_WALL):
+                screw_fails.append("stage %s: %s is not at the status-quo cap"
+                                   % (name, r["id"]))
+            if args[args.index("--arms") + 1] != "learned,numerical":
+                screw_fails.append("stage %s: %s does not field exactly the two arms"
+                                   % (name, r["id"]))
+            solvers_seen.add(args[args.index("--solver") + 1])
+        if name == "SCREW":
+            if solvers_seen != set(SOLVER_CLASSES):
+                screw_fails.append("stage SCREW covers %s, not all three method classes"
+                                   % sorted(solvers_seen))
+        elif solvers_seen != {"ipopt"}:
+            screw_fails.append("stage %s is not IPOPT-only (saw %s); the solver axis is "
+                               "closed and these stages are about the robot"
+                               % (name, sorted(solvers_seen)))
+
+    ## The pitch ladder must cover every rung exactly once per (task, protocol), or it is
+    ## not a dose-response.
+    pitch = stage_SCREWPITCH(STATUSQUO_WALL, 60, 8, 8)
+    per_robot = {}
+    for r in pitch:
+        per_robot.setdefault(r["robot"], set()).add(r["id"].split("_shard")[0])
+    if set(per_robot) != set(SCREW_TRAINED_ROBOTS):
+        screw_fails.append("stage SCREWPITCH covers %s, not every trained rung %s"
+                           % (sorted(per_robot), list(SCREW_TRAINED_ROBOTS)))
+    ## And the untrained spec must never reach a manifest: it has no chart, and a missing
+    ## checkpoint is a column of zeros rather than an error.
+    if set(per_robot) & set(SCREW_UNTRAINED):
+        screw_fails.append("stage SCREWPITCH fields %s, which is not trained"
+                           % sorted(set(per_robot) & set(SCREW_UNTRAINED)))
+    for robot, runs in sorted(per_robot.items()):
+        if len(runs) != len(STATUSQUO_ROWS) * 2:
+            screw_fails.append("stage SCREWPITCH: %s has %d runs, expected %d"
+                               % (robot, len(runs), len(STATUSQUO_ROWS) * 2))
+
+    ## And the primary rung must be a member of the pitch ladder, or the ladder is not a
+    ## control on the row stage SCREW actually reports.
+    if SCREW_PRIMARY not in per_robot:
+        screw_fails.append("stage SCREWPITCH does not include the primary rung %s, so it "
+                           "is not a control on what stage SCREW reports" % SCREW_PRIMARY)
+
+    ## Stage SCREWCAP: exactly the listed rows, each IDENTICAL to its original item apart
+    ## from the tag and the lifted iteration budgets -- so it re-measures that row and
+    ## nothing else -- and never an NLopt row, where max_iter would become max_eval.
+    cap = stage_SCREWCAP(STATUSQUO_WALL, 60, 8, 8)
+    cap_runs = {r["id"].split("_shard")[0] for r in cap}
+    if cap_runs != {f"sc_SCREWCAP_{run}" for run in SCREWCAP_ROWS}:
+        screw_fails.append("stage SCREWCAP covers %d runs, not the %d listed"
+                           % (len(cap_runs), len(SCREWCAP_ROWS)))
+    originals = {}
+    for builder, stage in ((stage_SCREW, "SCREW"), (stage_SCREWCHART, "SCREWCHART"),
+                           (stage_SCREWPITCH, "SCREWPITCH")):
+        for r in builder(STATUSQUO_WALL, 60, 8, 8):
+            originals.setdefault(r["id"][len(f"sc_{stage}_"):], r)
+    for r in cap:
+        key = r["id"][len("sc_SCREWCAP_"):]
+        o = originals.get(key)
+        if o is None:
+            screw_fails.append("stage SCREWCAP: %s has no original item" % r["id"])
+            continue
+        a, b = list(r["args"]), list(o["args"])
+        a[a.index("--tag") + 1] = b[b.index("--tag") + 1] = "TAG"
+        solver = a[a.index("--solver") + 1]
+        extra = ["--set", f"max_iter={SCREWCAP_MAX_ITER}"] + (
+            ["--set", f"snopt_iterations_limit={SCREWCAP_SNOPT_ITERATIONS}"] if solver == "snopt" else [])
+        if a != b + extra:
+            screw_fails.append("stage SCREWCAP: %s differs from its original by more than the "
+                               "iteration budgets" % r["id"])
+        if solver == "nlopt":
+            screw_fails.append("stage SCREWCAP: %s is NLopt, where max_iter is max_eval" % r["id"])
+    if not any(f.startswith("stage SCREWCAP") for f in screw_fails):
+        print("ok   stage SCREWCAP: %d runs / %d items, each its original row plus lifted "
+              "iteration budgets, wall clock unchanged" % (len(cap_runs), len(cap)))
+
+    for line in screw_fails:
+        print("FAIL " + line)
+    if not screw_fails:
+        print("ok   stages SCREW/SCREWCHART/SCREWPITCH: 12/12/12 logical runs, contained "
+              "placement, every item carrying its own rung's chart")
+    fails += len(screw_fails)
+
     ## Stage SOFT12 / SOFTDOF / SOFTCHART. The invariants are the ones this robot could
     ## plausibly get wrong, not a restatement of item(): that its rows are CONTAINED (the
     ## `free` placement is a retired setting and must never be fielded again, which cost a
@@ -3352,7 +3713,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -3360,19 +3721,22 @@ def main():
                         "setting tokens to field, so a confirmation runs only the screen's "
                         "survivors without a code edit. Must include 'default' (and, for "
                         "SNOPTCOMBO, 'mstep0p5', which is its second pre-registered bar).")
-    p.add_argument("--starts", default="paired",
-                   help="STEP, SNOPTTUNE, SNOPTCOMBO and NLOPTTUNE stages: comma-separated "
-                        "start protocols. "
-                        "STEP's 60-cell screen is 'paired' (diagnostic) and its confirmation "
-                        "is 'paired,native'. SNOPTTUNE needs 'paired,native' explicitly -- "
-                        "the default here is the screen's, and a setting measured on one "
+    p.add_argument("--starts", default=None,
+                   help="comma-separated start protocols. UNSET means each stage's OWN "
+                        "default, which is what its docstring documents -- this flag used to "
+                        "default to 'paired' and that default silently overrode every stage's, "
+                        "so a stage defined as 'both protocols' generated half of itself and "
+                        "looked complete. STEP's 60-cell screen is 'paired' (diagnostic) and "
+                        "its confirmation is 'paired,native'; a setting measured on one "
                         "protocol cannot be fielded as SNOPT's configuration.")
     p.add_argument("--triage-solvers", default="nlopt",
                    help="SOLVER2 stage only: solvers fielded at the 60-cell triage grid "
                         "instead of full scale, so a column that may be near-empty costs "
                         "triage money. Must not overlap --solvers; '' fields none.")
-    p.add_argument("--solvers", default="snopt",
-                   help="SOLVER stage only: comma-separated solvers to field alongside the "
+    p.add_argument("--solvers", default=None,
+                   help="comma-separated solvers. UNSET means each stage's OWN default -- see "
+                        "--starts for why this is not a literal. For the SOLVER stage these "
+                        "are fielded alongside the "
                         "ipopt baseline, which is always generated. The axis is three METHOD "
                         "CLASSES -- ipopt interior point, snopt SQP, nlopt augmented "
                         "Lagrangian -- so adding one should be justified by the class it "
@@ -3412,59 +3776,78 @@ def main():
         raise SystemExit("--stage is required (or --selftest)")
 
     caps = [float(c) for c in args.caps.split(",")]
+    ## An UNSET --solvers/--starts must fall through to each stage's own default rather than
+    ## to this parser's. These two flags were written for the tuning stages and their old
+    ## literal defaults ('snopt', 'paired') were passed to EVERY stage, so a stage documented
+    ## as three solvers x two protocols generated 2 of its 12 logical runs from a bare
+    ## command line -- a manifest that is valid, plausible and a third of the measurement.
+    sv = {} if args.solvers is None else {"solvers": args.solvers}
+    st = {} if args.starts is None else {"starts": args.starts}
     items = {"SOLVER": lambda: stage_SOLVER(args.wall_time, args.targets, args.guesses,
                                            args.shards, only=args.rungs,
-                                           solvers=args.solvers),
+                                           **sv),
              "SOLVER2": lambda: stage_SOLVER2(args.wall_time, args.targets, args.guesses,
                                               args.shards, only=args.rungs,
-                                              solvers=args.solvers,
+                                              **sv,
                                               triage_solvers=args.triage_solvers),
              "SWEEP": lambda: stage_SWEEP(args.wall_time, args.targets, args.guesses,
                                           args.shards, only=args.rungs,
-                                          solvers=args.solvers),
+                                          **sv),
              "STEP": lambda: stage_STEP(args.wall_time, args.targets, args.guesses,
                                         args.shards, only=args.rungs,
-                                        solvers=args.solvers, settings=args.settings,
-                                        starts=args.starts),
+                                        **sv, settings=args.settings,
+                                        **st),
              "SNOPTTUNE": lambda: stage_SNOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,
                                                  settings=args.settings,
-                                                 starts=args.starts),
+                                                 **st),
              "SNOPTCOMBO": lambda: stage_SNOPTCOMBO(args.wall_time, args.targets,
                                                    args.guesses, args.shards,
                                                    only=args.rungs,
                                                    settings=args.settings,
-                                                   starts=args.starts),
+                                                   **st),
              "STATUSQUO": lambda: stage_STATUSQUO(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
-                                                 only=args.rungs, solvers=args.solvers,
-                                                 starts=args.starts),
+                                                 only=args.rungs, **sv,
+                                                 **st),
+             "SCREW": lambda: stage_SCREW(args.wall_time, args.targets,
+                                         args.guesses, args.shards,
+                                         only=args.rungs, **sv,
+                                         **st),
+             "SCREWCHART": lambda: stage_SCREWCHART(args.wall_time, args.targets,
+                                                   args.guesses, args.shards,
+                                                   only=args.rungs, **st),
+             "SCREWPITCH": lambda: stage_SCREWPITCH(args.wall_time, args.targets,
+                                                   args.guesses, args.shards,
+                                                   only=args.rungs, **st),
+             "SCREWCAP": lambda: stage_SCREWCAP(args.wall_time, args.targets,
+                                               args.guesses, args.shards,
+                                               only=args.rungs),
              "GVS": lambda: stage_GVS(args.wall_time, args.targets,
                                       args.guesses, args.shards,
-                                      only=args.rungs, solvers=args.solvers,
-                                      starts=args.starts),
+                                      only=args.rungs, **sv, **st),
              "SOFT12": lambda: stage_SOFT12(args.wall_time, args.targets,
                                             args.guesses, args.shards,
-                                            only=args.rungs, solvers=args.solvers,
-                                            starts=args.starts),
+                                            only=args.rungs, **sv,
+                                            **st),
              "SOFTDOF": lambda: stage_SOFTDOF(args.wall_time, args.targets,
                                               args.guesses, args.shards,
-                                              only=args.rungs, starts=args.starts),
+                                              only=args.rungs, **st),
              "SOFTCHART": lambda: stage_SOFTCHART(args.wall_time, args.targets,
                                                   args.guesses, args.shards,
-                                                  only=args.rungs, starts=args.starts),
+                                                  only=args.rungs, **st),
              "SOFTCAP": lambda: stage_SOFTCAP(args.wall_time, args.targets,
                                               args.guesses, args.shards,
-                                              only=args.rungs, starts=args.starts),
+                                              only=args.rungs, **st),
              "SOFTFK": lambda: stage_SOFTFK(args.wall_time, args.targets,
                                             args.guesses, args.shards,
-                                            only=args.rungs, starts=args.starts),
+                                            only=args.rungs, **st),
              "NLOPTTUNE": lambda: stage_NLOPTTUNE(args.wall_time, args.targets,
                                                  args.guesses, args.shards,
                                                  only=args.rungs,
                                                  settings=args.settings,
-                                                 starts=args.starts),
+                                                 **st),
              "HARD": lambda: stage_HARD(args.wall_time, args.targets,
                                         args.guesses, args.shards, only=args.rungs),
              "HARDTRI": lambda: stage_HARD(args.wall_time, args.targets, args.guesses,

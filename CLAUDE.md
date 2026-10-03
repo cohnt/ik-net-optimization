@@ -755,13 +755,14 @@ refuted too, so the containment verdicts stand as measured under IPOPT.
 ## Results: the campaign of record
 
 **Stage STATUSQUO, measured 2026-09-19/20 and accepted by Thomas 2026-09-21**, joined by the soft
-arm's stage SOFT12 (identical conditions) on 2026-09-28. Hardened scene, shelf-contained targets at
+arm's stage SOFT12 (identical conditions) on 2026-09-28 and the screw-joint arm's stage SCREW on
+2026-10-02 (identical conditions, accepted with its merge). Hardened scene, shelf-contained targets at
 the **fingertips for both tasks**, **180 s**, 480 cells = 60 targets x 8 guesses, seed 1 (out of
-sample), `--compile`, adopted rungs (Panda `n6`, iiwa `n4`, soft `n6`), arms `learned,numerical`,
+sample), `--compile`, adopted rungs (Panda `n6`, iiwa `n4`, soft `n6`, screw `screw7_p050` `n6`), arms `learned,numerical`,
 both start protocols, all three solvers at their adopted configurations, Drake nightly
 `0.0.20260918`.
 
-**THE RECORD IS 36 LOGICAL RUNS: three robots x TWO experiments x two protocols x three solvers.**
+**THE RECORD IS 48 LOGICAL RUNS: four robots x TWO experiments x two protocols x three solvers.**
 The experiments are grasp and pose, both shelf-contained at the fingertips, and there are no others.
 The run also produced 12 logical runs on `--target-placement free`, which **is a vestigial setting of
 the grasp experiment and not a third experiment** (Thomas: *"preserving old settings and old
@@ -777,23 +778,25 @@ arms **adjacent**, bold the better of each pair, and **every row prints, zeros i
 
 ### What the tables say
 
-**Success. Across all 36 solver x experiment cells the learned arm wins 23, ties 10 and loses 3** --
-interior point **10/2/0**, augmented Lagrangian **7/5/0**, SQP **6/3/3**. Interior point is the best
-entry in nearly every row and **loses nothing anywhere**. **All three losses are contained grasp
-under SQP** -- two on the iiwa, one on the soft PCS arm -- so that weakness now reproduces on a
-robot whose configuration space is strain rather than joint angles, which makes it a property of
-SQP on this problem class rather than of the rigid arms. Verdicts are by exact McNemar, which is
+**Success. Across all 48 solver x experiment cells the learned arm wins 28, ties 15 and loses 5** --
+interior point **12/4/0**, augmented Lagrangian **9/7/0**, SQP **7/4/5**. Interior point is the best
+entry in nearly every row and **loses nothing anywhere**. **All five losses are contained grasp
+under SQP** -- two on the iiwa, one on the soft PCS arm, two on the screw-joint arm -- so that
+weakness reproduces on a strain-configured robot and on a non-algebraic one, which makes it a
+property of SQP on this problem class rather than of any one arm. Verdicts are by exact McNemar, which is
 also what decides a tie; the reporter prints the tally beside the table so text and table cannot
 drift.
 
-**Cost splits by TASK, not by solver**: learned is cheaper on pose and ~1.4-1.8x more expensive on
-grasp, under every solver producing a comparison. `N/A` means fewer than 10 shared solved cells.
+**Cost splits by TASK, not by solver**: learned is cheaper on pose and ~1.4-2.2x more expensive on
+grasp, under every solver producing a comparison -- with one exception, the screw arm's NLopt pose
+native row (10.1 against 4.9, on only 23 shared cells). `N/A` means fewer than 10 shared solved cells.
 
 **Runtime is the per-iteration price stated as a number.** Joint space wins every interior-point and
 SQP cell; the iiwa contained-grasp tie is bought at a **14x** premium (27.29 s against 1.90 s) while
 joint space is flat across the whole cap ladder. **Under the augmented Lagrangian the ordering
-inverts on five rows** -- the learned arm is genuinely faster there, because it converges while joint
-space burns the whole 180 s. The soft PCS arm's premium is only 2.5-6.0x, and the reason must travel
+inverts on every pose row of all four robots and on Panda grasp native** -- the learned arm is
+genuinely faster there, because it converges while joint space burns the whole 180 s. The screw
+arm's IPOPT grasp premium is the record's largest, ~26x (50.7 s against 2.0 s, mean over cells). The soft PCS arm's premium is only 2.5-6.0x, and the reason must travel
 with it: **the baseline got more expensive, not the learned arm cheaper.**
 
 **Iterations is where hardening shows**: on Panda grasp joint space needs 744 median iterations
@@ -804,7 +807,7 @@ comparable across arms.
 
 **The rescue rate is the quantity the success counts hide: 82-99% of the joint-space arm's failures
 are solved by the learned arm**, on every row of both rigid robots and both protocols, with 157-263
-failures available to rescue. The iiwa grasp ties are not even the same cells (31-35 each way), so
+failures available to rescue, and 81-93% on the screw arm's IPOPT rows. The iiwa grasp ties are not even the same cells (31-35 each way), so
 the arms are complementary where the totals agree.
 
 **CAVEAT, added 2026-09-30: every success win above is against SINGLE-START joint space, and a
@@ -838,18 +841,19 @@ contained grasp, the augmented Lagrangian and the soft arms.** This is also why 
 exact FK is the most expensive, is the most promising robot for a time-matched claim, and why
 learned FK is closed (the soft PCS arm's section).
 
-**Under NLopt all four rigid pose rows are decisive learned wins** (p from 5.4e-26 to 5.1e-68) with
-the joint-space arm never exceeding 31 of 480. **Panda contained grasp is the cleanest statement the
+**Under NLopt all six rigid pose rows are decisive learned wins** (p from 2.1e-08 to 2.4e-73; the
+screw arm's are 303 and 87 against 30) with the joint-space arm never exceeding 31 of 480. **Panda contained grasp is the cleanest statement the
 project contains: learned 327 of 480 against joint space ZERO**, p = 7.3e-99. Report it as the result
 it is: only the solver differs and joint space is the *easier* problem, so its collapse is a property
-of NLopt on this program. Two caveats travel with it -- both iiwa grasp rows are 0-2 of 480 on BOTH
-arms and carry no comparison, and **the augmented Lagrangian is extraordinarily start-sensitive**
+of NLopt on this program. Two caveats travel with it -- the iiwa and screw-arm grasp rows are 0-3 of 480 on
+BOTH arms and carry no comparison, and **the augmented Lagrangian is extraordinarily start-sensitive**
 (Panda contained grasp 327 native against **zero** paired), so that column is read per protocol and
 never pooled.
 
-**Timeouts are essentially gone at 180 s** -- at most 2 cells of 480 on any IPOPT or SNOPT row -- but
+**Timeouts are essentially gone at 180 s** -- at most 6 cells of 480 on any IPOPT or SNOPT row -- but
 that is **not** enough to call these formulation rather than cap results: see the cap check above,
-where `hit_iteration_cap` shows the grasp rows sitting at IPOPT's default `max_iter`. The cap effect
+where `hit_iteration_cap` shows the grasp rows sitting at IPOPT's default `max_iter`. (The screw
+arm's were re-measured with it lifted, stage SCREWCAP, and its IPOPT grasp ties hold.) The cap effect
 is one-directional and diagnostic: from the 45 s pairing reference to 180 s, IPOPT's learned arm gains
 +5 to +55 cells on every grasp row and **exactly +0 on every pose row**. Every row with no timeouts at
 45 s reproduces its 45 s count exactly (sole exception: Panda pose tip paired, +2), the campaign's
@@ -858,8 +862,10 @@ tightest reproducibility statement.
 **Acceptance checks all pass**, including the decisive one: iiwa `n4` contained grasp under IPOPT
 reproduces `sc_CAP_iiwa_n4_mug_180_*` exactly on all four numbers, across a different stage, the
 raised cluster caps and the Drake pin move. `median_start_q_error` is 0.0 on every paired row, joint
-space is bit-identical between protocols on every solver x row pair, and every row has 480 cells on
-both arms.
+space is bit-identical between protocols on every solver x row pair -- one exception, the screw arm's
+NLopt pose row, where a single cell that timed out under both protocols stopped at a different
+iterate (2898 against 2961 Jacobians at the 180 s cutoff), verdict-identical -- and every row has
+480 cells on both arms.
 
 ### The honest caveats, and what is closed
 
@@ -1426,6 +1432,258 @@ is spec-only. **Learned FK is closed for this robot too** (the soft PCS arm's se
 exact forward model is the expensive one, which is what makes it the most promising robot for a
 time-matched claim, so the primary rows keep it. `scripts/gvs_arm/make_untrained_chart.py` writes a gitignored untrained chart so the
 pipeline can be smoked without training, and was: both tasks, both arms, end to end.
+
+## The screw-joint arm: a robot no algebraic method can chart
+
+**MERGED TO MAIN 2026-10-02 from branch `non-analytic-arm` (closed). All five charts trained, stages
+SCREW / SCREWCHART / SCREWPITCH / SCREWCAP measured**; results below.
+`cluster/SCREW_ARM_RUNBOOK.md` holds the operations and the screens. **Stage SCREW's twelve rows
+are in the campaign of record** (end of push, 2026-10-02: 48 logical runs, four robots), accepted
+with the merge.
+
+**The identifiers say `screw` everywhere, as the prose does** -- robot `screw7_p*`, `src/screw_arm/`,
+stages SCREW / SCREWCHART / SCREWPITCH, cluster tree `~/learned-ik-screw`. Until 2026-10-02 they
+were spelled `helix`; the rename (Thomas, 2026-09-28, *"purge mentions of a 'helix arm'
+everywhere"*) moved the code, regenerated the models and manifests from the renamed generators
+(byte-identical modulo the name) and renamed the downloaded results. The cluster tree the campaign
+ran in, `~/learned-ik-helix`, was **deleted on 2026-10-02** (Thomas's call) after its screens were
+pulled down; the wandb runs keep the old name. `~/learned-ik-screw` holds the five final charts under
+the new names. `git log --follow` crosses the rename.
+
+**Why the robot exists.** An analytic column needs `FK(q)` to be *algebraic*: for a revolute arm
+every entry is a polynomial in `(cos q_i, sin q_i)`, and `c^2 + s^2 = 1` turns IK into a polynomial
+system elimination solves. A **screw joint** rotates by `q` *and* translates
+`pitch * q / (2*pi)` along the same axis, so `q` enters both trigonometrically and linearly and is
+algebraically independent of `e^{iq}` (Lindemann-Weierstrass). Abban, Li & Schicho
+(arXiv:1312.1060) state it for linkages: algebraic-geometry methods "have failed so far ... because
+of the presence of some non-algebraic relations". So this is a **generality demonstration**, like
+the soft arm — a robot class the algebraic baselines cannot touch, where the learned + optimization
+formulation needs no change at all. Two arms, `learned,numerical`.
+
+**The robot is INVENTED, and invented from scratch.** We could not find a 7+-DoF arm with a lone
+screw joint in hardware or in any public model, and the reason is structural: a lone screw pair
+carries the drive torque and the load's reaction torque through the same thread. The next section
+gives the evidence. In all of public GitHub exactly two robot models use an SDFormat `screw` joint
+and neither is an arm DOF. Given the arm must be invented it is invented **from scratch**, not by
+perturbing a benchmark arm — which would carry a real robot's name and published identity while no
+longer being that robot.
+
+**`screw7`.** A 7-DoF S-R-S arm whose **upper-arm roll is a screw joint**: the upper arm telescopes as it
+rolls, and every downstream link is offset from that axis, which is what makes the coupling
+irreducible. `src/screw_arm/params.py` **is** the robot; the SDFormat model and the batched torch FK
+are two renderings of it and a test says they agree, so there is no second source of truth and
+nothing to drift. The screw coordinate is `±2π`, deliberately symmetric about zero because
+**ikflow's first layer is `x_i / max(|lo_i|, |hi_i|)` — a pure scaling with no offset** — so a
+one-sided range would land that coordinate in `[0, 1]`. Many `q3` differing by `2π` give the same
+rotation at a different extension, so the solution set is richly multimodal, which is the property a
+flow is supposed to capture. Reach matches the iiwa (flange at z 1.26 home, 0.89 m horizontal from a
+shoulder at z 0.42), so every shelf weld, table and containment screen applies untouched.
+
+**Four rungs, one robot: pitch `{0, 0.025, 0.050, 0.100}` m/rev, primary `screw7_p050`, fixed before
+any number was read.** Every other number is shared, so the ladder is a dose-response rather than
+four robots. **`screw7_p000` is a full spec, not a code path** — a control that takes a different
+code path is not a control — and at pitch 0 the arm is an ordinary S-R-S arm for which the closed
+form is standard, so the family contains its own degenerate, algebraic member.
+
+**That member is NOT trained, by decision** (Thomas, 2026-09-25: *"Seems like a waste of time to
+train a model for [screw7_p000]. We already have analytic arms, we don't need a specific control
+example here."*). The project already fields two S-R-S arms **with** analytic columns, so a seventh
+chart would spend 620k steps rediscovering that an algebraic arm is algebraic. The spec and its
+dataset stay — the tests use it, and it is what makes the pitch a *parameter* rather than a fact
+about one robot — but the trained ladder is the three screw rungs, and the "an analytic column
+could exist here" end of the scale is held by the Panda and the iiwa. One consequence to keep in
+view: with the limit box held at ±2π for comparability, the zero-pitch member's screw coordinate
+covers the circle twice, so `q` and `q+2π` are the same configuration there and different
+everywhere else.
+
+**TRAP: every Drake parser silently discards a screw joint's `<limit>`.** `ParseJointLimits` is
+reached only for revolute and prismatic joints, in URDF and SDFormat alike, so the plant reports
+`[-inf, inf]` on that coordinate and nothing raises. The joint-limit row — the one row this robot
+exists to stress — goes vacuous, the joint-space arm's box goes unbounded, and the target sampler's
+`rng.uniform(lower, upper)` returns `nan` and spins for ever. `src/screw_arm/limits.py` repairs it
+in the program's `__init__`, after `Finalize()` and **before `ToAutoDiffXd()`**, which takes an
+independent copy that would otherwise carry the infinities for ever. Anything that builds this plant
+without constructing a program must repair it itself; `scripts/probe_shelf_acceptance.py` does.
+
+**TRAP, and it is the conditioning-frame lesson a second time: `ee_frame` must be set BEFORE
+`CalibrateFlowFrame`.** The grasp program set it after `super().__init__()`, which is what the
+iiwa's structure invites, so the calibration measured `between_fingers` and applied that 0.2 m
+offset to the flange. Nothing raised: `frame_for_flow` falls back to `self.frame`, and the offset
+**is** constant, so the constancy check passes. `X_ee_flow` must be exactly the identity on both
+tasks — which doubles as a free end-to-end witness over the whole SDFormat-versus-torch chain — and
+a test pins it.
+
+Three smaller ones worth not rediscovering. **Capsules hang Drake's proximity engine**, so collision
+geometry is a sphere union along each capsule's segment. A `<drake:collision_filter_group>` named
+after its own link raises "Non-unique name detected 2 times", hence the `cfg_` prefix. And `jrl`
+cannot parse or evaluate a screw joint at all, so `src/screw_arm/robot.py` follows the soft arm's
+shim pattern — no `super().__init__()`, and every jrl method we do not implement raises
+`NotImplementedError` naming why. `RationalForwardKinematics` refusing this arm is **not** a test:
+it keys on the joint *type*, so it refuses `screw7_p000` just as readily and distinguishes nothing.
+
+**Measured on the laptop, before anything was queued.** Torch FK against Drake 4.4e-16 position and
+1.3e-15 rotation, every link frame under 1e-12; all twelve AutoDiffXd constraint gradient blocks
+within 5.2e-10 of central differences; `X_ee_flow` exactly the identity; paired start
+`|q(start) - q_init| = 0.0` on all four rungs; 54.1-54.7% of uniform draws collision-free;
+acceptance at inset 0.10 of **0.31-0.39% grasp and 0.33-0.34% pose**, inside the rigid arms' band
+(0.55-0.68% and 0.23-0.37%), at 465-588 draws per target, with `P(trip)` zero at the fielded
+`MAX_CONSECUTIVE_REJECTIONS = 50000`. Acceptance falls monotonically with pitch on the grasp row,
+which is the stroke carrying more of the configuration box out of the shelves. The dataset builder,
+a 200-step training smoke and the export round trip all run clean.
+
+**This robot's pole screens are IN DISTRIBUTION, and that is now measured rather than argued.** The
+vendored fork's in-training callback draws its conditioning pose as a position and an orientation
+**independently**, which is a fair draw only where the arm reaches most of SO(3) at a given position.
+The soft arm does not, and its callback consequently read `pole/max` 2.4e8 against an
+in-distribution screen's 5.44 — eight orders, and a statement about unreachable poses rather than
+about the chart. The structural expectation here (7 DoF, roll-pitch-roll wrist) is that orientation
+is free, but that is exactly the kind of assumption the soft arm's experience says to stop leaving
+standing. `scripts/probe_orientation_freedom.py` settles it without an IK solver: hold the flange
+within 5 cm of the box centre `[0.4, 0, 0.5]` and measure how far an independently drawn orientation
+sits from the nearest one **achieved** there. A single such number is meaningless, being set by how
+sparsely SO(3) was sampled; **the SCALING is the measurement**, since a covering radius over a
+`d`-dimensional set falls as `N**(-1/d)`. Measured median degrees 24.1 / 16.8 / 11.7 at
+`N` = 200 / 600 / 1800 — **1.44x per 3x against the 1.44x a 3-dimensional set predicts, with no
+floor.** So the orientation set is full-dimensional, the callback's draw is reachable, and
+`ScreenDomain` returning the rigid tuple unchanged is correct. **Quote this robot's in-training pole
+curve directly beside the record's**, unlike the soft arm's. A lower-dimensional set would instead
+have plateaued at the distance from a random orientation to it — which is the general test, not a
+screw7 fact.
+
+### Why a screw joint is a sensible thing to build
+
+Asked for directly (Thomas, 2026-09-25), because an invented robot has to be defensible as a
+*machine* and not only as a test case. Claims below were checked against vendor documentation and
+patents; the three things that did **not** survive checking are named at the end, because the
+tempting version of this story is more confident than the evidence.
+
+**The pair is textbook, not exotic.** The screw pair is one of the standard lower pairs,
+symbol **H**, with **one** degree of freedom — the same as R and P, imposing five constraints
+between two spatial bodies (Lynch & Park, *Modern Robotics*, §2.2.1 and Table 2.1). It is the
+general case of which R and P are the degenerate limits: pitch 0 is a pure rotation and pitch → ∞ a
+pure translation (ibid., Def. 3.24). So `screw7`'s pitch ladder is a sweep along a standard
+one-parameter family, and its zero-pitch member is the R end of it.
+
+**Mind the pitch units; three conventions are in play.** Drake's `screw_pitch` — and this repo's
+`params.py` — is **metres per revolution**, so translation is `pitch · q / 2π` with `q` in radians.
+*Modern Robotics* defines pitch `h` in **metres per radian**, giving `d = h·θ` with no 2π; Pinocchio
+follows that convention. Machine-tool practice adds a third trap: for a single-start thread "pitch"
+equals "lead", but for a multi-start thread lead = n × pitch, and a ball-screw catalogue quantity is
+the **lead**. Never copy a pitch between libraries without converting.
+
+**Hardware realises a lone H pair in exactly two ways, and neither is sold as a robot joint.**
+
+*As an internal element.* The **Newport Picomotor** is a genuine lone screw pair: a precision
+80-threads-per-inch screw clamped in a split nut and advanced by piezo stick-slip, so the screw —
+and with it the ball tip — rotates as it translates, rigidly coupled at 317.5 µm per revolution.
+Newport's own closed-loop arithmetic confirms the coupling (6000 encoder counts per revolution at
+52.9 nm each). And it shows exactly why a lone H pair is hard to use as a joint: the drive torque
+and the load's reaction torque pass through the same thread, so Newport publishes a **torsional load
+limit of 0.018 N·m** above which the actuator stalls, and specifies pushing against a smooth flat
+pad rather than bolting a load to the tip.
+
+*As a constrained operating mode.* A **ball screw/spline** — THK's BNS-type "Precision Ball
+Screw/Spline", NB's SPBR, PMI's PBSA — puts a ball-screw groove and a ball-spline groove on one
+shaft with two independently rotatable nuts. THK names three modes: *"rotational, linear, and
+**spiral**"*. **Spiral mode is the screw pair**: drive the spline nut with the screw nut held and
+the shaft advances at the screw's lead per turn. Drive the screw nut with the spline nut held and
+you get translation; drive both together and the screw nut's rotation cancels the translation,
+giving pure rotation.
+
+**So the joint is buildable from catalogue parts — but the honest statement is narrower than "an
+actuator with this structure exists".** Spiral mode is a *constrained mode of a 2-DoF device*: the
+hardware has two independent inputs and braking one is a control choice, not a kinematic constraint
+built into the pair. We are **not aware of any commercially available actuator that realises a lone
+screw pair as a robot joint.** Every rotary-linear product on the market is either a 2-DoF
+**cylindrical** actuator with two independent drives (LinMot's PR01 linear-rotary motors; the
+ball-screw/spline SCARA quill, which patents from Epson, Fanuc, ABB, Yaskawa, Denso Wave, Mitsubishi
+Electric and Nidec Sankyo all show driven by two motors) or a screw with an anti-rotation feature,
+which makes it **prismatic**. Screw joints in the robotics literature are pedagogical — Lynch &
+Park's RPH and HRR chains are exercises.
+
+**That is the reportable finding, and it is why the arm had to be invented rather than downloaded.**
+The joint is a standard pair, buildable, and first-class in Drake, DART, Simbody and Pinocchio;
+nobody has put one in an arm. The C-pair alternative would not have served: a screw in series with a
+prismatic or revolute joint **on the same axis** is a cylindrical pair, and its IK re-coordinatises
+back to an algebraic problem under an invertible linear map — so it would look non-algebraic and not
+be. What makes `screw7`'s coupling irreducible is that the H pair is the upper-arm **roll**, so its
+translation telescopes the link it rotates about, and every downstream link is offset from that
+axis.
+
+**Three claims that did not survive checking, recorded so they do not creep back.** NSK, Hiwin and
+Nook are **not** established ball-screw/spline suppliers — "spline" does not appear in NSK's
+sitemap, Hiwin lists ball splines only, Nook could not be checked; only THK, NB and PMI are
+confirmed. Kawasaki and Omron are **not** confirmed users of a ball-screw/spline SCARA quill, unlike
+the seven makers named above. And there is **no** non-rotating-tip Picomotor variant marketed for
+attaching loads — the only rotating/non-rotating distinction Newport actually sells is the 8341NF
+*rotary-output* actuator, which is the opposite. Note also that only the BNS/SPBR/PBSA-type models
+have both nuts rotatable; THK's NS type and NB's SPBF have a fixed spline nut and are linear-only.
+
+### What the three stages measured (2026-10-01/02)
+
+Stages `SCREW` (status-quo-shaped: 2 experiments x 2 protocols x 3 solvers), `SCREWCHART` (`nb_nodes`
+4/6/8 on `p050`, IPOPT) and `SCREWPITCH` (the three trained pitches at `n6`, IPOPT): 36 logical runs
+of 480 cells at 180 s, seed 1, `--compile`, contained placement, Drake nightly `0.0.20260918`,
+352 items with zero worker failures. **Separate stages, never entries in `ADOPTED_RUNGS`.** Tables,
+with the cap and runaway columns inline: `python scripts/report_screw.py`; operations and screens:
+`cluster/SCREW_ARM_RUNBOOK.md`. **The pitch rungs do not pair** (each draws its own grid), so
+McNemar stays within a pitch, between the arms.
+
+**Stage SCREW reproduces the record's pattern on a third robot class: learned wins 5, ties 5,
+loses 2.** Interior point 2/2/0, augmented Lagrangian 2/2/0, SQP 1/1/2, and **both losses are
+contained grasp under SQP** (161 and 211 against 298) — the same weakness as the iiwa's and the soft
+PCS arm's. The learned arm takes every pose row except SQP paired (a clean tie): IPOPT 457 and 421
+against 313, NLopt **303 against 30**. It rescues 84-93% of joint space's IPOPT failures. Cost splits
+by task again, ~2.2x dearer on grasp (7.8 against 3.5) and cheaper on pose; the per-iteration
+premium is ~14x (48 against 3.3 ms). NLopt grasp is 0-3 of 480 on both arms and carries no verdict.
+
+**Stage SCREWCAP re-measured every budget-bound row with the iteration budgets lifted**
+(2026-10-02): the 17 rows where either arm had >= 24 of 480 cells at a budget, each regenerated from
+its own builder -- same seed, grid, chart and **180 s clock** -- with `max_iter` 100000 and, for SNOPT,
+`snopt_iterations_limit` too (both its INFO 31 and 32 count as the iteration cap). The clock stays
+because Thomas ruled it the usability limit: *"Don't raise the wall clock timeout. If it's that slow,
+it's not usable."* So the remaining failures are 180 s stops, and each verdict below is a result at the
+fielded clock rather than budget-bound. Iteration-capped cells are now 0 on every IPOPT row; SNOPT keeps
+10 per row that reached 100000 majors on a few thousand minors -- cycling, not under-budgeted, and under
+the 24-cell threshold. Cell-for-cell table against the originals: `python scripts/report_screw.py
+SCREWCAP`.
+
+**The IPOPT grasp ties are now ESTABLISHED ties** (427 v 424, 429 v 424; the learned arm gains 16 and
+10 cells, losing none). The SQP grasp losses stand unchanged (163 and 212 against 300), so stage SCREW's
+tally is unchanged at 5 / 5 / 2.
+
+**The chart ladder: `n4` is still the WORST rung, but by less** -- the iiwa's best. Its two grasp
+losses were the iteration cap, not the chart: lifted, `n4` gains 43 and 50 cells (losing 1) and ties
+(410 and 415 against 424). It wins pose native and still loses pose paired decisively (200 against
+313, p = 3.6e-15, at 0 capped cells and 246 timeouts). `n6` and `n8` agree (both pose rows won, both
+grasp rows tied). `n4`'s failures are not the gain-ceiling runaway: on pose paired they end at a
+median `|q|_inf` of 30 rad against ±3 rad limits, none above 1000 -- moderate out-of-limits excursions,
+what its training-time validation ratio (up to 14.7, unclamped over clamped) had flagged. The
+pre-registered `n6` stands. `p050_n6` reproduces across all three stages (411/412/411 and
+419/420/420 on grasp, exactly on pose).
+
+**The pitch ladder found the GAIN-CEILING RUNAWAY on this robot, at the SMALLEST pitch.** `p025_n6`
+is the one rung the lifted budget does not rescue: it still loses grasp native (363 against 420,
+p = 3.5e-6, 111 timeouts), ties grasp paired (398 against 420, p = 0.053) and pose paired, and wins
+pose native. **91 of its 124 original grasp failures and 158 of 188 pose-paired failures return
+`|q|_inf > 1000` rad, 73 and 58 above 1e7** — the record's 1e7-1e16 band. `p050` has none and `p100`
+some (55 of 132 on pose paired, a learned win, 359 against 310 lifted). Unlike the iiwa's single ray,
+it is a two-joint family, shoulder pitch against wrist roll at opposite sign, not the screw
+coordinate. **This is the one place a screen predicted cells**: `p025_n6` is the chart whose box
+screen ended at 9.3e5 rad, 92% of its log ceiling, against 20-27% for the other two. One chart is not
+a reversal of "the screen is a smoke test", but it is the first agreement, and it says the runaway is
+a property of the trained chart rather than of the robot class. Joint space climbs with pitch on
+grasp (420 / 424 / 434 lifted) and is flat on pose; it too gains 2-14 cells when the cap lifts.
+
+**Build datasets one at a time** — ikflow's end-of-run summary scans the shared cache directory, so
+a concurrent sibling's half-written tensor makes a finished job exit 1 with its data correct on
+disk and its `.DONE` sentinel missing, which `train_flow.sh` hard-fails without.
+
+**The curvilinear rail is deferred, not dropped.** `<drake:joint type="curvilinear">` parses in the
+pinned build with finite limits. Two things to know on return: on each piece the map is algebraic (a
+circular arc is a revolute joint about the arc centre, relabelled), so the non-algebraicity is
+global rather than pointwise; and Drake's trajectory is planar and piecewise line-and-arc only,
+which matches every real curved track and admits no clothoid or spline.
 
 ## Running on MIT SuperCloud (`cluster/`)
 

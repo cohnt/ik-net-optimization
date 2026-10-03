@@ -30,6 +30,13 @@ for it. Ported from the screw arm's probe on branch `non-analytic-arm`, made
 robot-generic: the robot is resolved through `src.register_robots`, and its
 `sample_joint_angles` / `forward_kinematics` are what jrl and ikflow call.
 
+Measured for screw7_p050 at [0.4, 0, 0.5] (that robot's conditioning box centre, so pass
+`--centre 0.4 0 0.5`) with the screw-specific original, 22.5M draws, 6,505 within 5 cm:
+median degrees to the nearest achieved orientation 24.71 / 16.85 / 11.58 / 8.12 at
+N = 200 / 600 / 1800 / 5400, i.e. 1.47x, 1.45x and 1.43x per 3x against the predicted
+1.44x. No floor, so that robot's orientation set is full-dimensional, which is why
+`ScreenDomain` returns the rigid tuple unchanged for it.
+
     GVS_ARM_XLA_THREADS=8 python scripts/probe_orientation_freedom.py --robot gvs_pushrod9_o1
 """
 import argparse
