@@ -162,17 +162,78 @@ finished 67 s under it). The default is now 11 h, under the wall. Both datasets 
 downloaded and verified: unit quaternions to 1.2e-7, 64 random rows each re-solved against the
 stored endpoints to 6.3e-8 (`o1`) and 5.8e-8 (`o2`), the float32 storage floor.
 
+## Pre-registered columns and predictions (written 2026-10-02, before any trained chart existed)
+
+Agreed with Thomas on 2026-09-30, and committed here before any trained-chart cell was read,
+because this robot's argument rests on them. Both are computed by `scripts/report_gvs.py stage`
+from the recorded cells, with no extra runs.
+
+1. **Time-matched joint space.** For every learned cell (target t, guess g), the budget is the
+   wall time the learned arm spent on that cell, success or failure. Joint space runs target t's
+   8 recorded solves in a random order and stops at the first success. The learned cell's
+   counterpart succeeds if that first success lands within the budget; the figure is averaged
+   over 2,000 random orders. Printed beside it:
+   - the STARVED share: cells whose budget exceeds all 8 joint-space solves, where the true
+     multi-start figure would be higher;
+   - the any-of-8 ceiling.
+
+   This is an analysis of recorded guesses, not multi-start machinery. It uses
+   `scripts/report_time_matched.py`'s own `row_stats`, which reproduces the record's figures
+   (soft PCS arm under IPOPT: 71.9 / 69.2 / 74.8 / 90.6%).
+2. **Iterations on mutual successes**: the median, over cells BOTH arms solved, of the per-cell
+   learned/joint-space iteration ratio. Per-arm medians over each arm's own successes compare
+   different cells.
+
+Reported beside them: the per-EVALUATION premium (ms per network-and-map evaluation,
+`solver_seconds / eval_counts["map_jacobian"]`, per arm and as a ratio) and ms per iteration.
+
+**Predictions:**
+- The per-evaluation premium is ~1.3-1.5x, because both arms pay the equilibrium solve (~14 ms
+  plus ~18 ms per Jacobian on one core) and the flow adds ~17 ms.
+- Learned success SURVIVES the time-matched column on every row where single-start joint space
+  leaves room.
+
+**Reference points, IPOPT:**
+- Rigid arms: only Panda contained grasp survives (learned 98-99% against matched 54-68%).
+- Soft PCS arm: grasp 98-99% against 69-72% and pose native 99.4% against 74.8% survive; pose
+  paired is a tie (90.8% against 90.6%).
+
+That arm's own per-evaluation premium, read from SOFT12 by the same reader, is 2.95-3.45x under
+IPOPT and 2.25-2.43x under SNOPT.
+
+**Solvers: IPOPT and SNOPT, no NLopt** (Thomas, 2026-10-02: *"it's a waste of time"*), each at its
+adopted configuration. These rows replace the soft PCS arm's IPOPT and SNOPT rows.
+
+## The go/no-go pre-check (before any training)
+
+Thomas agreed this gate on 2026-09-30. Two numbers decide whether training can show anything,
+and neither needs a trained chart:
+- **room to win**: single-start joint-space success on stage GVS's own cells (stage `GVSJS`);
+- **the premium**: measured with the untrained `n6` chart (stage `GVSPREM`). A chart's cost per
+  evaluation is set by its architecture, not its weights.
+
+Proposed thresholds: proceed if joint space leaves real room (below ~90% on the rows) AND the
+premium is below ~2x. `cluster/calibrate.sh` measures workers per node for this robot in the same
+allocation, with both arms. Read all three with `scripts/report_gvs.py precheck`.
+
 ## What is queued and what is not
 
-Built and tested locally: spec, model, generated SDF/scenes, jrl shim, registration seam,
-four programs, driver, probes, stage `GVS` (manifest generated, not submitted), the
-chained-dataset path, the preflight and rate jobs. On the cluster: the branch's own tree
-`~/learned-ik-gvs` with its environment built, the preflight passed, and the two dataset
-builds queued one at a time on a single xeon-p8 node (2026-09-29 16:12). Training and
-evaluation are out of this session's scope. The learned forward model (`--fk learned`) is
-CLOSED as not worth it (2026-09-30; `CLAUDE.md`, the soft PCS arm's section, has the
-reasoning). This robot's exact forward model is expensive, and that is what keeps a
-time-matched joint-space baseline from fitting cheap restarts into one learned solve.
+Built, tested and on the cluster: the robot and its programs, both datasets (25M + 15k,
+`rejected_unconverged` 0), the tree `~/learned-ik-gvs`.
+
+Stage GVS (128 items: 2 rungs x 2 experiments x 2 protocols x IPOPT/SNOPT x 8 shards) has two
+derived forms on the same grid, and `gen_manifest.py --selftest` checks every grid argument
+against it:
+- `GVSJS`: joint space alone, one protocol;
+- `GVSL`: learned alone, to be joined to GVSJS. Fielded only if GVSPREM shows that a joint-space
+  solve costs the same wall time in either kind of job.
+
+GVS workers run pinned to their own physical cores (`cluster/cpu_slice.py`), because unpinned
+JAX processes grow ~5 threads per visible CPU.
+
+The learned forward model (`--fk learned`) is CLOSED as not worth it (2026-09-30; `CLAUDE.md`,
+the soft PCS arm's section). This robot's exact forward model is expensive, and that is what keeps
+a time-matched joint-space baseline from fitting cheap restarts into one learned solve.
 
 ## How this compares to LOInK, once
 
