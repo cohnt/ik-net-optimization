@@ -1343,7 +1343,7 @@ and its weights were deleted.
 
 ## The GVS push-rod arm: a robot with no closed-form forward model at all
 
-**On branch `gvs-actuated-arm`, 2026-09-29.** Built and tested locally; both datasets built on the cluster; go/no-go pre-check submitted 2026-10-02; no chart trained. Numbers:
+**On branch `gvs-actuated-arm`, 2026-09-29.** Built and tested; both datasets built; go/no-go pre-check done 2026-10-02/03; charts `o1_n6` and `o2_n6` trained and proven 2026-10-04; **stage GVS running** (jobs 5826941-44). Numbers:
 `docs/gvs-arm.md`. Operations: `cluster/GVS_ARM_RUNBOOK.md`. Thomas expects this experiment to
 **replace the soft PCS arm's in the final paper**, so the PCS rows are provisional.
 

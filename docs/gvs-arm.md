@@ -299,7 +299,22 @@ These are smoke tests, not a selection criterion; `n6` was pre-registered.
   - `|q(start) - q_init|` 0.0;
   - `grid_hash` `bdc69d9a378d-mug` and `b0083a15b347-pose`, identical to GVSJS.
 
-**`gvs_pushrod9_o2__n6__step620000`**: job 5802078, started 2026-10-03 19:04.
+**`gvs_pushrod9_o2__n6__step620000`** (job 5802078: 620k steps on 4 nodes in 18.9 h,
+2026-10-03 19:04 to 2026-10-04 13:58, exit 0):
+- **Sidecar:** `nb_nodes` 6, `dim_latent_space` 9, `rnvp_clamp` 2.5.
+- **Tip error:** median **1.78 mm**, p90 3.76 mm, p99 14.4 mm.
+- **In-distribution pole screen:** `frac_gt_threshold` **0.0**, `pole/max` **3.04**, p99 1.62.
+- **`val_clamped/l2_error` 0.0139**, flat since 320k (0.0137). Unclamped it is 0.0024, with
+  31.2% of samples outside a force limit.
+- **Proof on the same cells:**
+  - grasp **4/4**, 203 median iterations;
+  - pose **4/4**, 58 median iterations;
+  - `grid_hash` `3bc41879586c-mug` and `0f8c95b12130-pose`, identical to GVSJS.
+
+The two charts are indistinguishable on every intrinsic number.
+
+**Stage GVS** was submitted 2026-10-04 15:2x as jobs 5826941-44 (128 items, 4 nodes, PROCS=2,
+staged commit `9e98604`, which carries the warmup fix).
 
 ## What is queued and what is not
 
