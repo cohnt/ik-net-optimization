@@ -6,7 +6,7 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-10-03 19:45 -- o1 CHART DONE AND PROVEN; o2 TRAINING
+## STATE AS OF 2026-10-04 15:30 -- BOTH CHARTS DONE AND PROVEN; STAGE GVS RUNNING
 
 Node budget for the 2026-10-02 session: up to 4 `xeon-g6-volta` nodes. That is TEMPORARY; ask
 again next session. Solvers: **IPOPT and SNOPT, no NLopt**. **PROCS=2 for every GVS stage.**
@@ -18,15 +18,14 @@ again next session. Solvers: **IPOPT and SNOPT, no NLopt**. **PROCS=2 for every 
 | 5800896-98, 5802411 | GVSJS, 64 items | done, merged, promoted |
 | 5802076 | training smoke, 200 steps | COMPLETED; retarget, loss and checkpoints verified |
 | 5802077 | `gvs_pushrod9_o1_n6`, 4 nodes, 620k steps | COMPLETED 19:04 (17.5 h); exported, screened, local copy in `models/gvs_pushrod9_o1/`, proof cells 8/8 |
-| **5802078** | **`gvs_pushrod9_o2_n6`**, 4 nodes, 620k steps | started 2026-10-03 19:04; ETA ~12:30 2026-10-04 |
+| 5802078 | `gvs_pushrod9_o2_n6`, 4 nodes, 620k steps | COMPLETED 2026-10-04 13:58 (18.9 h); exported, screened, local copy, proof cells 8/8 |
+| **5826941-44** | **stage GVS**, `manifest_stageGVS.txt`, 128 items, PROCS=2, staged `9e98604` | submitted 2026-10-04 |
 
 Pre-check and chart numbers: docs/gvs-arm.md. The export lands in
-`~/learned-ik-gvs/repo/models/<rung>/`; that is where to copy the final `.pkl` and `.arch.json` from. **NOT YET STAGED: `896acef`** (the driver compiles the
-equilibrium map before the grid). Staging is refused while training is queued, and the fix
-matters only for stage GVS. Stage it after `o2` finishes and before the trained-chart proof
-cells.
+`~/learned-ik-gvs/repo/models/<rung>/`; that is where to copy the final `.pkl` and `.arch.json` from. `896acef` (the driver compiles the
+equilibrium map before the grid) is STAGED, in `9e98604`, on 2026-10-04 after `o2` finished.
 
-**Then stage GVS** runs as the committed two-arm `manifest_stageGVS.txt` at **PROCS=2**, so
+**Stage GVS** runs as the committed two-arm `manifest_stageGVS.txt` at **PROCS=2**, so
 every cell is measured with the warmup fix. GVSJS stays the pre-check only. Resume checks:
 `bash cluster/submit_ladder.sh --status` (with `SC_ROOT=learned-ik-gvs`); read
 `val_clamped/l2_error` in `metrics.csv`, not `val_l2_error`.
