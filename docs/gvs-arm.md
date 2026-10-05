@@ -313,7 +313,7 @@ These are smoke tests, not a selection criterion; `n6` was pre-registered.
 
 The two charts are indistinguishable on every intrinsic number.
 
-**Stage GVS** was submitted 2026-10-04 15:2x as jobs 5826941-44 (128 items, 4 nodes, PROCS=2,
+**Stage GVS** was submitted 2026-10-04 and started 15:00 as jobs 5826941-44 (128 items, 4 nodes, PROCS=2,
 staged commit `9e98604`, which carries the warmup fix).
 
 ## What is queued and what is not
