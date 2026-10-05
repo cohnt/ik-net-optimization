@@ -6,7 +6,7 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-10-04 15:30 -- BOTH CHARTS DONE AND PROVEN; STAGE GVS RUNNING
+## STATE AS OF 2026-10-05 06:30 -- STAGE GVS DONE, COLLECTED, MERGED, REPORTED (docs/gvs-arm-tables.md)
 
 Node budget for the 2026-10-02 session: up to 4 `xeon-g6-volta` nodes. That is TEMPORARY; ask
 again next session. Solvers: **IPOPT and SNOPT, no NLopt**. **PROCS=2 for every GVS stage.**
@@ -19,7 +19,7 @@ again next session. Solvers: **IPOPT and SNOPT, no NLopt**. **PROCS=2 for every 
 | 5802076 | training smoke, 200 steps | COMPLETED; retarget, loss and checkpoints verified |
 | 5802077 | `gvs_pushrod9_o1_n6`, 4 nodes, 620k steps | COMPLETED 19:04 (17.5 h); exported, screened, local copy in `models/gvs_pushrod9_o1/`, proof cells 8/8 |
 | 5802078 | `gvs_pushrod9_o2_n6`, 4 nodes, 620k steps | COMPLETED 2026-10-04 13:58 (18.9 h); exported, screened, local copy, proof cells 8/8 |
-| **5826941-44** | **stage GVS**, `manifest_stageGVS.txt`, 128 items, PROCS=2, staged `9e98604` | submitted 2026-10-04 |
+| **5826941-44** | **stage GVS**, `manifest_stageGVS.txt`, 128 items, PROCS=2, staged `9e98604` | COMPLETED 2026-10-05 05:14-05:22, all 0:0; 128/128 done; collected `20261005-054435`, merged, promoted |
 
 Pre-check and chart numbers: docs/gvs-arm.md. The export lands in
 `~/learned-ik-gvs/repo/models/<rung>/`; that is where to copy the final `.pkl` and `.arch.json` from. `896acef` (the driver compiles the

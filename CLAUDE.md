@@ -1343,8 +1343,8 @@ and its weights were deleted.
 
 ## The GVS push-rod arm: a robot with no closed-form forward model at all
 
-**On branch `gvs-actuated-arm`, 2026-09-29.** Built and tested; both datasets built; go/no-go pre-check done 2026-10-02/03; charts `o1_n6` and `o2_n6` trained and proven 2026-10-04; **stage GVS running** (jobs 5826941-44). Numbers:
-`docs/gvs-arm.md`. Operations: `cluster/GVS_ARM_RUNBOOK.md`. Thomas expects this experiment to
+**On branch `gvs-actuated-arm`, 2026-09-29.** Built and tested; both datasets built; go/no-go pre-check done 2026-10-02/03; charts `o1_n6` and `o2_n6` trained and proven 2026-10-04; **stage GVS measured 2026-10-05** (results below). Numbers:
+`docs/gvs-arm.md`; tables `docs/gvs-arm-tables.md` (`scripts/report_gvs.py stage`). Operations: `cluster/GVS_ARM_RUNBOOK.md`. Thomas expects this experiment to
 **replace the soft PCS arm's in the final paper**, so the PCS rows are provisional.
 
 **What it is.** A spatial continuum arm driven in ACTUATION SPACE: three segments of a **tapered**
@@ -1423,6 +1423,28 @@ timeout must exceed `share x ms_each`, since the first result waits for a worker
 **The joint-space arm's failures are force saturation, not a wiring fault.** From the target, from
 straight and from random starts it converges to 1e-8; when it fails IPOPT reports local infeasibility
 with rod forces on the +-1 box. A property of the problem to report, like every other baseline's.
+
+**What stage GVS measured (2026-10-05; 16 logical runs, IPOPT and SNOPT, PROCS=2).**
+- **Success: learned wins 7, ties 9, loses 0.** IPOPT gives 5 wins and 3 ties, SNOPT 2 and 6.
+  - Pose native is 479-480 of 480 against 252-315 on both solvers.
+  - IPOPT grasp leaves joint space only 25-33 failures, so three of its four rows are ties.
+  - **No SQP grasp loss**, which is where all five of the record's losses sit.
+- **The per-evaluation premium prediction holds**: 1.31-1.48x under IPOPT and 1.15-1.24x under
+  SNOPT, against a predicted 1.3-1.5x.
+- **The time-matched prediction holds by sign on 11 of 16 rows and FAILS on every pose paired row**
+  (IPOPT 80% against 87-88%, SNOPT 57% against 94-97%).
+  - Holds decisively: IPOPT grasp (95-97% against 71-75%) and pose native.
+  - Level: the SNOPT grasp rows (-1.8 to +5.9 points).
+  - **The exact forward model did NOT make restarts expensive enough on pose paired**: from the
+    paired start the learned arm needs 3x (IPOPT) to 9x (SNOPT) its native iterations, while a
+    joint-space pose solve takes under a second. That is the soft PCS arm's one tie, reproduced.
+- **Cap check:** `hit_iteration_cap` is at most 11 of 480 everywhere, so no row is
+  iteration-budget-bound. The SNOPT rows carry 51-130 wall-clock timeouts, and those verdicts are
+  results at the fielded clock.
+- **Joint space reproduces cell for cell** across protocols and against GVSJS on every converged
+  cell.
+- **o1 and o2 do not separate on any row** (target-level bootstrap). Only the cost per evaluation
+  differs.
 
 **What is queued and what is not.** Stage `GVS` (`cluster/gen_manifest.py`: two trained rungs x two
 experiments x two protocols x **IPOPT and SNOPT, no NLopt** -- Thomas, 2026-10-02: *"it's a waste of
