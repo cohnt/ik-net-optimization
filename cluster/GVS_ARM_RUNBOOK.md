@@ -6,7 +6,8 @@ operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (it
 the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
 not have its venv or code changed under them).
 
-## STATE AS OF 2026-10-05 06:30 -- STAGE GVS DONE, COLLECTED, MERGED, REPORTED (docs/gvs-arm-tables.md)
+## STATE AS OF 2026-10-05 -- STAGE GVS DONE AND REPORTED (docs/gvs-arm-tables.md); BRANCH MERGED TO MAIN;
+## GVS DOES NOT REPLACE THE SOFT PCS ARM (Thomas). Nothing queued or running.
 
 Node budget for the 2026-10-02 session: up to 4 `xeon-g6-volta` nodes. That is TEMPORARY; ask
 again next session. Solvers: **IPOPT and SNOPT, no NLopt**. **PROCS=2 for every GVS stage.**

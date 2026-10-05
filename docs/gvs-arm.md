@@ -202,7 +202,9 @@ That arm's own per-evaluation premium, read from SOFT12 by the same reader, is 2
 IPOPT and 2.25-2.43x under SNOPT.
 
 **Solvers: IPOPT and SNOPT, no NLopt** (Thomas, 2026-10-02: *"it's a waste of time"*), each at its
-adopted configuration. These rows replace the soft PCS arm's IPOPT and SNOPT rows.
+adopted configuration. The plan was for these rows to replace the soft PCS arm's IPOPT and SNOPT rows. **They do not**
+(Thomas, 2026-10-05, after stage GVS): the time-matched prediction failed on pose paired, so the
+PCS arm stays in the record.
 
 ## The go/no-go pre-check (before any training)
 
