@@ -810,6 +810,38 @@ are solved by the learned arm**, on every row of both rigid robots and both prot
 failures available to rescue, and 81-93% on the screw arm's IPOPT rows. The iiwa grasp ties are not even the same cells (31-35 each way), so
 the arms are complementary where the totals agree.
 
+**CAVEAT, added 2026-09-30: every success win above is against SINGLE-START joint space, and a
+time-matched joint space takes back most of the rigid arms'.** The time-matched baseline gives joint
+space best-of-k from each target's 8 recorded starts, in random order and stopping at the first
+success, within the wall time the learned arm spent on the same cell. It is computed from the
+record's own cells by `scripts/report_time_matched.py`, with no new runs.
+
+| | learned | time-matched joint space | verdict |
+| --- | --- | --- | --- |
+| **IPOPT, rigid arms** | | | |
+| Panda contained grasp, native / paired | 99.2 / 98.1% | 54.0 / 67.7% | **survives**, the only rigid row that does |
+| iiwa contained grasp | 93-94% | 92-94% | tie |
+| pose, paired: iiwa / Panda | 87.9 / 84.8% | 97.8 / 96.5% | **joint space wins** |
+| pose, native: iiwa / Panda | 97.9 / 96.0% | >= 89.2 / >= 78.5% | unestablished (see below) |
+| **SQP, rigid arms** | | | survives only on Panda grasp native (91.9% against 68.2%) |
+| **Augmented Lagrangian, all robots** | | | survives on every row with a comparison: joint space does not converge, and restarts cannot fix that |
+| **IPOPT, soft PCS arm** | | | |
+| grasp, native / paired | 98.8 / 97.5% | 71.9 / 69.2% | **survives** |
+| pose native | 99.4% | 74.8% | **survives** |
+| pose paired | 90.8% | 90.6% | tie |
+
+Native pose is unestablished because joint space ran out of its 8 starts on 44-57% of those cells
+before the budget did, so its true multi-start figure is higher. The mechanism is the per-iteration
+premium: the advantage survives exactly where a joint-space solve is expensive. That is containment
+on the Panda, a costlier FK on the soft arm, and non-convergence under NLopt. On the cheap rigid pose
+rows several restarts fit into one learned solve. The rescue rate shares the limitation: joint space
+solves 95-100% of these targets from at least ONE of its 8 starts under IPOPT and SNOPT. So **state
+rigid-arm success wins as against single-start joint space, and rest any time-matched claim on Panda
+contained grasp, the augmented Lagrangian and the soft arms.** This is also why the GVS arm, whose
+exact FK is the most expensive, was expected to be the strongest time-matched robot. Measured, it
+holds on grasp and pose native and FAILS on every pose paired row (its section), and it does not
+replace the soft PCS arm. It is also why learned FK is closed (the soft PCS arm's section).
+
 **Under NLopt all six rigid pose rows are decisive learned wins** (p from 2.1e-08 to 2.4e-73; the
 screw arm's are 303 and 87 against 30) with the joint-space arm never exceeding 31 of 480. **Panda contained grasp is the cleanest statement the
 project contains: learned 327 of 480 against joint space ZERO**, p = 7.3e-99. Report it as the result
@@ -1126,7 +1158,8 @@ harder; they are simply configurations that arm cannot be given.**
 
 **On branch `soft-manipulator`.** Model, kinematics, scenes, four programs and the ikflow shim have
 landed and are tested; all five charts are trained; stages SOFT12, SOFTCHART, SOFTDOF and SOFTCAP are
-measured. Only the FK surrogate fit remains. Tables: **`docs/soft-arm-ladders.md`**. Operations:
+measured. Nothing remains open: the learned forward model was closed as not worth it (2026-09-30,
+below). Tables: **`docs/soft-arm-ladders.md`**. Operations:
 **`cluster/SOFT_ARM_RUNBOOK.md`**.
 
 **The name is deliberately "the soft PCS arm", never "the soft arm"**: other soft-arm models (a GVS
@@ -1282,17 +1315,151 @@ premium is 2.5-6.0x rather than 10-13x **because the baseline got more expensive
 learned arm got cheaper** -- and joint space is still faster per solved problem on every IPOPT and
 SNOPT row. The learned arm does win on ITERATIONS on grasp (82-92 against 123).
 
-**Learned forward kinematics is a planned axis, not a fallback.** The same
-configuration-to-plant-positions map is what a network would replace, so swapping it replaces the
-forward model for the IK constraint and the collision geometry at once. It is the general mechanism
-(SoRoMoX's GVS models integrate numerically; actuation-space hardware has no closed form), it is the
-setting LOInK is in, and it is a CONTROL rather than an advantage -- the joint-space arm uses the same
-surrogate. Two things it forces: `verify()` re-measures the task on exact kinematics through
-`VerificationQ`, and `CalibrateFlowFrame`'s tolerance becomes a recorded number. **The fit is a
-CLUSTER job and is not done**; a 4k-step laptop run reached 11 mm median against a 1 mm gate and those
-weights were deleted. Two fixes are known before spending a GPU hour: float32 for the fit with float64
-for the screen and shipped weights, and a per-segment architecture composed analytically rather than
-one net over all 33 body poses.
+**Learned forward kinematics is CLOSED as not worth it, on BOTH soft arms (Thomas,
+2026-09-30).** Do not fit a surrogate, run stage SOFTFK, or field `--fk learned`.
+
+- **It cannot change who wins.** The chart outputs a configuration, and every constraint row of
+  BOTH arms goes through FK of it. So a surrogate is a control that moves both arms alike; its only
+  effect on the comparison is its own approximation error.
+- **It weakens the paper's main claim.** Making FK cheap makes a joint-space solve cheap again, and
+  the learned arm's per-iteration premium returns toward the rigid arms' 10-13x. That lets a
+  time-matched, restart-enabled joint space fit several tries into one learned solve. The
+  record's own cells (2026-09-30) show that is exactly where the learned arm's success advantage
+  fails to survive. Under IPOPT, giving joint space best-of-k from each target's 8 recorded starts
+  within the learned cell's own wall time, only Panda contained grasp survives on the rigid arms
+  (learned 98-99% against 54-68%). The soft PCS arm, where FK already costs a joint-space solve
+  3-4x more, survives on 3 of 4 rows (grasp 98-99% against 69-72%; pose native 99.4% against
+  74.8%; pose paired a tie). An expensive forward model is what keeps the comparison fair to the
+  learned arm, so it is kept.
+- **It buys no realism on the PCS arm**, whose exact map is already a cheap closed-form torch
+  function.
+- **The deployed-hardware argument** (only learned FK exists there) applies to both arms equally
+  and is not this paper's contribution.
+
+The hook stays in the tree, unused, as refuted remedies' knobs do: `fk="learned"`,
+`src/soft_arm/fk_surrogate.py`, `scripts/soft_arm/train_fk_surrogate.py` and
+`cluster/fk_surrogate_job.sh`. `verify()` still re-measures every solution on exact kinematics
+through `VerificationQ`. The one laptop fit, 4k steps, reached 11 mm median against a 1 mm gate,
+and its weights were deleted.
+
+## The GVS push-rod arm: a robot with no closed-form forward model at all
+
+**MERGED TO MAIN 2026-10-05 from branch `gvs-actuated-arm` (closed), outside the campaign of record.** Built and tested; both datasets built; go/no-go pre-check done 2026-10-02/03; charts `o1_n6` and `o2_n6` trained and proven 2026-10-04; **stage GVS measured 2026-10-05** (results below). Numbers:
+`docs/gvs-arm.md`; tables `docs/gvs-arm-tables.md` (`scripts/report_gvs.py stage`). Operations: `cluster/GVS_ARM_RUNBOOK.md`. **It does NOT replace the soft PCS arm** (Thomas, 2026-10-05, on stage GVS: *"the GVS arm doesn't
+help our story. We can still merge it into main, but it certainly doesn't replace the other soft
+arm"*). The PCS rows stay in the record, and GVS is merged as a measured robot outside it.
+
+**What it is.** A spatial continuum arm driven in ACTUATION SPACE: three segments of a **tapered**
+(30 mm -> 15 mm) Geometric Variable Strain rod, strain a Legendre polynomial of order 0/1/2 per
+segment (rungs `gvs_pushrod9_o0/o1/o2`, primary `o1`), **three push-pull rods per segment at 120
+degrees**, each routed at 0.7 r(s) and acting only within its own segment. The configuration of every
+formulation is the **nine rod forces**, normalized to `[-1, 1]` (`F_max` = 13.2 / 7.2 / 3.4 N per
+segment, derived from one stated rule: a differential rod force reaches the PCS arm's 8.5 /m at the
+segment's mid-section). The forward map is **SoRoMoX's own GVS model solved to static equilibrium**
+(`src/gvs_arm/model.py`: Newton via optimistix, implicit differentiation, `jax.jacfwd` through the
+body poses), no gravity (a spec field, off, stated). LOInK's soft experiment is the reference
+(arXiv 2609.21275 sec. VII: SoRoMoX's planar HSA, 3 segments, 2 actuators each, simulated to
+equilibrium, IKFlow on the same data); ours is spatial, 9 inputs, with an optimization baseline they
+do not run, and Thomas rules the setups need not match: *"our contribution is orthogonal to LOInK."*
+
+**SoRoMoX IS the model, not an oracle.** Thomas: *"the point is to use that repo."* No torch
+re-derivation, no golden file; `soromox` + `jax[cpu]` + `optimistix` are runtime dependencies of the
+project venv (CPU jaxlib only -- the flow owns the GPU). What is tested is the WRAPPER: conventions,
+the rod input's sign, the implicit Jacobian, convergence, uniqueness. The PCS arm's torch map is the
+exception that motivated the old pattern, not a precedent.
+
+**Kinematic redundancy is in the inputs, enforced, and MEASURED.** Nine forces against a 6-D
+pose task (Thomas: *"at least one degree of kinematic redundancy"*); `GvsArmSpec.__post_init__`
+refuses a spec with `ninputs <= 6` and a test pins it. That is arithmetic; the kinematic claim
+is that the 6 x 9 spatial task Jacobian has rank 6, which it does on **400 of 400** uniform
+draws (condition number median 46, p95 142), and that the resulting 3-D null space can be
+TRAVELLED: a corrected walk holding the tip pose to 0.1 mm and 0.06 deg covers a median
+**1.38** of the 2.0-wide normalized force box, and **every walk stops at the force box, not at
+a singularity**. So the self-motion manifold is bounded by actuation limits rather than by
+kinematics -- the same saturation that makes the joint-space baseline fail. `dim_latent_space = 9` on every rung: the order ladder
+changes the forward model's fidelity, not the problem's width.
+
+**THE VACUITY TRAP, and why the backbone tapers.** With a uniform section, a straight-routed rod
+applies a uniform moment and the generalized stiffness is diagonal in the Legendre basis, so every
+coefficient above order 0 is EXACTLY zero at equilibrium -- an order ladder on such a rod would measure
+nothing. `EI(s) ~ r(s)^4` is what makes the strain variable. Measured and pinned by a test: a
+differential rod force gives 2.3 /m of Legendre-1 curvature on the taper and 1e-16 on a uniform rod.
+
+**Conventions are SoRoMoX's, deliberately.** Strains are `kappa_y, kappa_z, sigma_x` (local x is the
+backbone, `sigma_x = 1` the straight reference); with its default upright mounting the backbone runs
+along world +z at the origin, where every scene welds a robot, so nothing rotates a frame. Two
+consequences: the tip FRAME `gvs_tip` is declared in the SDF as `R_y(+90 deg)` on the tip body so its
+z runs along the rod (the gripper weld and the flow's conditioning pose are the same geometry as on
+every other robot), and body quaternions are canonicalised to `w >= 0`. **Tip orientation
+given tip position is 3-dimensional here despite no torsional strain** (nearest-neighbour
+shrink 1.43x per tripling against 1.44x for a 3-D set) and covers a LARGE fraction of SO(3):
+measured over 8M draws at eight tip positions, **37-93% of SO(3) within 30 deg of a reached
+orientation and 54-99% within 45 deg** (medians 71% and 87%), against a uniform control that
+saturates at 100% by 20 deg, and every figure still rising with sample size. The backbone
+tangent covers 86-100% of the sphere; what is restricted is the ROLL about it, ~50-103 deg of
+360. So "no torsion, so orientation is not free" was an inference, right about the mechanism
+and wrong about the size. It is still not all of SO(3), so the pole screen draws
+in-distribution poses.
+
+**The discretization is an approximation and its size is measured**: at the fielded 7 Gauss points
+per segment the tip error against a 40-point reference is 0.009 mm max on order 1 and 0.0075 mm on
+order 2 (order 0 exact) -- two orders below the 1 mm task gate. The sphere union follows the taper
+(radius 1.4 r(s), 37 bodies, 259 plant positions) and contains the rod with ~2 mm to spare.
+
+**The forward model is a root-find, and that is the per-iteration price**: ~14 ms per evaluation and
+~18 ms per 259 x 9 Jacobian on one CPU core, beside the flow's ~17 ms. Newton converges in a median
+of 3 steps on 2000/2000 draws; random restarts reach the same equilibrium to 3e-15, so the cold start
+from the straight arm is a deterministic map and not a selection among alternatives. A draw that
+does not converge is REJECTED AND COUNTED in the dataset sampler, never written. The whole AutoDiffXd
+chain (flow `jacrev` -> implicit `dq*/du` -> poses -> Drake collision) matches central differences to
+7e-10. XLA sizes its pools from the process's CPU affinity (jax 0.11 ignores the threads flag), so
+`run_items.sh` sets `GVS_ARM_XLA_THREADS=1` and the dataset builder pins each worker to its own CPU
+slice before JAX loads. **The dataset build is process-parallel and memory-bound**: one worker's
+vmapped solve peaks at ~2 GB + 0.7 MB per lane, so the batch is 512 and the worker count is
+capped by the node's memory (48 x 4096 was OOM-killed on 192 GB); the sampler solves each draw
+ONCE for both the tip pose and the collision screen. **The fielded build measured 436.8
+us/sample over a 48-worker xeon-p8 node, 3 h 6 min for 25M, `rejected_unconverged` 0**; order 2
+costs 1.83x that per sample (27 generalized coordinates against 18), and a build's per-worker
+timeout must exceed `share x ms_each`, since the first result waits for a worker's whole share.
+
+**The joint-space arm's failures are force saturation, not a wiring fault.** From the target, from
+straight and from random starts it converges to 1e-8; when it fails IPOPT reports local infeasibility
+with rod forces on the +-1 box. A property of the problem to report, like every other baseline's.
+
+**What stage GVS measured (2026-10-05; 16 logical runs, IPOPT and SNOPT, PROCS=2).**
+- **Success: learned wins 7, ties 9, loses 0.** IPOPT gives 5 wins and 3 ties, SNOPT 2 and 6.
+  - Pose native is 479-480 of 480 against 252-315 on both solvers.
+  - IPOPT grasp leaves joint space only 25-33 failures, so three of its four rows are ties.
+  - **No SQP grasp loss**, which is where all five of the record's losses sit.
+- **The per-evaluation premium prediction holds**: 1.31-1.48x under IPOPT and 1.15-1.24x under
+  SNOPT, against a predicted 1.3-1.5x.
+- **The time-matched prediction holds by sign on 11 of 16 rows and FAILS on every pose paired row**
+  (IPOPT 80% against 87-88%, SNOPT 57% against 94-97%).
+  - Holds decisively: IPOPT grasp (95-97% against 71-75%) and pose native.
+  - Level: the SNOPT grasp rows (-1.8 to +5.9 points).
+  - **The exact forward model did NOT make restarts expensive enough on pose paired**: from the
+    paired start the learned arm needs 3x (IPOPT) to 9x (SNOPT) its native iterations, while a
+    joint-space pose solve takes under a second. That is the soft PCS arm's one tie, reproduced.
+- **Cap check:** `hit_iteration_cap` is at most 11 of 480 everywhere, so no row is
+  iteration-budget-bound. The SNOPT rows carry 51-130 wall-clock timeouts, and those verdicts are
+  results at the fielded clock.
+- **Joint space reproduces cell for cell** across protocols and against GVSJS on every converged
+  cell.
+- **o1 and o2 do not separate on any row** (target-level bootstrap). Only the cost per evaluation
+  differs.
+
+**What is queued and what is not.** Stage `GVS` (`cluster/gen_manifest.py`: two trained rungs x two
+experiments x two protocols x **IPOPT and SNOPT, no NLopt** -- Thomas, 2026-10-02: *"it's a waste of
+time"*) is status-quo-shaped. Its go/no-go pre-check (`GVSJS` joint-space cells, `GVSPREM` premium,
+calibration) runs before any training. **Its two columns -- time-matched joint space and iterations
+on mutual successes -- and their predictions are PRE-REGISTERED in `docs/gvs-arm.md`** (written
+before any trained chart existed); `scripts/report_gvs.py` reads both stages.
+Datasets for `o1` and `o2` are BUILT (25M + 15k each, `rejected_unconverged` 0 on every draw),
+downloaded and verified, 2026-09-30; `o0`
+is spec-only. **Learned FK is closed for this robot too** (the soft PCS arm's section says why): its
+exact forward model is the expensive one, which is what made it the candidate for a
+time-matched claim, so the primary rows keep it. `scripts/gvs_arm/make_untrained_chart.py` writes a gitignored untrained chart so the
+pipeline can be smoked without training, and was: both tasks, both arms, end to end.
 
 ## The screw-joint arm: a robot no algebraic method can chart
 

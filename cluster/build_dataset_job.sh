@@ -35,9 +35,42 @@ PY="$ROOT/venv/bin/python"
 OUT="$ROOT/home/.cache/ikflow/datasets/$ROBOT"
 echo "building $ROBOT dataset: size=$SIZE seed=$SEED -> $OUT"
 
-"$PY" -u "$REPO/scripts/training/ikflow_entry.py" build_dataset \
-    --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
-RC=$?
+case "$ROBOT" in
+    gvs_*)
+        ## The GVS push-rod arm: every sample is a Newton solve on SoRoMoX's rod, and the
+        ## batched JAX solve does not spread across a node's cores (14.9 ms/sample measured
+        ## on 96 cores with XLA unpinned). scripts/gvs_arm/build_dataset_parallel.py runs
+        ## one single-threaded JAX per CPU the job owns and writes ikflow's exact files.
+        ## One thread per worker process: the builder is process-parallel, and a per-core
+        ## BLAS/OpenMP pool in each of ~96 workers exhausts RLIMIT_NPROC (measured).
+        export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 GVS_ARM_XLA_THREADS=1
+        ## ... and even so, every JAX process still creates XLA's own Eigen pool (one thread
+        ## per core, idle) and its compiler threads, which no flag in jax 0.11 turns off:
+        ## ~96 workers x ~100 threads against a SOFT process limit of 4096 killed the
+        ## second attempt at `GetPjRtCpuClient`. The hard limit is ~770k, so raise the
+        ## soft one (and the open-file one, which the symbolizer also complained about).
+        ulimit -u "$(ulimit -Hu)" 2>/dev/null || true
+        ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+        echo "process limit $(ulimit -u), open files $(ulimit -n), CPUs in cpuset $(taskset -cp $$ | cut -d: -f2)"
+        ## One worker per PHYSICAL core, each pinned to its own CPU slice (the builder's
+        ## default); DATASET_WORKERS overrides. The builder also caps the worker count by
+        ## the node's memory: 48 workers at batch 4096 peaked past 192 GB and 14 were
+        ## OOM-killed (attempt 4); the default batch is now 512, ~1.9 GB peak per worker.
+        grep MemTotal /proc/meminfo
+        ## The builder's per-result timeout must exceed the WHOLE build, not one batch: the
+        ## first `imap_unordered.next()` waits for a worker's entire share. Order 2 runs
+        ## ~38.5 ms/sample = ~20,000 s per worker, the old default itself, which would have
+        ## killed a 99%-finished build. Keep it under the Slurm wall (`WALL`).
+        export DATASET_WORKER_TIMEOUT="${DATASET_WORKER_TIMEOUT:-39600}"
+        echo "per-worker result timeout ${DATASET_WORKER_TIMEOUT} s"
+        "$PY" -u "$REPO/scripts/gvs_arm/build_dataset_parallel.py" \
+            --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
+        RC=$? ;;
+    *)
+        "$PY" -u "$REPO/scripts/training/ikflow_entry.py" build_dataset \
+            --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
+        RC=$? ;;
+esac
 
 if [ $RC -eq 0 ] && [ -d "$OUT" ]; then
     du -sh "$OUT"

@@ -20,11 +20,15 @@ every new robot has to find all three. The three are:
 IMPORT ORDER IS LOAD-BEARING at that third site: ikflow resolves `DATASET_DIR` from
 `expanduser("~")` AT IMPORT, and a path bug of exactly that shape once cost a training rung
 its entire run.
+
+Registering a robot must stay CHEAP: `src.gvs_arm.register` imports the JAX model module but
+builds no model (`GetModel` is lazy), so importing this from a Panda benchmark costs a JAX
+import and nothing else.
 """
 
 #: Modules whose import registers robots. Each is expected to be idempotent and to expose
 #: `REGISTERED`, a tuple of the names it added.
-MODULES = ("src.screw_arm.register", "src.soft_arm.register")
+MODULES = ("src.screw_arm.register", "src.soft_arm.register", "src.gvs_arm.register")
 
 
 def RegisterAll():

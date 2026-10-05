@@ -170,6 +170,16 @@ echo "===== [5/6] python deps ====="
 # device, which avoids the poll entirely; this is the belt to that pair of braces, so an
 # interactive session or a stray script cannot fail on an import.
 "$PIP" install --quiet nvidia-ml-py || Fail "nvidia-ml-py"
+# The GVS push-rod arm's forward model IS SoRoMoX (JAX), solved to equilibrium with
+# optimistix. CPU jaxlib ONLY: the flow owns the GPU, and a CUDA jax beside torch's CUDA
+# would fight it for the device and the driver. Pinned to the laptop's versions, where the
+# model tests were run; `jax[cpu]` pins jaxlib to the same version.
+"$PIP" install --quiet "jax[cpu]==0.11.2" soromox==0.5.0 optimistix==0.1.0 \
+    equinox==0.13.8 diffrax==0.7.2 lineax==0.1.1 || Fail "soromox/jax"
+"$PY" - <<'PYJAX' || Fail "jax is not CPU-only, or soromox does not import"
+import jax, soromox, optimistix
+assert jax.default_backend() == "cpu", jax.default_backend()
+PYJAX
 # Training deps (iiwa retraining campaign). Pinned to the laptop's versions. wandb runs
 # WANDB_MODE=offline on compute nodes (no internet, no credentials there); syncing to
 # the dashboard happens from the laptop.

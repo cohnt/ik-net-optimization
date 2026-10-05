@@ -138,6 +138,8 @@ Worker() {
     export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}"
     ## One thread per process: the node is filled with processes, not threads.
     export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+    ## The GVS push-rod arm's forward model is JAX on the CPU; pin XLA's pool per worker too.
+    export GVS_ARM_XLA_THREADS=1
     export TQDM_DISABLE=1 PYTHONUNBUFFERED=1
     export MPLBACKEND=Agg MPLCONFIGDIR="$TMPDIR/mpl.$LOCAL"
     export TORCHINDUCTOR_CACHE_DIR="$TMPDIR/inductor.$LOCAL"
@@ -167,7 +169,7 @@ Worker() {
     local OK=0 FAIL=0 SKIP=0
     ## Comments and blanks dropped first, so every worker numbers items alike.
     mapfile -t LINES < <(grep -vE '^[[:space:]]*(#|$)' "$MANIFEST")
-    local k LINE ID ENVS ITEM_ENVS SCRIPT ARGS REST MARKER CLAIM T0 STATUS LEFT
+    local k LINE ID ENVS ITEM_ENVS SCRIPT ARGS REST MARKER CLAIM T0 STATUS LEFT PIN
     for ((k = 0; k < ${#LINES[@]}; k++)); do
         LINE="${LINES[$k]}"
         ID="${LINE%%|*}";      REST="${LINE#*|}"
@@ -214,7 +216,18 @@ Worker() {
         ## -k: SIGTERM first so Python can unwind, then SIGKILL 60 s later.  Without it a
         ## solve wedged inside a C++ solver ignores the TERM and holds the worker until
         ## Slurm arrives, which is the failure the item cap exists to prevent.
-        env $ITEM_ENVS timeout -k 60 "$ITEM_TIMEOUT" "$PY" -u $SCRIPT $ARGS >> "$LOG" 2>&1
+        ## GVS items run PINNED to this worker's own physical cores: XLA sizes its thread
+        ## pools from the CPUs a process may use (jax 0.11 ignores the threads flag), and
+        ## unpinned workers approach the node's soft process limit -- cluster/cpu_slice.py
+        ## says why and how. Scoped to the GVS driver on purpose: every other robot's rows
+        ## were measured unpinned, and pinning them would change the record's conditions.
+        PIN=()
+        case "$SCRIPT" in
+            scripts/gvs_arm/*)
+                PIN=(taskset -c "$("$PY" "$REPO/cluster/cpu_slice.py" "$PROCS" "$LOCAL")")
+                echo "    pinned: ${PIN[*]}" >> "$LOG" 2>&1 ;;
+        esac
+        env $ITEM_ENVS "${PIN[@]}" timeout -k 60 "$ITEM_TIMEOUT" "$PY" -u $SCRIPT $ARGS >> "$LOG" 2>&1
         STATUS=$?
         if [ $STATUS -eq 0 ]; then
             touch "$MARKER"; OK=$((OK + 1))

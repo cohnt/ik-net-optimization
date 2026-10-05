@@ -350,6 +350,90 @@ def main():
         # A skip therefore means the robot itself failed to build, and must SAY so.
         print(f"  SKIP  screw7 checks unavailable: {type(exc).__name__}: {exc}")
 
+    # ------------------------------------------------------------ GVS push-rod arm
+    # The actuation-space robot, on the same base rows. Its configuration is nine rod
+    # forces and its plant carries 259 floating-body positions with +-inf limits, so the
+    # joint-limit row must be the NINE normalized force rows in [-1, 1] and not a vacuous
+    # block over the plant. The chart is built UNTRAINED, which exercises every
+    # bound-forming path and says nothing about solve quality.
+    print("\n--- GVS push-rod arm: the same base rows, and nine force rows in [-1, 1] ---")
+    try:
+        import torch
+        from ikflow.ikflow_solver import IKFlowSolver
+        from ikflow.model import IkflowModelParameters
+        from jrl.robots import get_robot
+
+        import src.register_robots  # noqa: F401
+        from src.flow_loading import LEGACY_ARCH_BY_ROBOT
+        from src.gvs_arm.params import PRIMARY as GVS_PRIMARY, GetSpec as GvsSpec
+        from src.gvs_arm_program import (GvsArmIKProgram, GvsArmIKProgramNumerical,
+                                         GvsArmMugProgram, GvsArmMugProgramNumerical)
+
+        gspec = GvsSpec(GVS_PRIMARY)
+        gopts = ProgramOptions(collision_avoidance=True, joint_limits=True, use_float64=True,
+                               latent_trust_region=gspec.latent_radius)
+        gscene = os.path.join(REPO, f"models/{GVS_PRIMARY}/{GVS_PRIMARY}_collision_hardened.yaml")
+        with HiddenPrints():
+            parameters = IkflowModelParameters()
+            parameters.__dict__.update(dict(LEGACY_ARCH_BY_ROBOT[GVS_PRIMARY], nb_nodes=4))
+            torch.manual_seed(0)
+            gsolver = IKFlowSolver(parameters, get_robot(GVS_PRIMARY))
+            gdiagram = BuildEnv(meshcat=None, directives_file=gscene)
+            gsampler = GvsArmIKProgram(gdiagram, options=gopts, rung=GVS_PRIMARY, model=gsolver)
+            gsampler.create_prog()
+            gcfg = gsampler.SampleConfiguration(rng)
+            gtarget = np.concatenate(gsampler.fk(gsampler.ExactConfigToPlantQ(gcfg)))
+
+        for cls, label in ((GvsArmIKProgram, "gvs learned"),
+                           (GvsArmIKProgramNumerical, "gvs numerical")):
+            with HiddenPrints():
+                gp = cls(gdiagram, options=gopts, rung=GVS_PRIMARY, model=gsolver)
+                gp.create_prog(gtarget)
+            lb, ub = stacked_rows(gp.prog, label)
+            if lb is None:
+                continue
+            check(f"{label}: position rows are an EQUALITY at 0",
+                  np.array_equal(lb[:3], np.zeros(3)) and np.array_equal(ub[:3], np.zeros(3)),
+                  f"lb={lb[:3]} ub={ub[:3]}")
+            check(f"{label}: orientation rows are an EQUALITY at 0",
+                  np.array_equal(lb[3:6], np.zeros(3)) and np.array_equal(ub[3:6], np.zeros(3)),
+                  f"lb={lb[3:6]} ub={ub[3:6]}")
+            limit_rows = slice(7, 7 + gspec.ninputs)
+            check(f"{label}: the joint-limit block is the {gspec.ninputs} rod-force rows, "
+                  f"not the plant's {gp.num_pos}",
+                  len(lb) == 7 + gspec.ninputs, f"{len(lb)} rows in the stacked binding")
+            check(f"{label}: force rows are the normalized box [-1, 1]",
+                  np.allclose(lb[limit_rows], -1.0) and np.allclose(ub[limit_rows], 1.0),
+                  f"lb={lb[limit_rows]} ub={ub[limit_rows]}")
+            check(f"{label}: collision row is an INEQUALITY with a finite lower bound",
+                  np.isfinite(lb[6]) and not np.isfinite(ub[6]) or ub[6] > lb[6],
+                  f"lb={lb[6]} ub={ub[6]}")
+
+        with HiddenPrints():
+            gmug_sampler = GvsArmMugProgram(gdiagram, options=gopts, rung=GVS_PRIMARY,
+                                            model=gsolver)
+            gmug_sampler.create_prog()
+            q_gm = gmug_sampler.ExactConfigToPlantQ(gmug_sampler.SampleConfiguration(rng))
+            gdiagram_with_mug, gmug = GenerateDiagramWithMug(q_gm, gmug_sampler, gscene, None)
+        for cls, label in ((GvsArmMugProgram, "gvs mug learned"),
+                           (GvsArmMugProgramNumerical, "gvs mug numerical")):
+            with HiddenPrints():
+                gpm = cls(gdiagram_with_mug, options=gopts, rung=GVS_PRIMARY, model=gsolver)
+                gpm.create_prog(target_mug=gmug)
+            lb, ub = stacked_rows(gpm.prog, label)
+            if lb is None:
+                continue
+            check(f"{label}: axis rows x, y are an EQUALITY at 0 (the task's definition)",
+                  np.array_equal(lb[:2], np.zeros(2)) and np.array_equal(ub[:2], np.zeros(2)),
+                  f"lb={lb[:2]} ub={ub[:2]}")
+            check(f"{label}: height row is a BAND, deliberately not an equality",
+                  not np.isclose(lb[2], ub[2])
+                  and np.isclose(ub[2], gopts.mug_height) and np.isclose(lb[2], -gopts.mug_height),
+                  f"lb={lb[2]} ub={ub[2]} mug_height={gopts.mug_height}")
+    except (ImportError, FileNotFoundError, RuntimeError) as exc:
+        # The chart is built in-process, so a skip means the robot itself failed to build.
+        print(f"  SKIP  GVS arm checks unavailable: {type(exc).__name__}: {exc}")
+
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failures")
     for f in FAILURES:
         print(f"  - {f}")

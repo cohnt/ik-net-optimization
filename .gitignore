@@ -14,6 +14,10 @@ models/soft12/*.pkl
 models/soft16/*.pkl
 models/soft*/*__fk_surrogate.pt
 models/soft*/*__fk_surrogate.json
+## The GVS push-rod arm's rungs, same rule.
+models/gvs_pushrod9_o*/*.pkl
+models/gvs_pushrod9_o*/*__fk_surrogate.pt
+models/gvs_pushrod9_o*/*__fk_surrogate.json
 notebooks/artifacts
 results/
 
@@ -31,3 +35,5 @@ wandb/
 
 ## The SoRoMoX oracle venv: disposable, offline-only, and 300+ MB of jaxlib.
 .venv-soromox/
+## Untrained smoke-test charts (scripts/gvs_arm/make_untrained_chart.py): never tracked, sidecar included.
+models/*/*__untrained__*
