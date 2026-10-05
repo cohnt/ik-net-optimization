@@ -45,6 +45,7 @@ from src.screw_arm.limits import ApplyScrewJointLimits, RequireFiniteLimits
 from src.screw_arm.params import SPECS as SCREW_SPECS
 from src.generic_program import ProgramOptions
 from src.shelf_regions import PointInShelfCompartments, ShelfCompartmentRegions
+from src.gvs_arm.params import RUNGS as _GVS_RUNGS
 from src.soft_arm.params import RUNGS as _SOFT_RUNGS
 from src.target_screening import SCENES, FloatingMugScreen, SceneFile
 from src.utils import BuildEnv, HiddenPrints
@@ -56,7 +57,8 @@ def parse_args():
     p.add_argument("--robots", default="panda,iiwa",
                    help="comma-separated; the record's two robots by default. The "
                         "soft PCS arm's rungs (soft9/soft12/soft16) and the screw-joint "
-                        "rungs (screw7_p000 / p025 / p050 / p100) are valid too.")
+                        "rungs (screw7_p000 / p025 / p050 / p100) and the GVS arm's "
+                        "(gvs_pushrod9_o0/o1/o2) are valid too.")
     p.add_argument("--tasks", default="mug,pose")
     p.add_argument("--insets", default="0,0.05,0.10,0.125")
     p.add_argument("--draws", type=int, default=20000)
@@ -110,7 +112,18 @@ def probe_scene(robot, task, draws, seed, scene="hardened"):
     ## makes, and the slot map is the SAME helper, so the probe and the driver cannot
     ## disagree about the layout.
     soft_spec = _SOFT_RUNGS.get(robot)
-    if soft_spec is None:
+    gvs_spec = _GVS_RUNGS.get(robot)
+    if gvs_spec is not None:
+        ## The GVS push-rod arm: draw nine normalized rod forces, map through SoRoMoX's
+        ## equilibrium. Same slot-map helper as its program, so the two cannot disagree.
+        from src.gvs_arm.model import GetModel, PlantSlotMap as GvsPlantSlotMap
+
+        gvs_model = GetModel(gvs_spec)
+        picks = GvsPlantSlotMap(plant, gvs_spec)
+
+        def draw_plant_q():
+            return gvs_model.PlantQ(rng.uniform(-1.0, 1.0, size=gvs_spec.ninputs))[picks]
+    elif soft_spec is None:
         lower, upper = plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits()
 
         def draw_plant_q():
