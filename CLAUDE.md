@@ -838,8 +838,9 @@ rows several restarts fit into one learned solve. The rescue rate shares the lim
 solves 95-100% of these targets from at least ONE of its 8 starts under IPOPT and SNOPT. So **state
 rigid-arm success wins as against single-start joint space, and rest any time-matched claim on Panda
 contained grasp, the augmented Lagrangian and the soft arms.** This is also why the GVS arm, whose
-exact FK is the most expensive, is the most promising robot for a time-matched claim, and why
-learned FK is closed (the soft PCS arm's section).
+exact FK is the most expensive, was expected to be the strongest time-matched robot. Measured, it
+holds on grasp and pose native and FAILS on every pose paired row (its section), and it does not
+replace the soft PCS arm. It is also why learned FK is closed (the soft PCS arm's section).
 
 **Under NLopt all six rigid pose rows are decisive learned wins** (p from 2.1e-08 to 2.4e-73; the
 screw arm's are 303 and 87 against 30) with the joint-space arm never exceeding 31 of 480. **Panda contained grasp is the cleanest statement the
@@ -1343,9 +1344,10 @@ and its weights were deleted.
 
 ## The GVS push-rod arm: a robot with no closed-form forward model at all
 
-**On branch `gvs-actuated-arm`, 2026-09-29.** Built and tested; both datasets built; go/no-go pre-check done 2026-10-02/03; charts `o1_n6` and `o2_n6` trained and proven 2026-10-04; **stage GVS measured 2026-10-05** (results below). Numbers:
-`docs/gvs-arm.md`; tables `docs/gvs-arm-tables.md` (`scripts/report_gvs.py stage`). Operations: `cluster/GVS_ARM_RUNBOOK.md`. Thomas expects this experiment to
-**replace the soft PCS arm's in the final paper**, so the PCS rows are provisional.
+**MERGED TO MAIN 2026-10-05 from branch `gvs-actuated-arm` (closed), outside the campaign of record.** Built and tested; both datasets built; go/no-go pre-check done 2026-10-02/03; charts `o1_n6` and `o2_n6` trained and proven 2026-10-04; **stage GVS measured 2026-10-05** (results below). Numbers:
+`docs/gvs-arm.md`; tables `docs/gvs-arm-tables.md` (`scripts/report_gvs.py stage`). Operations: `cluster/GVS_ARM_RUNBOOK.md`. **It does NOT replace the soft PCS arm** (Thomas, 2026-10-05, on stage GVS: *"the GVS arm doesn't
+help our story. We can still merge it into main, but it certainly doesn't replace the other soft
+arm"*). The PCS rows stay in the record, and GVS is merged as a measured robot outside it.
 
 **What it is.** A spatial continuum arm driven in ACTUATION SPACE: three segments of a **tapered**
 (30 mm -> 15 mm) Geometric Variable Strain rod, strain a Legendre polynomial of order 0/1/2 per
@@ -1453,9 +1455,9 @@ calibration) runs before any training. **Its two columns -- time-matched joint s
 on mutual successes -- and their predictions are PRE-REGISTERED in `docs/gvs-arm.md`** (written
 before any trained chart existed); `scripts/report_gvs.py` reads both stages.
 Datasets for `o1` and `o2` are BUILT (25M + 15k each, `rejected_unconverged` 0 on every draw),
-downloaded and verified, 2026-09-30; charts and the benchmark are out of this session's scope; `o0`
+downloaded and verified, 2026-09-30; `o0`
 is spec-only. **Learned FK is closed for this robot too** (the soft PCS arm's section says why): its
-exact forward model is the expensive one, which is what makes it the most promising robot for a
+exact forward model is the expensive one, which is what made it the candidate for a
 time-matched claim, so the primary rows keep it. `scripts/gvs_arm/make_untrained_chart.py` writes a gitignored untrained chart so the
 pipeline can be smoked without training, and was: both tasks, both arms, end to end.
 
