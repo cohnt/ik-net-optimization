@@ -314,7 +314,8 @@ These are smoke tests, not a selection criterion; `n6` was pre-registered.
 The two charts are indistinguishable on every intrinsic number.
 
 **Stage GVS** was submitted 2026-10-04 and started 15:00 as jobs 5826941-44 (128 items, 4 nodes, PROCS=2,
-staged commit `9e98604`, which carries the warmup fix).
+staged commit `9e98604`, which carries the warmup fix). It finished 2026-10-05 05:22 with all 128
+items done, and was collected and merged the same morning. **Results: `docs/gvs-arm-tables.md`.**
 
 ## What is queued and what is not
 

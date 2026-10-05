@@ -198,12 +198,13 @@ def stage(prefix):
               "cluster/join_arm_runs.py)")
         return 1
     rng = np.random.default_rng(0)
+    tally = {}
     print(f"=== STAGE GVS -- {CELLS} cells, 180 s, seed 1, exact forward model")
     print("Verdicts by exact McNemar; cost on cells both arms solved (reported_cost); "
           "'TM' = time-matched joint space (pre-registered).")
     hdr = (f"{'row':<36}{'L':>5}{'JS':>5}{'p':>9}{'verdict':>12}{'L it':>6}{'JS it':>6}"
            f"{'it L/JS':>8}{'L cost':>8}{'JS cost':>8}{'L s':>7}{'JS s':>7}"
-           f"{'rescue':>9}{'TM JS':>7}{'starv':>6}{'any8':>6}"
+           f"{'rescue':>9}{'L %':>8}{'TM JS':>7}{'L-TM':>6}{'starv':>6}{'any8':>6}"
            f"{'ms/ev L':>8}{'JS':>6}{'x':>6}{'L to/ic':>8}{'JS to/ic':>9}")
     print(hdr)
     print("-" * len(hdr))
@@ -221,13 +222,23 @@ def stage(prefix):
         le, je = median(ms_per_eval(s["records"]["learned"])), median(ms_per_eval(s["records"]["numerical"]))
         lto, lic = cap_counts(s["records"]["learned"])
         jto, jic = cap_counts(s["records"]["numerical"])
+        v = verdict(L['succ'], J['succ'], p)
+        tally.setdefault(t["solver"], {}).setdefault(v, 0)
+        tally[t["solver"]][v] += 1
         label = f"{t['robot'].replace('gvs_pushrod9_', '')} {t['solver']} {ROW_NAME[t['row']]} {t['start']}"
-        print(f"{label:<36}{L['succ']:>5}{J['succ']:>5}{p:>9.2g}{verdict(L['succ'], J['succ'], p):>12}"
+        print(f"{label:<36}{L['succ']:>5}{J['succ']:>5}{p:>9.2g}{v:>12}"
               f"{f(L['iters']):>6}{f(J['iters']):>6}{f(ratio, 2):>8}"
               f"{f(L['cost'], 2):>8}{f(J['cost'], 2):>8}{f(L['wall'], 1):>7}{f(J['wall'], 1):>7}"
-              f"{f'{res}/{js_fail}':>9}{100 * tm['J_match']:>6.1f}%{100 * tm['starved']:>5.0f}%"
+              f"{f'{res}/{js_fail}':>9}{100 * L['succ'] / CELLS:>7.1f}%{100 * tm['J_match']:>6.1f}%"
+              f"{100 * (L['succ'] / CELLS - tm['J_match']):>+6.1f}{100 * tm['starved']:>5.0f}%"
               f"{100 * tm['J_any']:>5.0f}%{f(le, 1):>8}{f(je, 1):>6}"
               f"{f(le / je if le and je else None, 2):>6}{f'{lto}/{lic}':>8}{f'{jto}/{jic}':>9}")
+    for solver, c in sorted(tally.items(), key=lambda kv: ORDER[kv[0]]):
+        print(f"\nTally, {solver}: " + ", ".join(f"{k} {n}" for k, n in sorted(c.items())))
+    print("'L-TM' = learned success rate minus time-matched joint space, in points: the "
+          "pre-registered prediction is that it is positive wherever single-start joint space "
+          "leaves room. Read it with 'starv', the share of cells where the true multi-start "
+          "figure is higher.")
     print("\nCap check: 'to/ic' = timed_out / hit_iteration_cap. A loss or tie where the losing "
           "arm has a budget-bound population that could close the gap carries NO verdict.")
 
