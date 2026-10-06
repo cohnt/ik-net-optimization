@@ -322,7 +322,8 @@ items done, and was collected and merged the same morning. **Results: `docs/gvs-
 ## What is queued and what is not
 
 Built, tested and on the cluster: the robot and its programs, both datasets (25M + 15k,
-`rejected_unconverged` 0), the tree `~/learned-ik-gvs`.
+`rejected_unconverged` 0). The cluster tree `~/learned-ik-gvs` was folded into `~/learned-ik`
+on 2026-10-06 (`cluster/GVS_ARM_RUNBOOK.md` says what moved where).
 
 Stage GVS (128 items: 2 rungs x 2 experiments x 2 protocols x IPOPT/SNOPT x 8 shards) has two
 derived forms on the same grid, and `gen_manifest.py --selftest` checks every grid argument

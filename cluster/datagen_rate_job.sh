@@ -5,9 +5,9 @@
 # If even REMOTELY unsure about a SuperCloud action, STOP and ask Thomas.
 # ===========================================================================
 #
-# Submit (from ~/learned-ik-gvs/repo on the login node) -- the same partition and core
+# Submit (from ~/learned-ik/repo on the login node) -- the same partition and core
 # count the dataset build will use, so the number transfers:
-#   LEARNED_IK_ROOT=$HOME/learned-ik-gvs LLsub ./cluster/datagen_rate_job.sh -s 48 -q xeon-p8 -T 00:40:00 -J gvs_cal_rate
+#   LLsub ./cluster/datagen_rate_job.sh -s 48 -q xeon-p8 -T 00:40:00 -J gvs_cal_rate
 #
 # WHY A JOB. The rate is a reportable number that sizes DATASET_SIZE and the build's wall
 # time, so it is measured where the build runs and not on a login or debug node (standing
