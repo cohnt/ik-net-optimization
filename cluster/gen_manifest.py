@@ -2645,6 +2645,44 @@ def stage_TRAJ(wall, targets, guesses, shards, only=None, tag="TRAJ", seed=1):
     return items
 
 
+def _mergechk_pick(items, shards):
+    """Items of a stage of record restricted to IPOPT/SNOPT rows of the record's two experiments,
+    and to the named 8-way shards. NLopt is left out: its cells mostly run to the clock, and only
+    converged cells are compared."""
+    keep = tuple(f"_shard{k}of8" for k in shards)
+    out = []
+    for it in items:
+        a = it["args"]
+        if a[a.index("--solver") + 1] not in ("ipopt", "snopt"):
+            continue
+        if "_mugshelf_" not in it["id"] and "_posetip_" not in it["id"]:
+            continue
+        if it["id"].endswith(keep):
+            out.append(it)
+    return out
+
+
+def stage_MERGECHK(which):
+    """Diagnostic for the merge of ~/learned-ik-gvs into ~/learned-ik (2026-10-06).
+
+    It re-runs slices of the stages of record VERBATIM from the merged tree, with only the tag
+    changed (sc_MERGECHK_...). A converged cell is exactly reproducible (stage STEP's control;
+    stage GVS across protocols and against GVSJS), so the check is cell-for-cell. On every cell
+    that converged in both runs, verdicts and iteration counts must be identical. The merged
+    tree's venv gained the JAX stack, so every robot is checked, not only the GVS arm.
+
+    `GVS` (PROCS=2, as stage GVS ran): shards 0 and 4 of all 16 stage GVS rows, both arms.
+    `REC` (PROCS=8, as the record ran): shard 0 of every IPOPT/SNOPT row of STATUSQUO (Panda,
+    iiwa), SOFT12 and SCREW. Two manifests because PROCS is per submission.
+    """
+    if which == "GVS":
+        return retag(_mergechk_pick(stage_GVS(180, 60, 8, 8), (0, 4)), "MERGECHK")
+    rec = []
+    for st in (stage_STATUSQUO, stage_SOFT12, stage_SCREW):
+        rec += _mergechk_pick(st(180, 60, 8, 8), (0,))
+    return retag(rec, "MERGECHK")
+
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -3827,6 +3865,32 @@ def selftest():
         print(f"ok   stages GVS/GVSJS/GVSL: 16/8/16 logical runs over {GVS_TRAINED_RUNGS}, "
               f"{GVS_SOLVERS}, contained, status-quo cap, one grid across all three")
 
+    ## MERGECHK must re-run the stages of record VERBATIM -- the COMMITTED manifests the stored
+    ## results came from, not this file's current idea of those stages -- with only the tag moved.
+    mc_fails = []
+    here = os.path.dirname(os.path.abspath(__file__))
+    on_disk = {}
+    for st in ("GVS", "STATUSQUO", "SOFT12", "SCREW"):
+        with open(os.path.join(here, f"manifest_stage{st}.txt")) as fh:
+            for line in fh:
+                if line.strip() and not line.startswith("#"):
+                    ident, env, script, args = line.rstrip("\n").split("|", 3)
+                    on_disk[ident] = (env, script, args)
+    for which, want in (("GVS", 32), ("REC", 32)):
+        items = stage_MERGECHK(which)
+        if len(items) != want:
+            mc_fails.append(f"MERGECHK{which} has {len(items)} items, expected {want}")
+        for it in items:
+            orig = it["id"].replace("sc_MERGECHK_", "sc_", 1)
+            args = " ".join(it["args"]).replace("sc_MERGECHK_", "sc_", 1)
+            if on_disk.get(orig) != (it["env"], it["script"], args):
+                mc_fails.append(f"{it['id']} is not its committed original {orig} re-tagged")
+    for msg in mc_fails[:10]:
+        print(f"FAIL {msg}")
+    fails += len(mc_fails)
+    if not mc_fails:
+        print("ok   MERGECHK GVS/REC: 32/32 items, each a committed stage-of-record item re-tagged")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -3844,7 +3908,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -3958,6 +4022,8 @@ def main():
              "GVS": lambda: stage_GVS(args.wall_time, args.targets,
                                       args.guesses, args.shards,
                                       only=args.rungs, **sv, **st),
+             "MERGECHKGVS": lambda: stage_MERGECHK("GVS"),
+             "MERGECHKREC": lambda: stage_MERGECHK("REC"),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
