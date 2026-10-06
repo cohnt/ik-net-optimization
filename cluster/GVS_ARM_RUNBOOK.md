@@ -2,9 +2,23 @@
 
 What is queued, what it depends on, and what a resuming session should check first. The
 design and the measured facts live in `CLAUDE.md` and `docs/gvs-arm.md`; this is the
-operational half. Branch `gvs-actuated-arm`; cluster tree `~/learned-ik-gvs` (its own, per
-the two-tree rule: the default `~/learned-ik` carries Thomas's soft PCS arm jobs and must
-not have its venv or code changed under them).
+operational half. Branch `gvs-actuated-arm` (merged and deleted 2026-10-05).
+
+**THE CLUSTER TREE `~/learned-ik-gvs` WAS FOLDED INTO `~/learned-ik` on 2026-10-06** and no longer
+exists. It was its own tree for the campaign's life, under the two-tree rule. Read every
+`~/learned-ik-gvs` below as `~/learned-ik`, and drop every `SC_ROOT=learned-ik-gvs` and
+`LEARNED_IK_ROOT=$HOME/learned-ik-gvs`, since the defaults are the main tree.
+
+What moved where:
+- **Datasets:** to `home/.cache/ikflow/datasets/gvs_pushrod9_o{1,2}`.
+- **Training runs and pole screens:** to `results/train/` and `results/pole/`.
+- **Stage results and state:** `results/gvs_pushrod9_o*` and `state/manifest_stageGVS*`.
+- **Charts:** to `repo/models/gvs_pushrod9_o{1,2}/`.
+- **Calibration:** renamed, to `calib/gpu-procs.gvs` and `calibrate.gpu-procs.gvs.*`.
+- **The venv:** the main venv gained the JAX stack via `cluster/add_jax_stack_job.sh`, pinned to the
+  versions stage GVS ran with, with no pre-existing package moved.
+- **The check:** the merge was verified by re-running slices of every stage of record from the
+  merged tree (stages `MERGECHKGVS` and `MERGECHKREC`, `cluster/gen_manifest.py`).
 
 ## STATE AS OF 2026-10-05 -- STAGE GVS DONE AND REPORTED (docs/gvs-arm-tables.md); BRANCH MERGED TO MAIN;
 ## GVS DOES NOT REPLACE THE SOFT PCS ARM (Thomas). Nothing queued or running.

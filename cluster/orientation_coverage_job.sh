@@ -5,8 +5,8 @@
 # If even REMOTELY unsure about a SuperCloud action, STOP and ask Thomas.
 # ===========================================================================
 #
-# Submit (from ~/learned-ik-gvs/repo on the login node):
-#   LEARNED_IK_ROOT=$HOME/learned-ik-gvs LLsub ./cluster/orientation_coverage_job.sh \
+# Submit (from ~/learned-ik/repo on the login node):
+#   LLsub ./cluster/orientation_coverage_job.sh \
 #       -s 48 -q xeon-p8 -T 02:00:00 -J gvs_cal_cover
 #
 # WHY A JOB. Answering it needs tens of millions of equilibrium solves: the tip must land
