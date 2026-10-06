@@ -4,8 +4,7 @@ What is queued, what it depends on, and what a resuming session should check fir
 design and the measured facts live in `CLAUDE.md` and `docs/gvs-arm.md`; this is the
 operational half. Branch `gvs-actuated-arm` (merged and deleted 2026-10-05).
 
-**THE CLUSTER TREE `~/learned-ik-gvs` WAS FOLDED INTO `~/learned-ik` on 2026-10-06** and no longer
-exists. It was its own tree for the campaign's life, under the two-tree rule. Read every
+**THE CLUSTER TREE `~/learned-ik-gvs` WAS FOLDED INTO `~/learned-ik` on 2026-10-06, verified, and DELETED.** It was its own tree for the campaign's life, under the two-tree rule. Read every
 `~/learned-ik-gvs` below as `~/learned-ik`, and drop every `SC_ROOT=learned-ik-gvs` and
 `LEARNED_IK_ROOT=$HOME/learned-ik-gvs`, since the defaults are the main tree.
 
@@ -19,6 +18,17 @@ What moved where:
   versions stage GVS ran with, with no pre-existing package moved.
 - **The check:** the merge was verified by re-running slices of every stage of record from the
   merged tree (stages `MERGECHKGVS` and `MERGECHKREC`, `cluster/gen_manifest.py`).
+  - Scope: 64 items, jobs 5839685-88, all `COMPLETED 0:0`.
+  - **Result: PASSED** (`python scripts/check_mergechk.py`). Over 8,960 cells, every cell that converged
+    in both runs reproduced its original exactly, verdict and iteration count, on all five robots:
+    Panda and iiwa 2,048, screw 1,024, soft PCS 1,024, GVS 3,840.
+  - The 132 cells that differ all hit the 180 s clock in at least one run (129 GVS, 3 soft PCS).
+    That is allowed.
+- **Preserved before deletion:** the gpu-procs calibration's 75 per-worker runs had lived only in
+  the GVS tree's `repo/results`. They were moved to `results/gvs_pushrod9_o1/benchmark/calib_gpu_*` and
+  copied to the laptop.
+- **`~/learned-ik-gvs` was then DELETED on 2026-10-06**, after a guarded audit found no result file,
+  checkpoint or dataset not already in `~/learned-ik`.
 
 ## STATE AS OF 2026-10-05 -- STAGE GVS DONE AND REPORTED (docs/gvs-arm-tables.md); BRANCH MERGED TO MAIN;
 ## GVS DOES NOT REPLACE THE SOFT PCS ARM (Thomas). Nothing queued or running.
