@@ -8,7 +8,7 @@
 # Submit as a job (never on a login node) -- a smoke test, so debug-cpu is the right pool:
 #   ROBOT=gvs_pushrod9_o1 \
 #     LLsub ./cluster/preflight_root.sh -s 8 -q debug-cpu -T 00:20:00 -J gvs_cal_preflight
-#   LEARNED_IK_ROOT=$HOME/learned-ik-screw ROBOT=screw7_p050 \
+#   ROBOT=screw7_p050 \
 #     LLsub ./cluster/preflight_root.sh -s 8 -q debug-cpu -T 00:20:00 -J screw_cal_preflight
 #
 # WHY IT EXISTS. An isolated tree can be complete enough to build datasets and still be
