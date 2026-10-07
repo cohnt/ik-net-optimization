@@ -2677,6 +2677,13 @@ def stage_MERGECHK(which):
     """
     if which == "GVS":
         return retag(_mergechk_pick(stage_GVS(180, 60, 8, 8), (0, 4)), "MERGECHK")
+    if which == "SCREW":
+        ## The 2026-10-07 fold of ~/learned-ik-screw: every screw chart that was not already
+        ## checked (p050_n6 was, in REC), plus all of SCREWCAP, whose results lived only there.
+        ## Shards 0 and 4, PROCS=8 as those stages ran.
+        other = [it for st in (stage_SCREWCHART, stage_SCREWPITCH) for it in st(180, 60, 8, 8)
+                 if "_p050_n6_" not in it["id"]]
+        return retag(_mergechk_pick(other + stage_SCREWCAP(180, 60, 8, 8), (0, 4)), "MERGECHK")
     rec = []
     for st in (stage_STATUSQUO, stage_SOFT12, stage_SCREW):
         rec += _mergechk_pick(st(180, 60, 8, 8), (0,))
@@ -3870,13 +3877,13 @@ def selftest():
     mc_fails = []
     here = os.path.dirname(os.path.abspath(__file__))
     on_disk = {}
-    for st in ("GVS", "STATUSQUO", "SOFT12", "SCREW"):
+    for st in ("GVS", "STATUSQUO", "SOFT12", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP"):
         with open(os.path.join(here, f"manifest_stage{st}.txt")) as fh:
             for line in fh:
                 if line.strip() and not line.startswith("#"):
                     ident, env, script, args = line.rstrip("\n").split("|", 3)
                     on_disk[ident] = (env, script, args)
-    for which, want in (("GVS", 32), ("REC", 32)):
+    for which, want in (("GVS", 32), ("REC", 32), ("SCREW", 66)):
         items = stage_MERGECHK(which)
         if len(items) != want:
             mc_fails.append(f"MERGECHK{which} has {len(items)} items, expected {want}")
@@ -3889,7 +3896,7 @@ def selftest():
         print(f"FAIL {msg}")
     fails += len(mc_fails)
     if not mc_fails:
-        print("ok   MERGECHK GVS/REC: 32/32 items, each a committed stage-of-record item re-tagged")
+        print("ok   MERGECHK GVS/REC/SCREW: 32/32/66 items, each a committed stage item re-tagged")
 
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
@@ -3908,7 +3915,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -4024,6 +4031,7 @@ def main():
                                       only=args.rungs, **sv, **st),
              "MERGECHKGVS": lambda: stage_MERGECHK("GVS"),
              "MERGECHKREC": lambda: stage_MERGECHK("REC"),
+             "MERGECHKSCREW": lambda: stage_MERGECHK("SCREW"),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
