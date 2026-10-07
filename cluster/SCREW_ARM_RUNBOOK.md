@@ -3,6 +3,38 @@
 What would be queued, what it depends on, and what a resuming session should check first.
 The design and the measured facts live in `CLAUDE.md`; this is the operational half.
 
+## IN FLIGHT 2026-10-07: folding `~/learned-ik-screw` into `~/learned-ik` (resume here)
+
+**Done already:**
+- **Moved into `~/learned-ik`:** the four charts it had alone (p025_n6, p050_n4/n8, p100_n6;
+  p050_n6 was already there and byte-identical), 144 `results/screw_arm/benchmark/*` dirs (SCREWCAP,
+  REPRO_*), the SCREWCAP/SCREWREPRO job logs and `state/manifest_stageSCREW{CAP,REPRO}`.
+- **Venv, Drake and sysdeps:** these were symlinks into the main tree all along, so the environment
+  did not change.
+- **Staged:** `dd32790`.
+
+**Running:** the merge check, stage `MERGECHKSCREW`.
+- Jobs 5848458-60 and 5848463 started 2026-10-07 11:32, with 66 items at PROCS=8.
+- Projected finish ~14:00-15:00 EDT.
+- It runs on Slurm alone and needs nothing from the laptop.
+
+**To resume:**
+1. `SC_ROOT=learned-ik bash cluster/collect_results.sh --status`. Wait until
+   `manifest_stageMERGECHKSCREW` shows 66 done and no MERGECHK job is queued.
+2. Collect with `bash cluster/collect_results.sh`, then run `python scripts/check_mergechk.py`. It must
+   end `MERGE CHECK PASSED`, with zero differences on converged cells, for all 66 SCREW shards
+   alongside the 64 earlier ones.
+3. Audit `~/learned-ik-screw` the way `~/learned-ik-gvs` was audited (GVS runbook, "Preserved before
+   deletion"):
+   - every file under its `repo/results` must exist under `~/learned-ik/results`;
+   - no `*.pkl`/`*.ckpt` may remain outside the venv symlink.
+
+   Move anything unique first, then `rm -rf ~/learned-ik-screw`. Its `venv`, `drake` and `sysdeps`
+   are symlinks, and `rm -rf` removes the links, not their targets.
+4. Update the location lines: CLAUDE.md's screw section ("`~/learned-ik-screw` holds the five
+   final charts"), this runbook, and the `LEARNED_IK_ROOT=$HOME/learned-ik-screw` examples in
+   `cluster/preflight_root.sh` and `cluster/chain_datasets.sh`. Commit and push to main.
+
 **STATUS (2026-10-02): CAMPAIGN COMPLETE, MERGED TO MAIN, BRANCH CLOSED.** All five charts trained and exported; stages SCREW,
 SCREWCHART and SCREWPITCH ran as jobs 5792792-5792803 (submitted 2026-10-01 19:56, drained
 2026-10-02 07:30, 352 items, zero worker failures, all on `xeon-g6-volta`). Merged summaries are
