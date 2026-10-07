@@ -1470,13 +1470,14 @@ are in the campaign of record** (end of push, 2026-10-02: 48 logical runs, four 
 with the merge.
 
 **The identifiers say `screw` everywhere, as the prose does** -- robot `screw7_p*`, `src/screw_arm/`,
-stages SCREW / SCREWCHART / SCREWPITCH, cluster tree `~/learned-ik-screw`. Until 2026-10-02 they
+stages SCREW / SCREWCHART / SCREWPITCH. Until 2026-10-02 they
 were spelled `helix`; the rename (Thomas, 2026-09-28, *"purge mentions of a 'helix arm'
 everywhere"*) moved the code, regenerated the models and manifests from the renamed generators
 (byte-identical modulo the name) and renamed the downloaded results. The cluster tree the campaign
 ran in, `~/learned-ik-helix`, was **deleted on 2026-10-02** (Thomas's call) after its screens were
-pulled down; the wandb runs keep the old name. `~/learned-ik-screw` holds the five final charts under
-the new names. `git log --follow` crosses the rename.
+pulled down; the wandb runs keep the old name. The five final charts, under the new names, live in
+`~/learned-ik`. Its own tree `~/learned-ik-screw` was folded in and deleted on 2026-10-07, after the
+merge check passed (`cluster/SCREW_ARM_RUNBOOK.md`). `git log --follow` crosses the rename.
 
 **Why the robot exists.** An analytic column needs `FK(q)` to be *algebraic*: for a revolute arm
 every entry is a polynomial in `(cos q_i, sin q_i)`, and `c^2 + s^2 = 1` turns IK into a polynomial

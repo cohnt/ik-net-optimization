@@ -6,7 +6,7 @@
 # ===========================================================================
 #
 # Usage, from the repo root:
-#   LEARNED_IK_ROOT=$HOME/learned-ik-screw bash cluster/chain_datasets.sh screw7_p050 screw7_p000
+#   bash cluster/chain_datasets.sh screw7_p050 screw7_p000
 #   bash cluster/chain_datasets.sh gvs_pushrod9_o1 gvs_pushrod9_o2
 #
 # WHY A CHAIN AND NOT A BATCH. ikflow's end-of-run summary walks the WHOLE dataset

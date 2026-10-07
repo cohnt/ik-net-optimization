@@ -3,7 +3,8 @@
 
 Each sc_MERGECHK_* shard re-ran a committed stage-of-record item verbatim (cluster/gen_manifest.py,
 `stage_MERGECHK`) after ~/learned-ik-gvs was folded into ~/learned-ik and the main venv gained the
-JAX stack (2026-10-06). A cell that converges is exactly reproducible -- stage STEP's
+JAX stack (2026-10-06), and after ~/learned-ik-screw was folded in too (stage MERGECHKSCREW,
+2026-10-07). A cell that converges is exactly reproducible -- stage STEP's
 same-configuration control, and stage GVS across protocols and against GVSJS -- so the test is
 cell for cell against the original merged run:
 
