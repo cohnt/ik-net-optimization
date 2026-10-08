@@ -2707,6 +2707,35 @@ def stage_SEGVREP(copies=32):
     return [retag(base, f"SEGV{k:02d}")[0] for k in range(copies)]
 
 
+SEGV_CELL = "16:7"
+
+
+def stage_SEGVFIX(cell_copies=30, full_copies=2, dump_every=5):
+    """Validate the stall-dump fix (StallWatchdog, src/benchmark.py) against stage SEGVREP.
+
+    SEGVREP's crashes were faulthandler.dump_traceback_later firing on SEGV_ITEM's cell 16:7, a
+    SNOPT cell that cycles for ~2.4 h, once every cell_timeout = 1200 s; ~7% of dumps killed the
+    process. Here `cell_copies` copies run ONLY that cell (`--cells`) with the dump every
+    `dump_every` s, ~1,700 dumps each, so the old watchdog would have killed every one within
+    minutes. `full_copies` run the whole item verbatim, so `scripts/check_mergechk.py --prefix
+    'SEGVFIX\\d\\d'` can show the fix moves no converged cell. Same PROCS=8 packing as SEGVREP.
+    """
+    base = [it for it in stage_SCREWCAP(180, 60, 8, 8) if it["id"] == SEGV_ITEM]
+    assert len(base) == 1, base
+    out = []
+    for k in range(cell_copies + full_copies):
+        it = retag(base, f"SEGVFIX{k:02d}")[0]
+        if k < cell_copies:
+            ## --shard and --cells are mutually exclusive, so the tag carries no shard suffix.
+            args = list(it["args"])
+            i = args.index("--shard")
+            del args[i:i + 2]
+            args += ["--cells", SEGV_CELL, "--cell-timeout", str(dump_every)]
+            it = dict(it, args=args,
+                      id=it["id"].replace("_shard0of8", "_cell" + SEGV_CELL.replace(":", "_")))
+        out.append(it)
+    return out
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -3917,6 +3946,19 @@ def selftest():
         args = re.sub(r"sc_SEGV\d\d_", "sc_", " ".join(it["args"]), count=1)
         if orig != SEGV_ITEM or on_disk.get(orig) != (it["env"], it["script"], args):
             mc_fails.append(f"{it['id']} is not {SEGV_ITEM} re-tagged")
+    fix = stage_SEGVFIX()
+    if len(fix) != 32 or len({it["id"] for it in fix}) != 32:
+        mc_fails.append("SEGVFIX must be 32 distinctly tagged copies")
+    for k, it in enumerate(fix):
+        orig = re.sub(r"^sc_SEGVFIX\d\d_", "sc_", it["id"])
+        args = re.sub(r"sc_SEGVFIX\d\d_", "sc_", " ".join(it["args"]), count=1)
+        want = on_disk.get(SEGV_ITEM)
+        if want is not None and k < 30:
+            orig = orig.replace("_cell16_7", "_shard0of8")
+            want = (want[0], want[1], want[2].replace("--shard 0/8 ", "")
+                    + f" --cells {SEGV_CELL} --cell-timeout 5")
+        if orig != SEGV_ITEM or want != (it["env"], it["script"], args):
+            mc_fails.append(f"{it['id']} is not {SEGV_ITEM} re-tagged (+ the cell restriction)")
     for msg in mc_fails[:10]:
         print(f"FAIL {msg}")
     fails += len(mc_fails)
@@ -3940,7 +3982,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -4058,6 +4100,7 @@ def main():
              "MERGECHKREC": lambda: stage_MERGECHK("REC"),
              "MERGECHKSCREW": lambda: stage_MERGECHK("SCREW"),
              "SEGVREP": lambda: stage_SEGVREP(),
+             "SEGVFIX": lambda: stage_SEGVFIX(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
