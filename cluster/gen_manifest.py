@@ -2468,8 +2468,15 @@ def stage_ITCAP():
             items.append(retag([dict(it, args=args + extra)], prefix)[0])
     return items
 
-def stage_CUDAGRAPH():
+def stage_CUDAGRAPH(suffix=""):
     """End-to-end check of `flow_cuda_graph`: the record's IPOPT rows, with and without it.
+
+    `suffix="P2"` (stage CUDAGRAPHP2) is the same stage tagged sc_CGCTRLP2_ / sc_CUDAGRAPHP2_
+    and MUST be submitted at PROCS=2: one process per V100, the timing a one-solve-at-a-time
+    deployment sees. At PROCS=8 four processes time-slice each card, which costs only the
+    learned arm (joint space never touches the GPU) -- a benchmark artefact, not a property
+    of the formulation (Thomas, 2026-10-08: "In a real application, the solves would be
+    one-at-a-time"). PROCS is a submit-time setting, so it lives in the tag.
 
     Both rigid adopted rungs x grasp and pose x both protocols, IPOPT, 180 s, `PROCS=8` as
     the record ran -- each row twice in ONE stage, so the control and the graphed run share
@@ -2486,8 +2493,9 @@ def stage_CUDAGRAPH():
         if "free" in it["id"]:
             continue
         args = list(it["args"]) + _itcap_extra("ipopt")[1]
-        items += retag([dict(it, args=args)], "CGCTRL")
-        items += retag([dict(it, args=args + ["--set", "flow_cuda_graph=True"])], "CUDAGRAPH")
+        items += retag([dict(it, args=args)], f"CGCTRL{suffix}")
+        items += retag([dict(it, args=args + ["--set", "flow_cuda_graph=True"])],
+                       f"CUDAGRAPH{suffix}")
     return items
 
 
@@ -4097,7 +4105,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -4218,6 +4226,7 @@ def main():
              "SEGVFIX": lambda: stage_SEGVFIX(),
              "ITCAP": lambda: stage_ITCAP(),
              "CUDAGRAPH": lambda: stage_CUDAGRAPH(),
+             "CUDAGRAPHP2": lambda: stage_CUDAGRAPH("P2"),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),

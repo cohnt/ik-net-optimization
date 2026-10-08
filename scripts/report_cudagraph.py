@@ -21,7 +21,8 @@ Per row:
   - the control against the record (stage ITCAP for the grasp rows, STATUSQUO for pose), the
     acceptance check that the re-run reproduces what was reported.
 
-    python scripts/report_cudagraph.py
+    python scripts/report_cudagraph.py        # stage CUDAGRAPH, PROCS=8
+    python scripts/report_cudagraph.py P2     # stage CUDAGRAPHP2, one process per V100
 """
 import os
 import sys
@@ -56,22 +57,24 @@ def gained_lost(old, new, arm):
 
 def main():
     os.chdir(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-    graph = load("sc_CUDAGRAPH_STATUSQUO_", cells=480)
-    ctrl = load("sc_CGCTRL_STATUSQUO_", cells=480)
+    sfx = sys.argv[1] if len(sys.argv) > 1 else ""
+    G_, C_ = f"sc_CUDAGRAPH{sfx}_STATUSQUO_", f"sc_CGCTRL{sfx}_STATUSQUO_"
+    graph = load(G_, cells=480)
+    ctrl = load(C_, cells=480)
     if not graph:
         print("no merged sc_CUDAGRAPH runs found")
         return 1
     f = lambda x, pr=1: "--" if x is None else "%.*f" % (pr, x)
-    print("### Stage CUDAGRAPH: IPOPT, 180 s, PROCS=8, control (`--compile`) against "
+    print(f"### Stage CUDAGRAPH{sfx}: IPOPT, 180 s, PROCS={2 if sfx == 'P2' else 8}, control (`--compile`) against "
           "`--compile --set flow_cuda_graph=True`\n")
     print("| row | ms/it L ctrl -> graph (x) | ms/it J ctrl / graph | premium L/J ctrl -> graph "
           "| L time-to-solve, shared cells (x, n) | L success ctrl -> graph (gained / lost, p) "
           "| verdict ctrl -> graph | same its | L iters ctrl / graph | timeouts L ctrl / graph |")
     print("| " + " | ".join(["---"] * 10) + " |")
     for tag, g in sorted(graph.items()):
-        run = tag[len("sc_CUDAGRAPH_STATUSQUO_"):]
+        run = tag[len(G_):]
         name = run.replace("_ipopt", "").replace("_480_180", "")
-        c = ctrl.get(f"sc_CGCTRL_STATUSQUO_{run}")
+        c = ctrl.get(f"{C_}{run}")
         if c is None:
             print(f"| {name} | CONTROL NOT FOUND |" + " |" * 8)
             continue
@@ -103,7 +106,7 @@ def main():
           "| joint discordant |")
     print("| --- | --- | --- | --- | --- |")
     for tag, c in sorted(ctrl.items()):
-        run = tag[len("sc_CGCTRL_STATUSQUO_"):]
+        run = tag[len(C_):]
         name = run.replace("_ipopt", "").replace("_480_180", "")
         rec = (load(f"sc_ITCAP1e6_STATUSQUO_{run}", cells=480).get(f"sc_ITCAP1e6_STATUSQUO_{run}")
                or load(f"sc_STATUSQUO_{run}", cells=480).get(f"sc_STATUSQUO_{run}"))
