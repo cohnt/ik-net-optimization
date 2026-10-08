@@ -238,8 +238,13 @@ Worker() {
             ## a stage looks like it produced nothing. The item id IS the run's
             ## tag (gen_manifest.py passes the base tag and the shard suffix the
             ## script appends reproduces it), so one glob finds the directory
-            ## whichever robot it belongs to.
-            for RD in "$REPO"/results/*/benchmark/"$ID"; do
+            ## whichever robot it belongs to. An item whose id does NOT reproduce
+            ## its tag (a --cells copy: stage SEGVFIX's ids ended `_cell16_7`,
+            ## its tags did not) is published by the tag it was given, which
+            ## otherwise strands its output in $REPO/results unpublished.
+            TAG=$(sed -n 's/.*--tag \([^ ]*\).*/\1/p' <<< "$ARGS")
+            for RD in "$REPO"/results/*/benchmark/"$ID" \
+                      ${TAG:+"$REPO"/results/*/benchmark/"$TAG"}; do
                 [ -d "$RD" ] || continue
                 REL="${RD#"$REPO"/results/}"
                 mkdir -p "$RESULTS_ROOT/$(dirname "$REL")"

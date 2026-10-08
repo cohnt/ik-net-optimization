@@ -50,6 +50,18 @@ The design and the measured facts live in `CLAUDE.md`; this is the operational h
   reading `sys._current_frames()`. Under the same 1 ms stress it survives 120,000 dumps, every one
   complete. Idle, it costs nothing measurable, and neither does `PYTHONFAULTHANDLER=1`.
   `tests/test_stall_watchdog.py` pins both the survival and the absence of `dump_traceback_later`.
+- **Validated on the cluster by stage SEGVFIX** (2026-10-07/08, jobs 5854887-90, PROCS=8, e29a333):
+  - 30 copies ran cell `16:7` alone with a 5 s cell timeout, so the watchdog dumped every 5 s for
+    ~2.5 h, plus 2 full copies of the item at the fielded 1200 s.
+  - **32 of 32 exited 0, after 53,608 dumps in total (~1,786 per single-cell copy).** At SEGVREP's
+    ~7% per dump, the old watchdog would not have survived one copy.
+  - Cell (16,7) is **bit-identical** to SCREWCAP's original on both arms in all 32 runs (iterations,
+    status, `max_violation`).
+  - The full copies pass `check_mergechk.py --prefix 'SEGVFIX\d\d'`, and the learned arm's
+    non-clock wall time is 0.81x the original, so the watchdog costs nothing measurable.
+  - The 30 single-cell copies' output was stranded unpublished in `repo/results`: their ids carried a
+    `_cell16_7` suffix their tag did not, and `run_items.sh` published by id only. It now also
+    publishes by `--tag`.
 - **SNOPT does not enforce its time limit on a cycling cell.** `learned_16_7` ran 8,066 s in the
   original SCREWCAP. Cells over 1.2x the clock: SCREWCAP 27, GVS 25, older SNOPT stages up to 773,
   all at INFO 32/34/41. **None was scored feasible**, so no verdict depends on it; mean wall-clock
