@@ -2690,6 +2690,23 @@ def stage_MERGECHK(which):
     return retag(rec, "MERGECHK")
 
 
+SEGV_ITEM = "sc_SCREWCAP_screw7_p050_n6_snopt_mugshelf_480_180_paired_shard0of8"
+
+
+def stage_SEGVREP(copies=32):
+    """Reproduce the SIGSEGV of 2026-10-07 (cluster/SCREW_ARM_RUNBOOK.md).
+
+    MERGECHKSCREW's copy of this SCREWCAP item died with status 139 after 5942 s while packed 8 to a
+    node; its original ran 10097 s cleanly, and a lone retry with the fault handler on ran 8666 s
+    cleanly. So the crash is not a deterministic property of the cell sequence. This runs `copies`
+    verbatim copies, each under its own tag `sc_SEGVnn_...`, with the fault handler OFF (Thomas,
+    2026-10-07), at PROCS=8 as the crash ran, so a recurrence rate can be read off.
+    """
+    base = [it for it in stage_SCREWCAP(180, 60, 8, 8) if it["id"] == SEGV_ITEM]
+    assert len(base) == 1, base
+    return [retag(base, f"SEGV{k:02d}")[0] for k in range(copies)]
+
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -3892,6 +3909,14 @@ def selftest():
             args = " ".join(it["args"]).replace("sc_MERGECHK_", "sc_", 1)
             if on_disk.get(orig) != (it["env"], it["script"], args):
                 mc_fails.append(f"{it['id']} is not its committed original {orig} re-tagged")
+    seg = stage_SEGVREP()
+    if len(seg) != 32 or len({it["id"] for it in seg}) != 32:
+        mc_fails.append("SEGVREP must be 32 distinctly tagged copies")
+    for it in seg:
+        orig = re.sub(r"^sc_SEGV\d\d_", "sc_", it["id"])
+        args = re.sub(r"sc_SEGV\d\d_", "sc_", " ".join(it["args"]), count=1)
+        if orig != SEGV_ITEM or on_disk.get(orig) != (it["env"], it["script"], args):
+            mc_fails.append(f"{it['id']} is not {SEGV_ITEM} re-tagged")
     for msg in mc_fails[:10]:
         print(f"FAIL {msg}")
     fails += len(mc_fails)
@@ -3915,7 +3940,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -4032,6 +4057,7 @@ def main():
              "MERGECHKGVS": lambda: stage_MERGECHK("GVS"),
              "MERGECHKREC": lambda: stage_MERGECHK("REC"),
              "MERGECHKSCREW": lambda: stage_MERGECHK("SCREW"),
+             "SEGVREP": lambda: stage_SEGVREP(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
