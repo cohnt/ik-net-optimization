@@ -271,6 +271,19 @@ class ProgramOptions:
     # compile; the benchmark scripts turn it on and warm it up before the grid.
     compile_flow_jacobian: bool = field(default=False, metadata={"help": "torch.compile the flow Jacobian once per process and share it between programs"})
 
+    # CUDA-graph replay of the compiled flow, on BOTH paths a solve uses: the jacrev and the
+    # plain forward pass, which IPOPT runs as often as the jacrev (Drake evaluates constraint
+    # values in double and costs in AutoDiffXd, so each trial point costs one of each) and
+    # which is otherwise eager, uncompiled and recording autograd for nothing. Replay drops
+    # the CPU dispatch that bounds a batch-1 call. Measured on a V100, float64, against
+    # --compile: jacrev 4.40 -> 2.37 ms (Panda n6), 3.14 -> 1.62 ms (iiwa n4); forward pass
+    # 7.07 -> 0.70 and 4.79 -> 0.49 ms against the eager path it replaces -- about 3.7x on
+    # the flow work of an IPOPT trial point and ~1.9x under SNOPT, which never takes the
+    # value path. The replayed Jacobian is the compiled one's kernels. Requires
+    # compile_flow_jacobian, and like it moves iterations per wall-clock cap, so every run
+    # being compared must set it the same way. Capture is offline: WarmUpJacobian pays it.
+    flow_cuda_graph: bool = field(default=False, metadata={"help": "Replay the compiled flow (jacrev and forward pass) as CUDA graphs; requires compile_flow_jacobian"})
+
 
     ## Evaluation sharing ##
     # Every Drake binding evaluates its own callback, so the joint-centering cost used to
@@ -585,6 +598,11 @@ class ProgramOptions:
         ## Deliberately NOT gated on `which_solver == "nlopt"`. A manifest that sets an NLopt
         ## field on an IPOPT arm is a broken sweep and should say so rather than run.
         CheckNloptOptions(self)
+        ## Graphing the eager jacrev is not possible (it allocates its basis offsets with a
+        ## host-to-device copy every call, illegal under capture), and graphing anything
+        ## else would be a third configuration nobody measured.
+        if self.flow_cuda_graph and not self.compile_flow_jacobian:
+            raise ValueError("flow_cuda_graph requires compile_flow_jacobian (--compile)")
 
 
 
@@ -688,9 +706,86 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
 
 _COMPILED_JACOBIANS = {}
 
+## ------------------------------ CUDA-graph replay ------------------------------ ##
+#
+# At batch 1 a compiled flow call is still ~290 kernel launches described one at a time from
+# Python; a CUDA graph records them once and replays them in one launch. What it bakes in:
+# the kernels, the parameters' and buffers' ADDRESSES, and the input/output buffers. So the
+# network must not be re-cast or have its parameters reassigned after capture (`.to()` to the
+# dtype it already has is a no-op, which is why ConfigureNetworkDtype stays safe), and dynamo's
+# guards are evaluated at capture only -- replay checks nothing. Keyed like the compiled
+# Jacobian, so one graph per process serves every program in a grid.
 
-def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_error_scale=0.0):
-    """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked.
+_FLOW_GRAPHS = {}
+## Set by WarmUpJacobian once the graphs exist. A capture after that point would be paid
+## inside a timed solve -- compile and capture are offline compute and must not be -- so it
+## raises instead of quietly eating the cap.
+_FLOW_GRAPHS_FROZEN = False
+
+
+def FreezeFlowGraphs(frozen=True):
+    global _FLOW_GRAPHS_FROZEN
+    _FLOW_GRAPHS_FROZEN = frozen
+
+
+class GraphedFlowCall:
+    """`fn` replayed as a CUDA graph; same signature, returns a tuple of fresh tensors.
+
+    Captured lazily, on the first call, at that call's input shape; any other shape, or a
+    CPU device, falls through to `fn`. Outputs are cloned out of the graph's static buffers,
+    because the next replay overwrites them.
+    """
+
+    def __init__(self, fn, grad_enabled):
+        self.fn = fn
+        self.grad_enabled = grad_enabled
+        self.graph = None
+        self.captures = 0
+
+    def _capture(self, example):
+        if _FLOW_GRAPHS_FROZEN:
+            raise RuntimeError(
+                "a flow CUDA graph would be captured inside a timed solve; WarmUpJacobian "
+                "must capture every graph the grid uses (is a program holding a different "
+                "network, dtype or input width?)")
+        mode = torch.enable_grad if self.grad_enabled else torch.no_grad
+        self.static_in = example.detach().clone()
+        current = torch.cuda.current_stream(example.device)
+        side = torch.cuda.Stream(device=example.device)
+        side.wait_stream(current)
+        with torch.cuda.stream(side), mode():       # warm up (and compile) off the capture
+            for _ in range(3):
+                self.fn(self.static_in)
+        current.wait_stream(side)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph), mode():
+            out = self.fn(self.static_in)
+        self.static_out = out if isinstance(out, tuple) else (out,)
+        torch.cuda.synchronize(example.device)
+        self.graph = graph
+        self.captures += 1
+
+    def __call__(self, x):
+        if x.device.type != "cuda":
+            return self.fn(x)
+        if self.graph is None:
+            self._capture(x)
+        elif x.shape != self.static_in.shape or x.dtype != self.static_in.dtype:
+            return self.fn(x)
+        self.static_in.copy_(x)
+        self.graph.replay()
+        return tuple(t.clone() for t in self.static_out)
+
+
+def _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale):
+    return (id(nn_model), width, num_arm_dof, str(device),
+            next(nn_model.parameters()).dtype, float(chart_error_scale))
+
+
+def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_error_scale=0.0,
+                    cuda_graph=False):
+    """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked, and
+    replayed as a CUDA graph on top of that if asked.
 
     Reverse mode is the right primitive at this shape -- 7 outputs against 21 inputs, of
     which 13 reach the network -- and the measurements behind that are in CLAUDE.md.
@@ -700,11 +795,38 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
         has_aux=True)
     if not compile_it:
         return jacobian_gen
-    key = (id(nn_model), width, num_arm_dof, str(device),
-           next(nn_model.parameters()).dtype, float(chart_error_scale))
+    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale)
     if key not in _COMPILED_JACOBIANS:
         _COMPILED_JACOBIANS[key] = torch.compile(jacobian_gen)
-    return _COMPILED_JACOBIANS[key]
+    if not cuda_graph:
+        return _COMPILED_JACOBIANS[key]
+    graph_key = key + ("jacobian",)
+    if graph_key not in _FLOW_GRAPHS:
+        _FLOW_GRAPHS[graph_key] = GraphedFlowCall(_COMPILED_JACOBIANS[key], grad_enabled=True)
+    return _FLOW_GRAPHS[graph_key]
+
+
+def FlowValueGen(nn_model, width, num_arm_dof, device, chart_error_scale=0.0):
+    """`vars -> (q, q)` for the plain forward pass: compiled, under no_grad, CUDA-graphed.
+
+    Used only under `flow_cuda_graph`; otherwise the forward pass stays the eager
+    `MakeFlowInference`, so a run without the switch is exactly what it always was.
+    """
+    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale) + ("value",)
+    if key not in _FLOW_GRAPHS:
+        infer = MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale)
+
+        def forward(vars):
+            with torch.no_grad():
+                return infer(vars)[0]
+        graphed = GraphedFlowCall(torch.compile(forward), grad_enabled=False)
+
+        def value(vars):
+            (q,) = graphed(vars)
+            return q, q
+        value.graphed = graphed
+        _FLOW_GRAPHS[key] = value
+    return _FLOW_GRAPHS[key]
 
 
 def regularize_jacobian(jacobian_np, options):
@@ -837,11 +959,14 @@ class IKFlowProgram:
         self.latent_trust_constraint.evaluator().set_description("LatentTrustRegion")
 
     def FlowInference(self):
-        """The eager forward pass, built once per program and shared with the compiled
-        Jacobian so both paths run identical code."""
+        """The forward pass, built once per program and shared with the compiled
+        Jacobian so both paths run identical code. Eager, unless `flow_cuda_graph`
+        replays the compiled pass instead."""
         fn = getattr(self, "_flow_inference", None)
         if fn is None:
-            fn = self._flow_inference = MakeFlowInference(
+            make = (FlowValueGen if getattr(self.options, "flow_cuda_graph", False)
+                    else MakeFlowInference)
+            fn = self._flow_inference = make(
                 self.ik_solver.nn_model, self.ik_solver.network_width,
                 self.num_arm_dof, DEVICE, self.options.chart_error_scale)
         return fn
@@ -849,7 +974,8 @@ class IKFlowProgram:
     def MakeJacobianGen(self):
         return FlowJacobianGen(
             self.ik_solver.nn_model, self.ik_solver.network_width, self.num_arm_dof,
-            DEVICE, self.options.compile_flow_jacobian, self.options.chart_error_scale)
+            DEVICE, self.options.compile_flow_jacobian, self.options.chart_error_scale,
+            cuda_graph=getattr(self.options, "flow_cuda_graph", False))
 
     def WarmUpJacobian(self):
         """Pay torch.compile's one-off cost outside any timed solve.
@@ -865,6 +991,10 @@ class IKFlowProgram:
         start = time.time()
         gen = self.MakeJacobianGen()
         gen(tensor)
+        if getattr(self.options, "flow_cuda_graph", False):
+            ## Both graphs, here and not in the first solve; then no more may be made.
+            self.FlowInference()(tensor)
+            FreezeFlowGraphs()
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         return time.time() - start
