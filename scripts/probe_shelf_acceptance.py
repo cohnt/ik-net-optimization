@@ -91,7 +91,12 @@ def probe_scene(robot, task, draws, seed, scene="hardened"):
     ## that looks exactly like a too-deep inset.
     if robot in SCREW_SPECS:
         ApplyScrewJointLimits(plant, SCREW_SPECS[robot])
-    RequireFiniteLimits(plant, f"{robot}/{task}")
+    if robot not in _SOFT_RUNGS and robot not in _GVS_RUNGS:
+        ## The continuum arms' plants carry quaternion floating bodies whose limits are
+        ## +-inf by construction; their configuration is drawn below in strain / force
+        ## space, never from the plant's limits, so the check is only meaningful (and only
+        ## passes) on the arms whose plant positions ARE the configuration.
+        RequireFiniteLimits(plant, f"{robot}/{task}")
 
     ## Read off the defaults rather than retyping them, so the probe cannot drift from the
     ## benchmark's own collision geometry.

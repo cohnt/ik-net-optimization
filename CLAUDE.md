@@ -293,6 +293,24 @@ frame its target *is*, recorded per run as `placement_point`. And the panda *gra
 decorative mugs, so hardening removes strictly less from it than from the other two; say so
 wherever grasp and pose deltas appear in one table.
 
+**The mug handle must point through the finger gap, and until 2026-10-08 it did not on the
+wsg finray (PENDING the PI's acceptance of branch `mug-handle-yaw`).** `GenerateDiagramWithMug`
+welds the mug at the FULL pose of `between_fingers` at q*, handle along that frame's +x
+(three r = 9 mm cylinders to x = 90 mm). `panda_finray.sdf` defines the frame with yaw 1.57, so
++x runs out past the fingertips and the handle clears both fingers by 9.5 mm;
+`wsg50_110_finray_fingers_box_collision.sdf` -- the gripper of the iiwa, soft PCS, screw and
+GVS scenes -- defined it with yaw 0, so +x ran INTO the right finger plate and the handle
+penetrated it by **18.0 mm on 150/150 collision-free q\*** (iiwa and screw7 alike). Nothing
+caught it: the sampler's `collision_free` runs without the mug, `FloatingMugScreen` filters the
+robot out, and a welded mug against a welded finger is anchored-vs-anchored, which Drake never
+reports. So on every wsg robot the "known to admit a valid grasp" target started the solve
+scene in self-penetration at q\*. The fix is the one-token yaw change to 1.57 in that SDF (the
+two gripper files are otherwise identical); `X_grasp_ee` and `X_ee_flow` are measured at
+runtime and containment uses the frame's position only, so no code depends on the yaw.
+Verified by `scripts/probe_mug_contact.py`: 0/150 contact at +9.5 mm on iiwa, screw7_p050 and
+soft12 after, 150/150 at -18.0 mm before, Panda unchanged. Acceptance and the benchmark impact
+are still to be measured (the branch's report lists the commands).
+
 **Guesses are deliberately not containment-filtered.** They are initial configurations, not
 targets; filtering them would couple the start distribution to the target distribution.
 
