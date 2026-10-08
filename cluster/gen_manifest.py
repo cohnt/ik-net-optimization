@@ -2396,6 +2396,78 @@ def stage_SCREWCAP(wall, targets, guesses, shards, only=None, tag="SCREWCAP", se
     return items
 
 
+
+#: Stage ITCAP (2026-10-08): the follow-up the 2026-09-28 cap audit queued, for every robot but the
+#: screw arm (which SCREWCAP already covered). Selected by scanning every merged run with the
+#: audit's own `hit_iteration_cap` scan: a row is here if either arm has >= 24 of 480 cells
+#: stopped at an iteration budget (SCREWCAP's rule), OR if crediting every iteration-capped
+#: failure of either arm as a success could move the exact-McNemar verdict -- the second clause
+#: is what admits SOFT12's IPOPT grasp rows, whose joint-space arm has 23 capped cells against a
+#: learned margin of 23-29. GVS is left out: no row reaches 24, and its one verdict-risk row is
+#: SNOPT, where a cycling cell ignores the clock (below) and at an exact-equilibrium forward
+#: model would outrun the item timeout. Duplicated configurations (SOFTCHART n6, SOFTDOF soft12
+#: are SOFT12's grid and chart) run once, from SOFT12. Keyed by original stage, values are run
+#: names without the stage prefix.
+ITCAP_ROWS = {
+    "STATUSQUO": ("iiwa_n4_ipopt_mugshelf_480_180_native", "iiwa_n4_ipopt_mugshelf_480_180_paired",
+                  "iiwa_n4_snopt_mugshelf_480_180_native", "iiwa_n4_snopt_mugshelf_480_180_paired",
+                  "iiwa_n4_snopt_posetip_480_180_paired",
+                  "panda_n6_ipopt_mugshelf_480_180_native", "panda_n6_ipopt_mugshelf_480_180_paired",
+                  "panda_n6_snopt_mugshelf_480_180_native", "panda_n6_snopt_mugshelf_480_180_paired"),
+    "SOFT12": ("soft12_n6_ipopt_mugshelf_480_180_native", "soft12_n6_ipopt_mugshelf_480_180_paired",
+               "soft12_n6_snopt_mugshelf_480_180_native", "soft12_n6_snopt_mugshelf_480_180_paired"),
+    "SOFTCHART": ("soft12_n4_ipopt_mugshelf_480_180_native", "soft12_n4_ipopt_mugshelf_480_180_paired",
+                  "soft12_n8_ipopt_mugshelf_480_180_native", "soft12_n8_ipopt_mugshelf_480_180_paired"),
+    "SOFTDOF": ("soft16_n6_ipopt_mugshelf_480_180_native", "soft16_n6_ipopt_mugshelf_480_180_paired",
+                "soft16_n6_ipopt_posetip_480_180_paired",
+                "soft9_n6_ipopt_mugshelf_480_180_native", "soft9_n6_ipopt_mugshelf_480_180_paired",
+                "soft9_n6_ipopt_posetip_480_180_paired"),
+}
+
+#: The lifted budgets, PER SOLVER, because max_iter is one field feeding three solvers.
+#: IPOPT: the cheapest iteration observed on any of these rows is 1.75 ms (iiwa joint space),
+#: i.e. at most ~103k iterations in 180 s, so SCREWCAP's 100000 is NOT safely above it here;
+#: 1e6 is ~10x clear, and IPOPT checks its wall clock every iteration, so the clock binds.
+#: SNOPT: SCREWCAP's values. Its cheapest per-cell major is 1.15 ms (~157k in 180 s), but SNOPT
+#: does not check its time limit on a major with no minor iterations, so a CYCLING cell runs to
+#: the major limit whatever the clock says (SCREWCAP: 8,066 s at 100000; SEGVREP). At 1e6 such a
+#: cell would run ~10x longer and outlive the 8 h item timeout. So SNOPT stays at 100000 majors,
+#: and every cell that still reaches it is read afterwards for whether it was cycling.
+ITCAP_IPOPT_MAX_ITER = 1000000
+ITCAP_SNOPT_MAX_ITER = SCREWCAP_MAX_ITER
+ITCAP_SNOPT_ITERATIONS = SCREWCAP_SNOPT_ITERATIONS
+
+
+def _itcap_extra(solver):
+    if solver == "ipopt":
+        return "ITCAP1e6", ["--set", f"max_iter={ITCAP_IPOPT_MAX_ITER}"]
+    if solver == "snopt":
+        return "ITCAP1e5", ["--set", f"max_iter={ITCAP_SNOPT_MAX_ITER}",
+                            "--set", f"snopt_iterations_limit={ITCAP_SNOPT_ITERATIONS}"]
+    raise ValueError(f"stage ITCAP lifts IPOPT/SNOPT budgets only, not {solver}")
+
+
+def stage_ITCAP():
+    """Re-measure every iteration-cap-bound row outside the screw arm, budgets lifted, 180 s kept.
+
+    Each item is its original stage's item verbatim (the selftest holds it to the COMMITTED
+    manifest line) plus the per-solver budgets above, tagged sc_ITCAP1e6_<STAGE>_... (IPOPT) or
+    sc_ITCAP1e5_<STAGE>_... (SNOPT) so the cap is in the name. The cap does not enter target
+    sampling, so grid_hash is unchanged and the rows pair cell-for-cell with their originals.
+    """
+    builders = {"STATUSQUO": stage_STATUSQUO, "SOFT12": stage_SOFT12,
+                "SOFTCHART": stage_SOFTCHART, "SOFTDOF": stage_SOFTDOF}
+    items = []
+    for stage, runs in ITCAP_ROWS.items():
+        for it in builders[stage](180, 60, 8, 8):
+            run = it["id"].split("_shard")[0][len(f"sc_{stage}_"):]
+            if run not in runs:
+                continue
+            args = list(it["args"])
+            prefix, extra = _itcap_extra(args[args.index("--solver") + 1])
+            items.append(retag([dict(it, args=args + extra)], prefix)[0])
+    return items
+
 def stage_SCREWCHART(wall, targets, guesses, shards, only=None, tag="SCREWCHART", seed=1,
                      starts="paired,native"):
     """The chart ladder on the primary rung: nb_nodes 4 / 6 / 8, IPOPT only.
@@ -3946,6 +4018,26 @@ def selftest():
         args = re.sub(r"sc_SEGV\d\d_", "sc_", " ".join(it["args"]), count=1)
         if orig != SEGV_ITEM or on_disk.get(orig) != (it["env"], it["script"], args):
             mc_fails.append(f"{it['id']} is not {SEGV_ITEM} re-tagged")
+    for st in ("SOFTCHART", "SOFTDOF"):
+        with open(os.path.join(here, f"manifest_stage{st}.txt")) as fh:
+            for line in fh:
+                if line.strip() and not line.startswith("#"):
+                    ident, env, script, args = line.rstrip("\n").split("|", 3)
+                    on_disk[ident] = (env, script, args)
+    itcap = stage_ITCAP()
+    want_runs = {f"{st}_{r}" for st, rs in ITCAP_ROWS.items() for r in rs}
+    got_runs = {re.sub(r"^sc_ITCAP1e[56]_", "", it["id"]).split("_shard")[0] for it in itcap}
+    if got_runs != want_runs or len(itcap) != 8 * len(want_runs):
+        mc_fails.append(f"ITCAP covers {len(got_runs)} runs / {len(itcap)} items, "
+                        f"expected {len(want_runs)} / {8 * len(want_runs)}")
+    for it in itcap:
+        orig = re.sub(r"^sc_ITCAP1e[56]_", "sc_", it["id"])
+        solver = it["args"][it["args"].index("--solver") + 1]
+        prefix, extra = _itcap_extra(solver)
+        args = re.sub(rf"sc_{prefix}_", "sc_", " ".join(it["args"]), count=1)
+        o = on_disk.get(orig)
+        if o is None or (o[0], o[1], o[2] + " " + " ".join(extra)) != (it["env"], it["script"], args):
+            mc_fails.append(f"{it['id']} is not its committed original {orig} + the lifted budgets")
     fix = stage_SEGVFIX()
     if len(fix) != 32 or len({it["id"] for it in fix}) != 32:
         mc_fails.append("SEGVFIX must be 32 distinctly tagged copies")
@@ -3982,7 +4074,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -4101,6 +4193,7 @@ def main():
              "MERGECHKSCREW": lambda: stage_MERGECHK("SCREW"),
              "SEGVREP": lambda: stage_SEGVREP(),
              "SEGVFIX": lambda: stage_SEGVFIX(),
+             "ITCAP": lambda: stage_ITCAP(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
