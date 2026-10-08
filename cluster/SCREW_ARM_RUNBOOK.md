@@ -27,15 +27,33 @@ The design and the measured facts live in `CLAUDE.md`; this is the operational h
 - **Clock-bound cells:** 401 cells hit the 180 s clock in at least one run and are allowed to differ.
   They are mostly SCREWCAP's, whose lifted iteration budgets send more cells to the clock.
 
-**One item crashed, and the retry did not reproduce it.**
+**One item crashed. The cause was our own stall watchdog, not the merge, and it is fixed.**
 - **The crash:** `sc_MERGECHK_SCREWCAP_screw7_p050_n6_snopt_mugshelf_480_180_paired_shard0of8` died with
   SIGSEGV (status 139) after 5,942 s, with no Python traceback. Its original had run 10,097 s cleanly.
-- **The retry** (stage `MERGECHKSCREWRETRY`, job 5850575): the same item verbatim, plus
-  `PYTHONFAULTHANDLER=1`. It ran 8,666 s, exit 0, and reproduced the original on every converged cell.
-- **Treated as transient.** The one environment difference since the merge: every benchmark now
-  imports JAX at startup, via `src/register_robots.py` registering the GVS arm. That import is in
-  all 130 passing shards, so it does not move results. **If a SIGSEGV recurs in a long SNOPT item,
-  suspect it first** and set `PYTHONFAULTHANDLER=1`.
+  The retry (stage `MERGECHKSCREWRETRY`, job 5850575) ran 8,666 s cleanly and reproduced the original.
+- **Reproduced by stage SEGVREP** (2026-10-07, jobs 5854045-48): 32 verbatim copies, PROCS=8. Six
+  of them died within the first 80 minutes.
+- **The cause:** every copy sits in one SNOPT cell, `learned_16_7`. It cycles on zero-minor majors
+  and runs ~2.4 h against the 180 s clock (below). Past `cell_timeout` (1200 s), `run_grid` dumped
+  stacks with `faulthandler.dump_traceback_later(repeat=True)`. That C thread reads every frame
+  stack without the GIL, and under `torch.compile` it crashes the process it watches:
+  - each of the six crashes landed at the instant of a dump, and each dump was cut off mid-frame,
+    some with garbage frames (`File ???, line 32522 in ???`);
+  - that is ~7% of the ~90 dumps fired, while every surviving copy's dumps are complete;
+  - the "20-minute period" was the 1200 s timeout, and the copies fired in step because they are
+    identical runs;
+  - on the laptop, a loop calling a compiled `jacrev` under a 1 ms repeating dump segfaults 3 of 3
+    times, and 0 of 3 without the dump.
+- **History:** only SCREWCAP's lifted SNOPT cells ever ran past 1200 s, 41 dumps across every stage,
+  which is why the crash was rare. The JAX import is innocent.
+- **The fix:** `StallWatchdog` (`src/benchmark.py`), a Python thread that takes the GIL before
+  reading `sys._current_frames()`. Under the same 1 ms stress it survives 120,000 dumps, every one
+  complete. Idle, it costs nothing measurable, and neither does `PYTHONFAULTHANDLER=1`.
+  `tests/test_stall_watchdog.py` pins both the survival and the absence of `dump_traceback_later`.
+- **SNOPT does not enforce its time limit on a cycling cell.** `learned_16_7` ran 8,066 s in the
+  original SCREWCAP. Cells over 1.2x the clock: SCREWCAP 27, GVS 25, older SNOPT stages up to 773,
+  all at INFO 32/34/41. **None was scored feasible**, so no verdict depends on it; mean wall-clock
+  columns on those rows carry the overrun.
 
 **Deletion:** the tree was deleted after a guarded audit found no result file, checkpoint or
 dataset not already in `~/learned-ik`.
