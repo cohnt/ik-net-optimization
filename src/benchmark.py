@@ -25,15 +25,17 @@ Three things distinguish it from the older per-script harnesses:
     failures were all wall-clock timeouts, and a timeout that landed on a valid grasp is
     a success by any definition that matters.
 """
-import faulthandler
 import glob
 import json
 import math
 import os
 import re
 import shutil
+import sys
 import tarfile
+import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -589,6 +591,70 @@ def solved_within_k(per_target_success):
 
 ## ------------------------------- the grid runner ------------------------------- ##
 
+class StallWatchdog:
+    """Dump every thread's Python stack to `file` while a cell overruns `timeout`.
+
+    This replaces `faulthandler.dump_traceback_later`, which SEGFAULTS THE PROCESS IT IS
+    WATCHING. faulthandler's watchdog is a C thread that walks every thread's frame stack
+    WITHOUT the GIL, at whatever instant its timer fires, so it reads frames the main thread
+    is in the middle of pushing or popping. Under torch.compile (dynamo's PEP 523 frame hook,
+    its `<shim>` frames) that is fatal: stage SEGVREP (2026-10-07) lost 6 of 32 copies of one
+    SNOPT item, each at the instant a dump fired, each dump cut off mid-frame, some reading
+    garbage (`File ???, line 32522 in ???`) -- about 7% of dumps -- and a laptop loop calling a
+    compiled `jacrev` under a 1 ms repeating dump segfaults every time.
+
+    This thread instead takes the GIL to read `sys._current_frames()`, so the main thread is
+    parked at a point where its frames are consistent. The price is one blind spot: a
+    wedge in native code that holds the GIL and never calls back into Python gets no dump.
+    Such an item is still bounded from outside by run_items.sh's OS-level timeout. The
+    thread sleeps on a condition between cells and costs nothing while nothing overruns.
+    """
+
+    def __init__(self, file):
+        self._file = file
+        self._cond = threading.Condition()
+        self._deadline = None
+        self._timeout = None
+        threading.Thread(target=self._run, name="stall-watchdog", daemon=True).start()
+
+    def arm(self, timeout):
+        with self._cond:
+            self._timeout = timeout
+            self._deadline = time.monotonic() + timeout
+            self._cond.notify()
+
+    def cancel(self):
+        with self._cond:
+            self._deadline = None
+            self._cond.notify()
+
+    def _run(self):
+        while True:
+            with self._cond:
+                while self._deadline is None or time.monotonic() < self._deadline:
+                    self._cond.wait(None if self._deadline is None
+                                    else self._deadline - time.monotonic())
+                timeout = self._timeout
+                self._deadline += timeout              # repeat while the cell still runs
+            self._dump(timeout)
+
+    def _dump(self, timeout):
+        names = {t.ident: t.name for t in threading.enumerate()}
+        lines = [f"Timeout ({time.strftime('%H:%M:%S', time.gmtime(timeout))})! "
+                 f"at {time.strftime('%Y-%m-%dT%H:%M:%S')}"]
+        for ident, frame in sys._current_frames().items():
+            if ident == threading.get_ident():
+                continue
+            lines.append(f"\nThread {ident:#x} [{names.get(ident, '?')}] (most recent call first):")
+            for fs in reversed(traceback.extract_stack(frame)):
+                lines.append(f'  File "{fs.filename}", line {fs.lineno} in {fs.name}')
+        try:
+            self._file.write("\n".join(lines) + "\n\n")
+            self._file.flush()
+        except (OSError, ValueError):
+            pass
+
+
 @dataclass
 class Arm:
     """One formulation, as the benchmark sees it."""
@@ -624,6 +690,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     # per run at the end; see `_log_scratch_dir`.
     scratch_dir = _log_scratch_dir(log_dir)
     stalls = open(os.path.join(scratch_dir, "stalls.txt"), "a") if cell_timeout else None
+    watchdog = StallWatchdog(stalls) if cell_timeout else None
     n_targets, n_guesses = len(targets), len(guesses[0])
     assert len(guesses) == n_targets and all(len(row) == n_guesses for row in guesses)
 
@@ -646,8 +713,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                 # construction, verification, a solve that overruns even the hard cap --
                 # dump every thread's stack to the log rather than leaving a silent stall.
                 if cell_timeout:
-                    faulthandler.dump_traceback_later(cell_timeout, repeat=True,
-                                                      file=stalls)
+                    watchdog.arm(cell_timeout)
                 program = None
                 try:
                     program = arm.make_program(targets[ti], guesses[ti][gi], (ti, gi))
@@ -675,7 +741,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                         if progress is not None:
                             progress(arm.name, ti, gi, record)
                         if cell_timeout:
-                            faulthandler.cancel_dump_traceback_later()
+                            watchdog.cancel()
                         continue
                     program.options.file_print_name = log_path
                     start = time.time()
@@ -751,7 +817,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     _recover_from_last_iterate(program, record, task_gate, tol, relaxed_tol)
                 finally:
                     if cell_timeout:
-                        faulthandler.cancel_dump_traceback_later()
+                        watchdog.cancel()
                 ## The options Drake was ACTUALLY handed, captured from the first program of
                 ## each arm that got as far as configuring a solver. A run's metadata records
                 ## `--set` overrides, which does not cover an ADOPTED DEFAULT -- those reach
@@ -771,6 +837,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                        partial=(ti < n_targets - 1))
 
     if stalls is not None:
+        watchdog.cancel()
         stalls.close()
     _roll_up_logs(scratch_dir, log_dir)
     return records
