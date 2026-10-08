@@ -1,0 +1,200 @@
+"""Pin the svgd solver's duck-typed result against what the harness actually reads.
+
+There is no test suite in this repo; run this by hand:
+
+    python tests/test_svgd_result.py
+
+`SvgdResult` (src/svgd/result.py) stands in for Drake's `MathematicalProgramResult` on the
+`svgd` column, because a hand-built Drake result ABORTS THE INTERPRETER (`set_x_val`'s C++
+assert). The harness reads a result through exactly seven calls, and this file drives a real
+`svgd` solve on a Panda joint-space program through every one of them the way `run_grid`
+does -- `verify`, `reported_cost`, `solver_diagnostics`, `parse_log`, `summarise` -- so a
+contract break shows up here rather than as a column of `fail_reason="error"`.
+
+The solver is the SKELETON for now: it returns the initial guess with status "not
+implemented". Checks marked TODO(svgd) assume that and are to be revised when the algorithm
+lands; the rest are the contract and must keep holding.
+"""
+import os
+import sys
+from types import SimpleNamespace
+
+import numpy as np
+from pydrake.solvers import SolutionResult
+from pydrake.symbolic import Variable
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(REPO)
+
+import src.benchmark as bm                                              # noqa: E402
+from src.generic_program import ProgramOptions                          # noqa: E402
+from src.panda_program import PandaIKProgram, PandaIKProgramNumerical  # noqa: E402
+from src.svgd.result import SvgdResult, STATUS_NOT_IMPLEMENTED          # noqa: E402
+from src.utils import BuildEnv, HiddenPrints                            # noqa: E402
+
+SCENE = os.path.join(REPO, "models/panda/panda_finray_collision_hardened.yaml")
+FAILURES = []
+CHECKS = [0]
+
+
+def check(name, condition, detail=""):
+    CHECKS[0] += 1
+    if condition:
+        print(f"  ok    {name}")
+    else:
+        print(f"  FAIL  {name}\n          {detail}")
+        FAILURES.append(name)
+
+
+def a_reachable_target():
+    with HiddenPrints():
+        diagram = BuildEnv(meshcat=None, directives_file=SCENE)
+        sampler = PandaIKProgram(diagram, options=ProgramOptions())
+        sampler.create_prog()
+    rng = np.random.default_rng(0)
+    q = rng.uniform(sampler.plant.GetPositionLowerLimits(),
+                    sampler.plant.GetPositionUpperLimits())
+    translation, wxyz = sampler.fk(q)
+    return np.concatenate([translation, wxyz]), sampler
+
+
+def test_svgd_result_duck_type():
+    print("\n--- svgd result: the seven calls the harness makes ---")
+    log = os.path.join(REPO, "results/_test_svgd_result.log")
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    target, sampler = a_reachable_target()
+    opts = ProgramOptions(which_solver="svgd", max_wall_time=5.0, file_print_name=log,
+                          collision_avoidance=True)
+    with HiddenPrints():
+        diagram = BuildEnv(meshcat=None, directives_file=SCENE)
+        p = PandaIKProgramNumerical(diagram, options=opts)
+        p.create_prog(target)
+    rng = np.random.default_rng(1)
+    q_init = rng.uniform(sampler.plant.GetPositionLowerLimits(),
+                         sampler.plant.GetPositionUpperLimits())
+    p.SetStartFromQ(q_init)
+    x0 = np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float)
+
+    with HiddenPrints():
+        result = p.Solve()
+
+    check("Solve() under svgd returns an SvgdResult", isinstance(result, SvgdResult),
+          type(result).__name__)
+    check("is_success() is a bool", isinstance(result.is_success(), bool))
+    check("get_solution_result() is a real pydrake SolutionResult",
+          isinstance(result.get_solution_result(), SolutionResult),
+          repr(result.get_solution_result()))
+    x_full = result.get_x_val()
+    check("get_x_val() has prog.num_vars() entries",
+          x_full.shape == (p.prog.num_vars(),), str(x_full.shape))
+    lumped = result.GetSolution(p.lumped_vars)
+    check("GetSolution(lumped_vars) is an ndarray the length of lumped_vars",
+          isinstance(lumped, np.ndarray) and lumped.shape == (len(p.lumped_vars),),
+          str(getattr(lumped, "shape", None)))
+    check("GetSolution(lumped_vars) agrees with get_x_val() scattered by Drake index",
+          np.array_equal(lumped, x_full[p.prog.FindDecisionVariableIndices(p.lumped_vars)]))
+    single = result.GetSolution(p.lumped_vars[2])
+    check("GetSolution(single Variable) returns a float",
+          isinstance(single, float), type(single).__name__)
+    check("... equal to that entry of GetSolution(lumped_vars)", single == lumped[2])
+    check("GetSolution accepts a plain list of Variables",
+          np.array_equal(result.GetSolution(list(p.lumped_vars[:3])), lumped[:3]))
+    ## TODO(svgd): the skeleton returns the start untouched; the algorithm will not.
+    check("TODO(svgd) skeleton: GetSolution(lumped_vars) is the start vector",
+          np.array_equal(lumped, x0), f"max |diff| {np.max(np.abs(lumped - x0))}")
+    check("TODO(svgd) skeleton: status is 'not implemented' and is_success() is False",
+          result.get_solver_details().status == STATUS_NOT_IMPLEMENTED
+          and not result.is_success())
+
+    ## The harness side, exactly as run_grid drives it.
+    check("last_iterate was recorded", getattr(p, "last_iterate", None) is not None)
+    counts = p.eval_counts
+    check("eval_counts: callback and map_forward were bumped",
+          counts["callback"] > 0 and counts["map_forward"] > 0, str(counts))
+    try:
+        ## `verify` calls `task_gate(program, q)` (its docstring's `task_gate(q)` is stale
+        ## shorthand); a permissive gate keeps this test about the result contract.
+        verdict = bm.verify(p, result, lambda program, q: (True, {}), 1e-4, relaxed_tol=1e-3)
+        check("verify() accepts the result", verdict is not None
+              and verdict.fail_reason != "nan", f"{verdict}")
+        check("verify() measured the point (max_violation is a number)",
+              verdict.detail.get("max_violation") is not None, str(verdict.detail.keys()))
+    except Exception as exc:
+        check("verify() accepts the result", False, f"{type(exc).__name__}: {exc}")
+    try:
+        cost = bm.reported_cost(p, result, 1.0)
+        check("reported_cost() returns a finite float", np.isfinite(cost), str(cost))
+        check("... and matches EvalBinding summed over the program's costs",
+              abs(cost - result.get_optimal_cost()) < 1e-12,
+              f"{cost} vs {result.get_optimal_cost()} (no regularizer cost on this arm)")
+    except Exception as exc:
+        check("reported_cost() returns a finite float", False, f"{type(exc).__name__}: {exc}")
+
+    parsed = bm.parse_log(log, "svgd")
+    check("parse_log recovers the step count from the svgd log",
+          parsed["iterations"] is not None and parsed["iterations"] >= 1, str(parsed))
+    check("parse_log recovers the exit line", parsed["exit"] == "not implemented", str(parsed))
+    check("parse_log recovers solver_seconds", parsed["solver_seconds"] is not None, str(parsed))
+    check("parse_log leaves IPOPT-only keys None",
+          parsed["objective_evals"] is None and parsed["jacobian_evals"] is None, str(parsed))
+
+    diag = bm.solver_diagnostics(result, "svgd")
+    check("solver_diagnostics names the solver", diag["solver"] == "svgd", str(diag))
+    check("solver_diagnostics decodes the budget flags numerically",
+          diag["timed_out_status"] is False and diag["hit_iteration_cap_status"] is False,
+          str(diag))
+    block = diag.get("svgd") or {}
+    check("the svgd block carries the particle count and the method",
+          block.get("n_particles") == opts.svgd_n and block.get("method") == opts.svgd_method,
+          str(block))
+    check("the svgd block carries phase_times as a dict",
+          isinstance(block.get("phase_times"), dict), str(block))
+
+    emitted = getattr(p, "emitted_solver_options", None)
+    check("emitted_solver_options records every svgd_* field under 'svgd'",
+          emitted is not None and set(emitted) == {"svgd"}
+          and all(k.startswith("svgd_") for k in emitted["svgd"])
+          and emitted["svgd"]["svgd_n"] == opts.svgd_n,
+          str(emitted))
+
+    ## summarise must carry the svgd columns on every arm: numbers where svgd ran, nan
+    ## where it did not.
+    base = dict(target=0, guess=0, feasible=False, fail_reason="x", eval_counts={})
+    records = {"svgd_arm": [dict(base, svgd=block)], "drake_arm": [dict(base, svgd=None)]}
+    arms = [SimpleNamespace(name="svgd_arm"), SimpleNamespace(name="drake_arm")]
+    try:
+        summary = bm.summarise(records, arms, 1, 1)
+        s, d = summary["svgd_arm"], summary["drake_arm"]
+        check("summarise: svgd columns are numbers on the svgd arm",
+              s["mean_svgd_steps"] == block["iterations"]
+              and s["median_n_feasible_particles"] == block["n_feasible"]
+              and np.isfinite(s["mean_collision_seconds"]), str(s))
+        check("summarise: svgd columns are nan on a Drake-solver arm",
+              all(np.isnan(d[k]) for k in ("mean_svgd_steps", "median_n_feasible_particles",
+                                           "mean_collision_seconds")), str(d))
+    except Exception as exc:
+        check("summarise() runs with the svgd key present", False,
+              f"{type(exc).__name__}: {exc}")
+
+
+def test_bad_svgd_set_is_refused_at_options():
+    print("\n--- a bad --set svgd_method dies at ProgramOptions, before any cell ---")
+    try:
+        ProgramOptions(which_solver="svgd", svgd_method="foo")
+        check("ProgramOptions(svgd_method='foo') raises", False, "constructed without raising")
+    except ValueError as exc:
+        check("ProgramOptions(svgd_method='foo') raises ValueError naming the field",
+              "svgd_method" in str(exc) and "foo" in str(exc), str(exc))
+
+
+def main():
+    test_svgd_result_duck_type()
+    test_bad_svgd_set_is_refused_at_options()
+    print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")
+    for name in FAILURES:
+        print(f"  FAILED: {name}")
+    return 1 if FAILURES else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

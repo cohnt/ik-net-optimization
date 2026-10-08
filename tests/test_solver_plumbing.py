@@ -184,6 +184,40 @@ def test_nlopt_is_an_augmented_lagrangian():
           f"both kinds. (Comparing the two is recorded future work, not a default.)")
 
 
+def test_svgd_options_emit_nothing_through_drake_branches():
+    """`which_solver="svgd"` with every svgd_* enum moved off its default must leave all
+    three Drake option builders BYTE-IDENTICAL to a default ProgramOptions.
+
+    The svgd fields are inert on the Drake path by construction (none is read by
+    `_IpoptOptions`, `_SnoptOptions` or `_NloptOptions`); this pins it, so a later field
+    that leaks into a Drake branch changes an archived column's configuration visibly
+    rather than silently. The enum refusals are checked here too: a bad `--set` must die
+    at `ProgramOptions(...)`, before the first cell, not land as a column of instant
+    failures from inside run_grid's per-cell `except`.
+    """
+    print("\n--- svgd: inert on every Drake branch, refused at the door ---")
+    target = a_reachable_target(ProgramOptions())
+    p = build(ProgramOptions(), target)
+    builders = ("Ipopt", "Snopt", "Nlopt")
+    baseline = {name: dict(getattr(p, f"_{name}Options")()[1].options) for name in builders}
+    p.options = ProgramOptions(which_solver="svgd", svgd_method="tsvgd", svgd_n=7,
+                               svgd_dtype="float64", svgd_paired_init="native",
+                               svgd_kernel="none", svgd_warmup="cem", svgd_lr=1.0,
+                               svgd_outer_iters=3, svgd_compile=True, svgd_seed=11)
+    for name in builders:
+        emitted = dict(getattr(p, f"_{name}Options")()[1].options)
+        check(f"svgd fields emit nothing through _{name}Options",
+              emitted == baseline[name],
+              f"default emitted {baseline[name]}\n          svgd emitted {emitted}")
+    for bad in ({"svgd_method": "foo"}, {"svgd_dtype": "bf16"}, {"svgd_paired_init": "clip"},
+                {"svgd_kernel": "rbf"}, {"svgd_warmup": "yes"}, {"svgd_n": 0}):
+        try:
+            ProgramOptions(**bad)
+            check(f"ProgramOptions refuses {bad}", False, "constructed without raising")
+        except ValueError as exc:
+            check(f"ProgramOptions refuses {bad}", next(iter(bad)) in str(exc), str(exc))
+
+
 def test_unknown_solver_raises_clearly():
     print("\n--- an unknown solver fails loudly ---")
     target = a_reachable_target(ProgramOptions())
@@ -219,15 +253,39 @@ def test_each_solver_solves_and_reports(solver):
           "an abnormal exit could not be verified from the point the solver had")
 
     counts = getattr(p, "eval_counts", {})
-    check(f"{solver}: map_jacobian was counted",
-          counts.get("map_jacobian", 0) > 0,
-          f"eval_counts={counts}. This is the ONLY cost measure NLopt has, since it "
-          f"reports no iteration count and writes no log.")
+    if solver == "svgd":
+        ## The svgd skeleton evaluates the start once, forward only, through QAndPose.
+        ## TODO(svgd): once the algorithm lands, require map_jacobian > 0 here too -- one
+        ## count per BATCHED pass (see IKFlowProgram.ResetEvalCounts).
+        check("svgd: the start was evaluated through the counted funnel (map_forward)",
+              counts.get("map_forward", 0) > 0, f"eval_counts={counts}")
+    else:
+        check(f"{solver}: map_jacobian was counted",
+              counts.get("map_jacobian", 0) > 0,
+              f"eval_counts={counts}. This is the ONLY cost measure NLopt has, since it "
+              f"reports no iteration count and writes no log.")
     check(f"{solver}: the visualization callback fired",
           counts.get("callback", 0) > 0, f"eval_counts={counts}")
 
     parsed = bm.parse_log(log, solver)
     diag = bm.solver_diagnostics(result, solver)
+    if solver == "svgd":
+        ## Not a Drake solver and not (yet) a solve: the skeleton returns the initial guess
+        ## with status "not implemented", so `is_success()` is deliberately NOT required.
+        ## What IS required is the harness contract -- a log in the svgd format with an
+        ## iteration count (the skeleton's one evaluation of the start counts as one outer
+        ## step, by decision, so the shared `> 0` check below holds) and an exit line, a
+        ## diagnostics block, and a result the rest of the harness can read.
+        check("svgd: the svgd details block is present in the diagnostics",
+              diag.get("svgd") is not None, str(diag))
+        check("svgd: the particle count is recorded",
+              (diag.get("svgd") or {}).get("n_particles", 0) >= 1, str(diag.get("svgd")))
+        check("svgd: get_x_val() is the full decision vector in Drake order",
+              len(result.get_x_val()) == p.prog.num_vars(),
+              f"{len(result.get_x_val())} vs {p.prog.num_vars()}")
+        check("svgd: the budget flags are decoded numerically, not from log text",
+              diag["timed_out_status"] is not None
+              and diag["hit_iteration_cap_status"] is not None, str(diag))
     if solver == "nlopt":
         check("nlopt: parse_log returns all None without raising",
               all(v is None for v in parsed.values()),
@@ -731,6 +789,7 @@ def main():
     test_algorithms_drake_lists_but_cannot_run_are_refused()
     test_nlopt_is_an_augmented_lagrangian()
     test_unknown_solver_raises_clearly()
+    test_svgd_options_emit_nothing_through_drake_branches()
     test_no_step_rejection_knob_is_set_by_default()
     test_the_adopted_snopt_step_limit_is_the_default()
     test_new_knobs_reach_the_solver()
@@ -738,7 +797,7 @@ def main():
     runnable = all(spec.accessor in have
                    for f, spec in NLOPT_POST_1_56_OPTIONS.items()
                    if f in ADOPTED_NLOPT_DEFAULTS)
-    for solver in ("ipopt", "snopt", "nlopt"):
+    for solver in ("ipopt", "snopt", "nlopt", "svgd"):
         ## The adopted NLopt defaults need PR 25002. On an older Drake the refusal is the
         ## correct behaviour (test_the_availability_check_spares_the_other_solvers proves it
         ## fires), so running the solve here would only re-raise it. Say so loudly rather than

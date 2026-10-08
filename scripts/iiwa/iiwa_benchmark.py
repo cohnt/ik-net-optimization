@@ -53,7 +53,7 @@ def parse_args():
     p.add_argument("--targets", type=int, default=15)
     p.add_argument("--guesses", type=int, default=2)
     p.add_argument("--wall-time", type=float, default=20.0)
-    p.add_argument("--solver", choices=["ipopt", "snopt", "nlopt"], default="ipopt",
+    p.add_argument("--solver", choices=["ipopt", "snopt", "nlopt", "svgd"], default="ipopt",
                    help="the solver axis is three METHOD CLASSES, not three vendors: "
                         "ipopt is interior point, snopt is SQP, nlopt is an augmented "
                         "Lagrangian (LD_AUGLAG). Each converges at its own defaults -- "
@@ -301,6 +301,12 @@ def main():
     if args.compile:
         compile_seconds = sampler.WarmUpJacobian()
         print(f"compiled the flow Jacobian in {compile_seconds:.1f} s")
+    if base_options.which_solver == "svgd":
+        ## The svgd solver's compile cost, paid here for the reason the Jacobian's is: so
+        ## the first timed cell does not carry it. Folded into compile_seconds.
+        svgd_seconds = sampler.WarmUpSvgdStep()
+        compile_seconds = (compile_seconds or 0.0) + svgd_seconds
+        print(f"warmed up the svgd step in {svgd_seconds:.1f} s")
 
     if args.task == "mug":
         mug_meshcat = Meshcat() if base_options.visualize else None
