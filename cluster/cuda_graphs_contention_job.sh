@@ -54,7 +54,7 @@ echo "node $(hostname), $(nproc) cores, $NGPU GPUs, staged commit $(cat .staged-
 RC=0
 for K in ${KS:-1 2 4}; do
     ## Build, compile and check take ~1-2 min per process; start the clock well after.
-    START=$(( $(date +%s) + ${LEAD:-240} ))
+    START=$(( $(date +%s) + ${LEAD:-300} ))
     pids=()
     for g in $(seq 1 "$NGPU"); do
         for k in $(seq 1 "$K"); do
@@ -65,6 +65,10 @@ for K in ${KS:-1 2 4}; do
                 --start-at "$START" --out "$OUT/K${K}_gpu${g}_p${k}.json" \
                 > "$OUT/K${K}_gpu${g}_p${k}.log" 2>&1 &
             pids+=($!)
+            ## jrl rewrites its cached URDF on every robot load; eight simultaneous loads
+            ## read each other's half-written file ("found 0 robots") and two of eight
+            ## processes died in the first MPS run. --start-at aligns the timing anyway.
+            sleep "${STAGGER:-10}"
         done
     done
     for pid in "${pids[@]}"; do wait "$pid" || RC=1; done
