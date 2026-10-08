@@ -77,7 +77,21 @@ _SNOPT_PATTERNS = {
 ## oversight to work around in Drake; it is the reason `IKFlowProgram.ResetEvalCounts`
 ## exists, and the reason this column reports evaluation counts we took ourselves and an
 ## honestly empty iteration column.
-_LOG_PATTERNS = {"ipopt": _IPOPT_PATTERNS, "snopt": _SNOPT_PATTERNS, "nlopt": {}}
+## The svgd solver writes its own log (`src/svgd/result.write_log`, which owns the line
+## formats these patterns must match) -- NOT IPOPT-formatted, so none of IPOPT's quantities
+## can be misread out of it. `iterations` is the number of OUTER steps, the population
+## method's counterpart of a major iteration; IPOPT's four evaluation counts have no svgd
+## analogue and stay None, because the batched work is counted per PASS in `eval_counts`
+## (see `IKFlowProgram.ResetEvalCounts`) and the particle count lives in `record["svgd"]`.
+## Only the patterns that exist are listed: `parse_log` seeds every key of _ALL_LOG_KEYS
+## with None itself, and a None pattern here would be handed to re.search.
+_SVGD_PATTERNS = {
+    "iterations": r"SVGD steps\.*:\s*(\d+)",
+    "solver_seconds": r"SVGD seconds\s*=\s*([\d.]+)",
+}
+
+_LOG_PATTERNS = {"ipopt": _IPOPT_PATTERNS, "snopt": _SNOPT_PATTERNS, "nlopt": {},
+                 "svgd": _SVGD_PATTERNS}
 
 ## Every record carries the same keys whatever solver produced it, so a summary can be read
 ## without knowing which solver ran and a merge cannot trip over a missing field.
@@ -91,6 +105,7 @@ _EXIT_PATTERNS = {
     "ipopt": (r"EXIT: (.*)", False),
     "snopt": (r"SNOPTA (?:EXIT|INFO)\s+\d+ -- (.*)", True),
     "nlopt": (None, False),
+    "svgd": (r"EXIT: (.*)", False),
 }
 
 
@@ -217,9 +232,30 @@ def solver_diagnostics(result, solver):
         if status is not None:
             out["timed_out_status"] = int(status) == _NLOPT_MAXTIME
             out["hit_eval_cap_status"] = int(status) == _NLOPT_MAXEVAL
+    elif solver == "svgd":
+        ## `SvgdSolverDetails` (src/svgd/result.py) carries the two budget flags as
+        ## booleans decoded by the solver itself, plus the particle-level quantities no
+        ## Drake solver has. Those go under `out["svgd"]`, which run_grid promotes to a
+        ## top-level record key the way `eval_counts` is.
+        status = getattr(details, "status", None)
+        out["solver_status"] = int(status) if status is not None else None
+        out["solver_detail_seconds"] = _finite(getattr(details, "solve_seconds", None))
+        if status is not None:
+            out["timed_out_status"] = bool(getattr(details, "timed_out", False))
+            out["hit_iteration_cap_status"] = bool(getattr(details, "hit_iteration_cap", False))
+        out["svgd"] = {k: getattr(details, k, None) for k in _SVGD_DETAIL_KEYS}
+        out["svgd"]["phase_times"] = dict(out["svgd"].get("phase_times") or {})
     else:
         out["solver_status"] = getattr(details, "status", None)
     return out
+
+
+## What of the svgd details object is persisted per cell. `iterations` is repeated here
+## (it is also parsed from the log) so `summarise` can read the svgd step count off the
+## same dict as the other svgd columns and report nan, not IPOPT majors, on a Drake arm.
+_SVGD_DETAIL_KEYS = ("method", "dtype", "n_particles", "iterations", "inner_steps",
+                     "map_evals", "n_feasible", "n_resampled", "selected_index",
+                     "solver_feasible", "drake_feasible", "phase_times", "collision_seconds")
 
 
 def is_timeout(exit_string):
@@ -769,6 +805,9 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     ## The cross-solver cost measure. No solver reports an iteration count
                     ## through Drake, so this is the only quantity every column carries.
                     record["eval_counts"] = dict(getattr(program, "eval_counts", {}) or {})
+                    ## The svgd solver's particle-level quantities; None on every other
+                    ## solver, so the key is present on every record.
+                    record["svgd"] = diag.get("svgd")
                     verdict = verify(program, result, task_gate, tol,
                                      relaxed_tol=relaxed_tol)
                     record["feasible"] = verdict.feasible
@@ -952,6 +991,14 @@ def summarise(records, arms, n_targets, n_guesses):
                                      ok_only=False),
             mean_map_forwards=_mean([_flat_counts(r) for r in ok], "map_forward",
                                     ok_only=False),
+            ## The svgd solver's own columns, over ALL cells of the arm (a failure's
+            ## feasible-particle count and collision time are as informative as a
+            ## success's). nan on an arm that did not run svgd, so every summary carries
+            ## the keys.
+            median_n_feasible_particles=_median([_flat_svgd(r) for r in recs], "n_feasible"),
+            mean_svgd_steps=_mean([_flat_svgd(r) for r in recs], "iterations", ok_only=False),
+            mean_collision_seconds=_mean([_flat_svgd(r) for r in recs], "collision_seconds",
+                                         ok_only=False),
             eval_capped=sum(1 for r in recs if r.get("hit_eval_cap")),
             mean_cost=_mean(ok, "cost", ok_only=False),
             median_cost=_median(ok, "cost"),
@@ -1012,6 +1059,12 @@ def summarise(records, arms, n_targets, n_guesses):
 def _flat_counts(record):
     """A record's `eval_counts` as a flat dict, so `_mean` can read it like any other key."""
     return dict(record.get("eval_counts") or {})
+
+
+def _flat_svgd(record):
+    """A record's `svgd` block as a flat dict; empty on a Drake-solver record, so `_mean`
+    and `_median` see no values and return nan."""
+    return dict(record.get("svgd") or {})
 
 
 def _mean(recs, key, ok_only=True):
