@@ -2478,6 +2478,11 @@ def stage_CUDAGRAPH(suffix=""):
     of the formulation (Thomas, 2026-10-08: "In a real application, the solves would be
     one-at-a-time"). PROCS is a submit-time setting, so it lives in the tag.
 
+    `suffix="MPS"` (stage CUDAGRAPHMPS) MUST be submitted at PROCS=8 MPS=1: the record's
+    eight workers per node under a job-local MPS daemon, which lets workers sharing a card
+    run their kernels side by side instead of time-slicing. If it matches CUDAGRAPHP2's
+    timing, campaigns keep eight workers per node without charging the learned arm for it.
+
     Both rigid adopted rungs x grasp and pose x both protocols, IPOPT, 180 s, `PROCS=8` as
     the record ran -- each row twice in ONE stage, so the control and the graphed run share
     nodes, queue and contention: `sc_CGCTRL_STATUSQUO_...` (the record's configuration,
@@ -4105,7 +4110,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -4227,6 +4232,7 @@ def main():
              "ITCAP": lambda: stage_ITCAP(),
              "CUDAGRAPH": lambda: stage_CUDAGRAPH(),
              "CUDAGRAPHP2": lambda: stage_CUDAGRAPH("P2"),
+             "CUDAGRAPHMPS": lambda: stage_CUDAGRAPH("MPS"),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),

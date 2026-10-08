@@ -23,6 +23,7 @@ Per row:
 
     python scripts/report_cudagraph.py        # stage CUDAGRAPH, PROCS=8
     python scripts/report_cudagraph.py P2     # stage CUDAGRAPHP2, one process per V100
+    python scripts/report_cudagraph.py MPS    # stage CUDAGRAPHMPS, PROCS=8 under MPS
 """
 import os
 import sys
@@ -65,7 +66,7 @@ def main():
         print("no merged sc_CUDAGRAPH runs found")
         return 1
     f = lambda x, pr=1: "--" if x is None else "%.*f" % (pr, x)
-    print(f"### Stage CUDAGRAPH{sfx}: IPOPT, 180 s, PROCS={2 if sfx == 'P2' else 8}, control (`--compile`) against "
+    print(f"### Stage CUDAGRAPH{sfx}: IPOPT, 180 s, {dict(P2='PROCS=2', MPS='PROCS=8 + MPS').get(sfx, 'PROCS=8')}, control (`--compile`) against "
           "`--compile --set flow_cuda_graph=True`\n")
     print("| row | ms/it L ctrl -> graph (x) | ms/it J ctrl / graph | premium L/J ctrl -> graph "
           "| L time-to-solve, shared cells (x, n) | L success ctrl -> graph (gained / lost, p) "
