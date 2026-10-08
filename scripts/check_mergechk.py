@@ -41,15 +41,19 @@ def load_original(tag):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    p.add_argument("--prefix", default="MERGECHK",
+                   help="regex for the re-run's tag prefix: sc_<PREFIX>_<original tag minus sc_>. "
+                        r"'SEGV\d\d' reads stage SEGVREP's copies.")
     args = p.parse_args()
     os.chdir(args.root)
 
     shards = {}
     for root in ("results", "results/_cluster_staging/*/results"):
-        for f in glob.glob(f"{root}/*/benchmark/sc_MERGECHK_*_shard*of8/summary.json"):
-            shards.setdefault(os.path.basename(os.path.dirname(f)), f)
+        for f in glob.glob(f"{root}/*/benchmark/sc_*_shard*of8/summary.json"):
+            if re.match(rf"sc_{args.prefix}_", os.path.basename(os.path.dirname(f))):
+                shards.setdefault(os.path.basename(os.path.dirname(f)), f)
     if not shards:
-        print("no sc_MERGECHK_* shards found")
+        print(f"no sc_{args.prefix}_* shards found")
         return 1
 
     hdr = (f"{'shard':<66}{'arm':<10}{'cells':>6}{'same':>6}{'DIFF conv':>10}"
@@ -60,7 +64,7 @@ def main():
     for tag in sorted(shards):
         with open(shards[tag]) as fh:
             new = json.load(fh)
-        orig_tag = re.sub(r"_shard\d+of8$", "", tag.replace("sc_MERGECHK_", "sc_", 1))
+        orig_tag = re.sub(r"_shard\d+of8$", "", re.sub(rf"^sc_{args.prefix}_", "sc_", tag))
         old = load_original(orig_tag)
         if old is None:
             print(f"{tag}: ORIGINAL {orig_tag} NOT FOUND")
@@ -99,7 +103,7 @@ def main():
             bad += conv_diff
             total_conv += same + conv_diff
             total_clock_diff += clock_diff
-            label = tag.replace("sc_MERGECHK_", "")
+            label = re.sub(rf"^sc_{args.prefix}_", "", tag)
             ratio = f"{np.median(ratios):.2f}" if ratios else "--"
             print(f"{label:<66}{arm:<10}{len(recs):>6}{same:>6}{conv_diff:>10}{clock_diff:>11}"
                   f"{ratio:>13}")
