@@ -766,7 +766,9 @@ arm's stage SOFT12 (identical conditions) on 2026-09-28 and the screw-joint arm'
 the **fingertips for both tasks**, **180 s**, 480 cells = 60 targets x 8 guesses, seed 1 (out of
 sample), `--compile`, adopted rungs (Panda `n6`, iiwa `n4`, soft `n6`, screw `screw7_p050` `n6`), arms `learned,numerical`,
 both start protocols, all three solvers at their adopted configurations, Drake nightly
-`0.0.20260918`.
+`0.0.20260918`. **The 17 runs that were iteration-budget-bound are REPORTED AT THE LIFTED BUDGET**
+(Thomas, 2026-10-08): stages ITCAP and SCREWCAP re-ran each on the same cells and clock, and the
+reporter substitutes them under the original tag.
 
 **THE RECORD IS 48 LOGICAL RUNS: four robots x TWO experiments x two protocols x three solvers.**
 The experiments are grasp and pose, both shelf-contained at the fingertips, and there are no others.
@@ -797,23 +799,25 @@ drift.
 grasp, under every solver producing a comparison -- with one exception, the screw arm's NLopt pose
 native row (10.1 against 4.9, on only 23 shared cells). `N/A` means fewer than 10 shared solved cells.
 
-**Runtime is the per-iteration price stated as a number.** Joint space wins every interior-point and
-SQP cell; the iiwa contained-grasp tie is bought at a **14x** premium (27.29 s against 1.90 s) while
-joint space is flat across the whole cap ladder. **Under the augmented Lagrangian the ordering
+**Runtime is the per-iteration price stated as a number.** Joint space wins every interior-point cell
+and every SQP cell but Panda grasp native, where with the iteration budget lifted its failures run to
+the clock (learned 5.46 s against 13.05 s); the iiwa contained-grasp tie is bought at a **13x** premium
+(28.66 s against 2.14 s). Table 3 clamps each cell at the 180 s clock, because a cycling SNOPT cell
+overruns it. **Under the augmented Lagrangian the ordering
 inverts on every pose row of all four robots and on Panda grasp native** -- the learned arm is
 genuinely faster there, because it converges while joint space burns the whole 180 s. The screw
-arm's IPOPT grasp premium is the record's largest, ~26x (50.7 s against 2.0 s, mean over cells). The soft PCS arm's premium is only 2.5-6.0x, and the reason must travel
+arm's IPOPT grasp premium is the record's largest, ~23x (55.6 s against 2.4 s, mean over cells). The soft PCS arm's premium is only 2.5-6.0x, and the reason must travel
 with it: **the baseline got more expensive, not the learned arm cheaper.**
 
-**Iterations is where hardening shows**: on Panda grasp joint space needs 744 median iterations
+**Iterations is where hardening shows**: on Panda grasp joint space needs 908 median iterations
 against the learned arm's 169, so the learned formulation wins on *iterations* there despite costing
 ~10x per iteration. Containment costs the joint-space arm its cheapness. **The augmented Lagrangian
 column is `N/A` BY CONSTRUCTION** -- NLopt has no major iteration to count, and its work proxy is not
 comparable across arms.
 
-**The rescue rate is the quantity the success counts hide: 82-99% of the joint-space arm's failures
-are solved by the learned arm**, on every row of both rigid robots and both protocols, with 157-263
-failures available to rescue, and 81-93% on the screw arm's IPOPT rows. The iiwa grasp ties are not even the same cells (31-35 each way), so
+**The rescue rate is the quantity the success counts hide: 83-100% of the joint-space arm's failures
+are solved by the learned arm** under IPOPT, on every row of both rigid robots and both protocols, with
+28-263 failures available to rescue, and 81-93% on the screw arm's IPOPT rows. The iiwa grasp ties are not even the same cells (27 against 15-18), so
 the arms are complementary where the totals agree.
 
 **CAVEAT, added 2026-09-30: every success win above is against SINGLE-START joint space, and a
@@ -858,8 +862,9 @@ BOTH arms and carry no comparison, and **the augmented Lagrangian is extraordina
 (Panda contained grasp 327 native against **zero** paired), so that column is read per protocol and
 never pooled.
 
-**Timeouts are essentially gone at 180 s** -- at most 6 cells of 480 on any IPOPT or SNOPT row -- but
-that is **not** enough to call these formulation rather than cap results: see the cap check above,
+**Timeouts were essentially gone at 180 s** -- at most 6 cells of 480 on any IPOPT or SNOPT row at the
+record's budgets, 15-53 on the lifted rows, whose iteration-limit stops became clock stops -- but that
+was **not** enough to call these formulation rather than cap results: see the cap check above,
 where `hit_iteration_cap` showed the grasp rows sitting at the default `max_iter`. (Every such row
 was re-measured with it lifted, stages SCREWCAP and ITCAP, and no verdict of the record moved.) The cap effect
 is one-directional and diagnostic: from the 45 s pairing reference to 180 s, IPOPT's learned arm gains

@@ -50,6 +50,7 @@ Usage:
 import glob
 import json
 import os
+import re
 import sys
 from math import comb
 
@@ -178,6 +179,15 @@ def arm_stats(summary, arm, other):
         ## have described the augmented Lagrangian as cheap.
         jac_all=mean([map_jacobians(r) for r in A.values()]),
         wall_all=mean([r["wall_time"] for r in A.values()]),
+        ## The same mean with each cell clamped at the run's wall-clock cap. SNOPT does not
+        ## check its time limit on a major with zero minors, so with the iteration budget
+        ## lifted (stages ITCAP, SCREWCAP) a cycling cell runs on to the major limit, 0.4-2.2 h
+        ## against a 180 s clock, and a few such cells swamp the mean: on Panda grasp native
+        ## they flipped which arm reads as faster. None has ever been scored feasible, and a
+        ## solver that checked its clock would have stopped each at the cap, which is what this
+        ## charges it. Used by Table 3 only; other readers keep the raw mean.
+        wall_all_clock=mean([min(r["wall_time"], summary["metadata"].get("wall_time") or float("inf"))
+                             for r in A.values()]),
         viol_all=median([r["max_violation"] for r in A.values()]),
     )
 
@@ -365,9 +375,11 @@ def metric_tables(runs):
          "lower is better; N/A means fewer than %d shared solved cells, so no comparison exists"
          % MIN_COST_CELLS,
          lambda L, J: (L["cost"], J["cost"]), f3, lambda a, b: a < b)
-    emit("Table 3 -- mean runtime, s, over ALL cells", "lower is better; this machine only, never "
-         "compared across machines",
-         lambda L, J: (L["wall_all"], J["wall_all"]), lambda v: "N/A" if v is None else f"{v:.2f}",
+    emit("Table 3 -- mean runtime, s, over ALL cells, each clamped at the 180 s clock",
+         "lower is better; this machine only, never compared across machines. Clamped because "
+         "SNOPT overruns its clock on cycling cells (none feasible) once the iteration budget "
+         "is lifted",
+         lambda L, J: (L["wall_all_clock"], J["wall_all_clock"]), lambda v: "N/A" if v is None else f"{v:.2f}",
          lambda a, b: a < b)
     emit("Table 4 -- median major iterations over solved cells",
          "lower is better; AL is N/A BY CONSTRUCTION -- NloptSolverDetails carries a single status "
@@ -406,6 +418,25 @@ def main(only):
     ## logical runs across three stages.
     runs.update(load("sc_SCREW_", cells=CELLS))
 
+    ## Rows that were iteration-budget-bound are REPORTED AT THE LIFTED BUDGET (Thomas,
+    ## 2026-10-08). Stages SCREWCAP (screw arm) and ITCAP (the rest) re-ran each such row on
+    ## the same seed, grid, chart, --compile and 180 s clock with only the iteration budgets
+    ## lifted, so the lifted run replaces its original under the original's tag, and every
+    ## table reads it with no special case. A lifted run whose grid differs is refused.
+    lifted = {}
+    for prefix, pattern in (("sc_ITCAP1e", r"^sc_ITCAP1e[56]_(STATUSQUO|SOFT12)_"),
+                            ("sc_SCREWCAP_", r"^sc_SCREWCAP_")):
+        for tag, s in load(prefix, cells=CELLS).items():
+            if not re.match(pattern, tag):
+                continue
+            orig = re.sub(r"^sc_ITCAP1e[56]_", "sc_", re.sub(r"^sc_SCREWCAP_", "sc_SCREW_", tag))
+            if orig not in runs:
+                continue
+            if s["metadata"].get("grid_hash") != runs[orig]["metadata"].get("grid_hash"):
+                raise SystemExit(f"{tag}: grid_hash differs from {orig}; refusing to substitute")
+            runs[orig] = s
+            lifted[orig] = tag
+
     retired = [tag for tag in runs if parse_tag(tag)["row"] not in STATUS_QUO_ROWS]
     for tag in retired:
         del runs[tag]
@@ -420,6 +451,9 @@ def main(only):
     print(f"THE CAMPAIGN OF RECORD -- {CELLS} cells, 180 s cap, seed 1")
     print("Stages STATUSQUO (panda, iiwa) + SOFT12 (soft12) + SCREW (screw7_p050), identical conditions.")
     print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
+    print(f"Iteration-budget-bound rows are reported at the LIFTED budget, same 180 s clock: "
+          f"{len(lifted)} of {len(runs)} runs")
+    print("  from stages ITCAP (IPOPT max_iter 1e6; SNOPT 1e5 majors, 1e8 minors) and SCREWCAP.")
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")
 
