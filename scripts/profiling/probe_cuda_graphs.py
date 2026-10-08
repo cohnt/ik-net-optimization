@@ -75,6 +75,11 @@ def parse_args():
     p.add_argument("--profile-calls", type=int, default=20)
     p.add_argument("--variants", default="E,C,G,CG,RO")
     p.add_argument("--out", default=None)
+    p.add_argument("--start-at", type=float, default=None,
+                   help="epoch seconds: build and check every variant, then wait until this "
+                        "instant before timing, so concurrent copies sharing a GPU time the "
+                        "same window (the contention measurement)")
+    p.add_argument("--skip-profile", action="store_true")
     return p.parse_args()
 
 
@@ -335,12 +340,22 @@ def main():
             if not r["max_rel"] < 1e-8:
                 raise SystemExit(f"{key} disagrees with eager (max_rel {r['max_rel']}); no timing reported")
 
+        if args.start_at is not None:
+            wait = args.start_at - time.time()
+            print(f"  waiting {wait:.1f} s for the shared start", flush=True)
+            if wait > 0:
+                time.sleep(wait)
         rows = {}
         for (path, tag), (fn, offline) in variants.items():
             row = dict(offline_s=offline)
             row["call"] = time_variant(fn, inputs, args.calls, args.warmup, numpy_io=False)
             row["np"] = time_variant(fn, inputs, args.calls, args.warmup, numpy_io=True)
-            row.update(profile_variant(fn, inputs, args.profile_calls))
+            if not args.skip_profile:
+                row.update(profile_variant(fn, inputs, args.profile_calls))
+            else:
+                row.update(kernel_launches_per_call=float("nan"),
+                           graph_launches_per_call=float("nan"),
+                           gpu_kernel_ms_per_call=float("nan"))
             rows[f"{path}/{tag}"] = row
 
         print(f"  {'variant':10s} {'call med':>9s} {'np med':>9s} {'np mean':>9s} {'np p95':>9s} "
