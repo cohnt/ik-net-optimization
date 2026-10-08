@@ -437,17 +437,23 @@ formulation; raise it and re-measure. Established by iiwa `n4` contained grasp: 
 **But that 180 s reading used timeouts only, and `max_iter` is the budget it missed.** `max_iter`
 defaults to `None`, so IPOPT runs at **its own default of 3000 iterations**, and a cell can reach
 3000 *inside* the wall-clock cap — a stop `timed_out` does not record and `hit_iteration_cap` does.
-Measured on the record's own IPOPT rows (2026-09-28): on both iiwa contained-grasp rows **27-29 of
-the learned arm's 27-33 failures stopped at 3000 iterations with a median 99-103 s of the 180 s
-budget unspent**, and Panda grasp's joint-space arm has 80 such cells at a median 14 s. So the
-45 s → 180 s move converted a wall-clock stop into an iteration-limit stop rather than removing the
-budget. **All four pose rows are clean (`hit_iteration_cap` 0-4) and carry the record's largest
-effects; Panda contained grasp keeps its verdict, since 75 cap-bound baseline failures cannot close
-~150 cells; the two iiwa contained-grasp TIES — the record's only IPOPT non-wins — are stated on
-budget-bound rows and are not established as ties.** Thomas's ruling, 2026-09-28: **record the
-caveat, change nothing, re-measure nothing.** So quote those two ties with this caveat attached and
-do not re-open them. `ProgramOptions`'s own note that "3000 matches IPOPT's own default so the wall
-clock is what binds" is the intent, not a guarantee: it holds only where no cell reaches 3000. **The cap is a budget for the arm that evaluates a
+On the record's own grasp rows (2026-09-28) the iiwa learned arm had 27-29 of its 27-33 failures at
+3000 iterations with a median ~100 s of 180 s unspent, and Panda grasp's joint-space arm 80 cells at
+a median 14 s; the 45 s → 180 s move had converted a wall-clock stop into an iteration-limit stop.
+**Every such row has now been re-measured with the budgets lifted** -- the screw arm's by stage
+SCREWCAP, the other 23 rows (STATUSQUO, SOFT12, SOFTCHART, SOFTDOF) by **stage ITCAP, 2026-10-08**
+-- on the same grid, chart and 180 s clock, IPOPT at `max_iter` 1e6 and SNOPT at 1e5 majors / 1e8
+minors (`scripts/report_itcap.py`). **No verdict of the record moved**: the two iiwa contained-grasp
+ties are now ESTABLISHED ties (461 v 452, 464 v 452), every SQP loss stands, and IPOPT cells at the
+new budget are 0 everywhere. **What the budget had been binding was mostly the BASELINE**: joint
+space gains 10-12 cells on every soft grasp row, 27-28 on `soft16` and 51 on Panda grasp, the
+learned arm 0-14. Three soft LADDER verdicts moved (soft PCS arm's section). Thomas reversed his
+2026-09-28 "record the caveat, re-measure nothing": **a row with >= 24 of 480 cells at a budget
+carries no verdict until it is re-measured with the iteration budget lifted (the clock never is)**;
+within a push, flag it and re-run it as a follow-up. Lifting SNOPT's has one cost:
+**SNOPT does not check its time limit on a major with zero minors**, so a cycling cell runs to the
+major limit -- 0.4-2.2 h at 1e5 -- and none has ever been scored feasible, so no verdict depends on
+it, but mean-wall columns carry the overrun and an item timeout must allow for it. **The cap is a budget for the arm that evaluates a
 network, not a shared budget**: across 5/10/20/45/90/180 s every baseline is flat, with one
 exception — on iiwa grasp paired the joint-space arm is itself cap-bound below 20 s, with cells
 running 1300-1430 iterations against that arm's median of 70. That arm is not uniformly cheap; it
@@ -820,7 +826,7 @@ record's own cells by `scripts/report_time_matched.py`, with no new runs.
 | --- | --- | --- | --- |
 | **IPOPT, rigid arms** | | | |
 | Panda contained grasp, native / paired | 99.2 / 98.1% | 54.0 / 67.7% | **survives**, the only rigid row that does |
-| iiwa contained grasp | 93-94% | 92-94% | tie |
+| iiwa contained grasp | 93-94% (96-97% with the budget lifted, ITCAP) | 92-94% (>= 92-93% lifted) | tie as tabled; **unestablished** lifted, joint space starved on 54-58% |
 | pose, paired: iiwa / Panda | 87.9 / 84.8% | 97.8 / 96.5% | **joint space wins** |
 | pose, native: iiwa / Panda | 97.9 / 96.0% | >= 89.2 / >= 78.5% | unestablished (see below) |
 | **SQP, rigid arms** | | | survives only on Panda grasp native (91.9% against 68.2%) |
@@ -830,7 +836,8 @@ record's own cells by `scripts/report_time_matched.py`, with no new runs.
 | pose native | 99.4% | 74.8% | **survives** |
 | pose paired | 90.8% | 90.6% | tie |
 
-Native pose is unestablished because joint space ran out of its 8 starts on 44-57% of those cells
+Lifting the iteration budget (stage ITCAP) moves no other row here: Panda grasp stays 52.7 / 64.7% time-matched
+against 99.2 / 98.8%, soft PCS grasp 71.8 / 69.5% against 98.8 / 97.5%. Native pose is unestablished because joint space ran out of its 8 starts on 44-57% of those cells
 before the budget did, so its true multi-start figure is higher. The mechanism is the per-iteration
 premium: the advantage survives exactly where a joint-space solve is expensive. That is containment
 on the Panda, a costlier FK on the soft arm, and non-convergence under NLopt. On the cheap rigid pose
@@ -853,8 +860,8 @@ never pooled.
 
 **Timeouts are essentially gone at 180 s** -- at most 6 cells of 480 on any IPOPT or SNOPT row -- but
 that is **not** enough to call these formulation rather than cap results: see the cap check above,
-where `hit_iteration_cap` shows the grasp rows sitting at IPOPT's default `max_iter`. (The screw
-arm's were re-measured with it lifted, stage SCREWCAP, and its IPOPT grasp ties hold.) The cap effect
+where `hit_iteration_cap` showed the grasp rows sitting at the default `max_iter`. (Every such row
+was re-measured with it lifted, stages SCREWCAP and ITCAP, and no verdict of the record moved.) The cap effect
 is one-directional and diagnostic: from the 45 s pairing reference to 180 s, IPOPT's learned arm gains
 +5 to +55 cells on every grasp row and **exactly +0 on every pose row**. Every row with no timeouts at
 45 s reproduces its 45 s count exactly (sole exception: Panda pose tip paired, +2), the campaign's
@@ -1281,18 +1288,21 @@ cells; the fielded rung is pre-registered at `n6` before any cell is read. DOF r
 cell-for-cell** -- each draws its own grid, so they are compared by target-level success rate with a
 bootstrap CI, and McNemar does not apply across them.
 
-**The chart ladder is FLAT** -- learned wins 11 of 12, ties 1, no rung separates from another (spread
+**The chart ladder is FLAT** -- learned wins 10 of 12, ties 2 with the iteration budget lifted (stage
+ITCAP turned `n4` grasp paired from a win into a tie), no rung separates from another (spread
 3-10 cells of 480 across n4/n6/n8). `n8` sits above the ~1e7 runaway band and does NOT degrade, where
 an above-ceiling rung is strictly worse on the iiwa. That agrees with the in-distribution screen
 reading 0.0 everywhere: **this robot has no runaway population, so the gain-ceiling criterion is
 satisfied vacuously and the ladder has nothing to measure.** A negative result about the robot, not a
 refutation of the selection rule.
 
-**The DOF ladder measures the BASELINE, not the formulation** -- learned wins 11 of 12, loses 1. On
+**The DOF ladder measures the BASELINE, not the formulation** -- learned wins 9, ties 2, loses 1 with
+the iteration budget lifted (stage ITCAP; 11 / 0 / 1 as first measured). On
 pose native the learned arm is at the ceiling (478/477/480 across 9/12/16 DOF) while joint space
 climbs **280 -> 334 -> 441**: extra redundancy is worth 161 cells to the arm that has headroom, and
-the learned arm has none left to show it in. The one loss, `soft16` pose paired (405 v 441), carries
-NO VERDICT -- it is iteration-cap-bound.
+the learned arm has none left to show it in. **Lifting the budget shows the same on grasp**: `soft16`
+joint space gains 27-28 cells and both its grasp rows become ties (476 v 476, 476 v 477). The one loss,
+`soft16` pose paired, is now ESTABLISHED (407 v 441, p = 7.7e-04, 0 cells at the budget).
 
 **Stage SOFTCAP closes the cap rule on the NLopt grasp rows: the floor is REAL.** Native runs
 90/180/**360** s and is 0/480 on both arms at every cap -- quadrupling the wall clock moves exactly

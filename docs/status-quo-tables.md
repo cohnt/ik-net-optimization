@@ -22,20 +22,34 @@ conditions are identical and a re-run would re-measure the same thing on equival
 on supercloud"*). Only the provenance is split. The screw-joint arm joins from stage SCREW on the
 same terms; `stage_SCREW` refuses any cap but 180 s.
 
-## Read the grasp rows with the cap caveat
+## The grasp rows were iteration-budget-bound, and stage ITCAP re-measured them
 
-**Four of the soft PCS arm's rows and several of the rigid arms' are iteration-cap-bound and their
-verdicts are PROVISIONAL.** `max_iter` defaults to `None`, so IPOPT runs at its own default of 3000
-and a cell can reach it well inside the 180 s wall clock -- which `timed_out` does not record and
-`hit_iteration_cap` does. Specifically: soft12 grasp under IPOPT has joint space 23 cap-bound with
-~126 s unspent against a learned margin of 23-29 cells, so a decisive win could become a tie; soft12
-grasp under SNOPT has learned 27-43 and joint 42 cap-bound, and the soft PCS arm's one loss sits
-there; and on the rigid arms the two iiwa contained-grasp ties and Panda grasp's joint-space arm
-(80 cells) are affected. **All pose rows are clean**, and they carry the record's largest effects.
-The re-run is
-a standing to-do; until it lands, quote the grasp verdicts with this attached.
+**The tables below are as measured, at the record's budgets, and several grasp rows there were
+iteration-cap-bound.** `max_iter` defaults to `None`, so IPOPT ran at its own 3000 and SNOPT at
+3000 majors, and cells reached that well inside the 180 s wall clock -- which `timed_out` does not
+record and `hit_iteration_cap` does. **Stage ITCAP (2026-10-08) re-measured every such row** on the
+same seed, grid, chart, `--compile` and 180 s clock with the budgets lifted (IPOPT `max_iter` 1e6;
+SNOPT 1e5 majors and 1e8 minors), pairing cell for cell with these runs. **No verdict of the record
+moved**, so the tally below stands, and the affected verdicts are now ESTABLISHED rather than
+provisional. Per row, learned / joint space, as tabled -> budget lifted:
 
-**The screw-joint arm's grasp rows have had that re-run.** Its two IPOPT grasp ties sit at the
+| row | IPOPT | SNOPT |
+| --- | --- | --- |
+| iiwa grasp native | 447 / 442 -> **461 / 452, tie** (p = 0.23) | 201 / 304 -> 204 / 308, loss |
+| iiwa grasp paired | 453 / 442 -> **464 / 452, tie** (p = 0.088) | 240 / 304 -> 243 / 308, loss |
+| iiwa pose paired | not cap-bound | 247 / 270 -> 251 / 270, tie |
+| Panda grasp native | 476 / 323 -> 476 / 374, win | 441 / 305 -> 441 / 306, win |
+| Panda grasp paired | 471 / 323 -> 474 / 374, win | 301 / 305 -> 302 / 306, tie |
+| soft12 grasp native | 474 / 445 -> 474 / 456, win (p = 9.1e-04) | 340 / 358 -> 347 / 360, tie |
+| soft12 grasp paired | 468 / 445 -> 468 / 455, win (p = 0.024) | 315 / 358 -> 320 / 360, loss |
+
+IPOPT cells at the new budget: 0 on every row. SNOPT: 1-11 per row, every one but one cycling on
+zero-minor majors past the clock (SNOPT does not check its time limit there), so no verdict depends
+on where they stopped. Panda grasp's joint-space arm gains **51** cells -- its margin was overstated,
+as predicted, and the win is untouched. Read the margins from `python scripts/report_itcap.py`,
+which prints the quartet for every re-measured row.
+
+**The screw-joint arm's grasp rows had the same re-run earlier, as stage SCREWCAP.** Its two IPOPT grasp ties sit at the
 iteration cap here (59-66 of the learned arm's 61-69 failures at 3000), so they are printed as
 measured under the record's conditions -- but stage SCREWCAP re-measured them at the same 180 s with
 the iteration budgets lifted (Thomas: the wall clock is not raised) and **they hold as ties**, 427 v

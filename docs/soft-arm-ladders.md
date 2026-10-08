@@ -9,8 +9,10 @@ Jobs 5752615-18 (SOFTCHART, drained 06:19-06:48, rc=0) and 5752619-22 (SOFTDOF, 
 07:25-07:36, rc=0). 96 of 96 items produced a summary in each stage; 8 shards merged per
 logical run, 480 cells x 2 arms each. 24 logical runs, 23,040 solves.
 
-**Read the cap caveat at the bottom before quoting any row of either table.** One row reads as
-a loss and it does not yet carry a verdict.
+**The tables below are as first measured, at IPOPT's default 3000-iteration budget. Every
+cap-bound row was re-measured with the budget lifted (stage ITCAP, 2026-10-08, after the cap
+caveat), and three grasp verdicts moved -- read that section before quoting a grasp row or
+`soft16` pose paired.**
 
 ## The chart ladder: FLAT, and that is the result
 
@@ -65,7 +67,10 @@ draws its own grid -- so the rungs are compared by rate, and McNemar is used onl
 | `soft12` (12 DOF) | 474 / 445 | 468 / 445 | 477 / 334 | 436 / 334 |
 | `soft16` (16 DOF) | 476 / 450 | 476 / 450 | 480 / 441 | **405 / 441** |
 
-learned / joint space, of 480. Verdicts: **learned wins 11 of 12, loses 1.**
+learned / joint space, of 480, at the 3000-iteration default. Verdicts as first measured:
+learned wins 11 of 12, loses 1. **With the budget lifted (stage ITCAP): learned wins 9, ties 2,
+loses 1** -- both `soft16` grasp rows become ties (476 / 476 and 476 / 477) and the loss is
+established.
 
 **The learned arm is at the ceiling and the baseline climbs to meet it.** On pose native the
 learned arm is 478 / 477 / 480 -- flat, and at 480 twice -- while joint space runs
@@ -77,7 +82,9 @@ The same ordering holds on grasp, much more weakly: joint space 436 / 445 / 450,
 474 / 474 / 476.
 
 **The one loss is `soft16` pose paired, 405 against 441** (p = 3.6e-04), and it is the only
-row in either stage where joint space wins. See the cap caveat -- it does not carry a verdict.
+row in either stage where joint space wins. With the budget lifted it is **407 against 441
+(p = 7.7e-04) with zero cells at the cap**: an established loss at the 180 s clock (53 learned
+timeouts), no longer a budget artefact.
 
 **`soft16` has torsion and `soft9`/`soft12` do not**, which is the rung difference that is not
 just a DOF count: `kappa_z` makes the tip orientation free given the tip position. That is also
@@ -188,10 +195,40 @@ enough that the declared wall-clock cap is the binding budget. `ProgramOptions`'
 the wall clock is what binds". That premise is false on any row where a cell reaches 3000 inside
 the cap.
 
-**Thomas's ruling, 2026-09-28: do not re-run, on either the soft PCS arm or the record.** The soft
-tables stand as measured with the losing row reported as budget-bound and carrying no verdict, and
-the status quo is left untouched with the caveat recorded against the two iiwa contained-grasp ties.
-No compute was spent on this. Do not re-open either question.
+**Thomas first ruled not to re-run (2026-09-28), then reversed it the same day; stage ITCAP is the
+re-run.**
+
+## Stage ITCAP: the cap-bound rows re-measured with the budget lifted (2026-10-08)
+
+Every row outside the screw arm where either arm had >= 24 of 480 cells at an iteration budget,
+or where counting every capped failure as a success could flip the verdict -- 23 rows across
+STATUSQUO, SOFT12, SOFTCHART and SOFTDOF -- re-run from its own builder on the same seed, grid,
+chart, `--compile` and **180 s clock**, IPOPT at `max_iter` 1e6 (the cheapest capped cells run
+1.75 ms/it, so 180 s fits at most ~103k) and SNOPT at 1e5 majors / 1e8 minors (SCREWCAP's values:
+a cycling SNOPT cell ignores the clock, so 1e6 would outlive the 8 h item timeout). NLopt rows are
+not iteration-bound (SOFTCAP) and were not re-run. Rows pair cell for cell on `grid_hash`. Table,
+with the quartet: `python scripts/report_itcap.py`.
+
+**Cells at the new budget: 0 on every IPOPT row; at most 2 cells per row lost by either arm.**
+The soft rows, learned / joint space:
+
+| row | as first measured | budget lifted | verdict |
+| --- | --- | --- | --- |
+| `soft12_n4` grasp native / paired | 471 / 445, 463 / 445 | 471 / 455, 465 / 456 | win; **win -> tie** (p = 0.16) |
+| `soft12_n6` grasp native / paired (= SOFT12) | 474 / 445, 468 / 445 | 474 / 456, 468 / 455 | wins hold (p = 9.1e-04, 0.024) |
+| `soft12_n8` grasp native / paired | 473 / 445, 459 / 445 | 472 / 455, 458 / 454 | win; tie |
+| `soft9` grasp native / paired | 474 / 436, 471 / 436 | 475 / 447, 472 / 446 | wins hold |
+| `soft16` grasp native / paired | 476 / 450, 476 / 450 | 476 / 476, 476 / 477 | **both wins -> ties** |
+| `soft9` pose paired | 410 / 280 | 410 / 280 | win, unmoved |
+| `soft16` pose paired | 405 / 441 | 407 / 441 | **loss, now established** |
+| SOFT12 SNOPT grasp native / paired | 340 / 358, 315 / 358 | 347 / 360, 320 / 360 | tie; loss, both hold |
+
+**The budget was binding the BASELINE.** Joint space gains 10-12 cells on every grasp row and
+**27-28 on `soft16`**, where it now matches the learned arm's ceiling; the learned arm gains 0-7.
+So the DOF ladder's story strengthens: extra redundancy lifts joint space to the learned arm on
+grasp too, not only on pose native. The chart ladder stays flat (grasp 471 / 474 / 472 native,
+465 / 468 / 458 paired) at 10 wins and 2 ties. SNOPT's capped cells are 1 per row, cycling on
+zero-minor majors past the clock.
 
 ## Stage SOFTCAP: the NLopt grasp cap ladder, and the floor is real
 
