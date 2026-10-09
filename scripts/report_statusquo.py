@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Read stage STATUSQUO: the campaign of record at the new status quo.
+"""Read the campaign of record: stage REMEASURE since 2026-10-09 (`--legacy`: the record before it).
+
+The record's IPOPT and SNOPT rows are stage REMEASURE's -- the fixed wsg scene, the five unified
+robot settings, CUDA graphs, lifted iteration budgets -- on the record's FOUR robots (Panda, iiwa,
+soft PCS, screw). Its NLopt rows are stage REMEASURE_NLOPT's where those have landed, else the old
+record's, with a printed caveat. Stage REMEASURE also measured the GVS arm under identical
+conditions; that arm is OUTSIDE the record (Thomas, 2026-10-05: "the GVS arm doesn't help our story
+... it certainly doesn't replace the other soft arm"), so its rows print as a separate block after
+the record's, with their own tally, and never enter the record's tables, tally or flags. The old
+record (STATUSQUO + SOFT12 + SCREW, ITCAP/SCREWCAP substituted) is `load_record(which="legacy")`,
+which scripts/report_remeasure.py reads as its "before" column.
 
 This is the table that replaces every results table in CLAUDE.md, so it is written to enforce
 the project's reporting rules rather than to be convenient:
@@ -46,6 +56,7 @@ over the promoted location alone silently matches nothing.
 Usage:
     scripts/report_statusquo.py                      # everything found
     scripts/report_statusquo.py ipopt snopt          # only these solvers
+    scripts/report_statusquo.py --legacy             # the record before stage REMEASURE
 """
 import glob
 import json
@@ -269,7 +280,7 @@ def row_table(runs, solver, tokens, title):
 METRIC_BLOCKS = (("ipopt", "IP"), ("nlopt", "AL"), ("snopt", "SQP"))
 
 
-def metric_tables(runs):
+def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, per solver)"):
     """The four headline tables: success rate, cost, runtime, iterations."""
     cells, pvals = {}, {}
     for tag, s in runs.items():
@@ -339,7 +350,7 @@ def metric_tables(runs):
 
     f3 = lambda v: "N/A" if v is None else f"{v:.3f}"
     fi = lambda v: "N/A" if v is None else f"{v:.0f}"
-    print("\n=== HEADLINE TABLES (learned vs joint space, per solver)")
+    print(f"\n{heading}")
     print("  IP = interior point (IPOPT), AL = augmented Lagrangian (NLOPT),")
     print("  SQP = sequential quadratic programming (SNOPT). *better* of each pair is starred;")
     print("  a trailing * marks the best in the row. Every row prints, zeros included.")
@@ -368,6 +379,8 @@ def metric_tables(runs):
           f"  (verdicts by exact McNemar on the same cells the table shows)")
     for solver, b in METRIC_BLOCKS:
         d = per_solver[solver]
+        if not sum(d.values()):
+            continue
         print(f"    {b:<4} learned {d['learned']}, ties {d['tie']}, "
               f"joint space {d['joint space']}")
 
@@ -387,13 +400,63 @@ def metric_tables(runs):
          lambda L, J: (L["iters"], J["iters"]), fi, lambda a, b: a < b)
 
 
-def load_record(cells=CELLS):
-    """The campaign of record: tag -> summary, and {original tag: lifted tag}.
+#: The stage the record's IPOPT and SNOPT rows come from since 2026-10-09, and the sub-stage
+#: prefixes sharing its tag family that are CONTROLS, never record rows.
+RECORD_STAGE = "REMEASURE"
+RECORD_CONTROLS = ("sc_REMEASURE_LEGACY_", "sc_REMEASURE_RULE_")
+#: Robots stage REMEASURE measured that are NOT in the campaign of record (Thomas, 2026-10-05, on
+#: the GVS arm: "it certainly doesn't replace the other soft arm"). Their rows print beside it.
+OUTSIDE_RECORD = ("gvs_pushrod9_o1",)
+NLOPT_PENDING = ("NLopt rows: old scene, old settings, re-measurement pending "
+                 "(stage REMEASURE_NLOPT)")
 
-    Stages STATUSQUO + SOFT12 + SCREW, with every iteration-budget-bound run replaced by its
-    lifted re-measurement (ITCAP, SCREWCAP) under the original tag. Shared with
-    scripts/report_remeasure.py, which reads the record as its "before" column.
+
+def load_record(cells=CELLS, which="remeasure"):
+    """The campaign of record: tag -> summary, and {tag in runs: the run it was read from}.
+
+    which="remeasure" (the default) is the record since 2026-10-09: stage REMEASURE -- the fixed
+    wsg scene, the five unified robot settings, CUDA graphs, lifted iteration budgets -- for every
+    IPOPT and SNOPT row, on the record's four robots (OUTSIDE_RECORD is excluded; see
+    load_beside_record). Its NLopt rows are read from
+    `sc_REMEASURE_*_nlopt_*` where stage REMEASURE_NLOPT has produced them, and otherwise from the
+    OLD record below, row by row; the second return maps every such fallback tag to the run it was
+    read from, so a caller can say so. The REMEASURE_LEGACY and REMEASURE_RULE sub-stages share the
+    tag prefix and are controls, so they are refused here.
+
+    which="legacy" is the record as accepted 2026-09-21..10-08 and the "before" column of
+    scripts/report_remeasure.py: stages STATUSQUO + SOFT12 + SCREW, every iteration-budget-bound
+    run replaced by its lifted re-measurement (ITCAP, SCREWCAP) under the original tag; the second
+    return maps {original tag: lifted tag}.
     """
+    if which not in ("remeasure", "legacy"):
+        raise ValueError(f"which must be 'remeasure' or 'legacy', not {which!r}")
+    old, lifted = _load_legacy_record(cells)
+    if which == "legacy":
+        return old, lifted
+    runs = {tag: s for tag, s in load(f"sc_{RECORD_STAGE}_", cells=cells).items()
+            if not tag.startswith(RECORD_CONTROLS)
+            and parse_tag(tag)["robot"] not in OUTSIDE_RECORD}
+    measured = {(t["robot"], t["rung"], t["row"], t["start"], t["solver"])
+                for t in map(parse_tag, runs)}
+    fallback = {}
+    for tag, s in old.items():
+        t = parse_tag(tag)
+        if t["solver"] != "nlopt" or (t["robot"], t["rung"], t["row"], t["start"], "nlopt") in measured:
+            continue
+        runs[tag] = s
+        fallback[tag] = lifted.get(tag, tag)
+    return runs, fallback
+
+
+def load_beside_record(cells=CELLS):
+    """Stage REMEASURE's runs on the robots OUTSIDE the record (the GVS arm): tag -> summary."""
+    return {tag: s for tag, s in load(f"sc_{RECORD_STAGE}_", cells=cells).items()
+            if not tag.startswith(RECORD_CONTROLS)
+            and parse_tag(tag)["robot"] in OUTSIDE_RECORD}
+
+
+def _load_legacy_record(cells):
+    """The pre-REMEASURE record (see load_record(which="legacy"))."""
     ## Filtered at LOAD time, not per table. The campaign also produced 12 runs on
     ## --target-placement free, which is a retired SETTING of the grasp experiment and not a
     ## third experiment (Thomas, 2026-09-21: "preserving old settings and old experimental
@@ -445,9 +508,11 @@ def load_record(cells=CELLS):
     return runs, lifted
 
 
-def main(only):
+def main(argv):
+    legacy = "--legacy" in argv
+    only = [a for a in argv if not a.startswith("--")]
     want = [s for s in SOLVERS if not only or s in only]
-    runs, lifted = load_record()
+    runs, provenance = load_record(which="legacy" if legacy else "remeasure")
 
     retired = [tag for tag in runs if parse_tag(tag)["row"] not in STATUS_QUO_ROWS]
     for tag in retired:
@@ -456,38 +521,93 @@ def main(only):
         print(f"  ({len(retired)} run(s) on a retired placement ignored: "
               f"{sorted({parse_tag(t)['row'] for t in retired})})")
     if not runs:
-        print("no merged 480-cell sc_STATUSQUO_ runs found (staged or promoted). "
+        print("no merged 480-cell record runs found (staged or promoted). "
               "Merge shards first: cluster/merge_shard_summaries.py")
         return 1
 
-    print(f"THE CAMPAIGN OF RECORD -- {CELLS} cells, 180 s cap, seed 1")
-    print("Stages STATUSQUO (panda, iiwa) + SOFT12 (soft12) + SCREW (screw7_p050), identical conditions.")
-    print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
-    print(f"Iteration-budget-bound rows are reported at the LIFTED budget, same 180 s clock: "
-          f"{len(lifted)} of {len(runs)} runs")
-    print("  from stages ITCAP (IPOPT max_iter 1e6; SNOPT 1e5 majors, 1e8 minors) and SCREWCAP.")
+    if legacy:
+        print(f"THE CAMPAIGN OF RECORD BEFORE STAGE REMEASURE (superseded 2026-10-09) -- {CELLS} cells, "
+              "180 s cap, seed 1")
+        print("Stages STATUSQUO (panda, iiwa) + SOFT12 (soft12) + SCREW (screw7_p050), identical conditions.")
+        print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
+        print(f"Iteration-budget-bound rows are reported at the LIFTED budget, same 180 s clock: "
+              f"{len(provenance)} of {len(runs)} runs")
+        print("  from stages ITCAP (IPOPT max_iter 1e6; SNOPT 1e5 majors, 1e8 minors) and SCREWCAP.")
+    else:
+        n_new = sum(1 for t in runs if parse_tag(t)["stage"] == RECORD_STAGE)
+        n_ipsn = sum(1 for t in runs if parse_tag(t)["stage"] == RECORD_STAGE
+                     and parse_tag(t)["solver"] in ("ipopt", "snopt"))
+        print(f"THE CAMPAIGN OF RECORD -- stage {RECORD_STAGE} (2026-10-09), {CELLS} cells, 180 s cap, seed 1")
+        print("Conditions: the FIXED wsg scene (finray between_fingers yaw 0 -> 1.57, 452d784), the five")
+        print("  UNIFIED robot settings (0381807; the Panda's joint-space bound is ConfigLimits(), no longer")
+        print("  +-10 rad), CUDA graphs (--compile, flow_cuda_graph=True), LIFTED iteration budgets (IPOPT")
+        print("  max_iter 1e6; SNOPT 1e5 majors, 1e8 minors), adopted rungs (panda n6, iiwa n4, soft12 n6,")
+        print("  screw7_p050 n6), hardened scene, shelf-contained at the fingertips.")
+        print("Run at PROCS=8 under MPS=1: DEVELOPMENT throughput, NOT the paper's one-solve-per-GPU")
+        print("  (PROCS=2) condition, so the wall-clock columns are development-grade.")
+        print(f"IPOPT + SNOPT: {n_ipsn} of 32 runs from stage {RECORD_STAGE} (four robots x two experiments")
+        print("  x two protocols x two solvers); 48 logical runs with NLopt.")
+        print(f"The GVS arm ({', '.join(OUTSIDE_RECORD)}) was measured in the same stage under identical")
+        print("  conditions and is OUTSIDE the record: its rows print as a separate block at the end,")
+        print("  with their own tally, and enter none of the record's tables, tally or flags.")
+        print(f"NLopt: {n_new - n_ipsn} run(s) from stage {RECORD_STAGE}, {len(provenance)} from the old record.")
+        if provenance:
+            print(f"  {NLOPT_PENDING}.")
+            print("  Those rows carry the defective wsg scene on every grasp row but the Panda's.")
+        print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")
 
     metric_tables(runs)
+    if not legacy and provenance:
+        print(f"  ({NLOPT_PENDING}; the AL column and its tally line are the old record's.)")
 
     print("\n=== PER-SOLVER DETAIL (discordant counts, McNemar p, timeouts)")
     all_rows = {}
     for solver in want:
         print(f"\n=== {SOLVER_NAME[solver]}   [{CONFIG[solver]}]")
+        if solver == "nlopt" and not legacy and provenance:
+            print(f"  {NLOPT_PENDING}.")
         sq = row_table(runs, solver, STATUS_QUO_ROWS, "THE STATUS QUO (contained targets)")
         if not sq:
             print("  (no rows found)")
         all_rows[solver] = sq
 
-    flags(all_rows, want)
+    flags(all_rows, want, remeasure=not legacy, nlopt_pending=not legacy and bool(provenance))
+    if not legacy:
+        beside_record(want)
     return 0
 
 
-def flags(all_rows, want):
+def beside_record(want):
+    """The GVS arm's REMEASURE rows: same tables, same verdict rule, own tally, not the record."""
+    beside = load_beside_record()
+    label = "GVS arm, measured under identical conditions, outside the record"
+    print(f"\n\n=== {label.upper()}")
+    print("Stage REMEASURE, the same conditions as the record above; IPOPT and SNOPT only (the GVS")
+    print("arm never ran NLopt, so its AL column is N/A). Thomas, 2026-10-05: \"the GVS arm doesn't")
+    print("help our story ... it certainly doesn't replace the other soft arm\".")
+    if not beside:
+        print("  (no rows found)")
+        return
+    metric_tables(beside, heading=f"=== HEADLINE TABLES -- {label}")
+    print(f"\n=== PER-SOLVER DETAIL -- {label}")
+    for solver in want:
+        if solver == "nlopt":
+            continue
+        print(f"\n=== {SOLVER_NAME[solver]}   [{CONFIG[solver]}]")
+        if not row_table(beside, solver, STATUS_QUO_ROWS, label):
+            print("  (no rows found)")
+
+
+def flags(all_rows, want, remeasure=False, nlopt_pending=False):
     """The three criteria named in CLAUDE.md BEFORE the campaign ran."""
     print("\n\n=== PRE-REGISTERED FLAG CRITERIA")
     print("Named in advance so 'did the story change' is a printed verdict, not a judgement.")
+    if remeasure:
+        print("Their 45 s references predate stage REMEASURE: old settings everywhere, and on every wsg")
+        print("grasp row (iiwa, soft12, screw7_p050) the defective scene. A move there conflates the cap")
+        print("with the scene fix and the settings; scripts/report_remeasure.py attributes them.")
 
     ## --- 1. Any learned-vs-joint-space verdict moving between 45 s and 180 s.
     print("\n--- 1. Did any learned-vs-joint-space verdict move?  (45 s -> 180 s, same grid)")
@@ -544,6 +664,8 @@ def flags(all_rows, want):
     ## --- 3. NLopt at 180 s under the adopted configuration -- untested before this campaign.
     print("\n--- 3. NLopt at 180 s under the adopted configuration (previously untested)")
     nl = all_rows.get("nlopt", [])
+    if nl and nlopt_pending:
+        print(f"  {NLOPT_PENDING}.")
     if nl:
         live = [r for r in nl if r["L"]["succ"] > 0]
         print(f"  {len(live)} of {len(nl)} rows solve anything at all on the learned arm.")
