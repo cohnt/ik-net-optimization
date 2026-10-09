@@ -254,10 +254,11 @@ def test_each_solver_solves_and_reports(solver):
 
     counts = getattr(p, "eval_counts", {})
     if solver == "svgd":
-        ## The svgd skeleton evaluates the start once, forward only, through QAndPose.
-        ## TODO(svgd): once the algorithm lands, require map_jacobian > 0 here too -- one
-        ## count per BATCHED pass (see IKFlowProgram.ResetEvalCounts).
-        check("svgd: the start was evaluated through the counted funnel (map_forward)",
+        ## The svgd solver counts one `map_forward` per BATCHED pass (see
+        ## IKFlowProgram.ResetEvalCounts). `map_jacobian` is NOT required here: this cell is
+        ## the joint-space arm, whose configuration map is the identity, and the batched
+        ## solver differentiates its rows in closed form -- there is no map Jacobian to count.
+        check("svgd: the swarm was evaluated through the counted funnel (map_forward)",
               counts.get("map_forward", 0) > 0, f"eval_counts={counts}")
     else:
         check(f"{solver}: map_jacobian was counted",
@@ -270,11 +271,9 @@ def test_each_solver_solves_and_reports(solver):
     parsed = bm.parse_log(log, solver)
     diag = bm.solver_diagnostics(result, solver)
     if solver == "svgd":
-        ## Not a Drake solver and not (yet) a solve: the skeleton returns the initial guess
-        ## with status "not implemented", so `is_success()` is deliberately NOT required.
-        ## What IS required is the harness contract -- a log in the svgd format with an
-        ## iteration count (the skeleton's one evaluation of the start counts as one outer
-        ## step, by decision, so the shared `> 0` check below holds) and an exit line, a
+        ## Not a Drake solver: `is_success()` is deliberately NOT required (this is a
+        ## plumbing test, not a quality one). What IS required is the harness contract -- a
+        ## log in the svgd format with an outer-iteration count and an exit line, a
         ## diagnostics block, and a result the rest of the harness can read.
         check("svgd: the svgd details block is present in the diagnostics",
               diag.get("svgd") is not None, str(diag))
