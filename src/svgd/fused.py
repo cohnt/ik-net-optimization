@@ -1,6 +1,6 @@
 """The svgd step split at the collision pool: three pure stages, eager / compiled / graphed.
 
-One `al_svgd` or `tsvgd` step on the fielded robots (`BatchedProgram.has_analytic_row_jacobians`)
+One `al_svgd` step on the fielded robots (`BatchedProgram.has_analytic_row_jacobians`)
 is, with the only host round trip -- Drake's exact collision row, in a process pool -- between
 the stages:
 
@@ -8,9 +8,9 @@ the stages:
     host            q_plant -> pool.submit                       Drake starts in the workers
     stage 2 (GPU)   (X, cfg) -> J_q = dq/dX, kinematics + frame Jacobians
     host            pool.collect -> (row, d row / d q_plant)     waits for the workers
-    stage 3 (GPU)   everything else: rows, scaling, AL coefficients, kernel, Adam, the
-                    Gauss-Newton correction (Levenberg-Marquardt damped, q-step clamped),
-                    bound projection, the LM gain ratio, best tracking, the lr schedule.
+    stage 3 (GPU)   everything else: rows, scaling, AL coefficients, the objective and
+                    constraint gradients, kernel, the Stein direction, the gradient step
+                    and the clamp onto the true bounds (`update_step`).
 
 THE OVERLAP (`svgd_pool_overlap`). Stage 2 is the expensive one (the flow Jacobian is ndof
 reverse passes) and does not depend on the collision row, so the pool is dispatched BEFORE
@@ -26,8 +26,7 @@ captured once into a `torch.cuda.CUDAGraph` and replayed (`graphed`) -- the patt
 `GraphedFlowCall` on main: static input buffers copied into, one replay, outputs cloned out
 of the static output buffers (the next replay overwrites them). The stages are written for
 capture: static shapes, no `.item()` / host sync / data-dependent shape, every branch a
-`torch.where`, linear solves through `solve_ex(check_errors=False)` with `info` folded in
-(`al._solve_gram`), no random numbers (the swarm draws them OUTSIDE, at resampling), no
+`torch.where`, no random numbers (the swarm draws them OUTSIDE, at resampling), no
 Python side effect (the evaluation counters are bumped by the driver, never inside).
 
 ONE COMPILE / GRAPH PER STRUCTURE, NOT PER PROGRAM. The benchmark builds a new program per
@@ -36,7 +35,7 @@ the ADDRESSES of every constant it reads (targets, bounds, row scales). So compi
 graphed stages close over a TEMPLATE `_Target` held in this module's cache, keyed by the
 structure signature (`structure_signature`: every tensor's path, shape and dtype and every
 Python scalar's path and value in the target, minus a short list of program-specific values
-the stages never read), the particle count, the dtype, the method and the step options. A
+the stages never read), the particle count, the dtype and the step options. A
 solve whose target has the template's structure COPIES its constant tensors into the
 template's (`copy_constants`) and runs the template's stages; anything that changes a
 stage's Python-level behaviour changes the signature and so gets its own entry. After
@@ -44,7 +43,6 @@ stage's Python-level behaviour changes the signature and so gets its own entry. 
 or a capture inside a timed solve -- RAISES instead of quietly eating the cap.
 """
 
-import math
 import time
 from dataclasses import dataclass, fields as dataclass_fields
 
@@ -81,34 +79,18 @@ def clear_cache():
 @dataclass(frozen=True)
 class StepConfig:
     """The option values the stages read as Python constants (part of the cache key)."""
-    method: str
-    kernel: str
-    bandwidth: str
-    bandwidth_floor: float
-    q_step_max: float
-    gn_delta: float
-    lm: bool
-    gn_lm_min: float
-    gn_lm_max: float
-    gn_lm_growth: float
-    tangent_delta: float
-    switch_infeas: float
-    lr0: float
-    lr_min: float
-    lr_decay_t: float
+    kernel: str                 # svgd_kernel: "q" | "none"
+    bandwidth_floor: float      # svgd_bandwidth_floor
+    inside: bool                # svgd_constraint_inside_kernel
+    lr: float                   # svgd_lr (the step is svgd_lr / rho_i)
+    T: float                    # svgd_temperature
 
     @staticmethod
     def from_options(opts):
-        return StepConfig(
-            method=str(opts.svgd_method), kernel=str(opts.svgd_kernel),
-            bandwidth=str(opts.svgd_bandwidth), bandwidth_floor=float(opts.svgd_bandwidth_floor),
-            q_step_max=float(opts.svgd_q_step_max), gn_delta=float(opts.svgd_gn_delta),
-            lm=float(opts.svgd_gn_lm) > 0.0, gn_lm_min=float(opts.svgd_gn_lm_min),
-            gn_lm_max=float(opts.svgd_gn_lm_max), gn_lm_growth=float(opts.svgd_gn_lm_growth),
-            tangent_delta=float(opts.svgd_tangent_delta),
-            switch_infeas=float(opts.svgd_tsvgd_switch_infeas),
-            lr0=float(opts.svgd_lr), lr_min=float(opts.svgd_lr_min),
-            lr_decay_t=float(opts.svgd_lr_decay_t))
+        return StepConfig(kernel=str(opts.svgd_kernel),
+                          bandwidth_floor=float(opts.svgd_bandwidth_floor),
+                          inside=bool(opts.svgd_constraint_inside_kernel),
+                          lr=float(opts.svgd_lr), T=float(opts.svgd_temperature))
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -224,51 +206,51 @@ def _bmv(A, v):
 
 
 def kernel_terms(sc, cfg, finite, X):
-    """`(K, R, needs_pullback)`: the kernel and the repulsion in the kernel's space (q for
-    `svgd_kernel = "q"`, x otherwise). Non-finite particles are isolated (their K row and
-    column are the identity's) so a NaN cannot spread through the kernel average."""
+    """`(K, R, kernel_on)`: the RBF kernel on the configuration and its repulsion in
+    configuration space (`kernels.rbf_terms`, median bandwidth). Non-finite particles are
+    isolated (their K row and column are the identity's, their R zero) so a NaN cannot
+    spread through the kernel average. `svgd_kernel = none` (or N = 1): `K = I`, `R = 0`."""
     N = X.shape[0]
     dtype, device = X.dtype, X.device
     if sc.kernel == "none" or N < 2:
-        K, R = kernels.identity_terms(N, X.shape[1], dtype, device)
-        return K, R, False
-    y = cfg.detach() if sc.kernel == "q" else X
+        return (torch.eye(N, dtype=dtype, device=device),
+                torch.zeros_like(cfg), sc.kernel != "none")
+    y = cfg.detach()
     fin = finite & torch.isfinite(y).all(dim=1)
     y0 = torch.where(fin.unsqueeze(1), y, torch.zeros_like(y))
-    D = kernels.pairwise_sqdist(y0)
-    if sc.bandwidth == "median":
-        hbw = kernels.median_bandwidth(D, N, floor=sc.bandwidth_floor)
-    else:
-        hbw = torch.full((), float(sc.bandwidth) ** 2, dtype=dtype, device=device)
+    hbw = kernels.median_bandwidth(kernels.pairwise_sqdist(y0), N, floor=sc.bandwidth_floor)
     K, _ = kernels.rbf_terms(y0, hbw)
     mask = fin.unsqueeze(1) & fin.unsqueeze(0)
     K = torch.where(mask, K, torch.eye(N, dtype=dtype, device=device))
     R = (2.0 / hbw) * (K.sum(dim=1, keepdim=True) * y0 - K @ y0)
     R = torch.where(fin.unsqueeze(1), R, torch.zeros_like(R))
-    return K, R, sc.kernel == "q"
+    return K, R, True
 
 
-def gn_rows(h, g, J_h, J_g, mask):
-    """`(J, r)` of the Gauss-Newton row set `mask [N, m_e + m_i]` (0/1): rows outside the
-    set ZEROED in both (static shape), non-finite entries zeroed."""
-    J = torch.cat([J_h, J_g], dim=1) * mask.unsqueeze(2)
-    r = torch.cat([h, g], dim=1).detach() * mask
-    J = torch.nan_to_num(J.detach(), nan=0.0, posinf=0.0, neginf=0.0)
-    r = torch.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
-    return J, r
+def update_step(tg, sc, X, gF, gC, K, R_x, finite, rho):
+    """The update every mode shares (the split step's stage 3 and the autograd path):
 
+        y = X / s,   phi = kernels.stein_direction(K, s R_x, s gF, s gC, T, inside, kernel),
+        y <- y + (svgd_lr / rho_i) phi_i,   then the clamp onto the true bounds B.
 
-def clamp_step(sc, learned, dx, J_q):
-    """`clamp_q_step` plus the per-particle flag that the bound was hit."""
-    Jq = J_q if learned else None
-    dq = dx if Jq is None else _bmv(Jq, dx)
-    clamped = dq.abs().amax(dim=1) > sc.q_step_max
-    return al.clamp_q_step(dx, Jq, sc.q_step_max), clamped
-
-
-def q_motion(learned, J_q, d):
-    """`|J_q d|_inf` (learned) or `|d|_inf` (joint space): a step's configuration motion."""
-    return (_bmv(J_q, d) if learned else d).abs().amax(dim=1)
+    `gF = dF/dX`, `gC = d(L - f)/dX` and the pulled-back repulsion `R_x = J_q^T R` are in the
+    decision variables; multiplying by `s = tg.s` (the region half-widths) is the chain rule
+    into `y = X / s`. Returns `(X_new, clip [N], n_clip [N])`: the clamp's distance per
+    particle in the normalised coordinates and how many coordinates it moved."""
+    s = tg.s.unsqueeze(0)
+    fin = finite.unsqueeze(1)
+    zero = torch.zeros_like(X)
+    gF_y = torch.where(fin, s * gF, zero)
+    gC_y = torch.where(fin, s * gC, zero)
+    R_y = torch.where(fin, s * R_x, zero)
+    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside,
+                                  kernel=sc.kernel != "none")
+    eps = (sc.lr / rho).unsqueeze(1)
+    Xn = X + s * (eps * phi)
+    Xp, _ = tg.bp.project(Xn)
+    moved = (Xp != Xn) & torch.isfinite(Xn)
+    clip = torch.where(moved, (Xp - Xn) / s, zero).norm(dim=1)
+    return Xp.detach(), clip, moved.sum(dim=1)
 
 
 def state_dict(S):
@@ -302,136 +284,33 @@ def stage2(tg, X, cfg):
 
 
 @torch.compiler.disable
-def _scale_and_merit(tg, out):
-    """`tg.scale(out)` and the merit, kept OUT of inductor: compiled, these few row
-    reductions fuse into one reduction kernel that Triton 3.6 cannot compile ("operand #0
-    does not dominate this use" in `make_ttgir`, on the joint-space grasp program; a fused
-    persistent-reduction variant crashed on the learned pose program, 2026-10-09). Running
-    them eager costs a handful of launches in `compiled` mode and nothing in `graphed`
-    mode, where the CUDA graph captures them like any other kernels."""
-    h, g, finite, infeas = tg.scale(out)
-    return h, g, finite, infeas, tg.merit_of(out.F, infeas)
+def _scale(tg, out):
+    """`tg.scale(out)`, kept OUT of inductor: compiled, these few row reductions fuse into
+    one reduction kernel that Triton 3.6 cannot compile ("operand #0 does not dominate this
+    use" in `make_ttgir`, on the joint-space grasp program; a fused persistent-reduction
+    variant crashed on the learned pose program, 2026-10-09). Running them eager costs a
+    handful of launches in `compiled` mode and nothing in `graphed` mode, where the CUDA
+    graph captures them like any other kernels."""
+    return tg.scale(out)
 
 
-def _common(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S, gamma, T):
-    """What both methods' stage 3 start with: rows, scaling, merit, the LM gain update,
-    AL coefficients, kernel, row Jacobians and the three gradients."""
+def stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S):
+    """The rest of one step: the rows and costs, their scaling, the AL coefficients, the
+    gradients `dF/dX` and `d(L - f)/dX` (closed form downstream of the configuration, the
+    flow's `J_q` from stage 2), the kernel, and `update_step`."""
     bp = tg.bp
+    S = ALState(**S)
     out = bp.assemble(X, cfg, cfg, kin, col_row, col_grad)
-    h, g, finite, infeas, merit = _scale_and_merit(tg, out)
-    ratio = torch.full_like(infeas, float("nan"))
-    if sc.lm:
-        S, ratio = al.lm_gain_update(S, h, g, sc.gn_lm_growth, sc.gn_lm_min, sc.gn_lm_max)
+    h, g, finite, infeas = _scale(tg, out)
     ch, cg = al.al_constraint_grad_coefficients(h, g, S)
-    K, R, pull = kernel_terms(sc, cfg, finite, X)
-    J_h, J_g = tg.row_jacobians_out(out, X, J_q)
     dFc, dFx = bp.cost_gradient_parts(X, cfg)
     gF = _bmv(J_q.transpose(1, 2), dFc) + dFx
-    R_pulled = _bmv(J_q.transpose(1, 2), R) if pull else R
-    fin = finite.unsqueeze(1)
-    R_pulled = torch.where(fin, R_pulled, torch.zeros_like(R_pulled))
-    return dict(out=out, h=h, g=g, finite=finite, infeas=infeas, merit=merit, ratio=ratio,
-                S=S, ch=ch, cg=cg, K=K, R_pulled=R_pulled, J_h=J_h, J_g=J_g, gF=gF, fin=fin)
-
-
-def _finish(tg, sc, X, Xn, S, c, dq_adam, clamped, lm_set, t_outer, extra):
-    """Projection, the LM prediction over the step taken, best tracking, lr schedule; the
-    stage-3 output dict."""
-    bp = tg.bp
-    Xn, _ = bp.project(Xn)
-    if sc.lm and lm_set is not None:
-        J, r, mask = lm_set
-        S = al.lm_record_prediction(S, J, r, mask, Xn - X)
-    S = al.track_best(S, X, c["merit"])
-    S = al.lr_schedule(S, torch.nan_to_num(dq_adam, nan=float("inf")), sc.q_step_max, sc.lr0,
-                       sc.lr_min, t_outer, sc.lr_decay_t)
-    out = dict(X=Xn.detach(), S=state_dict(S), h=c["h"].detach(), g=c["g"].detach(),
-               F=c["out"].F.detach(), infeas=c["infeas"], finite=c["finite"], merit=c["merit"],
-               dq_adam=dq_adam, clamped=clamped, ratio=c["ratio"])
-    out.update(extra)
-    return out
-
-
-def stage3_al(tg, sc, do_gn, X, cfg, J_q, kin, col_row, col_grad, S, gamma, T, t_outer):
-    """The rest of one `al_svgd` step (the GN path of `SvgdSolver._step_al`, plus LM)."""
-    learned = tg.bp.is_learned
-    S = ALState(**S)
-    c = _common(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S, gamma, T)
-    S, fin = c["S"], c["fin"]
-    gC = _bmv(c["J_h"].transpose(1, 2), c["ch"]) + _bmv(c["J_g"].transpose(1, 2), c["cg"])
-    gF = torch.where(fin, c["gF"], torch.zeros_like(c["gF"]))
-    gAL = torch.where(fin, gF + gC, torch.zeros_like(gF))
-    phi = kernels.svgd_direction(c["K"], -gF, c["R_pulled"], gamma, T)
-    Xn, S = al.adam_step(X, -(phi - gAL), S)
-    ## The lr schedule sees ADAM'S OWN configuration step, not the GN correction's.
-    dq_adam = q_motion(learned, J_q, Xn - X)
-    lm_set = None
-    if do_gn:
-        m_e = c["h"].shape[1]
-        mask = torch.cat([torch.ones_like(c["h"]), al.active_mask(c["g"], S.mu, S.rho)], dim=1)
-        J, r = gn_rows(c["h"], c["g"], c["J_h"], c["J_g"], mask)
-        dx = al.gn_correction(J, r, sc.gn_delta, S.gn_lam if sc.lm else None)
-        dx, clamped = clamp_step(sc, learned, dx, J_q)
-        Xn = Xn + dx
-        lm_set = (J, r, mask)
-    else:
-        clamped = torch.zeros_like(c["finite"])
-    return _finish(tg, sc, X, Xn, S, c, dq_adam, clamped, lm_set, t_outer, {})
-
-
-def stage3_t(tg, sc, do_gn, X, cfg, J_q, kin, col_row, col_grad, S, gamma, T, t_outer):
-    """The rest of one `tsvgd` step: BOTH an al_svgd update and a tangent-space update from
-    one evaluation, each particle taking the tangent one iff its scaled infeasibility is at
-    or below `svgd_tsvgd_switch_infeas` (`SvgdSolver._step_t`, plus LM). `do_gn` is unused:
-    tsvgd corrects onto the manifold every step."""
-    learned = tg.bp.is_learned
-    S = ALState(**S)
-    c = _common(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S, gamma, T)
-    S, fin = c["S"], c["fin"]
-    h, g = c["h"], c["g"]
-    J_h = torch.nan_to_num(c["J_h"].detach(), nan=0.0, posinf=0.0, neginf=0.0)
-    J_g = torch.nan_to_num(c["J_g"].detach(), nan=0.0, posinf=0.0, neginf=0.0)
-    gI = _bmv(J_g.transpose(1, 2), c["cg"])
-    gC = _bmv(J_h.transpose(1, 2), c["ch"]) + gI
-    gF = torch.where(fin, c["gF"], torch.zeros_like(c["gF"]))
-    gAL = torch.where(fin, gF + gC, torch.zeros_like(gF))
-    K, R_pulled = c["K"], c["R_pulled"]
-
-    ## -- the al_svgd update --
-    phi_al = kernels.svgd_direction(K, -gF, R_pulled, gamma, T)
-    Xn_al, S = al.adam_step(X, -(phi_al - gAL), S)
-    dq_al = q_motion(learned, J_q, Xn_al - X)
-    act = al.active_mask(g, S.mu, S.rho)
-    ones_h = torch.ones_like(h)
-    mask_al = torch.cat([ones_h, act], dim=1)
-    J_al, r_al = gn_rows(h, g, J_h, J_g, mask_al)
-    lam = S.gn_lam if sc.lm else None
-    dx_gn, clamped_al = clamp_step(sc, learned, al.gn_correction(J_al, r_al, sc.gn_delta, lam), J_q)
-    Xn_al = Xn_al + dx_gn
-
-    ## -- the tangent-space update --
-    J_A = torch.cat([J_h, J_g * act.unsqueeze(2)], dim=1)
-    P = al.tangent_projector(J_A, sc.tangent_delta)
-    driving = torch.where(fin, -(gF + gI), torch.zeros_like(gF))
-    driving = _bmv(P, driving)
-    phi = _bmv(P, kernels.svgd_direction(K, driving, R_pulled, gamma, T))
-    step_lr, _ = clamp_step(sc, learned, S.lr.unsqueeze(1) * phi, J_q)
-    mask_t = torch.cat([ones_h, torch.zeros_like(g)], dim=1)
-    J_t, r_t = gn_rows(h, g, J_h, J_g, mask_t)
-    dx_c, clamped_c = clamp_step(sc, learned, al.gn_correction(J_t, r_t, sc.gn_delta, lam), J_q)
-    Xn_t = X + step_lr + dx_c
-    dq_t = q_motion(learned, J_q, step_lr)
-
-    ## -- per-particle mode --
-    tangent = torch.nan_to_num(c["infeas"], nan=float("inf")) <= sc.switch_infeas
-    t1 = tangent.unsqueeze(1)
-    Xn = torch.where(t1, Xn_t, Xn_al)
-    dq_adam = torch.where(tangent, dq_t, dq_al)
-    clamped = torch.where(tangent, clamped_c, clamped_al)
-    lm_set = (torch.where(tangent.view(-1, 1, 1), J_t, J_al), torch.where(t1, r_t, r_al),
-              torch.where(t1, mask_t, mask_al))
-    return _finish(tg, sc, X, Xn, S, c, dq_adam, clamped, lm_set, t_outer,
-                   dict(tangent=tangent, P=P.detach()))
+    gC = tg.constraint_gradient(out, X, J_q, ch, cg)
+    K, R, kernel_on = kernel_terms(sc, cfg, finite, X)
+    R_x = _bmv(J_q.transpose(1, 2), R) if kernel_on else torch.zeros_like(X)
+    Xn, clip, n_clip = update_step(tg, sc, X, gF, gC, K, R_x, finite, S.rho)
+    return dict(X=Xn, h=h.detach(), g=g.detach(), F=out.F.detach(), infeas=infeas,
+                finite=finite, clip=clip, n_clip=n_clip)
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -463,7 +342,7 @@ class GraphedStage:
         if _FROZEN:
             raise RuntimeError(f"svgd fused step: a CUDA graph ({self.name}) would be captured "
                                "inside a timed solve; WarmUpSvgdStep must capture every graph "
-                               "the run uses (a new N, dtype, method or program structure?)")
+                               "the run uses (a new N, dtype, step option or program structure?)")
         t0 = time.perf_counter()
         self.spec = spec
         self.static_in = [a.detach().clone() if isinstance(a, torch.Tensor) else a for a in flat]
@@ -525,8 +404,7 @@ class _Entry:
 
 
 def _make_fns(tg, sc, mode):
-    """The stage callables over `tg` for `mode`: `{"s1", "s2", ("s3", do_gn)}`."""
-    s3 = stage3_al if sc.method == "al_svgd" else stage3_t
+    """The stage callables over `tg` for `mode`: `{"s1", "s2", "s3"}`."""
 
     def f1(X):
         return stage1(tg, X)
@@ -534,12 +412,10 @@ def _make_fns(tg, sc, mode):
     def f2(X, cfg):
         return stage2(tg, X, cfg)
 
-    def make3(do_gn):
-        def f3(X, cfg, J_q, kin, col_row, col_grad, S, gamma, T, t_outer):
-            return s3(tg, sc, do_gn, X, cfg, J_q, kin, col_row, col_grad, S, gamma, T, t_outer)
-        return f3
+    def f3(X, cfg, J_q, kin, col_row, col_grad, S):
+        return stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S)
 
-    fns = {"s1": f1, "s2": f2, ("s3", True): make3(True), ("s3", False): make3(False)}
+    fns = {"s1": f1, "s2": f2, "s3": f3}
     if mode == "eager":
         return fns
     ## `triton.persistent_reductions=False`, scoped to these compiles: with persistent
@@ -548,7 +424,7 @@ def _make_fns(tg, sc, mode):
     ## (2026-10-08); `max_fusion_size=16` avoids it too, at a similar compile time.
     ## Every entry's stage closures share ONE code object per stage, and dynamo caches per
     ## code object, so the default `recompile_limit` of 8 is reached after eight (structure,
-    ## N, dtype, method) entries in one process -- after which dynamo SILENTLY runs the stage
+    ## N, dtype, step options) entries in one process -- after which dynamo SILENTLY runs the stage
     ## eager (and a graph capture of it can fail): the profiling sweep hit it at its ninth
     ## compiled row (2026-10-09). Raised, process-wide, to the accumulated limit.
     import torch._dynamo.config as dynamo_config
@@ -582,7 +458,7 @@ class StepRunner:
             if _FROZEN:
                 raise RuntimeError(
                     f"svgd fused step: no {mode} step for this structure (N={N}, "
-                    f"{tg.dtype}, {sc.method}) and steps are frozen -- WarmUpSvgdStep must run "
+                    f"{tg.dtype}, {sc}) and steps are frozen -- WarmUpSvgdStep must run "
                     f"on a program of every arm and task before the first timed cell")
             entry = _Entry(tg, tensors, _make_fns(tg, sc, mode))
             _CACHE[key] = entry
@@ -605,9 +481,9 @@ class StepRunner:
         with torch.enable_grad():
             return self.fns["s2"](X, cfg)
 
-    def s3(self, do_gn, *args):
+    def s3(self, *args):
         with torch.no_grad():
-            return self.fns[("s3", bool(do_gn))](*args)
+            return self.fns["s3"](*args)
 
     def graphs_captured(self):
         if self.mode != "graphed":

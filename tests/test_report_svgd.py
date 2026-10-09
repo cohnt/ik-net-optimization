@@ -10,6 +10,8 @@ not a copy of it. What is pinned:
     IPOPT-only per arm against the twin;
   - cost is the median over cells BOTH arms solved, and N/A under 10 such cells;
   - solver_feasible vs drake_feasible, and drake_feasible vs verify(), print as BUG lines;
+  - the two population metrics (feasible particles, their q-spread) are medians over cells;
+  - the A/B section pairs a column against the primary al64 per arm;
   - a missing tag is reported and not fatal.
 """
 import contextlib
@@ -54,7 +56,9 @@ def _rec(i, ok, cost, svgd=True, solver_ok=None, drake_ok=None):
                          solver_feasible=ok if solver_ok is None else solver_ok,
                          drake_feasible=ok if drake_ok is None else drake_ok,
                          phase_times={"swarm": 1.0}, collision_seconds=0.5,
-                         stop_reason="feasible_stall" if ok else "wall_clock")
+                         feasible_q_spread=(0.1 * (i % 3 + 1)) if ok else None,
+                         rho_median=10.0, rho_max=1e3 if ok else 1e6,
+                         stop_reason="converged" if ok else "wall_clock")
     return r
 
 
@@ -89,7 +93,7 @@ def _run(root, extra=()):
 def test_mcnemar_directions_cost_and_bugs():
     with tempfile.TemporaryDirectory() as root:
         _twin(root)
-        ## svgd al64-none: learned solves 0..13 (cost 1 on 0..9, 1000 on its own 10..13), joint
+        ## svgd al64: learned solves 0..13 (cost 1 on 0..9, 1000 on its own 10..13), joint
         ## space solves 0..9 and 14 (cost 2 on 0..9, 1000 on 14). Mutual = 0..9, ten cells.
         learned = [_rec(i, i < 14, 1.0 if i < 10 else 1000.0) for i in range(N_CELLS)]
         numerical = [_rec(i, i < 10 or i == 14, 2.0 if i < 10 else 1000.0) for i in range(N_CELLS)]
@@ -97,10 +101,13 @@ def test_mcnemar_directions_cost_and_bugs():
         ## feasible and Drake did not; on joint-space cell 15, Drake said feasible, verify did not.
         learned[15] = _rec(15, False, None, solver_ok=True, drake_ok=False)
         numerical[15] = _rec(15, False, None, solver_ok=True, drake_ok=True)
-        _write(root, "al64-none", learned, numerical, _meta())
-        rep, text = _run(root, ["--columns", "al64"])
+        _write(root, "al64", learned, numerical, _meta())
+        ## al64none: learned solves 0..7 only -> 6 cells only al64 solved, 0 only al64none.
+        _write(root, "al64none", [_rec(i, i < 8, 1.0) for i in range(N_CELLS)],
+               [_rec(i, i < 10, 2.0) for i in range(N_CELLS)], _meta())
+        rep, text = _run(root, ["--columns", "al64,al64none,al64cem"])
 
-        b = rep.blocks[ROW + ("al64-none",)]
+        b = rep.blocks[ROW + ("al64",)]
         assert (b["lj"]["a_only"], b["lj"]["b_only"]) == (4, 1), b["lj"]
         assert "L-only 4 / JS-only 1" in text
         ## Per arm against the IPOPT twin: (svgd-only, IPOPT-only).
@@ -118,8 +125,17 @@ def test_mcnemar_directions_cost_and_bugs():
         assert any("solver_feasible != drake_feasible" in m for m in rep.bugs), rep.bugs
         assert any("drake_feasible != verify()" in m for m in rep.bugs), rep.bugs
         assert "!!!!!! BUG" in text and rep.status == 3
-        ## The warmup=cem column was asked for and is not on disk: reported, not fatal.
-        cem_tag = M.make_tag(*ROW[:2], ROW[2], "al64-cem", N_CELLS, CAP)
+        ## The population metrics: medians over the cells that recorded them.
+        assert b["L"]["n_feasible"] == 8.0 and abs(b["L"]["q_spread"] - 0.2) < 1e-12, b["L"]
+        assert b["L"]["rho_max"] == 1e6 and "q-spread among them" in text
+        ## A/B against the primary: al64none has 6 learned cells only al64 solved.
+        assert "A/B against the primary al64" in text
+        line = next(l for l in text.splitlines() if "al64none" in l and "learned" in l
+                    and "grasp" in l)
+        f = line.split()
+        assert f[f.index("learned") + 1:f.index("learned") + 5] == ["14", "8", "0", "6"], line
+        ## The CEM column was asked for and is not on disk: reported, not fatal.
+        cem_tag = M.make_tag(*ROW[:2], ROW[2], "al64cem", N_CELLS, CAP)
         assert cem_tag in rep.missing and cem_tag in text
 
 
@@ -128,9 +144,9 @@ def test_grid_hash_refusal():
         _twin(root)
         learned = [_rec(i, i < 12, 1.0) for i in range(N_CELLS)]
         numerical = [_rec(i, i < 12, 2.0) for i in range(N_CELLS)]
-        _write(root, "tsvgd64-none", learned, numerical, _meta(grid="ffffffffffff"))
-        rep, text = _run(root, ["--columns", "tsvgd64-none"])
-        b = rep.blocks[ROW + ("tsvgd64-none",)]
+        _write(root, "al64none", learned, numerical, _meta(grid="ffffffffffff"))
+        rep, text = _run(root, ["--columns", "al64none"])
+        b = rep.blocks[ROW + ("al64none",)]
         assert b["vs_twin"] == {}, "a mismatched grid must not be paired"
         assert any("grid_hash ffffffffffff != " + GRID in m for m in rep.refused), rep.refused
         assert "REFUSED" in text and rep.status == 2 and not rep.bugs
@@ -141,9 +157,9 @@ def test_metadata_mismatch_refused_even_on_equal_hash():
     with tempfile.TemporaryDirectory() as root:
         _twin(root)
         meta = dict(_meta(), task="pose")
-        _write(root, "admm64-none", [_rec(i, True, 1.0) for i in range(N_CELLS)],
+        _write(root, "al256", [_rec(i, True, 1.0) for i in range(N_CELLS)],
                [_rec(i, True, 1.0) for i in range(N_CELLS)], meta)
-        rep, _ = _run(root, ["--columns", "admm64-none"])
+        rep, _ = _run(root, ["--columns", "al256"])
         assert any("task" in m for m in rep.refused) and rep.status == 2
 
 

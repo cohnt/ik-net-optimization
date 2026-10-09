@@ -67,7 +67,7 @@ def test_svgd_result_duck_type():
     os.makedirs(os.path.dirname(log), exist_ok=True)
     target, sampler = a_reachable_target()
     opts = ProgramOptions(which_solver="svgd", max_wall_time=5.0, file_print_name=log,
-                          collision_avoidance=True)
+                          collision_avoidance=True, svgd_collision_workers=4)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
         p = PandaIKProgramNumerical(diagram, options=opts)
@@ -214,16 +214,20 @@ def test_bad_svgd_set_is_refused_at_options():
               "svgd_method" in str(exc) and "foo" in str(exc), str(exc))
 
 
-def test_method_knob_guard():
-    """A method-specific knob set away from its default under another method is refused at
-    ProgramOptions (it would be inert); under its own method it is accepted; the CUDA-graph
-    switch without the compile switch is refused."""
-    print("\n--- method-specific svgd knobs are refused under another method ---")
-    cases = [(dict(svgd_method="al_svgd", svgd_admm_rho=5.0), True),
-             (dict(svgd_method="admm_svgd", svgd_admm_rho=5.0), False),
-             (dict(svgd_method="tsvgd", svgd_admm_x_iters=2), True),
-             (dict(svgd_method="al_svgd", svgd_tsvgd_switch_infeas=10.0), True),
-             (dict(svgd_method="tsvgd", svgd_tsvgd_switch_infeas=10.0), False),
+def test_option_guard():
+    """The svgd option checks at ProgramOptions: `svgd_method` has one value; the removed
+    methods and kernel spaces are refused; a non-positive temperature, step size or initial
+    penalty is refused; the CUDA-graph switch without the compile switch is refused."""
+    print("\n--- svgd option checks ---")
+    cases = [(dict(svgd_method="al_svgd"), False),
+             (dict(svgd_method="tsvgd"), True),
+             (dict(svgd_method="admm_svgd"), True),
+             (dict(svgd_kernel="x"), True),
+             (dict(svgd_kernel="none"), False),
+             (dict(svgd_temperature=0.0), True),
+             (dict(svgd_lr=-1.0), True),
+             (dict(svgd_rho0=0.0), True),
+             (dict(svgd_constraint_inside_kernel=True), False),
              (dict(svgd_cuda_graph=True), True),
              (dict(svgd_compile=True, svgd_cuda_graph=True), False)]
     for kw, should_raise in cases:
@@ -234,12 +238,26 @@ def test_method_knob_guard():
             raised, msg = True, str(exc)
         check(f"ProgramOptions({kw}) {'raises' if should_raise else 'is accepted'}",
               raised == should_raise, msg or "no raise")
+    removed = ("svgd_polish_iters", "svgd_gn_every", "svgd_gn_lm", "svgd_eta_rel", "svgd_q_step_max",
+               "svgd_repulsion_T0", "svgd_anneal_frac", "svgd_gamma_t", "svgd_admm_rho",
+               "svgd_tsvgd_switch_infeas", "svgd_lr_decay_t", "svgd_bandwidth",
+               "svgd_row_scale_rot", "svgd_resample_every", "svgd_jitter_z")
+    present = [f for f in removed if hasattr(ProgramOptions(), f)]
+    check("no field of a removed piece survives on ProgramOptions", not present, str(present))
 
 
 def main():
-    test_svgd_result_duck_type()
+    from src.svgd.solver import close_shared_pools
+    try:
+        test_svgd_result_duck_type()
+    finally:
+        close_shared_pools()          # the one 4-worker pool this file opens
+    from src.svgd.collision_backend import live_pools, live_workers
+    from src.svgd.collision_backend import peak_live_workers
+    print(f"    peak live collision workers in this process: {peak_live_workers()}")
+    check("no collision pool is live at the end of the file", live_workers() == 0, str(live_pools()))
     test_bad_svgd_set_is_refused_at_options()
-    test_method_knob_guard()
+    test_option_guard()
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")
     for name in FAILURES:
         print(f"  FAILED: {name}")

@@ -10,17 +10,15 @@ timing (`SvgdSolver.warm_up`: the pool's worker scenes, and under `compiled` / `
 compile and the capture, whose seconds are recorded as `warmup_seconds`), and then `--steps`
 steps of the method are timed between two CUDA synchronisations, on a swarm drawn by the
 solver's own paired init around a collision-free start. The step is the method's real step:
-`al_svgd` / `tsvgd` the split step of `src/svgd/fused.py` (`_step_split`), `admm_svgd` one
-ADMM round of `AdmmSwarm.run` (`svgd_admm_x_iters` + `svgd_admm_q_iters` inner iterations, and
-`q_iters + 1` pool round trips), reported per round and per inner iteration.
+the split step of `src/svgd/fused.py` (`_step_split`) of `al_svgd`, the only method.
 
 Columns: `ms_per_step`; `pool_ms_per_step`, the host time BLOCKED in the pool per step;
 `pool_span_ms_per_step`, the pool's latency (submit to collect; equal to the blocked time
 without the overlap); `pool_us_per_config` (blocked time over configurations sent) and
 `pool_share` (blocked / total). `--overlap both` runs every row with the pool dispatched
 before stage 2 and collected after (`svgd_pool_overlap=True`) and with it collected at once,
-which is the overlap's measurement. `graphed` needs CUDA; `admm_svgd` runs eager whatever the
-mode (it is not fused), so its compiled / graphed rows are skipped.
+which is the overlap's measurement. `graphed` needs CUDA. Every pool has `--workers` processes
+(default 4: each is a whole Drake scene in memory).
 
 Output: `results/profiling/svgd_step_<host>_<UTC time>.json`, host-tagged because timing is
 never compared across machines. Spawns pool workers, so it needs the `__main__` guard.
@@ -44,7 +42,6 @@ from src.flow_loading import LoadFlowSolver                                   # 
 from src.generic_program import ProgramOptions                                # noqa: E402
 from src.panda_program import (PandaIKProgram, PandaIKProgramNumerical,       # noqa: E402
                                PandaMugProgram, PandaMugProgramNumerical)
-from src.svgd.al import ALState                                               # noqa: E402
 from src.svgd.solver import SvgdSolver, close_shared_pools                    # noqa: E402
 from src.target_screening import SceneFile                                    # noqa: E402
 from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints, RepoDir  # noqa: E402
@@ -58,13 +55,13 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--task", choices=("pose", "mug"), default="pose")
     p.add_argument("--arms", default="learned,numerical")
-    p.add_argument("--methods", default="al_svgd,tsvgd,admm_svgd")
+    p.add_argument("--methods", default="al_svgd")
     p.add_argument("--Ns", default="1,16,64,256,1024")
     p.add_argument("--dtypes", default="float32,float64")
     p.add_argument("--modes", default="eager,compiled,graphed")
     p.add_argument("--overlap", choices=("on", "off", "both"), default="on")
     p.add_argument("--steps", type=int, default=20, help="timed steps (ADMM: rounds) per row")
-    p.add_argument("--workers", type=int, default=None, help="svgd_collision_workers (default: the solver's)")
+    p.add_argument("--workers", type=int, default=4, help="svgd_collision_workers (default 4)")
     p.add_argument("--seed", type=int, default=3)
     p.add_argument("--out", default=None)
     return p.parse_args()
@@ -125,38 +122,23 @@ def time_row(p, method, N, dtype, mode, overlap, steps, workers):
     warm = s.warm_up()
     x0 = np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float)
     X, _, _ = s._init_particles(x0)
-    tg = s._tg
-    S = ALState.init(N, s.n, tg.m_e, tg.m_i, rho0=float(p.options.svgd_rho0), eta0=1.0,
-                     lr0=float(p.options.svgd_lr), dtype=s.dtype, device=s.device,
-                     gn_lam0=float(p.options.svgd_gn_lm))
-    s._eta0 = 1.0
+    S = s._init_state(X)
     s._pool.drain()
     s._make_runner()
     sync = (lambda: torch.cuda.synchronize(s.device)) if s.device.type == "cuda" else (lambda: None)
     inner = 1
-    if method == "admm_svgd":
-        from src.svgd.admm import AdmmSwarm
-        inner = int(p.options.svgd_admm_x_iters) + int(p.options.svgd_admm_q_iters)
-        sw = AdmmSwarm(s)
-        sw.run(X, S, time.perf_counter() + 1e6, 1, lambda x: None)     # one untimed round
-        s._pool.reset()
-        sync()
-        t0 = time.perf_counter()
-        sw.run(X, S, time.perf_counter() + 1e6, steps, lambda x: None)
-        sync()
-    else:
-        for t in range(2):                                               # untimed
-            X, S, _ = s._step_split(X, S, 0, t, steps + 2, True)
-        s._pool.reset()
-        sync()
-        t0 = time.perf_counter()
-        for t in range(steps):
-            X, S, _ = s._step_split(X, S, 0, t + 2, steps + 2, True)
-        sync()
+    for _ in range(2):                                                   # untimed
+        X, _, _ = s._step_split(X, S)
+    s._pool.reset()
+    sync()
+    t0 = time.perf_counter()
+    for _ in range(steps):
+        X, _, _ = s._step_split(X, S)
+    sync()
     dt = time.perf_counter() - t0
     pool = s._pool
     return dict(
-        method=method, N=N, dtype=dtype, mode=(mode if method != "admm_svgd" else "eager"),
+        method=method, N=N, dtype=dtype, mode=mode,
         overlap=bool(overlap), steps=steps, inner_per_step=inner, workers=s.workers,
         ms_per_step=1e3 * dt / steps, ms_per_inner=1e3 * dt / (steps * inner),
         pool_ms_per_step=1e3 * pool.seconds / steps, pool_span_ms_per_step=1e3 * pool.span_seconds / steps,
@@ -192,11 +174,7 @@ def main():
                 for dtype in dtypes:
                     for N in Ns:
                         for mode in modes:
-                            if method == "admm_svgd" and mode != "eager":
-                                continue
                             for ov in overlaps:
-                                if method == "admm_svgd" and not ov:
-                                    continue
                                 try:
                                     r = time_row(programs[arm], method, N, dtype, mode, ov,
                                                  args.steps, args.workers)

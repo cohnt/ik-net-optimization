@@ -257,7 +257,8 @@ def solver_diagnostics(result, solver):
 _SVGD_DETAIL_KEYS = ("method", "dtype", "n_particles", "iterations", "inner_steps",
                      "map_evals", "n_feasible", "n_resampled", "selected_index",
                      "solver_feasible", "drake_feasible", "phase_times", "collision_seconds",
-                     "stop_reason")
+                     "stop_reason", "rho_median", "rho_max", "bound_clip",
+                     "n_multiplier_clipped", "feasible_q_spread")
 
 
 def is_timeout(exit_string):

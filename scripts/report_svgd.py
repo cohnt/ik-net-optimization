@@ -27,12 +27,15 @@ wall clock") and the pre-registration's (`docs/svgd-solver.md`):
     the column header says which one a block carries.
   - the cap check reads BOTH `timed_out` AND `hit_iteration_cap`; the ">= 24 of 480 cells at a
     budget carries no verdict" rule is scaled to the cell count (>= 5%, at least one cell).
-  - from `record["svgd"]`: feasible particles, resampled particles (as a fraction of N),
-    `selected_index`, the collision pool's share of the wall, `stop_reason` counts, warm-up and
-    compile seconds -- and `solver_feasible` vs `drake_feasible`, and `drake_feasible` vs
-    `verify()`'s verdict. Any disagreement is a BUG and prints as one.
+  - from `record["svgd"]`: the two POPULATION metrics -- feasible particles at stop and the
+    median pairwise distance in q among them (`feasible_q_spread`) -- resampled particles (as a
+    fraction of N), `selected_index`, the per-particle penalties at stop (median, max), the
+    collision pool's share of the wall, `stop_reason` counts, warm-up and compile seconds --
+    and `solver_feasible` vs `drake_feasible`, and `drake_feasible` vs `verify()`'s verdict.
+    Any disagreement is a BUG and prints as one.
 
-Then a CEM A/B section, an N-ladder section, and the go/no-go rules (1)-(7) evaluated
+Then an A/B section -- every svgd column against the primary `al64` it differs from in one
+setting, per arm, exact McNemar on the same cells -- and the go/no-go rules (1)-(8) evaluated
 mechanically where the summaries can decide them. Exit status: 0 clean (missing runs are not
 fatal), 2 if any pairing was refused, 3 if any bug line printed.
 """
@@ -201,6 +204,9 @@ def arm_stats(summary, arm, other):
         out.update(
             n_particles=median([sv.get("n_particles") for sv in svgd]),
             n_feasible=median([sv.get("n_feasible") for sv in svgd]),
+            q_spread=median([sv.get("feasible_q_spread") for sv in svgd]),
+            rho_median=median([sv.get("rho_median") for sv in svgd]),
+            rho_max=max([sv.get("rho_max") or 0.0 for sv in svgd], default=None),
             resampled_median=median(frac), resampled_max=max(frac, default=None),
             selected_median=median([sv.get("selected_index") for sv in svgd]),
             selected_none=sum(1 for sv in svgd if sv.get("selected_index") == -1),
@@ -332,7 +338,9 @@ def print_row(rep, root, robot, row, start, columns, n_cells, cap, prefix, varia
             if not st["is_svgd"]:
                 continue
             print(f"    svgd {ARM_NAME[arm]:<12} N {fmt(st['n_particles'], 0)}  feasible particles "
-                  f"(median) {fmt(st['n_feasible'], 0, 1)}  resampled/N median "
+                  f"(median) {fmt(st['n_feasible'], 0, 1)}  q-spread among them (median) "
+                  f"{fmt(st['q_spread'], 0, 3)}  rho at stop median {fmt_e(st['rho_median'], 0)} "
+                  f"max {fmt_e(st['rho_max'], 0)}  resampled/N median "
                   f"{fmt(st['resampled_median'], 0, 3)} max {fmt(st['resampled_max'], 0, 3)}  "
                   f"selected idx median {fmt(st['selected_median'], 0, 0)} (none: {st['selected_none']})  "
                   f"collision share of wall {fmt(st['coll_share'], 0, 2)}")
@@ -355,62 +363,37 @@ def print_row(rep, root, robot, row, start, columns, n_cells, cap, prefix, varia
             L=L, J=J, lj=lj, run=s, vs_twin=vs_twin, vs_rec=vs_rec, rec=rec, twin=twin)
 
 
-## ---------------------------------------------------------- CEM A/B, N ladder --
-def cem_ab(rep, matrix, columns):
-    print(f"\n{'=' * 100}\nCEM warm-up A/B: svgd_warmup 'cem' against 'none', same method / N / "
-          f"kernel / cells; exact McNemar per arm (cem+ = cells only the CEM run solved)")
-    print(f"  {'row':<34}{'column':<10}{'arm':<13}{'none':>6}{'cem':>6}{'cem+':>6}{'none+':>6}"
-          f"{'p':>9}{'steps none':>11}{'steps cem':>10}{'wall none':>10}{'wall cem':>9}")
-    for base in M.SVGD_BASES:
-        if f"{base}-none" not in columns and f"{base}-cem" not in columns:
+## ------------------------------------------------------------- A/B vs primary --
+def ab_vs_primary(rep, matrix, columns):
+    print(f"\n{'=' * 100}\nA/B against the primary {M.PRIMARY} ({M.variant_token(M.PRIMARY)}): each "
+          f"column differs from it in ONE setting; exact McNemar per arm on the same cells "
+          f"(col+ = cells only that column solved)")
+    print(f"  {'row':<34}{'column':<12}{'arm':<13}{M.PRIMARY:>6}{'col':>6}{'col+':>6}{'prim+':>6}"
+          f"{'p':>9}{'steps prim':>11}{'steps col':>10}{'wall prim':>10}{'wall col':>9}"
+          f"{'feas prim':>10}{'feas col':>9}{'spread prim':>12}{'spread col':>11}")
+    for column in columns:
+        if column in (M.IPOPT, M.PRIMARY):
             continue
         for robot, row, start in matrix:
             label = f"{robot} {M.ROW_NAME[row]} {start}"
-            a = rep.blocks.get((robot, row, start, f"{base}-none"))
-            b = rep.blocks.get((robot, row, start, f"{base}-cem"))
+            a = rep.blocks.get((robot, row, start, M.PRIMARY))
+            b = rep.blocks.get((robot, row, start, column))
             for arm, key in (("learned", "L"), ("numerical", "J")):
                 if a is None or b is None:
-                    print(f"  {label:<34}{base:<10}{ARM_NAME[arm]:<13}  missing "
-                          f"({'none' if a is None else ''}{' ' if a is None and b is None else ''}"
-                          f"{'cem' if b is None else ''})")
+                    print(f"  {label:<34}{column:<12}{ARM_NAME[arm]:<13}  missing "
+                          f"({'primary' if a is None else column})")
                     continue
                 why = incomparable(a["run"], b["run"])
                 if why:
-                    rep.refuse(f"CEM A/B {label} {base}: {why}")
+                    rep.refuse(f"A/B {label} {column}: {why}")
                     continue
                 m = mcnemar_pair(b["run"], arm, a["run"], arm)
-                print(f"  {label:<34}{base:<10}{ARM_NAME[arm]:<13}{a[key]['succ']:>6}{b[key]['succ']:>6}"
-                      f"{m['a_only']:>6}{m['b_only']:>6}{m['p']:>9.3g}{fmt(a[key]['steps'], 11)}"
-                      f"{fmt(b[key]['steps'], 10)}{fmt(a[key]['wall'], 10, 2)}{fmt(b[key]['wall'], 9, 2)}")
-
-
-def n_ladder(rep, matrix, columns):
-    print(f"\n{'=' * 100}\nN ladder: al_svgd at N = 1 (kernel q, the single-particle control), "
-          f"N = 64 kernel none (no interaction), N = 64 kernel q; McNemar N=64 q vs N=1")
-    print(f"  {'row':<34}{'warmup':<8}{'arm':<13}{'N=1':>6}{'64 none':>9}{'64 q':>6}"
-          f"{'64q+':>6}{'1+':>5}{'p':>9}  rule (7)")
-    for w in M.WARMUPS:
-        for robot, row, start in matrix:
-            label = f"{robot} {M.ROW_NAME[row]} {start}"
-            b1 = rep.blocks.get((robot, row, start, f"al1-{w}"))
-            bn = rep.blocks.get((robot, row, start, f"al64none-{w}"))
-            bq = rep.blocks.get((robot, row, start, f"al64-{w}"))
-            for arm, key in (("learned", "L"), ("numerical", "J")):
-                def succ(b):
-                    return f"{b[key]['succ']}" if b else "--"
-                m, flag = None, ""
-                if b1 and bq:
-                    why = incomparable(bq["run"], b1["run"])
-                    if why:
-                        rep.refuse(f"N ladder {label} {w}: {why}")
-                    else:
-                        m = mcnemar_pair(bq["run"], arm, b1["run"], arm)
-                        flag = "FAILS: N=1 beats N=64" if b1[key]["succ"] > bq[key]["succ"] else "ok"
-                else:
-                    flag = "missing"
-                print(f"  {label:<34}{w:<8}{ARM_NAME[arm]:<13}{succ(b1):>6}{succ(bn):>9}{succ(bq):>6}"
-                      f"{(m['a_only'] if m else '--'):>6}{(m['b_only'] if m else '--'):>5}"
-                      f"{(format(m['p'], '.3g') if m else '--'):>9}  {flag}")
+                A, B = a[key], b[key]
+                print(f"  {label:<34}{column:<12}{ARM_NAME[arm]:<13}{A['succ']:>6}{B['succ']:>6}"
+                      f"{m['a_only']:>6}{m['b_only']:>6}{m['p']:>9.3g}{fmt(A['steps'], 11)}"
+                      f"{fmt(B['steps'], 10)}{fmt(A['wall'], 10, 2)}{fmt(B['wall'], 9, 2)}"
+                      f"{fmt(A.get('n_feasible'), 10, 1)}{fmt(B.get('n_feasible'), 9, 1)}"
+                      f"{fmt(A.get('q_spread'), 12, 3)}{fmt(B.get('q_spread'), 11, 3)}")
 
 
 ## ---------------------------------------------------------------- go / no-go --
@@ -427,8 +410,7 @@ def profile_ms(profile, arm, method, n, dtype, mode):
     for r in profile.get("rows", []):
         if (r.get("arm") == arm and r.get("method") == method and r.get("N") == n
                 and r.get("dtype") == dtype and r.get("overlap", True)
-                and r.get("mode") == (mode if method != "admm_svgd" else "eager")
-                and "ms_per_step" in r):
+                and r.get("mode") == mode and "ms_per_step" in r):
             ## Per INNER step: the profiler's own `ms_per_inner`, else its per-step figure
             ## over the inner steps each of its steps held (`inner_per_step`).
             if r.get("ms_per_inner") is not None:
@@ -494,14 +476,13 @@ def go_no_go(rep, matrix, columns, variant_kw, profile):
     print(f"  (6) worst per-cell resampled / N: {fmt(worst, 0, 3)} -> "
           f"{'--' if worst is None or not svgd_blocks else 'PASS' if worst < 0.10 else 'FAIL'}")
     bad = []
-    for w in M.WARMUPS:
-        for robot, row, start in matrix:
-            b1 = rep.blocks.get((robot, row, start, f"al1-{w}"))
-            bq = rep.blocks.get((robot, row, start, f"al64-{w}"))
-            if b1 and bq:
-                for arm, k in (("learned", "L"), ("numerical", "J")):
-                    if b1[k]["succ"] > bq[k]["succ"]:
-                        bad.append(f"{robot} {row} {start} warmup {w} {ARM_NAME[arm]}")
+    for robot, row, start in matrix:
+        b1 = rep.blocks.get((robot, row, start, "al1"))
+        bq = rep.blocks.get((robot, row, start, M.PRIMARY))
+        if b1 and bq:
+            for arm, k in (("learned", "L"), ("numerical", "J")):
+                if b1[k]["succ"] > bq[k]["succ"]:
+                    bad.append(f"{robot} {row} {start} {ARM_NAME[arm]}")
     print(f"  (7) N=1 beating N=64 (al_svgd, kernel q): {len(bad)} -> {'PASS' if not bad else 'FAIL'}"
           + (f" {bad}" if bad else ""))
     print("  (8) the selected variant(s) and N are written into docs/svgd-solver.md BEFORE any cluster "
@@ -544,8 +525,7 @@ def main(argv=None):
     for robot, row, start in matrix:
         print_row(rep, args.root, robot, row, start, columns, args.cells, args.cap, args.prefix,
                   variant_kw, args.record_stage, args.use_void_record)
-    cem_ab(rep, matrix, columns)
-    n_ladder(rep, matrix, columns)
+    ab_vs_primary(rep, matrix, columns)
     go_no_go(rep, matrix, columns, variant_kw, load_profile(args.profile))
     print(f"\n{'=' * 100}\nmissing runs: {len(rep.missing)}")
     for t in rep.missing:

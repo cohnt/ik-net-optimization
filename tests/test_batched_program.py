@@ -154,16 +154,31 @@ def program(robot, task, arm):
 
 
 def batched(robot, task, arm, device=DEVICE, dtype=torch.float64):
+    """The program's batched replay, with its own `WORKERS`-process collision pool. ONE is
+    alive at a time: asking for another closes the previous one's pool first (every use in
+    these tests is sequential), so a section's pool ends with the section -- eight programs'
+    pools held to the end of the file were part of the 2026-10-09 laptop OOM."""
     key = (robot, task, arm, str(device), dtype)
     if key not in _BATCHED:
+        close_all()
         _BATCHED[key] = BatchedProgram.from_program(program(robot, task, arm), dtype=dtype,
                                                     device=device, collision_workers=WORKERS)
     return _BATCHED[key]
 
 
 def close_all():
+    """Close every cached BatchedProgram's pool and forget it (a later `batched` rebuilds)."""
     for bp in _BATCHED.values():
         bp.close()
+    _BATCHED.clear()
+
+
+def assert_no_live_pools():
+    from src.svgd.collision_backend import live_pools, live_workers
+    from src.svgd.collision_backend import peak_live_workers
+    print(f"  peak live collision workers in this process: {peak_live_workers()}")
+    assert live_workers() == 0, f"collision pools left open: {live_pools()}"
+    print("PASS no collision pool is live at the end of the file")
 
 
 def lumped_batch(bp, rng, B):
@@ -636,6 +651,7 @@ if __name__ == "__main__":
         test_project()
         test_robot_hooks()
         test_timing()
-        print("ALL PASS")
     finally:
         close_all()
+    assert_no_live_pools()
+    print("ALL PASS")

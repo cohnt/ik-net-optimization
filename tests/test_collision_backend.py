@@ -36,8 +36,11 @@ from src.flow_loading import LoadFlowSolver                                  # n
 from src.generic_program import ProgramOptions                               # noqa: E402
 from src.iiwa_program import Iiwa14IKProgramNumerical, IiwaMugProgramNumerical  # noqa: E402
 from src.panda_program import PandaIKProgramNumerical, PandaMugProgramNumerical  # noqa: E402
+import multiprocessing as mp                                                  # noqa: E402
+
+import src.svgd.collision_backend as cb                                      # noqa: E402
 from src.svgd.collision_backend import (CollisionRow, DrakeCollisionPool,     # noqa: E402
-                                        ParallelCollisionChecker, SceneSpec,
+                                        ParallelCollisionChecker, PoolRefused, SceneSpec,
                                         collision_row, measure_pool)
 from src.target_screening import SCENES, SceneFile                           # noqa: E402
 from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints, RepoDir  # noqa: E402
@@ -356,7 +359,7 @@ def test_boolean_checker_agrees_with_the_row_outside_the_band():
 def test_timing_table():
     spec = _spec(_program("panda", "pose"))
     t0 = time.perf_counter()
-    rows = measure_pool(spec, Ns=(64, 256, 1024), workers=(8,), repeats=3,
+    rows = measure_pool(spec, Ns=(64, 256, 1024), workers=(4,), repeats=3,
                         out=lambda s: print("     " + s))
     assert len(rows) == 6
     print(f"PASS timing table completed in {time.perf_counter() - t0:.1f} s "
@@ -393,11 +396,76 @@ def test_pool_lifecycle():
     print("PASS pool lifecycle: spawn context, close terminates, second pool works, small batches")
 
 
+## ------------------------------------------------------------------------------------ ##
+##                                   the memory guard                                    ##
+## ------------------------------------------------------------------------------------ ##
+
+def _bare_spec():
+    """A spec needing no program: workers build their scene lazily, and these tests never
+    evaluate, so no scene is ever built."""
+    return SceneSpec(yaml_path=SceneFile("panda", "pose", "hardened"))
+
+
+def test_live_registry_counts_and_close_deregisters():
+    base = cb.live_workers()
+    n_children = len(mp.active_children())
+    with DrakeCollisionPool(_bare_spec(), workers=2) as pool:
+        assert cb.live_workers() == base + 2, cb.live_pools()
+        assert any(w == 2 and "hardened" in o for w, o in cb.live_pools()), cb.live_pools()
+        assert len(mp.active_children()) == n_children + 2
+    assert cb.live_workers() == base and pool.closed
+    assert len(mp.active_children()) == n_children
+    print("PASS the live-worker registry counts an open pool and close() deregisters it")
+
+
+def test_pool_refusals():
+    """The guard's two refusals, nothing spawned by either: (1) `MemAvailable` (monkeypatched
+    to 1 GB) -- a 2-worker pool needs 1.5 GB > half of it; (2) `SVGD_MAX_LIVE_WORKERS` -- with
+    one 1-worker pool live and the cap at the live count + 1, a second is refused with a
+    message naming the live count and the owner, and closing the first admits it again."""
+    real = cb.mem_available_gb
+    base, n_children = cb.live_workers(), len(mp.active_children())
+    cb.mem_available_gb = lambda: 1.0
+    try:
+        DrakeCollisionPool(_bare_spec(), workers=2)
+        raise AssertionError("a 2-worker pool must be refused at MemAvailable 1 GB")
+    except PoolRefused as exc:
+        assert "MemAvailable 1.0 GB" in str(exc), str(exc)
+    finally:
+        cb.mem_available_gb = real
+    assert cb.live_workers() == base and len(mp.active_children()) == n_children
+    old = os.environ.get("SVGD_MAX_LIVE_WORKERS")
+    os.environ["SVGD_MAX_LIVE_WORKERS"] = str(base + 1)
+    try:
+        first = DrakeCollisionPool(_bare_spec(), workers=1)
+        try:
+            DrakeCollisionPool(_bare_spec(), workers=1)
+            raise AssertionError("a second pool over the live-worker cap must be refused")
+        except PoolRefused as exc:
+            msg = str(exc)
+            assert "already live" in msg and "SVGD_MAX_LIVE_WORKERS" in msg and "hardened" in msg, msg
+        first.close()
+        with DrakeCollisionPool(_bare_spec(), workers=1):
+            pass
+    finally:
+        if old is None:
+            del os.environ["SVGD_MAX_LIVE_WORKERS"]
+        else:
+            os.environ["SVGD_MAX_LIVE_WORKERS"] = old
+    assert cb.live_workers() == base
+    print("PASS the memory guard refuses on MemAvailable and on SVGD_MAX_LIVE_WORKERS, spawning nothing")
+
+
 if __name__ == "__main__":
+    test_live_registry_counts_and_close_deregisters()
+    test_pool_refusals()
     test_scene_spec_round_trips_the_mug_exactly()
     test_pool_matches_the_program_bitwise()
     test_collision_row_autograd()
     test_boolean_checker_agrees_with_the_row_outside_the_band()
     test_timing_table()
     test_pool_lifecycle()
+    print(f"     peak live collision workers in this process: {cb.peak_live_workers()}")
+    assert cb.live_workers() == 0, f"pools left open at the end of the file: {cb.live_pools()}"
+    print("PASS no collision pool is live at the end of the file")
     print("ALL PASS")
