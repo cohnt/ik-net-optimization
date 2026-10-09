@@ -255,7 +255,8 @@ def solver_diagnostics(result, solver):
 ## same dict as the other svgd columns and report nan, not IPOPT majors, on a Drake arm.
 _SVGD_DETAIL_KEYS = ("method", "dtype", "n_particles", "iterations", "inner_steps",
                      "map_evals", "n_feasible", "n_resampled", "selected_index",
-                     "solver_feasible", "drake_feasible", "phase_times", "collision_seconds")
+                     "solver_feasible", "drake_feasible", "phase_times", "collision_seconds",
+                     "stop_reason")
 
 
 def is_timeout(exit_string):
@@ -699,6 +700,38 @@ class Arm:
     weight: float = 1.0       # joint-centering weight, to normalise the reported cost
 
 
+def _warm_up_svgd_arms(arms, targets, guesses, cells, metadata):
+    """Before the first timed cell: for every arm whose program runs the svgd solver, build
+    the program of the grid's FIRST cell and run `WarmUpSvgdStep` on it -- the pool, the
+    first evaluations and, under `svgd_compile` / `svgd_cuda_graph`, the compile of every
+    stage and the capture of every CUDA graph that arm's (N, dtype, method, program
+    structure) uses -- then FREEZE the step cache (`fused.FreezeSvgdSteps`), so a compile
+    or a capture inside a timed cell raises instead of eating its clock. The script-level
+    `sampler.WarmUpSvgdStep()` warms the sampler's structure only, which on the grasp task
+    is not an arm's. The seconds land in `metadata["svgd_warmup_seconds"]` per arm."""
+    if not arms or not targets:
+        return
+    ## Every benchmark script records its `--solver` in the metadata; nothing is built for
+    ## a Drake-solver run (a first-cell program per arm would be seconds of wasted setup).
+    if metadata is None or metadata.get("solver") != "svgd":
+        return
+    first = sorted(cells)[0] if cells else (0, 0)
+    ti, gi = first
+    seconds, compiled = {}, False
+    for arm in arms:
+        program = arm.make_program(targets[ti], guesses[ti][gi], (ti, gi))
+        opts = getattr(program, "options", None)
+        if getattr(opts, "which_solver", None) != "svgd":
+            continue
+        seconds[arm.name] = float(program.WarmUpSvgdStep())
+        compiled |= bool(opts.svgd_compile)
+    if compiled:
+        from src.svgd.fused import FreezeSvgdSteps
+        FreezeSvgdSteps()
+    if seconds and metadata is not None:
+        metadata["svgd_warmup_seconds"] = seconds
+
+
 def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
              progress=None, metadata=None, cell_timeout=None, cells=None,
              unrepresentable_tol=None, relaxed_tol=None):
@@ -734,6 +767,8 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
         cells = {(int(t), int(g)) for t, g in cells}
         if metadata is not None:
             metadata = dict(metadata, cells=sorted(cells))
+
+    _warm_up_svgd_arms(arms, targets, guesses, cells, metadata)
 
     for ti in range(n_targets):
         for gi in range(n_guesses):
@@ -780,6 +815,11 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                             watchdog.cancel()
                         continue
                     program.options.file_print_name = log_path
+                    if getattr(program.options, "which_solver", None) == "svgd":
+                        ## The batched program and the scene's collision pool, in SETUP:
+                        ## a grasp grid has a new scene per target, and the pool's spawn
+                        ## must not land in whichever arm's clock happens to run first.
+                        record["svgd_prepare_time"] = program.PrepareSvgdSolve()
                     start = time.time()
                     result = program.Solve()
                     record["wall_time"] = time.time() - start

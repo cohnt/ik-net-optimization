@@ -77,7 +77,7 @@ def median_bandwidth(sqdist: Tensor, N: int, floor) -> Tensor:
     `floor^2`; that branch is on the static N, not on data.
     """
     kw = dict(dtype=sqdist.dtype, device=sqdist.device)
-    floor_sq = torch.tensor(float(floor) ** 2, **kw)
+    floor_sq = torch.full((), float(floor) ** 2, **kw)     # a fill kernel: no H2D copy, capturable
     if N < 2:
         return floor_sq
     dist = torch.sqrt(sqdist)

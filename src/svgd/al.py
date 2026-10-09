@@ -61,10 +61,15 @@ class ALState:
     lr: Tensor          # [N]       per-particle learning rate
     best_x: Tensor      # [N, n]    best iterate so far (by the caller's merit)
     best_merit: Tensor  # [N]       its merit (+inf until the first `track_best`)
+    gn_lam: Tensor = None   # [N]   Levenberg-Marquardt damping of the GN correction (0: off)
+    gn_r2: Tensor = None    # [N]   |r|^2 of the GN row set at the last step (nan: none yet)
+    gn_pred2: Tensor = None  # [N]  |r + J d|^2, the linear prediction over the step taken
+    gn_mask: Tensor = None  # [N, m_e + m_i]  which rows that set was (0/1)
 
     @staticmethod
-    def init(N, n, m_e, m_i, rho0, eta0, lr0, dtype, device) -> "ALState":
-        """Zero multipliers and moments, `rho0`, `eta0`, `lr0` on every particle, best unset."""
+    def init(N, n, m_e, m_i, rho0, eta0, lr0, dtype, device, gn_lam0=0.0) -> "ALState":
+        """Zero multipliers and moments, `rho0`, `eta0`, `lr0` (and `gn_lam0`) on every
+        particle, best unset, no LM prediction recorded yet."""
         kw = dict(dtype=dtype, device=device)
         return ALState(
             lam=torch.zeros(N, m_e, **kw),
@@ -77,6 +82,10 @@ class ALState:
             lr=torch.full((N,), float(lr0), **kw),
             best_x=torch.zeros(N, n, **kw),
             best_merit=torch.full((N,), float("inf"), **kw),
+            gn_lam=torch.full((N,), float(gn_lam0), **kw),
+            gn_r2=torch.full((N,), float("nan"), **kw),
+            gn_pred2=torch.full((N,), float("nan"), **kw),
+            gn_mask=torch.zeros(N, m_e + m_i, **kw),
         )
 
 
@@ -127,15 +136,29 @@ def infeasibility(h: Tensor, g: Tensor, S: ALState) -> Tensor:
 
 
 def update_multipliers(h: Tensor, g: Tensor, S: ALState, rho_growth, rho_max,
-                       multiplier_max) -> ALState:
+                       multiplier_max, eta_rel=0.0) -> ALState:
     """Nocedal-Wright Algorithm 17.4, per particle, by `torch.where`.
 
     Where `infeasibility <= eta`:  `lam += rho h`, `mu = max(0, mu + rho g)`,
-                                   `eta = eta / rho^0.9`  (rho unchanged).
+                                   `eta = max(eta / rho^0.9, eta_rel * infeasibility)`
+                                   (rho unchanged).
     Otherwise:                     `rho = min(rho_max, rho * rho_growth)`,
-                                   `eta = 1 / rho_new^0.1`  (multipliers unchanged).
+                                   `eta = max(1 / rho_new^0.1, eta_rel * infeasibility)`
+                                   (multipliers unchanged).
     Multipliers are clipped to `|lam|, mu <= multiplier_max` so a particle whose rows never
     converge cannot carry its multipliers to infinity and poison every later gradient.
+
+    `eta_rel` (0 = textbook NW) makes the tolerance RELATIVE to the particle's own current
+    infeasibility on BOTH branches: the next test passes once it has shrunk by the factor
+    `eta_rel`, so rho grows only where a particle's infeasibility stalls. (The passing
+    branch's absolute `eta / rho^0.9` alone is a ~8x tightening per pass at rho = 10, which
+    a far start's scaled rows cannot follow: one pass, then a fail and a rho growth on
+    nearly every later outer step -- rho at its cap in six outer steps on the joint-space
+    pose cell, measured 2026-10-08.)
+    NW's absolute `rho^-0.1` (~0.6 at rho 1e2) is unreachable from a far start on rows
+    scaled by `1/tol` (infeasibility 1e3..1e4), so every test failed, rho saturated at
+    `rho_max` within a few outer steps and the multipliers never took a single first-order
+    step -- a pure penalty method wearing an AL's clothes (the 2026-10-08 traces).
     """
     v = infeasibility(h, g, S)
     ok = v <= S.eta                                   # [N] bool
@@ -149,8 +172,22 @@ def update_multipliers(h: Tensor, g: Tensor, S: ALState, rho_growth, rho_max,
 
     rho_grown = torch.clamp(S.rho * rho_growth, max=rho_max)
     rho_new = torch.where(ok, S.rho, rho_grown)
-    eta_new = torch.where(ok, S.eta / S.rho.pow(0.9), rho_new.pow(-0.1))
+    v_rel = float(eta_rel) * torch.nan_to_num(v, nan=0.0, posinf=0.0)
+    eta_reset = torch.maximum(rho_new.pow(-0.1), v_rel)
+    eta_tight = torch.maximum(S.eta / S.rho.pow(0.9), v_rel)
+    eta_new = torch.where(ok, eta_tight, eta_reset)
     return replace(S, lam=lam, mu=mu, rho=rho_new, eta=eta_new)
+
+
+def seed_eta(h: Tensor, g: Tensor, S: ALState, eta_rel) -> ALState:
+    """`eta = max(eta, eta_rel * infeasibility)` per particle: the relative tolerance of
+    `update_multipliers` applied at the START, so the first outer test is "shrink the initial
+    infeasibility by `eta_rel`" rather than NW's absolute `rho0^-0.1`. A no-op at
+    `eta_rel = 0`."""
+    if not eta_rel:
+        return S
+    v = torch.nan_to_num(infeasibility(h, g, S), nan=0.0, posinf=0.0)
+    return replace(S, eta=torch.maximum(S.eta, float(eta_rel) * v))
 
 
 def active_mask(g: Tensor, mu: Tensor, rho: Tensor) -> Tensor:
@@ -206,17 +243,21 @@ def lr_schedule(S: ALState, dq_observed: Tensor, q_step_max, lr0, lr_min, t,
 ## Gauss-Newton correction, step clamp and tangent projector
 ## --------------------------------------------------------------------------------------
 
-def _solve_gram(J: Tensor, rhs: Tensor, delta):
-    """Solve `(J J^T + delta I) Y = rhs` per particle without host syncs.
+def _solve_gram(J: Tensor, rhs: Tensor, delta, lam=None):
+    """Solve `(J J^T + delta I + lam diag(J J^T)) Y = rhs` per particle without host syncs.
 
-    `J [N, k, n]`, `rhs [N, k, *]` -> `(Y [N, k, *], ok [N] bool)`. `ok` is False where the
-    factorisation failed; the caller zeroes that particle's result. Non-finite output is
-    also flagged, so a `nan` can never leave this function marked as success.
+    `J [N, k, n]`, `rhs [N, k, *]`, `lam [N]` or None -> `(Y [N, k, *], ok [N] bool)`.
+    `ok` is False where the factorisation failed; the caller zeroes that particle's result.
+    Non-finite output is also flagged, so a `nan` can never leave this function marked as
+    success. The `lam` term is Marquardt's scaling of the Levenberg damping -- relative to
+    the Gram's own diagonal, so it means the same thing whatever the rows are scaled by.
     """
     k = J.shape[1]
     A = J @ J.transpose(1, 2)
     eye = torch.eye(k, dtype=J.dtype, device=J.device)
     A = A + delta * eye
+    if lam is not None:
+        A = A + torch.diag_embed(lam.view(-1, 1) * torch.diagonal(A, dim1=1, dim2=2))
     Y, info = torch.linalg.solve_ex(A, rhs, check_errors=False)
     finite = torch.isfinite(Y).flatten(1).all(dim=1)
     ok = (info == 0) & finite
@@ -224,8 +265,12 @@ def _solve_gram(J: Tensor, rhs: Tensor, delta):
     return Y, ok
 
 
-def gn_correction(J: Tensor, r: Tensor, delta) -> Tensor:
+def gn_correction(J: Tensor, r: Tensor, delta, lam=None) -> Tensor:
     """Gauss-Newton step onto `r = 0`: `dx = -J^T (J J^T + delta I)^-1 r`, `[N, n]`.
+
+    With `lam [N]` the Gram carries Marquardt's `lam_i diag(J_i J_i^T)` as well, which turns
+    the step continuously from Gauss-Newton (`lam = 0`) into a short scaled-gradient step
+    (`lam` large) -- `lm_gain_update` drives it per particle.
 
     For a LINEAR row set one step lands exactly on `r = 0`; for a nonlinear one the iteration
     is Newton's on the constraint manifold and converges quadratically. Rows the caller does
@@ -235,8 +280,46 @@ def gn_correction(J: Tensor, r: Tensor, delta) -> Tensor:
     would produce. A singular system (delta = 0, rank-deficient `J`) yields a zero step
     rather than a `nan` or a raise.
     """
-    Y, _ = _solve_gram(J, r.unsqueeze(2), delta)
+    Y, _ = _solve_gram(J, r.unsqueeze(2), delta, lam)
     return -(J.transpose(1, 2) @ Y).squeeze(2)
+
+
+LM_RATIO_LOW = 0.25     # gain ratio below which the damping grows (Nielsen / More)
+LM_RATIO_HIGH = 0.75    # ... and above which it shrinks
+
+
+def lm_gain_update(S: ALState, h: Tensor, g: Tensor, growth, lam_min, lam_max):
+    """Levenberg-Marquardt damping per particle from the GAIN RATIO of the last step:
+    `ratio = (|r_prev|^2 - |r_now|^2) / (|r_prev|^2 - |r_prev + J d|^2)`, the actual over
+    the linearly predicted reduction of the squared residual on the SAME row set (`gn_mask`)
+    over the step `d` the particle actually took (Adam + Stein + GN correction, after the
+    bound projection -- the linearisation is tested on what was done, not on the GN part
+    alone). `ratio < LM_RATIO_LOW`: `gn_lam *= growth` (capped at `lam_max`); `ratio >
+    LM_RATIO_HIGH`: `gn_lam /= growth` (floored at `lam_min`); otherwise unchanged. No
+    information -- the first step, a redrawn particle (`gn_r2 = nan`), a step predicted not
+    to reduce the residual (denominator <= 0), a non-finite row -- leaves `gn_lam` alone.
+
+    `h`, `g` are the SCALED rows at the current point. Returns `(S, ratio [N])`, `ratio`
+    nan where there was no information."""
+    r = torch.cat([h, g], dim=1) * S.gn_mask
+    actual2 = (r * r).sum(dim=1)
+    den = S.gn_r2 - S.gn_pred2
+    valid = torch.isfinite(actual2) & torch.isfinite(den) & (den > 0.0)
+    ratio = (S.gn_r2 - actual2) / torch.where(valid, den, torch.ones_like(den))
+    ratio = torch.where(valid, ratio, torch.full_like(ratio, float("nan")))
+    grown = torch.clamp(S.gn_lam * float(growth), max=float(lam_max))
+    shrunk = torch.clamp(S.gn_lam / float(growth), min=float(lam_min))
+    lam = torch.where(valid & (ratio < LM_RATIO_LOW), grown,
+                      torch.where(valid & (ratio > LM_RATIO_HIGH), shrunk, S.gn_lam))
+    return replace(S, gn_lam=lam), ratio
+
+
+def lm_record_prediction(S: ALState, J: Tensor, r: Tensor, mask: Tensor, d: Tensor) -> ALState:
+    """Store what `lm_gain_update` tests at the next step: the GN row set's `|r|^2`, its
+    linear prediction `|r + J d|^2` over the total step `d [N, n]`, and the row mask.
+    `J [N, m, n]`, `r [N, m]` already masked (zeroed where `mask` is 0)."""
+    pred = r + (J @ d.unsqueeze(2)).squeeze(2)
+    return replace(S, gn_r2=(r * r).sum(dim=1), gn_pred2=(pred * pred).sum(dim=1), gn_mask=mask)
 
 
 def clamp_q_step(dx: Tensor, Jq, q_step_max) -> Tensor:
