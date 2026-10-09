@@ -200,7 +200,7 @@ def test_svgd_options_emit_nothing_through_drake_branches():
     p = build(ProgramOptions(), target)
     builders = ("Ipopt", "Snopt", "Nlopt")
     baseline = {name: dict(getattr(p, f"_{name}Options")()[1].options) for name in builders}
-    p.options = ProgramOptions(which_solver="svgd", svgd_method="tsvgd", svgd_n=7,
+    p.options = ProgramOptions(which_solver="svgd", svgd_constraint_inside_kernel=True, svgd_n=7,
                                svgd_dtype="float64", svgd_paired_init="native",
                                svgd_kernel="none", svgd_warmup="cem", svgd_lr=1.0,
                                svgd_outer_iters=3, svgd_compile=True, svgd_seed=11)

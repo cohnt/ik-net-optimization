@@ -15,13 +15,22 @@ What is asserted on every cell: no exception; an `SvgdResult`; `last_iterate` se
 the per-outer trace is present and the right length. The numbers are PRINTED either way.
 
 The default run (`.venv/bin/python tests/test_svgd_solver.py`) is the short set: the
-closed-form derivative parity, the grasp cells (learned and joint space, `native` and
-`jitter` paired inits), determinism, the wall-clock stop, NaN injection, the CEM warm-up
-toggle, and one cell of `panda_benchmark.py --solver svgd` in a subprocess. The go/no-go
-SWEEP over the six pose configurations (`CONFIGS` x arms) is `... sweep`, run separately
-because it is six 20 s cells on the GPU. `... profile` times one step at N in {64, 256}.
+closed-form derivative parity, the row scaling against Drake, the step with the kernel off
+against projected gradient descent on the program's own L_rho (full autograd), the grasp
+cells (learned and joint space, `native` and `jitter` paired inits), determinism, the
+wall-clock stop, NaN injection, the CEM warm-up toggle, the stop reasons, the CUDA-graph
+replay, and one cell of `panda_benchmark.py --solver svgd` in a subprocess. The SWEEP over
+the pose configurations (`CONFIGS` x arms) is `... sweep`, run separately because it is
+20 s cells on the GPU. `... profile` times one step at N in {64, 256}.
 
 Spawns collision workers, so it needs the `__main__` guard. Models: `panda__n6__step620000`.
+
+MEMORY: every pool this file opens has `WORKERS` = 4 processes (the PI's rule after a laptop
+OOM on 2026-10-09: 84 pool processes, 48 GB, from 20-worker pools cached across tests and a
+benchmark subprocess). The shared pools and the test programs' own pools are CLOSED after
+every test (`release`), so no pool outlives the test that opened it; the most alive at once
+is the closed-form / row-scaling tests' four BatchedProgram pools (16 workers) plus the
+solver's shared pool for one scene (4).
 """
 
 import json
@@ -42,7 +51,7 @@ from pydrake.math import RollPitchYaw, RotationMatrix                    # noqa:
 from pydrake.common.eigen_geometry import Quaternion                    # noqa: E402
 
 from src import benchmark as bm                                         # noqa: E402
-from src.generic_program import orientation_error_rpy                   # noqa: E402
+from src.generic_program import ProgramOptions, orientation_error_rpy   # noqa: E402
 from src.panda_program import PandaIKProgram, PandaIKProgramNumerical  # noqa: E402
 from src.svgd import al                                                 # noqa: E402
 from src.svgd.result import SvgdResult                                  # noqa: E402
@@ -53,11 +62,12 @@ import test_batched_program as T                                        # noqa: 
 
 WALL = 20.0
 N_SWEEP = 64
+WORKERS = 4                   # collision workers per pool, everywhere in this file
 CONFIGS = [
-    ("al_svgd N=1 kernel=none", dict(svgd_method="al_svgd", svgd_n=1, svgd_kernel="none")),
-    ("al_svgd N=64 kernel=none", dict(svgd_method="al_svgd", svgd_n=64, svgd_kernel="none")),
-    ("al_svgd N=64 kernel=q", dict(svgd_method="al_svgd", svgd_n=64, svgd_kernel="q")),
-    ("tsvgd N=64 kernel=q", dict(svgd_method="tsvgd", svgd_n=64, svgd_kernel="q")),
+    ("al_svgd N=1 kernel=q", dict(svgd_n=1, svgd_kernel="q")),
+    ("al_svgd N=64 kernel=none", dict(svgd_n=64, svgd_kernel="none")),
+    ("al_svgd N=64 kernel=q", dict(svgd_n=64, svgd_kernel="q")),
+    ("al_svgd N=64 kernel=q literal", dict(svgd_n=64, svgd_kernel="q", svgd_constraint_inside_kernel=True)),
 ]
 FAILURES = []
 _POSE = {}
@@ -109,6 +119,7 @@ def pose_program(arm, seed=5):
         q_t = T.collision_free_q(oracle, rng, 1)[0]
         translation, wxyz = oracle.fk(oracle.ConfigToPlantQ(q_t))
         _POSE["target"] = np.concatenate([translation, wxyz])
+        _POSE["q_target"] = q_t
         with HiddenPrints():
             _POSE["diagram"] = BuildEnv(meshcat=None, directives_file=SceneFile("panda", "pose", "hardened"))
     cls = PandaIKProgram if arm == "learned" else PandaIKProgramNumerical
@@ -123,21 +134,25 @@ def program_for(task, arm):
     return pose_program(arm) if task == "pose" else T.program("panda", "mug", arm)
 
 
-def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet=False):
-    """One solve on `p` under `svgd` with `overrides`; returns `(verdict, details, result)`."""
+def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet=False, q_init=None):
+    """One solve on `p` under `svgd` with `overrides`; returns `(verdict, details, result)`.
+    `q_init` overrides the drawn collision-free start."""
     arm = "learned" if hasattr(p, "z") else "numerical"
     opts = replace(p.options, which_solver="svgd", max_wall_time=wall, acceptable_constr_viol_tol=1e-4,
+                   svgd_collision_workers=WORKERS,
                    file_print_name=os.path.join(RepoDir(), "results", f"_test_svgd_{task}_{arm}.log"),
                    **overrides)
     os.makedirs(os.path.dirname(opts.file_print_name), exist_ok=True)
     p.options = opts
     rng = np.random.default_rng(seed)
-    q_init = T.collision_free_q(p, rng, 1)[0]
+    if q_init is None:
+        q_init = T.collision_free_q(p, rng, 1)[0]
     with HiddenPrints():
         if start == "paired":
             p.SetStartFromQ(q_init)
         else:
             p.SetNativeStart(q_init, rng)
+    p.PrepareSvgdSolve()          # the pool and its workers' scenes, outside the clock (as run_grid)
     p.ResetEvalCounts()
     t0 = time.time()
     with HiddenPrints():
@@ -161,8 +176,8 @@ def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet
                   f"trace tail: min_infeas {tr.get('min_infeas', [float('nan')])[-1]:.3g} "
                   f"n_feasible {tr.get('n_feasible', [float('nan')])[-1]:.0f} "
                   f"med_rho {tr.get('med_rho', [float('nan')])[-1]:.3g} "
-                  f"med_lr {tr.get('med_lr', [float('nan')])[-1]:.3g} "
-                  f"frac_gn_clamped {tr.get('frac_gn_clamped', [float('nan')])[-1]:.2f}")
+                  f"max_rho {tr.get('max_rho', [float('nan')])[-1]:.3g} "
+                  f"bound_clip {d.bound_clip:.3g} spread {d.feasible_q_spread}")
     tag = f"[{task}/{arm}] {label}"
     check(f"{tag}: returns an SvgdResult", isinstance(result, SvgdResult))
     check(f"{tag}: last_iterate set", getattr(p, "last_iterate", None) is not None)
@@ -232,7 +247,7 @@ def test_closed_form_derivatives_match_autograd():
             ## arm, no graph at all on joint space) must carry the collision row's gradient
             ## too -- until 2026-10-08 it was read off an autograd node that path never
             ## builds, so the solver's collision Jacobian was silently zero on both arms.
-            tg = _Target(bp, 1e-4, 1.0)
+            tg = _Target(bp, 1e-4)
             evs = tg.evaluate(X)
             has_cg = evs.out.extras.get("collision_grad") is not None
             Ds = tg.generic_jacobian_cfg(evs)
@@ -254,13 +269,13 @@ def test_grasp_cells():
     for arm in ("learned", "numerical"):
         for init in ("jitter", "native"):
             run_cell(T.program("panda", "mug", arm), "mug", f"init={init}",
-                     dict(svgd_method="al_svgd", svgd_n=N_SWEEP, svgd_kernel="q", svgd_paired_init=init))
+                     dict(svgd_n=N_SWEEP, svgd_kernel="q", svgd_paired_init=init))
 
 
 def _run_fixed_steps(p, N, outer, seed=11, **ov):
     """A solve with the clock off (60 s cap, `outer` outer steps) on a fixed start."""
     _, d, result = run_cell(p, "pose", f"N={N} outer={outer}",
-                            dict(svgd_method="al_svgd", svgd_n=N, svgd_kernel="q", svgd_outer_iters=outer,
+                            dict(svgd_n=N, svgd_kernel="q", svgd_outer_iters=outer,
                                  svgd_stop_patience=10 ** 6, **ov), wall=60.0, seed=seed, quiet=True)
     return result.GetSolution(p.lumped_vars), d
 
@@ -287,16 +302,17 @@ def test_determinism():
 
 def test_wall_clock_stop():
     """`max_wall_time = 3` at N=64 stops at the clock with the iterate kept. The pool for
-    this scene is already spawned and warm (the preceding cells), as the benchmark's
-    `WarmUpSvgdStep` guarantees before any timed cell."""
+    this scene is spawned and warmed first (`warm_up`), as the benchmark's `WarmUpSvgdStep`
+    guarantees before any timed cell."""
     print("\n--- wall-clock stop: max_wall_time=3, N=64 ---")
     p = pose_program("learned")
-    p.options = replace(p.options, which_solver="svgd", svgd_n=64, svgd_kernel="q", svgd_method="al_svgd")
+    p.options = replace(p.options, which_solver="svgd", svgd_n=64, svgd_kernel="q",
+                        svgd_collision_workers=WORKERS)
     SvgdSolver(p).warm_up()
     t0 = time.time()
     ## Both budgets lifted explicitly: `run_cell` builds on `p.options`, which an earlier
     ## test may have left with a small `svgd_outer_iters` (the determinism test's 5).
-    _, d, _ = run_cell(p, "pose", "wall=3", dict(svgd_method="al_svgd", svgd_n=64, svgd_kernel="q",
+    _, d, _ = run_cell(p, "pose", "wall=3", dict(svgd_n=64, svgd_kernel="q",
                                                  svgd_stop_patience=10 ** 6, svgd_outer_iters=10 ** 6),
                        wall=3.0, quiet=True)
     wall = time.time() - t0
@@ -314,8 +330,8 @@ def test_nan_injection():
     counted, and the solve returns normally."""
     print("\n--- NaN injection via particles_override ---")
     p = pose_program("learned")
-    p.options = replace(p.options, which_solver="svgd", svgd_n=16, svgd_kernel="q", svgd_method="al_svgd",
-                        svgd_outer_iters=3, max_wall_time=20.0, acceptable_constr_viol_tol=1e-4,
+    p.options = replace(p.options, which_solver="svgd", svgd_n=16, svgd_kernel="q",
+                        svgd_collision_workers=WORKERS, svgd_outer_iters=3, max_wall_time=20.0, acceptable_constr_viol_tol=1e-4,
                         file_print_name="")
     rng = np.random.default_rng(3)
     with HiddenPrints():
@@ -338,7 +354,7 @@ def test_nan_injection():
 def test_cem_warmup_toggle():
     print("\n--- CEM warm-up toggle ---")
     p = pose_program("learned")
-    _, d, _ = run_cell(p, "pose", "cem warm-up", dict(svgd_method="al_svgd", svgd_n=32, svgd_kernel="q",
+    _, d, _ = run_cell(p, "pose", "cem warm-up", dict(svgd_n=32, svgd_kernel="q",
                                                       svgd_warmup="cem", svgd_warmup_iters=3,
                                                       svgd_outer_iters=3), wall=20.0, quiet=True)
     w = d.extras.get("warmup")
@@ -357,7 +373,8 @@ def test_benchmark_subprocess():
     shutil.rmtree(out_dir, ignore_errors=True)
     cmd = [sys.executable, os.path.join(RepoDir(), "scripts", "panda", "panda_benchmark.py"),
            "--task", "pose", "--targets", "1", "--guesses", "1", "--wall-time", "20",
-           "--solver", "svgd", "--arms", "learned,numerical", "--config", "latent", "--tag", tag]
+           "--solver", "svgd", "--arms", "learned,numerical", "--config", "latent", "--tag", tag,
+           "--set", f"svgd_collision_workers={WORKERS}"]
     t0 = time.time()
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     print(f"    exit {proc.returncode} in {time.time() - t0:.0f} s")
@@ -382,12 +399,12 @@ def test_benchmark_subprocess():
 
 
 def test_scaled_rows_map_back_to_drake_rows():
-    """Task D's contract. The solver scales every row by `1 / (tol * s)` so that
+    """The row-scaling pin. The solver scales every row by `1 / tol` so that
     `||[h~; g~+]||_inf <= 1` is "feasible at the gate"; `unscale` must recover, for EVERY
     entry, exactly the signed violation of the Drake row it came from -- `value - lb` (eq),
-    `lb - value` (lo), `value - ub` (hi) of `prog.EvalBinding(binding, x)` -- at
-    `svgd_row_scale_rot` 1 and 4, and at scale 1 the solver's infeasibility times `tol` is
-    the worst Drake violation over those rows. All four Panda programs, float64."""
+    `lb - value` (lo), `value - ub` (hi) of `prog.EvalBinding(binding, x)` -- and the solver's
+    violation times `tol` is the worst Drake violation over those rows. All four Panda
+    programs, float64."""
     print("\n--- scaled rows map back to the Drake rows exactly ---")
     rng = np.random.default_rng(11)
     tol = 1e-4
@@ -399,27 +416,25 @@ def test_scaled_rows_map_back_to_drake_rows():
             X_np = T.lumped_batch(bp, rng, 8)
             X = torch.tensor(X_np, dtype=torch.float64, device=bp.device)
             worst_map, worst_inf = 0.0, 0.0
-            for rot in (1.0, 4.0):
-                tg = _Target(bp, tol, rot)
-                with torch.no_grad():
-                    ev = tg.evaluate(X, need_grad=False)
-                h_u, g_u = tg.unscale(ev.h, ev.g)
-                for i in range(X.shape[0]):
-                    if not (bool(ev.finite[i]) and float(ev.cfg[i].abs().max()) < 100):
-                        continue
-                    xf = bp.to_drake_x(X_np[i])
-                    vals = {d: np.asarray(p.prog.EvalBinding(b[0], xf), dtype=float).ravel()
-                            for d, b in by_desc.items()}
-                    drake_viol = []
-                    for col, specs in ((h_u, bp.h_spec), (g_u, bp.g_spec)):
-                        for j, r in enumerate(specs):
-                            v = vals[r.drake_binding][r.drake_row]
-                            ref = {"eq": v - r.lb, "lo": r.lb - v, "hi": v - r.ub}[r.kind]
-                            worst_map = max(worst_map, abs(float(col[i, j]) - ref) / max(1.0, abs(ref)))
-                            drake_viol.append(abs(ref) if r.kind == "eq" else max(ref, 0.0))
-                    if rot == 1.0:
-                        worst_inf = max(worst_inf, abs(float(ev.infeas[i]) * tol - max(drake_viol))
-                                        / max(1e-12, max(drake_viol)))
+            tg = _Target(bp, tol)
+            with torch.no_grad():
+                ev = tg.evaluate(X, need_grad=False)
+            h_u, g_u = tg.unscale(ev.h, ev.g)
+            for i in range(X.shape[0]):
+                if not (bool(ev.finite[i]) and float(ev.cfg[i].abs().max()) < 100):
+                    continue
+                xf = bp.to_drake_x(X_np[i])
+                vals = {d: np.asarray(p.prog.EvalBinding(b[0], xf), dtype=float).ravel()
+                        for d, b in by_desc.items()}
+                drake_viol = []
+                for col, specs in ((h_u, bp.h_spec), (g_u, bp.g_spec)):
+                    for j, r in enumerate(specs):
+                        v = vals[r.drake_binding][r.drake_row]
+                        ref = {"eq": v - r.lb, "lo": r.lb - v, "hi": v - r.ub}[r.kind]
+                        worst_map = max(worst_map, abs(float(col[i, j]) - ref) / max(1.0, abs(ref)))
+                        drake_viol.append(abs(ref) if r.kind == "eq" else max(ref, 0.0))
+                worst_inf = max(worst_inf, abs(float(ev.infeas[i]) * tol - max(drake_viol))
+                                / max(1e-12, max(drake_viol)))
             print(f"    panda/{task}/{arm}: max |unscaled - Drake| (rel) {worst_map:.2e}; "
                   f"|infeas * tol - Drake max violation| (rel) {worst_inf:.2e}")
             check(f"panda/{task}/{arm}: unscaled rows equal the Drake rows' signed violations",
@@ -429,82 +444,100 @@ def test_scaled_rows_map_back_to_drake_rows():
 
 
 def test_stop_reasons_and_log():
-    """Task A's contract: the swarm's reason for stopping is recorded on the details and in
-    the log -- `feasible_stall` (some particle feasible, the best objective stalled for
-    `svgd_stop_patience` outer steps), `step_cap`, `wall_clock` -- and the log carries the
-    per-outer rho / eta trajectories (task B)."""
+    """The swarm's reason for stopping is recorded on the details and in the log --
+    `converged` (some particle feasible at the gate, the best feasible objective improved
+    by less than `svgd_stop_rel` over `svgd_stop_patience` checks), `step_cap`,
+    `wall_clock` -- and the log carries the per-check penalty / tolerance trajectories. The
+    converged case is the JOINT-SPACE arm started AT the target configuration, so particle 0
+    is feasible (v = 0) from the first check: this is a test of the stop rule, not of the
+    method's reach. The penalty and the tolerance are PER PARTICLE: the details carry one
+    rho per particle."""
     print("\n--- stop reasons ---")
-    p = pose_program("learned")
-    _, d, _ = run_cell(p, "pose", "patience=2", dict(svgd_method="al_svgd", svgd_n=32, svgd_kernel="q",
-                                                     svgd_stop_patience=2, svgd_outer_iters=300),
-                       wall=20.0, quiet=True)
-    check("stop: a feasible swarm that stalls stops with stop_reason 'feasible_stall'",
-          d.stop_reason == "feasible_stall" and d.status_name == "converged",
+    p = pose_program("numerical")
+    _, d, _ = run_cell(p, "pose", "patience=2", dict(svgd_n=32, svgd_kernel="q", svgd_stop_patience=2,
+                                                     svgd_outer_iters=300),
+                       wall=20.0, quiet=True, q_init=_POSE["q_target"])
+    check("stop: a feasible swarm that stalls stops with stop_reason 'converged'",
+          d.stop_reason == "converged" and d.status_name == "converged",
           f"{d.stop_reason} {d.status_name}")
     with open(p.options.file_print_name) as f:
         log = f.read()
     check("stop: the log records the stop reason and the rho / eta trajectories",
-          "SVGD stop reason: feasible_stall" in log and "SVGD trace med_rho = " in log
-          and "SVGD trace med_eta = " in log, log[-400:])
-    _, d, _ = run_cell(p, "pose", "outer=2", dict(svgd_method="al_svgd", svgd_n=16, svgd_kernel="q",
+          "SVGD stop reason: converged" in log and "SVGD trace med_rho = " in log
+          and "SVGD trace med_eta = " in log and "SVGD trace max_rho = " in log, log[-400:])
+    rho = d.extras["rho_at_stop"]
+    check("stop: rho is per particle (one entry per particle; median and max on the details)",
+          len(rho) == 32 and d.rho_median == float(np.median(rho)) and d.rho_max == max(rho),
+          f"{len(rho)} {d.rho_median} {d.rho_max}")
+    p = pose_program("learned")
+    _, d, _ = run_cell(p, "pose", "outer=2", dict(svgd_n=16, svgd_kernel="q",
                                                   svgd_stop_patience=10 ** 6, svgd_outer_iters=2),
                        wall=20.0, quiet=True)
     check("stop: the outer-step cap stops with stop_reason 'step_cap'", d.stop_reason == "step_cap",
           d.stop_reason)
-    rho = d.extras["trace"]["med_rho"]
-    check("stop: rho is capped at svgd_rho_max", max(rho) <= float(p.options.svgd_rho_max), str(rho))
+    check("stop: rho is capped at svgd_rho_max", max(d.extras["trace"]["max_rho"])
+          <= float(p.options.svgd_rho_max), str(d.extras["trace"]["max_rho"]))
 
 
-def test_admm_degenerates_on_joint_space():
-    """Task F's contract. On the joint-space arm `f = I`: the x-block IS the projection
-    `x <- Pi_box(q_bar - u)` (to within `svgd_gn_delta / rho`), and the solve's details say
-    it degenerated to the projection split; on the learned arm they say it did not."""
-    print("\n--- admm_svgd: the joint-space arm is the projection split, and says so ---")
-    from src.svgd.admm import AdmmSwarm
-    for arm in ("numerical", "learned"):
+def test_step_with_kernel_off_is_pgd_on_the_programs_L():
+    """On the real learned pose program (float64 swarm, collision row included), one step
+    with `svgd_kernel = none` is projected gradient descent on the program's own L_rho / T in
+    the normalised coordinates, `x <- clamp_B(x - (svgd_lr / rho_i) s^2 grad_x L_i / T)`, with
+    the reference gradient from FULL AUTOGRAD through the batched program (flow, kinematics
+    and the collision row's autograd node) -- not from the closed forms the step uses. Each
+    particle carries its own rho_i and random multipliers."""
+    print("\n--- one step with the kernel off == PGD on L_rho / T (full autograd reference) ---")
+    from dataclasses import replace as dc_replace
+    for arm in ("learned", "numerical"):
         p = pose_program(arm)
-        _, d, _ = run_cell(p, "pose", "admm", dict(svgd_method="admm_svgd", svgd_n=16, svgd_kernel="q",
-                                                   svgd_outer_iters=3, svgd_stop_patience=10 ** 6),
-                           wall=20.0, quiet=True)
-        a = d.extras.get("admm") or {}
-        check(f"admm/{arm}: details record degenerate={arm == 'numerical'}",
-              a.get("degenerate") is (arm == "numerical")
-              and (("projection split" in a.get("split", "")) == (arm == "numerical")), str(a))
-        p.options = replace(p.options, svgd_method="al_svgd")
-    p = pose_program("numerical")
-    p.options = replace(p.options, svgd_method="admm_svgd", svgd_n=16)
-    s = SvgdSolver(p)
-    s._build()
-    sw = AdmmSwarm(s)
-    rng = np.random.default_rng(5)
-    X = torch.tensor(T.lumped_batch(s._tg.bp, rng, 16), dtype=s.dtype, device=s.device)
-    v = X + 0.05 * torch.randn_like(X)
-    rho = torch.full((16,), 100.0, dtype=s.dtype, device=s.device)
-    Xn, _, _ = sw.x_block(X, v, rho)
-    lo, hi = s._tg.bp.bounds
-    err = float((Xn - torch.minimum(torch.maximum(v, lo), hi)).abs().max())
-    print(f"    joint space: |x_block(v) - Pi_box(v)|_inf = {err:.2e}")
-    check("admm/numerical: the x-block is the box projection of q_bar - u", err < 1e-4, f"{err}")
-    p.options = replace(p.options, svgd_method="al_svgd")
+        p.options = replace(p.options, which_solver="svgd", svgd_n=8, svgd_kernel="none",
+                            svgd_collision_workers=WORKERS,
+                            svgd_dtype="float64", svgd_compile=False, svgd_cuda_graph=False,
+                            svgd_lr=1e-9, svgd_temperature=0.5, acceptable_constr_viol_tol=1e-4)
+        rng = np.random.default_rng(4)
+        with HiddenPrints():
+            p.SetStartFromQ(T.collision_free_q(p, rng, 1)[0])
+        s = SvgdSolver(p)
+        s._build()
+        s._make_runner()
+        X, _, _ = s._init_particles(np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float))
+        S = s._init_state(X)
+        g = torch.Generator(device=s.device).manual_seed(0)
+        kw = dict(dtype=s.dtype, device=s.device)
+        S = dc_replace(S, rho=10.0 ** torch.linspace(1, 3, 8, **kw),
+                       lam=torch.randn(S.lam.shape, generator=g, **kw),
+                       mu=torch.randn(S.mu.shape, generator=g, **kw).abs())
+        Xn, _, _ = s._step_split(X, S)
+        tg, bp = s._tg, s._tg.bp
+        Xg = X.clone().requires_grad_(True)
+        out = bp.evaluate(Xg)
+        L = al.al_value(out.F, out.h * tg.sh, out.g * tg.sg, S)
+        (gx,) = torch.autograd.grad(L.sum(), Xg)
+        ref, _ = bp.project(X - tg.s ** 2 * (p.options.svgd_lr / S.rho).unsqueeze(1) * gx
+                            / p.options.svgd_temperature)
+        rel = float((Xn - ref).abs().max() / max(1e-30, float((ref - X).abs().max())))
+        print(f"    {arm}: |x_step - x_PGD|_inf / |x_PGD - x|_inf = {rel:.2e}")
+        check(f"pgd/{arm}: the kernel-off step is PGD on the program's L_rho / T", rel < 1e-8, f"{rel}")
+        p.options = replace(p.options, svgd_kernel="q", svgd_dtype="float32", svgd_n=64,
+                            svgd_lr=ProgramOptions().svgd_lr, svgd_temperature=1.0)
 
 
 def test_graph_replay_is_bitwise():
-    """Task G's contract: a captured stage replays BIT-IDENTICALLY to the compiled function
-    it captured, on a fixed input -- all three stages, learned and joint-space pose, N=16,
-    float32 -- and the compiled stages agree with eager to float32 rounding. Also: a second
-    program of the same structure REUSES the cached graphs (constants rebound, no capture),
-    and after `FreezeSvgdSteps()` a new structure raises instead of capturing."""
+    """A captured stage replays BIT-IDENTICALLY to the compiled function it captured, on a
+    fixed input -- all three stages, learned and joint-space pose, N=16, float32 -- and the
+    compiled stages agree with eager to float32 rounding. Also: a second program of the same
+    structure REUSES the cached graphs (constants rebound, no capture), and after
+    `FreezeSvgdSteps()` a new structure raises instead of capturing."""
     print("\n--- CUDA-graph replay vs the compiled step, bitwise ---")
     if not torch.cuda.is_available():
         print("    (no CUDA: skipped)")
         return
     from src.svgd import fused
-    from src.svgd.al import ALState
     for arm in ("learned", "numerical"):
         p = pose_program(arm)
-        p.options = replace(p.options, which_solver="svgd", svgd_method="al_svgd", svgd_n=16,
-                            svgd_kernel="q", svgd_compile=True, svgd_cuda_graph=True,
-                            acceptable_constr_viol_tol=1e-4)
+        p.options = replace(p.options, which_solver="svgd", svgd_n=16, svgd_kernel="q",
+                            svgd_compile=True, svgd_cuda_graph=True, acceptable_constr_viol_tol=1e-4,
+                            svgd_collision_workers=WORKERS)
         rng = np.random.default_rng(9)
         with HiddenPrints():
             p.SetStartFromQ(T.collision_free_q(p, rng, 1)[0])
@@ -515,14 +548,13 @@ def test_graph_replay_is_bitwise():
               f"{r.mode} {r.graphs_captured()}")
         X, _, _ = s._init_particles(np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float))
         tg = r.tg
-        S = ALState.init(16, s.n, tg.m_e, tg.m_i, 10.0, 1.0, 0.05, s.dtype, s.device, gn_lam0=1e-3)
-        g1, g2, g3 = r.fns["s1"], r.fns["s2"], r.fns[("s3", True)]
+        S = s._init_state(X)
+        g1, g2, g3 = r.fns["s1"], r.fns["s2"], r.fns["s3"]
         cfg, qp = g1(X)
         J_q, kin = g2(X, cfg)
         v, gr = s._pool.eval(qp.to("cpu", torch.float64).numpy())
         col = torch.as_tensor(v).to(X), torch.as_tensor(gr).to(X)
-        sc = [torch.full((), x, dtype=s.dtype, device=s.device) for x in (0.5, 0.3, 2.0)]
-        args3 = (X, cfg, J_q, kin, col[0], col[1], fused.state_dict(S), *sc)
+        args3 = (X, cfg, J_q, kin, col[0], col[1], fused.state_dict(S))
         out_g = g3(*args3)
         with torch.no_grad():
             out_c = g3.fn(*args3)
@@ -531,12 +563,12 @@ def test_graph_replay_is_bitwise():
             J_c, _ = g2.fn(X, cfg)
         flat_g, _ = torch.utils._pytree.tree_flatten(out_g)
         flat_c, _ = torch.utils._pytree.tree_flatten(out_c)
-        bit = all(torch.equal(a, b) if a.dtype == torch.bool else
+        bit = all(torch.equal(a, b) if a.dtype in (torch.bool, torch.long) else
                   bool(((a == b) | (torch.isnan(a) & torch.isnan(b))).all())
                   for a, b in zip(flat_g, flat_c) if isinstance(a, torch.Tensor))
         bit12 = torch.equal(cfg, cfg_c) and torch.equal(J_q, J_c)
         with torch.no_grad():
-            out_e = fused.stage3_al(tg, s._sc, True, *args3)
+            out_e = fused.stage3(tg, s._sc, *args3)
         dX = float((out_e["X"] - out_g["X"]).abs().max())
         print(f"    {arm}: replay == compiled bitwise: stages 1-2 {bit12}, stage 3 {bit}; "
               f"|X_eager - X_graph| = {dX:.2e}")
@@ -607,59 +639,69 @@ def sweep():
 
 
 def profile(Ns=(64, 256)):
-    """ms per step of `al_svgd` at N in `Ns`, GN every step and never, float32, learned pose."""
+    """ms per step of `al_svgd` at N in `Ns`, float32, learned pose, eager split step."""
     print("\n--- PROFILE: al_svgd step time, learned pose, float32 ---")
     p = pose_program("learned")
     for N in Ns:
-        p.options = replace(p.options, which_solver="svgd", svgd_n=N, svgd_kernel="q", svgd_method="al_svgd",
-                            max_wall_time=60.0, acceptable_constr_viol_tol=1e-4, file_print_name="")
+        p.options = replace(p.options, which_solver="svgd", svgd_n=N, svgd_kernel="q",
+                            max_wall_time=60.0, acceptable_constr_viol_tol=1e-4, file_print_name="",
+                            svgd_collision_workers=WORKERS)
         rng = np.random.default_rng(7)
         with HiddenPrints():
             p.SetStartFromQ(T.collision_free_q(p, rng, 1)[0])
         s = SvgdSolver(p)
         s._build()
-        tg = s._tg
+        s._make_runner()
         X, _, _ = s._init_particles(np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float))
-        S = al.ALState.init(N, s.n, tg.m_e, tg.m_i, rho0=10.0, eta0=1.0, lr0=0.05, dtype=s.dtype, device=s.device)
-        s._eta0 = 1.0
+        S = s._init_state(X)
 
         def sync():
             if s.device.type == "cuda":
                 torch.cuda.synchronize(s.device)
-        for t in range(3):
-            X, S, _ = s._step_al(X, S, 0, t, 100, True)
+        for _ in range(3):
+            X, _, _ = s._step_split(X, S)
+        s._pool.seconds, s._pool.calls = 0.0, 0
         sync()
-        for do_gn in (True, False):
-            s._pool.seconds, s._pool.calls = 0.0, 0
-            sync()
-            t0 = time.perf_counter()
-            for t in range(20):
-                X, S, _ = s._step_al(X, S, 0, t, 100, do_gn)
-            sync()
-            dt = (time.perf_counter() - t0) / 20
-            print(f"    N={N:4d} do_gn={do_gn!s:5s}: {1e3 * dt:6.1f} ms/step  "
-                  f"(pool {1e3 * s._pool.seconds / max(1, s._pool.calls):.1f} ms/call, {s.workers} workers)")
+        t0 = time.perf_counter()
+        for _ in range(20):
+            X, _, _ = s._step_split(X, S)
+        sync()
+        dt = (time.perf_counter() - t0) / 20
+        print(f"    N={N:4d}: {1e3 * dt:6.1f} ms/step  "
+              f"(pool {1e3 * s._pool.seconds / max(1, s._pool.calls):.1f} ms/call, {s.workers} workers)")
+
+
+def release():
+    """Close every collision pool this process holds -- the solver's shared ones and the test
+    programs' own BatchedProgram pools -- so none outlives the test that opened it. A later
+    `T.batched` rebuilds its program's batched replay (and pool) on demand."""
+    from src.svgd.solver import close_shared_pools
+    close_shared_pools()
+    T.close_all()
 
 
 def main():
     which = sys.argv[1:] or ["short"]
+    tests = []
     if "short" in which:
-        test_closed_form_derivatives_match_autograd()
-        test_scaled_rows_map_back_to_drake_rows()
-        test_grasp_cells()
-        test_determinism()
-        test_wall_clock_stop()
-        test_nan_injection()
-        test_cem_warmup_toggle()
-        test_stop_reasons_and_log()
-        test_admm_degenerates_on_joint_space()
-        test_graph_replay_is_bitwise()
-        test_benchmark_subprocess()
+        tests += [test_closed_form_derivatives_match_autograd, test_scaled_rows_map_back_to_drake_rows,
+                  test_grasp_cells, test_determinism, test_wall_clock_stop, test_nan_injection,
+                  test_cem_warmup_toggle, test_stop_reasons_and_log,
+                  test_step_with_kernel_off_is_pgd_on_the_programs_L, test_graph_replay_is_bitwise,
+                  test_benchmark_subprocess]
     if "sweep" in which:
-        sweep()
+        tests.append(sweep)
     if "profile" in which:
-        profile()
-    T.close_all()
+        tests.append(profile)
+    for t in tests:
+        try:
+            t()
+        finally:
+            release()
+    from src.svgd.collision_backend import live_pools, live_workers
+    from src.svgd.collision_backend import peak_live_workers
+    print(f"    peak live collision workers in this process: {peak_live_workers()}")
+    check("no collision pool is live at the end of the file", live_workers() == 0, str(live_pools()))
     print(f"\n{len(FAILURES)} failed")
     for f in FAILURES:
         print("  FAILED:", f)

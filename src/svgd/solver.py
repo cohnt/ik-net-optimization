@@ -1,105 +1,75 @@
 """The `svgd` solver: `SvgdSolver(program).solve() -> SvgdResult`.
 
-A common loop over three SVGD-style methods (`options.svgd_method`), all on the SAME target:
-the program as written, replayed for N particles by `BatchedProgram` (`src/svgd/batched_program.py`)
-and turned into a per-particle PHR augmented Lagrangian by `src/svgd/al.py`. Nothing here
-knows what a decision variable means: the only formulation-agnostic structure used is that
-every arm has a configuration `q` (the kernel's default space and the step clamp's unit).
+PLAIN AUGMENTED-LAGRANGIAN SVGD (`svgd_method = "al_svgd"`, the only method), on the program
+as written: replayed for N particles by `BatchedProgram` (`src/svgd/batched_program.py`) and
+turned into a per-particle PHR augmented Lagrangian by `src/svgd/al.py`. Nothing here knows
+what a decision variable means beyond two formulation-agnostic facts: every arm has a
+configuration `q` (the kernel's space), and every block of variables has a region whose
+half-width normalises it (the coordinates below).
 
-    init -> (optional CEM warm-up) -> swarm(method) -> float64 polish -> select -> Drake re-check
+    init -> (optional CEM warm-up) -> swarm -> select -> Drake re-check
 
-ROW SCALING. Every equality `h` and inequality `g` row of the batched program is divided by
-`tol * s`, `tol = options.acceptable_constr_viol_tol` (the harness's verify tolerance) and `s`
-the row's group scale (`svgd_row_scale_rot` on orientation rows, 1 elsewhere), so that
-`||[h~ ; max(g~, 0)]||_inf <= 1` means "feasible at the harness gate" for every row, the z/c
-boxes and the trust region included. `BatchedProgram.RowScaling` cannot scale the region rows
-(they carry no group), so the scaling is applied HERE from the public `h_spec` / `g_spec`.
+THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
 
-THE STEP, as implemented (sign conventions settled against `tests/test_svgd_kernels_al.py`,
-whose plain-SVGD loop is `y <- y + lr * phi` with `driving = -grad(neg log target)`):
-
-  al_svgd (Tabor-Hermans "Q-method"):
-      grad_F   = dF/dx                                   (one VJP through the graph)
-      grad_AL  = grad_F + J_h^T (lam + rho h~) + J_g^T max(0, mu + rho g~)
-      y        = q(x) | x | -      (svgd_kernel = q | x | none),  K, R = rbf_terms(y, h_med)
-      R_pulled = J_q^T R  (q-space)  |  R  (x-space)  |  0  (none, K = I)
-      phi      = (1/Z) [ gamma(t) K (-grad_F) + T(t) R_pulled ]          (svgd_direction)
-      x        <- project_bounds( adam_step(x, grad = -(phi - grad_AL)) )
-                 i.e. ascent along phi, descent along each particle's OWN AL gradient
-      every svgd_gn_every steps, OUTSIDE Adam:
-      J = [J_h~ ; active * J_g~],  r = [h~ ; active * g~],  dx = -J^T (J J^T + delta I)^-1 r,
-      dx <- clamp_q_step(dx, J_q, svgd_q_step_max),  x <- project_bounds(x + dx)
-  tsvgd (CSVTO / O-SVGD):
-      J_A = [J_h~ ; active * J_g~],  P = I - J_A^T (J_A J_A^T + delta I)^-1 J_A
-      driving  = P (-grad_F - J_g^T max(0, mu + rho g~))
-      phi      = P * svgd_direction(K, driving, R_pulled, gamma, T)
-      x        <- project_bounds( x + lr * phi + gn_correction(J_h~, h~) )     (alpha_C = 1)
-      lr is the per-particle `lr_schedule` rate (no Adam); resampling is in the tangent
-      space of the best particle: x_best + P_best xi, xi ~ N(0, svgd_jitter_z^2 I).
-  admm_svgd: Stein-projected consensus ADMM on q_bar = f(x) (`src/svgd/admm.py`), its own
-      outer loop on the same init, clock, trace, stall rule, polish and re-check; on the
-      joint-space arm (f = I) it degenerates to a projection split and says so in
-      `extras["admm"]`.
-
-  LEVENBERG-MARQUARDT (`svgd_gn_lm > 0`, default on): the GN Gram carries Marquardt's
-  `lam_i diag(J J^T)`, `lam_i` adapted per particle on the gain ratio of the step it took
-  (actual over linearly predicted reduction of the GN rows' `|r|^2`; `al.lm_gain_update`),
-  and the q-step clamp is applied on top.
-
-Inequality multipliers and penalties follow Nocedal-Wright 17.4 (`update_multipliers`) at every
-OUTER boundary, after `svgd_inner_iters` steps. The per-particle best is tracked by the merit
-`F` where the particle is feasible (`infeas <= 1`) and `F + FEASIBLE_WEIGHT * infeas` otherwise,
-so any feasible particle outranks any infeasible one and feasible particles rank by objective.
+ 1. Merit, per particle: `L_rho(x; lam, mu) = f + lam.h~ + (rho/2)|h~|^2
+    + (1/(2 rho)) sum [max(0, mu + rho g~)^2 - mu^2]`; target density `exp(-L_rho / T)`,
+    `T = svgd_temperature`, FIXED.
+ 2. Rows: every equality `h` and inequality `g` of the batched program divided by
+    `tol = acceptable_constr_viol_tol`, so `v = ||[h~ ; max(g~, 0)]||_inf <= 1` is "feasible at
+    the harness gate" (the c box and the latent ball are inequality ROWS; the true variable
+    bounds B -- the correction box on the learned arm, the joint limits on joint space -- are
+    not rows but a clamp).
+ 3. Coordinates: `y = x / s`, `s` the per-block region half-widths (`region_scale`).
+ 4. Step (Tabor-Hermans "Q method", `kernels.stein_direction`, `fused.update_step`):
+    `phi_i = (1/N) sum_j [K(q_j, q_i)(-grad_y f_j / T) + grad_{y_j} K(q_j, q_i)]
+             - (1/T) grad_y (L - f)_i`,
+    `y_i <- clamp_B(y_i + (svgd_lr / rho_i) phi_i)`. RBF kernel on q, median bandwidth; the
+    repulsion pulled back to y through the flow's VJP. `svgd_kernel = none` drops both kernel
+    terms; `svgd_constraint_inside_kernel` puts the whole `-grad L / T` under the average.
+ 5. Every `svgd_inner_iters` steps an OUTER CHECK, per particle (`al.update`): multipliers
+    and tolerance on `v_i <= eta_i`, the penalty on Powell's test `v_i > gamma v_i(prev)`.
+ 6. At every check, particles with `|q|_inf > svgd_resample_q_max` or a non-finite row are
+    redrawn from the arm's NATIVE start distribution with fresh AL state (`n_resampled`).
+ 7. Stop: the clock (`max_wall_time` less `svgd_time_reserve`), the outer-step cap
+    (`svgd_outer_iters`, or `max_iter`), or -- once a particle is feasible at the gate --
+    `svgd_stop_patience` consecutive checks at which the best feasible particle's objective
+    improved by less than `svgd_stop_rel` (relative): `stop_reason` converged / wall_clock /
+    step_cap.
+ 8. Select: the particles feasible on the batched rows, by objective; the top
+    `svgd_recheck_topk` re-checked exactly in Drake (`prog.EvalBinding`, float64, same x);
+    the first passer is returned, else the smallest Drake violation, scored infeasible.
 
 DERIVATIVES: THE ONLY BACKWARD IS THROUGH THE FLOW. On the fielded robots
 (`BatchedProgram.has_analytic_row_jacobians`) every derivative downstream of the
-configuration is closed form -- the task rows from the frame's geometric Jacobian
-(`FrameChain.poses(jacobians=True)`, `generic_rows_jacobian_cfg`), the collision row from the
-pool's own stored gradient, the joint-limit rows the identity, the region rows and the costs
-in `x` directly (`extra_row_jacobian`, `cost_gradient_parts`) -- so `evaluate` detaches the
-kinematics and the per-step autograd is ONE vmapped backward through the flow
-(`_Target.pullback`: `dF/dcfg`, the rows' cotangent and the q-space repulsion stacked as
-three cotangents), or `J_q` itself (ndof cotangents) on a Gauss-Newton step; the
-joint-space arm, whose map is the identity, builds no graph at all. A robot behind its own
-`BodyPoseProvider` falls back to autograd through its kinematics (`_Target.analytic = False`).
-Measured at N = 64 float32 on the laptop (the IPOPT smoke sharing the GPU): a step fell from
-181 / 106 ms (GN / no GN) to 40 / 34 ms, with the closed forms agreeing with autograd to
-1e-15 on all four Panda programs (`tests/test_svgd_solver.py`). What remains is launch-bound
-(evaluate at N = 1 is 14 ms) plus the pool's ~8 ms round trip.
+configuration is closed form -- the task rows from the frame's geometric Jacobian, the
+collision row from the pool's own stored gradient, the joint-limit rows the identity, the
+region rows and the costs in `x` directly -- and the flow's `J_q` is one vmapped `jacrev`.
+A robot behind its own `BodyPoseProvider` falls back to autograd through its kinematics
+(`_Target.analytic = False`, `_step_eager`).
 
 THE INIT PROTOCOL cannot be read off the program (the harness called `SetStartFromQ` or
 `SetNativeStart` before `Solve()`), so particle 0 is ALWAYS the program's initial guess,
 exactly, never clipped (the +-5 latent-clip trap). The other N-1 are drawn around it
-(`svgd_paired_init = "jitter"`, sigma per variable block) or from the arm's native
-distribution (`"native"`: learned `c = native_c, z ~ N(0, I), q_c = 0`; joint space uniform in
-`ConfigLimits`, kept collision-free by `ParallelCollisionChecker` with bounded redraws and a
-documented fallback), then projected onto the TRUE variable bounds with the clip distance
-recorded. The seed is `svgd_seed` mixed with a CRC of the initial guess so a cell reproduces.
+(`svgd_paired_init = "jitter"`: `y0 + svgd_jitter * xi` in the normalised coordinates) or from
+the arm's native distribution (`"native"`: learned `c = native_c, z ~ N(0, I), q_c = 0`; joint
+space uniform in `ConfigLimits`, kept collision-free by `ParallelCollisionChecker` with
+bounded redraws and a documented fallback), then clamped onto the true bounds with the clip
+distance recorded. The seed is `svgd_seed` mixed with a CRC of the initial guess.
 
-BUDGETS. `svgd_outer_iters` (or `max_iter`) outer steps of `svgd_inner_iters`; the wall clock
-is `max_wall_time * (1 - svgd_time_reserve)` for the swarm, checked after a CUDA sync at every
-outer boundary, the reserve kept for polish and re-check. `program.RecordIterate(best)` runs
-at every outer boundary so `last_iterate` is always the best particle so far.
+THE COLLISION POOL is cached per `(SceneSpec, workers)` in this process (`_POOLS`, ONE pool:
+`POOL_CACHE_SIZE = 1`, the old one closed before a new scene's is spawned): the benchmark builds
+a new program per cell and spawning workers costs seconds, while the scene is the same for every
+cell of a pose grid and for both arms of a grasp cell. `svgd_collision_workers = None` resolves
+to `cpu_count // PROCS` in a Slurm job and `min(cpu_count // PROCS, 8)` elsewhere
+(`resolve_workers`); every pool is admitted by the memory guard in `collision_backend`.
 
-THE COLLISION POOL is cached per `(SceneSpec, workers)` in this process (`_POOLS`, LRU of
-`POOL_CACHE_SIZE`): the benchmark builds a new program per cell and spawning workers costs
-seconds, while the scene is the same for every cell of a pose grid and for both arms of a
-grasp cell. `svgd_collision_workers = None` resolves to `max(1, cpu_count // PROCS)`
-(`PROCS` the environment's processes-per-node, 1 when unset). Pools close at exit.
-
-THE STEP IS SPLIT AT THE POOL (`src/svgd/fused.py`, `_step_split`) on the fielded robots
-for `al_svgd` and `tsvgd`: stage 1 (the configuration) -> the pool dispatched -> stage 2 (the
-flow Jacobian, the kinematics) while Drake runs -> the pool collected -> stage 3 (the rest).
-`svgd_compile` compiles the three stages and `svgd_cuda_graph` replays them as CUDA graphs,
-captured by `warm_up` (`WarmUpSvgdStep`) before any timed cell and frozen by `run_grid`;
-`svgd_pool_overlap=False` collects the pool before stage 2 (the overlap's control). A robot
-behind its own pose provider runs `_step_al` / `_step_t` (autograd, eager); `admm_svgd` runs
-eager always. `extras["step_mode"]` records which.
-
-STOPPING. The swarm stops at the clock, at the outer-step cap, or -- `stop_reason =
-"feasible_stall"`, status converged -- once some particle has been feasible at the gate and
-the best feasible objective has improved by less than `svgd_stop_rel` (relative) over
-`svgd_stop_patience` outer steps; `SvgdSolverDetails.stop_reason` records which.
+THE STEP IS SPLIT AT THE POOL (`src/svgd/fused.py`, `_step_split`) on the fielded robots:
+stage 1 (the configuration) -> the pool dispatched -> stage 2 (the flow Jacobian, the
+kinematics) while Drake runs -> the pool collected -> stage 3 (the rest). `svgd_compile`
+compiles the three stages and `svgd_cuda_graph` replays them as CUDA graphs, captured by
+`warm_up` (`WarmUpSvgdStep`) before any timed cell and frozen by `run_grid`;
+`svgd_pool_overlap=False` collects the pool before stage 2. `extras["step_mode"]` records
+which mode ran.
 """
 
 import atexit
@@ -109,13 +79,12 @@ import time
 import warnings
 import zlib
 from collections import OrderedDict
-from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
 import torch
 
-from src.svgd import al, fused, kernels
+from src.svgd import al, fused
 from src.svgd.al import ALState
 from src.svgd.batched_program import EXTRA_ROW_KEYS, GENERIC_BINDING, BatchedProgram
 from src.svgd.collision_backend import DrakeCollisionPool, ParallelCollisionChecker, SceneSpec
@@ -123,13 +92,10 @@ from src.svgd.result import (STATUS_CONVERGED, STATUS_INFEASIBLE, STATUS_NAN, ST
                              STATUS_WALL_CLOCK, SvgdResult, SvgdSolverDetails, status_name,
                              write_log)
 
-## Any feasible particle outranks any infeasible one (merit = F + this * infeasibility where
-## the scaled infeasibility exceeds 1). The objectives here are O(1e-4 .. 1e1).
-FEASIBLE_WEIGHT = 1e6
-POOL_CACHE_SIZE = 2
+POOL_CACHE_SIZE = 1           # ONE pool per process: a new scene closes the old pool first
+LOCAL_WORKERS_MAX = 8         # the default worker count's cap off a Slurm allocation
 NATIVE_DRAW_ROUNDS = 20       # bounded rejection sampling for the joint-space native start
-PATIENCE_REL = 1e-6
-POLISH_ALPHA_MIN = 1.0 / 64   # shortest backtracked Newton step in the float64 polish
+LATENT_BOX = 5.0              # the latent's +-5 box (`LatentBoxConstraint`), where no trust radius
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -141,14 +107,17 @@ _CHECKERS = OrderedDict()     # SceneSpec -> ParallelCollisionChecker
 
 
 def resolve_workers(option):
-    """`svgd_collision_workers`, or `max(1, cpu_count // PROCS)` when None."""
+    """`svgd_collision_workers`, or, when None, `max(1, cpu_count // PROCS)` inside a Slurm
+    job (`SLURM_JOB_ID` set: a dedicated node) and `min(that, LOCAL_WORKERS_MAX)` anywhere
+    else (a shared workstation, where each worker is a whole Drake scene in memory)."""
     if option is not None:
         return max(1, int(option))
     try:
         procs = max(1, int(os.environ.get("PROCS", "1") or 1))
     except ValueError:
         procs = 1
-    return max(1, (os.cpu_count() or 2) // procs)
+    n = max(1, (os.cpu_count() or 2) // procs)
+    return n if os.environ.get("SLURM_JOB_ID") else min(n, LOCAL_WORKERS_MAX)
 
 
 def _spawn_pool(spec, workers):
@@ -176,6 +145,10 @@ def _spawn_pool(spec, workers):
 
 
 def shared_pool(spec, workers):
+    """The process's pool for `(spec, workers)`, spawned on first use. At most
+    `POOL_CACHE_SIZE` pools are alive: the least recently used are CLOSED BEFORE a new one is
+    spawned, so two scenes' workers never coexist (the memory guard's registry would refuse
+    the second anyway on a tight host)."""
     key = (spec, int(workers))
     pool = _POOLS.get(key)
     if pool is not None and not pool.closed and all(pool.alive()):
@@ -184,11 +157,11 @@ def shared_pool(spec, workers):
     if pool is not None:
         pool.close()
         del _POOLS[key]
-    pool = _spawn_pool(spec, workers)
-    _POOLS[key] = pool
-    while len(_POOLS) > POOL_CACHE_SIZE:
+    while len(_POOLS) >= POOL_CACHE_SIZE:
         _, old = _POOLS.popitem(last=False)
         old.close()
+    pool = _spawn_pool(spec, workers)
+    _POOLS[key] = pool
     return pool
 
 
@@ -298,22 +271,42 @@ def _scene_spec(program):
 ##                      the scaled target: rows, costs, Jacobians                        ##
 ## ------------------------------------------------------------------------------------ ##
 
-class _Target:
-    """A `BatchedProgram` plus the row scaling and the bookkeeping that assembles per-row
-    Jacobians from the `RowSpec`s. One per dtype (the swarm's and the float64 polish's)."""
+def region_scale(bp):
+    """`s [nvars]`, the normalising half-width of each decision variable's region: on the
+    learned arm the conditioning position's box (`c_position_slack`), pi on its orientation,
+    the latent trust radius (the +-5 box where the program sets none) and the correction box
+    (`correction_bound`); on joint space half the range of each coordinate's true bound (the
+    joint limits). Read from the program's own options and bounds, never assumed."""
+    p, opts = bp.program, bp.options
+    if bp.is_learned:
+        radius = p.LatentTrustRadius() if hasattr(p, "LatentTrustRadius") else None
+        radius = LATENT_BOX if radius is None else float(radius)
+        s = ([float(opts.c_position_slack)] * 3 + [math.pi] * 3 + [radius] * bp.width
+             + [float(opts.correction_bound)] * bp.ndof)
+        s = np.asarray(s, dtype=float)
+    else:
+        lo, hi = (b.detach().cpu().double().numpy() for b in bp.bounds)
+        s = 0.5 * (hi - lo)
+    if s.shape != (bp.nvars,) or not np.all(np.isfinite(s)) or not np.all(s > 0):
+        raise ValueError(f"svgd: no finite positive region half-width for every variable of "
+                         f"{type(p).__name__}: {s}")
+    return s
 
-    def __init__(self, bp, tol, rot_scale):
+
+class _Target:
+    """A `BatchedProgram` plus the row scaling, the region scale `s` and the bookkeeping that
+    assembles per-row Jacobians from the `RowSpec`s."""
+
+    def __init__(self, bp, tol):
         self.bp = bp
         self.dtype, self.device = bp.dtype, bp.device
         self.n = bp.nvars
         self.ndof = bp.ndof
         kw = dict(dtype=self.dtype, device=self.device)
-
-        def scale(spec):
-            return 1.0 / (float(tol) * (float(rot_scale) if spec.group == "rotation" else 1.0))
-        self.sh = torch.tensor([scale(r) for r in bp.h_spec], **kw)
-        self.sg = torch.tensor([scale(r) for r in bp.g_spec], **kw)
+        self.sh = torch.full((len(bp.h_spec),), 1.0 / float(tol), **kw)
+        self.sg = torch.full((len(bp.g_spec),), 1.0 / float(tol), **kw)
         self.m_e, self.m_i = len(bp.h_spec), len(bp.g_spec)
+        self.s = torch.tensor(region_scale(bp), **kw)
 
         ## Row index bookkeeping: each h/g entry maps to a row of the stacked
         ## `[drake_rows | extra rows...]` Jacobian, with a sign (eq/hi: +1, lo: -1).
@@ -340,9 +333,9 @@ class _Target:
                                      dtype=torch.bool, device=self.device)
         self._n_rot = sum(1 for r in bp.h_spec if r.group == "rotation")
 
-        ## Routing of the GENERIC rows' derivative w.r.t. the configuration (`generic_blocks`):
-        ## task rows (pose / mug) by a vmapped backward through the frame chain, the
-        ## collision row from the pool's stored gradient, the joint-limit rows the identity.
+        ## Routing of the GENERIC rows' derivative w.r.t. the configuration (`generic_blocks`),
+        ## for the autograd path: task rows by a vmapped backward through the frame chain,
+        ## the collision row from the pool's stored gradient, the joint-limit rows the identity.
         task, jl, col = [], [], []
         for kind, start, size in bp.generic_blocks:
             rows = list(range(start, start + size))
@@ -358,7 +351,6 @@ class _Target:
         self._jl_rows = li(jl)
         self._col_rows = li(col)
         self._E_task = torch.eye(len(task), **kw).unsqueeze(1)           # [nt, 1, nt]
-        self._E_q = torch.eye(self.ndof, **kw).unsqueeze(1)              # [ndof, 1, ndof]
         ## Derivative mode (see `evaluate`): closed-form rows where the batched program
         ## offers them, autograd through the kinematics otherwise.
         self.analytic = bool(bp.has_analytic_row_jacobians)
@@ -366,11 +358,8 @@ class _Target:
     ## -- batched autograd, with the vmap-fallback chatter silenced ----------------------
     @staticmethod
     def _batched_grad(outputs, inputs, E, N):
-        """`autograd.grad` with `is_grads_batched` over the rows of `E [m, 1, m]`
-        (expanded to `[m, N, m]`), returning `[N, m, ...]`. torch warns, per call, about
-        every op without a batching rule ("There is a performance drop because we have not
-        yet implemented the batching rule for ..."); the fallback is correct and the warning
-        is noise at thousands of steps, so it is filtered HERE, around this call only."""
+        """`autograd.grad` with `is_grads_batched` over the rows of `E [m, 1, m]`, returning
+        `[N, m, ...]`; torch's per-call "no batching rule" warning is filtered here only."""
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*batching rule.*")
             warnings.filterwarnings("ignore", category=UserWarning, module="torch._functorch")
@@ -385,14 +374,9 @@ class _Target:
 
     ## -- evaluation -------------------------------------------------------------------
     def evaluate(self, X, need_grad=True):
-        """Rows and costs at `X [N, n]`; the scaled `h`, `g`, infeasibility and a per-particle
-        finiteness flag. With `need_grad`, the derivative machinery is set up in the mode
-        the target supports: ANALYTIC (`bp.has_analytic_row_jacobians`) keeps a graph through
-        the flow only (`q <- x`), everything downstream of `q` -- kinematics, rows, costs --
-        is detached and differentiated in closed form (`generic_rows_jacobian_cfg`,
-        `extra_row_jacobian`, `cost_gradient_parts`); on the joint-space arm, whose map is
-        the identity, no graph is built at all. AUTOGRAD (a robot behind its own pose
-        provider) keeps the full graph and differentiates the rows with `autograd`."""
+        """Rows and costs at `X [N, n]`; the scaled `h`, `g`, the violation and a per-particle
+        finiteness flag. With `need_grad`, ANALYTIC mode keeps a graph through the flow only
+        (none at all on joint space); AUTOGRAD mode keeps the full graph."""
         need_grad = bool(need_grad)
         graph = need_grad and (self.bp.is_learned or not self.analytic)
         Xg = X.detach().requires_grad_(graph)
@@ -404,40 +388,28 @@ class _Target:
                                infeas=infeas)
 
     def scale(self, out):
-        """`(h~, g~, finite [N], infeas [N])` from a batched `Evaluation`: the rows divided by
-        `tol * s` (see the module docstring), the per-particle finiteness flag and the
-        scaled infeasibility `||[h~; max(g~, 0)]||_inf` (+inf where not finite)."""
+        """`(h~, g~, finite [N], v [N])` from a batched `Evaluation`: the rows divided by `tol`,
+        the per-particle finiteness flag and the violation `||[h~; max(g~, 0)]||_inf` (+inf
+        where not finite)."""
         h = out.h * self.sh
         g = out.g * self.sg
         finite = (torch.isfinite(h).all(dim=1) & torch.isfinite(g).all(dim=1)
                   & torch.isfinite(out.F) & torch.isfinite(out.q).all(dim=1))
-        gplus = torch.clamp(g, min=0.0)
-        stacked = torch.cat([h.abs(), gplus], dim=1)
-        infeas = stacked.amax(dim=1) if stacked.shape[1] else torch.zeros_like(out.F)
-        infeas = torch.where(finite, infeas, torch.full_like(infeas, float("inf"))).detach()
-        return h, g, finite, infeas
-
-    def merit_of(self, F, infeas):
-        """`F` where feasible at the gate, else `F + FEASIBLE_WEIGHT * infeas`."""
-        excess = torch.where(infeas <= 1.0, torch.zeros_like(infeas), infeas)
-        return al.best_merit(F.detach(), excess, FEASIBLE_WEIGHT)
-
-    def merit(self, ev):
-        return self.merit_of(ev.F, ev.infeas)
+        v = al.violation(h, g)
+        v = torch.where(finite, v, torch.full_like(v, float("inf"))).detach()
+        return h, g, finite, v
 
     def unscale(self, h, g):
-        """The inverse of `scale`'s row scaling: `(h~ * tol * s, g~ * tol * s)`, i.e. the
-        `Evaluation`'s own `h` / `g` (Drake's signed violations under `RowScaling`)."""
+        """The inverse of `scale`'s row scaling: the `Evaluation`'s own `h` / `g` (Drake's
+        signed violations)."""
         return h / self.sh, g / self.sg
 
     ## -- derivatives ------------------------------------------------------------------
     def pullback(self, ev, cots):
-        """`[J_q^T v for v in cots]`, each `v [N, ndof]` -> `[N, n]`: the configuration
-        cotangents pulled back to the decision variables. Learned arm: ONE vmapped backward
-        through the flow with all of them stacked; joint space: the identity."""
+        """`[J_q^T v for v in cots]`, each `v [N, ndof]` -> `[N, n]`: ONE vmapped backward
+        through the flow with all of them stacked; the identity on joint space."""
         if not self.bp.is_learned:
             return [v.detach().clone() for v in cots]
-        N = ev.Xg.shape[0]
         E = torch.stack([v.detach() for v in cots])                   # [k, N, ndof]
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*batching rule.*")
@@ -449,7 +421,7 @@ class _Target:
 
     def cost_parts(self, ev):
         """`(dF/dcfg [N, ndof], dF/dx|direct [N, n])`: closed form in analytic mode; in
-        autograd mode the whole gradient lands in the direct part (`dF/dcfg = 0`)."""
+        autograd mode the whole gradient lands in the direct part."""
         if self.analytic:
             return self.bp.cost_gradient_parts(ev.Xg, ev.cfg)
         (g,) = torch.autograd.grad(ev.F.sum(), ev.Xg, retain_graph=True)
@@ -457,7 +429,7 @@ class _Target:
 
     def row_cotangents(self, ev, ch, cg):
         """The cotangent on the stacked UNSCALED rows `[drake_rows | extra rows]` that the
-        scaled `h`, `g` cotangents `ch`, `cg` induce: `[N, nr + n_extra]`."""
+        scaled `h`, `g` cotangents induce: `[N, nr + n_extra]`."""
         N = ev.Xg.shape[0]
         c = torch.zeros(N, self.bp.n_rows + self._n_extra, dtype=self.dtype, device=self.device)
         c.index_add_(1, self.h_idx, ch * self.h_coef)
@@ -465,34 +437,23 @@ class _Target:
         return c
 
     def al_gradients(self, ev, ch, cg, R):
-        """`(dF/dx, J_h^T ch + J_g^T cg, J_q^T R)` -- the three gradients a non-GN
-        `al_svgd` step needs -- with ONE backward through the flow (`R` may be None).
-        Analytic mode: the rows' cotangent is carried to the configuration through the
-        closed-form row Jacobians, the extras' directly to `x`. Autograd mode: the row
-        term is one VJP through the full graph."""
-        N = ev.Xg.shape[0]
+        """`(dF/dx, J_h~^T ch + J_g~^T cg, J_q^T R)` with ONE backward through the flow (`R`
+        may be None): the autograd path's three gradients."""
         nr = self.bp.n_rows
         dFc, dFx = self.cost_parts(ev)
         if self.analytic:
+            N = ev.Xg.shape[0]
             c = self.row_cotangents(ev, ch, cg)
             Dq = self.generic_jacobian_cfg(ev)                            # [N, nr, ndof]
             v_cfg = (Dq.transpose(1, 2) @ c[:, :nr].unsqueeze(2)).squeeze(2)
             J_ex = self._extra_jacobian(ev.Xg, N)
             v_x = (J_ex.transpose(1, 2) @ c[:, nr:].unsqueeze(2)).squeeze(2) if self._n_extra else 0.0
-            cots = [dFc, v_cfg] + ([R] if R is not None else [])
-            G = self.pullback(ev, cots)
-            gF = G[0] + dFx
-            gC = G[1] + v_x
-            R_pulled = G[2] if R is not None else None
-            return gF, gC, R_pulled
+            G = self.pullback(ev, [dFc, v_cfg] + ([R] if R is not None else []))
+            return G[0] + dFx, G[1] + v_x, (G[2] if R is not None else None)
         s = (ev.h * ch).sum() + (ev.g * cg).sum()
         (gC,) = torch.autograd.grad(s, ev.Xg, retain_graph=True)
         R_pulled = self.pullback(ev, [R])[0] if R is not None else None
         return dFx, gC, R_pulled
-
-    def grad_F(self, ev):
-        dFc, dFx = self.cost_parts(ev)
-        return self.pullback(ev, [dFc])[0] + dFx if self.analytic else dFx
 
     def jacobian_q(self, ev):
         """`dq/dx [N, ndof, n]` from the live graph (identity on joint space)."""
@@ -500,15 +461,15 @@ class _Target:
         N = ev.Xg.shape[0]
         if not bp.is_learned:
             return bp.jacobian_q(ev.Xg.detach())
-        J = self._batched_grad(ev.cfg, ev.Xg, self._E_q, N)
+        E = torch.eye(self.ndof, dtype=self.dtype, device=self.device).unsqueeze(1)
+        J = self._batched_grad(ev.cfg, ev.Xg, E, N)
         self._count("map_jacobian")
         return J
 
     def generic_jacobian_cfg(self, ev):
         """`d drake_rows / d cfg`, `[N, nr, ndof]`. Analytic mode: the batched program's
-        closed form (geometric Jacobian of the task frame, the pool's collision gradient,
-        identity joint limits). Autograd mode: routed by row kind -- the task rows by one
-        vmapped backward through the kinematics, the collision row from the pool's stored
+        closed form. Autograd mode: routed by row kind -- the task rows by one vmapped
+        backward through the kinematics, the collision row from the pool's stored
         `d row / d q_plant` through `config_to_plant_q`, the joint-limit rows the identity."""
         out = ev.out
         if self.analytic:
@@ -518,8 +479,7 @@ class _Target:
         N, nr = D.shape
         Dq = torch.zeros(N, nr, self.ndof, dtype=D.dtype, device=D.device)
         if self._task_rows.numel():
-            Jt = self._batched_grad(D[:, self._task_rows], ev.cfg, self._E_task, N)
-            Dq[:, self._task_rows] = Jt
+            Dq[:, self._task_rows] = self._batched_grad(D[:, self._task_rows], ev.cfg, self._E_task, N)
         if self._jl_rows.numel():
             Dq[:, self._jl_rows] = torch.eye(self.ndof, dtype=D.dtype, device=D.device)[
                 :self._jl_rows.numel()].unsqueeze(0).expand(N, -1, -1)
@@ -534,67 +494,50 @@ class _Target:
             Dq[:, self._col_rows[0]] = gcol
         return torch.nan_to_num(Dq, nan=0.0, posinf=0.0, neginf=0.0)
 
-    def row_jacobians(self, ev, J_q):
-        """`(J_h [N, m_e, n], J_g [N, m_i, n])` of the SCALED rows."""
-        return self._stack_jacobians(self.generic_jacobian_cfg(ev) @ J_q, ev.Xg)
-
-    def row_jacobians_out(self, out, X, J_q):
-        """`row_jacobians` from a bare `Evaluation` (analytic mode only): what the split
-        step calls, having no `ev` namespace and no graph."""
+    def constraint_gradient(self, out, X, J_q, ch, cg):
+        """`grad_X (L - f) = J_h~^T ch + J_g~^T cg` from a bare `Evaluation` (analytic mode
+        only): what the split step's stage 3 calls, having no `ev` namespace and no graph."""
         Dq = torch.nan_to_num(self.bp.generic_rows_jacobian_cfg(out), nan=0.0, posinf=0.0,
                               neginf=0.0)
-        return self._stack_jacobians(Dq @ J_q, X)
-
-    def _stack_jacobians(self, J_gen, X):
-        J_ex = self._extra_jacobian(X, X.shape[0])
-        J_stack = torch.cat([J_gen, J_ex], dim=1)
+        J_stack = torch.cat([Dq @ J_q, self._extra_jacobian(X, X.shape[0])], dim=1)
         J_h = J_stack[:, self.h_idx] * self.h_coef.view(1, -1, 1)
         J_g = J_stack[:, self.g_idx] * self.g_coef.view(1, -1, 1)
-        return J_h, J_g
+        return ((J_h.transpose(1, 2) @ ch.unsqueeze(2)).squeeze(2)
+                + (J_g.transpose(1, 2) @ cg.unsqueeze(2)).squeeze(2))
 
-    ## -- the per-outer-iteration trace ---------------------------------------------------
-    TRACE_COLUMNS = ("min_infeas", "med_infeas", "n_feasible", "med_rho", "med_lr",
-                     "frac_gn_clamped", "med_h_pos", "med_h_rot", "med_g_plus",
-                     "min_F_feasible", "med_dq", "med_nw_infeas", "med_eta", "med_gn_lam",
-                     "n_tangent", "frac_nw_ok", "med_gn_ratio")
+    ## -- the per-outer-check trace -------------------------------------------------------
+    TRACE_COLUMNS = ("min_infeas", "med_infeas", "n_feasible", "med_rho", "max_rho", "med_eta",
+                     "min_F_feasible", "med_h_pos", "med_h_rot", "med_g_plus",
+                     "n_multiplier_updates", "n_multiplier_clipped", "n_resampled",
+                     "bound_clip")
 
-    def trace_row(self, ev, S, dq, clamped, nw_ok=None):
-        """One `[len(TRACE_COLUMNS)]` tensor of swarm statistics at an outer boundary, all
-        on the device (the caller stacks them and moves them to the host ONCE at the end):
-        the best and median scaled violation, the feasible count, median rho and lr, the
-        fraction of particles whose last GN step hit the q-step clamp (`nan` when none ran),
-        the median over particles of the worst position / rotation equality row and of the
-        worst violated inequality, the best objective among feasible particles, the median
-        configuration step, the median Nocedal-Wright infeasibility measure, the median AL
-        tolerance `eta` and LM damping, the number of particles in tangent mode (tsvgd;
-        `nan` elsewhere), the fraction whose last NW test passed (`nw_ok`) and the median LM
-        gain ratio (actual / predicted reduction of the GN rows; `nan` with LM off).""" 
+    def trace_row(self, ev, S, updated, n_clipped, n_resampled, bound_clip):
+        """One `[len(TRACE_COLUMNS)]` tensor of swarm statistics at an outer check, on the
+        device (stacked and moved to the host ONCE at the end): the best and median scaled
+        violation, the feasible count, the median and largest penalty and the median
+        tolerance, the best objective among feasible particles, the median over particles
+        of the worst position / rotation equality and of the worst violated inequality, how
+        many particles took a multiplier step and how many multiplier entries were clipped,
+        the particles redrawn, and the clamp distance onto the bounds since the last check."""
         kw = dict(dtype=self.dtype, device=self.device)
-        nan = torch.tensor(float("nan"), **kw)
-        infeas = torch.nan_to_num(ev.infeas, nan=float("inf"))
-        feas = infeas <= 1.0
+        nan = torch.full((), float("nan"), **kw)
+        v = torch.nan_to_num(ev.infeas, nan=float("inf"))
+        feas = v <= 1.0
         habs = torch.nan_to_num(ev.h.detach().abs(), nan=float("inf"))
         gpos = torch.nan_to_num(torch.clamp(ev.g.detach(), min=0.0), nan=float("inf"))
 
-        def med_group(mask, count):           # `count` is a Python int fixed at construction
-            if count == 0:
-                return nan
-            return habs[:, mask].amax(dim=1).median()
+        def med_group(mask, count):
+            return nan if count == 0 else habs[:, mask].amax(dim=1).median()
         F = torch.nan_to_num(ev.F.detach(), nan=float("inf"))
         minF = torch.where(feas, F, torch.full_like(F, float("inf"))).min()
         minF = torch.where(torch.isfinite(minF), minF, nan)
-        frac = clamped.to(self.dtype).mean() if clamped is not None else nan
-        dqm = torch.nan_to_num(dq, nan=float("inf")).median() if dq is not None else nan
         return torch.stack([
-            infeas.min(), infeas.median(), feas.sum().to(self.dtype),
-            S.rho.median(), S.lr.median(), frac,
-            med_group(~self.h_is_rot, self.m_e - self._n_rot), med_group(self.h_is_rot, self._n_rot),
+            v.min(), v.median(), feas.sum().to(self.dtype), S.rho.median(), S.rho.max(),
+            S.eta.median(), minF, med_group(~self.h_is_rot, self.m_e - self._n_rot),
+            med_group(self.h_is_rot, self._n_rot),
             gpos.amax(dim=1).median() if gpos.shape[1] else nan,
-            minF, dqm, al.infeasibility(ev.h.detach(), ev.g.detach(), S).median(),
-            S.eta.median(), S.gn_lam.median(),
-            ev.n_tangent.to(self.dtype).sum() if getattr(ev, "n_tangent", None) is not None else nan,
-            nw_ok.to(self.dtype).mean() if nw_ok is not None else nan,
-            torch.nanmedian(ev.gn_ratio) if getattr(ev, "gn_ratio", None) is not None else nan])
+            updated.sum().to(self.dtype), n_clipped.to(self.dtype),
+            torch.full((), float(n_resampled), **kw), bound_clip.to(self.dtype)])
 
     def _count(self, bucket):
         counts = getattr(self.bp.program, "eval_counts", None)
@@ -609,14 +552,20 @@ class _Target:
 ##                                      the solver                                       ##
 ## ------------------------------------------------------------------------------------ ##
 
+def _median_pairwise_distance(Q):
+    """The median over pairs of `||q_a - q_b||` for `Q [k, ndof]` (numpy), None for k < 2."""
+    k = Q.shape[0]
+    if k < 2:
+        return None
+    d = np.sqrt(np.maximum(((Q[:, None, :] - Q[None, :, :]) ** 2).sum(axis=2), 0.0))
+    return float(np.median(d[np.triu_indices(k, 1)]))
+
+
 class SvgdSolver:
     """See the module docstring.
 
     `particles_override` (tests only): a `[N, n]` array used as the initial swarm instead of
     the drawn one -- the way to hand the solver a non-finite particle and watch it resample.
-
-    `admm_svgd` runs its own outer loop (`src/svgd/admm.py`, `AdmmSwarm.run`) in place of
-    `_swarm`, on the same init, clock, trace, stall rule, polish and selection.
     """
 
     def __init__(self, program, particles_override=None):
@@ -624,7 +573,6 @@ class SvgdSolver:
         self.options = program.options
         opts = self.options
         self.method = opts.svgd_method
-        self._lm = float(opts.svgd_gn_lm) > 0.0
         self._sc = fused.StepConfig.from_options(opts)
         self._overlap = bool(opts.svgd_pool_overlap)
         self._runner = None
@@ -634,36 +582,20 @@ class SvgdSolver:
         self.tol = float(opts.acceptable_constr_viol_tol)
         self._override = None if particles_override is None else np.asarray(particles_override, dtype=float)
         self._tg = None
-        self._tg64 = None
         self._pool = None
+        self._rho0 = float(opts.svgd_rho0)
+        self._eta0 = 1.0 / self._rho0 ** 0.1
 
     ## ----------------------------------- setup ----------------------------------------
     def _build(self):
         if self._tg is not None:
             return
         program = self.program
-        opts = self.options
         spec = _scene_spec(program)
         self._spec = spec
-        raw = shared_pool(spec, self.workers)
-        self._pool = _TimedPool(raw)
+        self._pool = _TimedPool(shared_pool(spec, self.workers))
         bp = BatchedProgram.from_program(program, dtype=self.dtype, pool=self._pool)
-        if bp.device.type == "cuda":
-            ## cuSOLVER for every batched solve (`solve_ex` in the GN correction, the
-            ## tangent projector, the polish). PROCESS-WIDE, and deliberate: torch's default
-            ## heuristic routes larger batches (measured: [256, 27, 27], and the [64, 47, 47]
-            ## Gram of a learned pose step) to MAGMA, whose batched getrf/potrs allocate
-            ## inside the call and so cannot be captured into a CUDA graph; cuSOLVER captured
-            ## at every size and dtype probed. Set for eager and compiled runs too, so the
-            ## three step modes share one backend's numerics.
-            torch.backends.cuda.preferred_linalg_library("cusolver")
-        self._tg = _Target(bp, self.tol, opts.svgd_row_scale_rot)
-        if self.dtype == torch.float64:
-            self._tg64 = self._tg
-        else:
-            bp64 = BatchedProgram.from_program(program, dtype=torch.float64, pool=self._pool,
-                                               device=bp.device)
-            self._tg64 = _Target(bp64, self.tol, opts.svgd_row_scale_rot)
+        self._tg = _Target(bp, self.tol)
         self.device = bp.device
         self.n = bp.nvars
 
@@ -676,24 +608,10 @@ class SvgdSolver:
         g.manual_seed(int(seed))
         return g
 
-    def _jitter_sigma(self):
-        opts = self.options
-        bp = self._tg.bp
-        if bp.is_learned:
-            s = ([opts.svgd_jitter_c_pos] * 3 + [opts.svgd_jitter_c_rot] * 3
-                 + [opts.svgd_jitter_z] * bp.width + [opts.svgd_jitter_qc] * bp.ndof)
-        else:
-            s = [opts.svgd_jitter_q] * bp.ndof
-        return torch.tensor(s, dtype=self.dtype, device=self.device)
-
-    def _draw(self, N, x0, gen):
-        """N fresh particles from the init distribution (unprojected); `(X, stats)`."""
+    def _draw_native(self, N, gen):
+        """N particles from the arm's NATIVE start distribution (unprojected); `(X, stats)`."""
         bp = self._tg.bp
         stats = {}
-        if self.options.svgd_paired_init == "jitter":
-            xi = torch.randn(N, self.n, generator=gen, dtype=self.dtype, device=self.device)
-            return x0.unsqueeze(0) + xi * self._jitter_sigma().unsqueeze(0), stats
-        ## native
         if bp.is_learned:
             z = torch.randn(N, bp.width, generator=gen, dtype=self.dtype, device=self.device)
             c = bp.native_c().unsqueeze(0).expand(N, 6)
@@ -721,18 +639,23 @@ class SvgdSolver:
         stats["native_rounds"] = rounds
         return out[:N], stats
 
+    def _draw(self, N, x0, gen):
+        """N fresh particles from the init distribution (unprojected); `(X, stats)`."""
+        if self.options.svgd_paired_init == "jitter":
+            xi = torch.randn(N, self.n, generator=gen, dtype=self.dtype, device=self.device)
+            return x0.unsqueeze(0) + float(self.options.svgd_jitter) * xi * self._tg.s.unsqueeze(0), {}
+        return self._draw_native(N, gen)
+
     def _init_particles(self, x0_np):
         x0 = torch.tensor(x0_np, dtype=self.dtype, device=self.device)
         gen = self._generator(self._seed(x0_np))
         self._gen = gen
-        self._x0 = x0
         stats = {}
         if self._override is not None:
             X = torch.tensor(self._override, dtype=self.dtype, device=self.device)
             if X.shape != (self.N, self.n):
                 raise ValueError(f"particles_override must be [{self.N}, {self.n}]")
-            clip = torch.zeros(self.N, dtype=self.dtype, device=self.device)
-            return X, clip, stats
+            return X, torch.zeros(self.N, dtype=self.dtype, device=self.device), stats
         X, stats = self._draw(self.N, x0, gen)
         Xp, clip = self._tg.project(X)
         keep0 = torch.zeros(self.N, dtype=torch.bool, device=self.device)
@@ -741,186 +664,19 @@ class SvgdSolver:
         clip = torch.where(keep0, torch.zeros_like(clip), clip)
         return X, clip, stats
 
-    def _fresh(self, N):
-        X, _ = self._draw(N, self._x0, self._gen)
-        Xp, _ = self._tg.project(X)
-        return Xp
-
-    ## ------------------------------- the steps ----------------------------------------
-    def _kernel_terms(self, ev, X):
-        """`(K, R, needs_pullback)`: `fused.kernel_terms` on an evaluation (the kernel and
-        the repulsion in the kernel's space; non-finite particles isolated)."""
-        return fused.kernel_terms(self._sc, ev.cfg, ev.finite, X)
-
-    def _gn_step(self, ev, S, J_h, J_g, rows_active):
-        """The (unclamped) Gauss-Newton correction onto the equality rows and, when
-        `rows_active`, the PHR-active inequality rows, LM-damped by `S.gn_lam` where LM is
-        on; returns `(dx, (J, r, mask))`, the row set for `al.lm_record_prediction`."""
-        opts = self.options
-        ones = torch.ones_like(ev.h)
-        if rows_active:
-            mask = torch.cat([ones, al.active_mask(ev.g, S.mu, S.rho)], dim=1)
-        else:
-            mask = torch.cat([ones, torch.zeros_like(ev.g)], dim=1)
-        J, r = fused.gn_rows(ev.h, ev.g, J_h, J_g, mask)
-        lam = S.gn_lam if self._lm else None
-        return al.gn_correction(J, r, opts.svgd_gn_delta, lam), (J, r, mask)
-
-    def _lm_gain(self, S, ev):
-        """`al.lm_gain_update` where LM is on (`svgd_gn_lm > 0`): `(S, ratio)`."""
-        if not self._lm:
-            return S, None
-        opts = self.options
-        return al.lm_gain_update(S, ev.h.detach(), ev.g.detach(), opts.svgd_gn_lm_growth,
-                                 opts.svgd_gn_lm_min, opts.svgd_gn_lm_max)
-
-    def _clamp(self, dx, J_q):
-        """`clamp_q_step` plus the per-particle flag that the bound was hit (for the trace:
-        a clamp that binds every step says `svgd_q_step_max` is the knob)."""
-        Jq = J_q if self._tg.bp.is_learned else None
-        dq = dx if Jq is None else (Jq @ dx.unsqueeze(2)).squeeze(2)
-        clamped = dq.abs().amax(dim=1) > float(self.options.svgd_q_step_max)
-        return al.clamp_q_step(dx, Jq, self.options.svgd_q_step_max), clamped
-
-    def _step_al(self, X, S, t_outer, t_step, total_steps, do_gn):
-        """One `al_svgd` step. Without a GN correction (`do_gn=False`) the whole derivative
-        work is ONE vmapped backward (`vjp_three`: dF/dx, the AL row cotangents, the q-space
-        repulsion pullback); with it, `J_q` and the row Jacobians are added."""
+    def _init_state(self, X):
+        """The AL state at the start: zero multipliers, `rho0`, `eta0 = rho0^-0.1`, and the
+        initial swarm's violation as the first Powell reference."""
         tg = self._tg
-        opts = self.options
-        ev = tg.evaluate(X)
-        S, ev.gn_ratio = self._lm_gain(S, ev)
-        ch, cg = al.al_constraint_grad_coefficients(ev.h, ev.g, S)
-        K, R, pull = self._kernel_terms(ev, X)
-        J_q = None
-        lm_set = None
-        if do_gn:
-            J_q = tg.jacobian_q(ev)
-            J_h, J_g = tg.row_jacobians(ev, J_q)
-            dFc, dFx = tg.cost_parts(ev)
-            gF = (J_q.transpose(1, 2) @ dFc.unsqueeze(2)).squeeze(2) + dFx
-            gC = (J_h.transpose(1, 2) @ ch.unsqueeze(2)).squeeze(2) \
-                + (J_g.transpose(1, 2) @ cg.unsqueeze(2)).squeeze(2)
-            R_pulled = (J_q.transpose(1, 2) @ R.unsqueeze(2)).squeeze(2) if pull else R
-        else:
-            gF, gC, R_pulled = tg.al_gradients(ev, ch, cg, R if pull else None)
-            if not pull:
-                R_pulled = R
-        fin = ev.finite.unsqueeze(1)
-        gF = torch.where(fin, gF, torch.zeros_like(gF))
-        gAL = torch.where(fin, gF + gC, torch.zeros_like(gF))
-        R_pulled = torch.where(fin, R_pulled, torch.zeros_like(R_pulled))
-        gamma = kernels.anneal_gamma(t_outer, opts.svgd_gamma_t)
-        T = kernels.anneal_T(t_step, opts.svgd_repulsion_T0, opts.svgd_anneal_frac, total_steps)
-        phi = kernels.svgd_direction(K, -gF, R_pulled, gamma, T)
-        Xn, S = al.adam_step(X, -(phi - gAL), S)
-        ev.gn_clamped = None
-        ev.dq_adam = None
-        if do_gn:
-            ## The lr schedule must see ADAM'S OWN configuration step, not the total
-            ## movement: the clamped GN correction alone sits at ~q_step_max, so measuring
-            ## the sum halved the learning rate on every GN step and froze the Stein/AL
-            ## part at `svgd_lr_min` (read off the trace: med_lr at the floor from outer 1).
-            ## On a GN step it is estimated linearly with the J_q already in hand; on a
-            ## non-GN step the observed step IS Adam's and the caller measures it.
-            if tg.bp.is_learned:
-                ev.dq_adam = (J_q @ (Xn - X).unsqueeze(2)).squeeze(2).abs().amax(dim=1)
-            else:
-                ev.dq_adam = (Xn - X).abs().amax(dim=1)
-            dx, lm_set = self._gn_step(ev, S, J_h, J_g, rows_active=True)
-            dx, clamped = self._clamp(dx, J_q)
-            Xn = Xn + dx
-            ev.gn_clamped = clamped
-        Xn, _ = tg.project(Xn)
-        if self._lm and lm_set is not None:
-            S = al.lm_record_prediction(S, *lm_set, Xn.detach() - X)
-        S = al.track_best(S, X, tg.merit(ev))
-        return Xn.detach(), S, ev
+        with torch.no_grad():
+            ev = tg.evaluate(X, need_grad=False)
+        return ALState.init(X.shape[0], tg.m_e, tg.m_i, self._rho0, self._eta0, self.dtype,
+                            self.device, v0=torch.nan_to_num(ev.infeas, nan=float("inf")))
 
-    def _step_t(self, X, S, t_outer, t_step, total_steps, do_gn):
-        """One `tsvgd` step: ONE evaluation and one set of Jacobians, from which BOTH an
-        `al_svgd` update (the GN path) and a tangent-space update are formed, and each
-        particle takes the tangent one iff its scaled infeasibility is at or below
-        `svgd_tsvgd_switch_infeas` (`torch.where`; the extra cost of the second update is
-        the projector solve). Tangent mode from a far start was the first wave's failure:
-        the manifold correction alone had to do the equality work, 6+ rad a step, clamped
-        to `q_step_max` and fighting the lr schedule -- so a particle is carried near the
-        manifold by the AL first. In tangent mode the Stein step and the manifold
-        correction are CLAMPED SEPARATELY (each to `q_step_max`), so a long correction no
-        longer scales the Stein step to nothing and the lr schedule sees only its own step."""
-        tg = self._tg
-        opts = self.options
-        ev = tg.evaluate(X)
-        S, ev.gn_ratio = self._lm_gain(S, ev)
-        J_q = tg.jacobian_q(ev)
-        J_h, J_g = tg.row_jacobians(ev, J_q)
-        dFc, dFx = tg.cost_parts(ev)
-        gF = (J_q.transpose(1, 2) @ dFc.unsqueeze(2)).squeeze(2) + dFx
-        J_h = torch.nan_to_num(J_h.detach(), nan=0.0, posinf=0.0, neginf=0.0)
-        J_g = torch.nan_to_num(J_g.detach(), nan=0.0, posinf=0.0, neginf=0.0)
-        ch, cg = al.al_constraint_grad_coefficients(ev.h, ev.g, S)
-        gI = (J_g.transpose(1, 2) @ cg.unsqueeze(2)).squeeze(2)
-        gC = (J_h.transpose(1, 2) @ ch.unsqueeze(2)).squeeze(2) + gI
-        fin = ev.finite.unsqueeze(1)
-        gF = torch.where(fin, gF, torch.zeros_like(gF))
-        gAL = torch.where(fin, gF + gC, torch.zeros_like(gF))
-        K, R, pull = self._kernel_terms(ev, X)
-        R_pulled = (J_q.transpose(1, 2) @ R.unsqueeze(2)).squeeze(2) if pull else R
-        R_pulled = torch.where(fin, R_pulled, torch.zeros_like(R_pulled))
-        gamma = kernels.anneal_gamma(t_outer, opts.svgd_gamma_t)
-        T = kernels.anneal_T(t_step, opts.svgd_repulsion_T0, opts.svgd_anneal_frac, total_steps)
-
-        ## -- the al_svgd update (the GN path of `_step_al`, verbatim) --
-        phi_al = kernels.svgd_direction(K, -gF, R_pulled, gamma, T)
-        Xn_al, S = al.adam_step(X, -(phi_al - gAL), S)
-        if tg.bp.is_learned:
-            dq_al = (J_q @ (Xn_al - X).unsqueeze(2)).squeeze(2).abs().amax(dim=1)
-        else:
-            dq_al = (Xn_al - X).abs().amax(dim=1)
-        dx_gn, set_al = self._gn_step(ev, S, J_h, J_g, rows_active=True)
-        dx_gn, clamped_al = self._clamp(dx_gn, J_q)
-        Xn_al = Xn_al + dx_gn
-
-        ## -- the tangent-space update --
-        act = al.active_mask(ev.g, S.mu, S.rho)
-        J_A = torch.cat([J_h, J_g * act.unsqueeze(2)], dim=1)
-        P = al.tangent_projector(J_A, opts.svgd_tangent_delta)
-        driving = torch.where(fin, -(gF + gI), torch.zeros_like(gF))
-        driving = (P @ driving.unsqueeze(2)).squeeze(2)
-        phi = kernels.svgd_direction(K, driving, R_pulled, gamma, T)
-        phi = (P @ phi.unsqueeze(2)).squeeze(2)
-        step_lr, clamped_t = self._clamp(S.lr.unsqueeze(1) * phi, J_q)
-        dx_c, set_t = self._gn_step(ev, S, J_h, J_g, rows_active=False)
-        dx_c, clamped_c = self._clamp(dx_c, J_q)
-        Xn_t = X + step_lr + dx_c
-        if tg.bp.is_learned:
-            dq_t = (J_q @ step_lr.unsqueeze(2)).squeeze(2).abs().amax(dim=1)
-        else:
-            dq_t = step_lr.abs().amax(dim=1)
-
-        ## -- per-particle mode --
-        tangent = (torch.nan_to_num(ev.infeas, nan=float("inf"))
-                   <= float(opts.svgd_tsvgd_switch_infeas))
-        Xn = torch.where(tangent.unsqueeze(1), Xn_t, Xn_al)
-        ev.dq_adam = torch.where(tangent, dq_t, dq_al)
-        clamped = torch.where(tangent, clamped_c, clamped_al)
-        ev.gn_clamped = clamped
-        ev.n_tangent = tangent
-        Xn, _ = tg.project(Xn)
-        if self._lm:
-            t1 = tangent.unsqueeze(1)
-            S = al.lm_record_prediction(
-                S, torch.where(tangent.view(-1, 1, 1), set_t[0], set_al[0]),
-                torch.where(t1, set_t[1], set_al[1]), torch.where(t1, set_t[2], set_al[2]),
-                Xn.detach() - X)
-        S = al.track_best(S, X, tg.merit(ev))
-        self._last_P = P.detach()
-        return Xn.detach(), S, ev
-
-    ## --------------------------- the split (fused) step -------------------------------
+    ## ------------------------------- the step -----------------------------------------
     def _step_mode(self):
         """`eager` | `compiled` | `graphed` from `svgd_compile` / `svgd_cuda_graph` (graphs
-        need CUDA; on a CPU device the request degrades to `compiled`, recorded as such)."""
+        need CUDA; on a CPU device the request degrades to `compiled`)."""
         opts = self.options
         if not opts.svgd_compile:
             return "eager"
@@ -929,25 +685,17 @@ class SvgdSolver:
         return "compiled"
 
     def _make_runner(self):
-        """The split step's `fused.StepRunner` where it applies (al_svgd / tsvgd on a target
-        with closed-form row Jacobians); None elsewhere (admm_svgd's own loop; a robot behind
-        its own pose provider, which runs `_step_al` / `_step_t` through autograd)."""
+        """The split step's `fused.StepRunner` on a target with closed-form row Jacobians;
+        None for a robot behind its own pose provider (`_step_eager`, autograd)."""
         self._runner = None
-        if self.method in ("al_svgd", "tsvgd") and self._tg.analytic:
+        if self._tg.analytic:
             self._runner = fused.StepRunner(self._tg, self._sc, self.N, self._step_mode())
-        kw = dict(dtype=self.dtype, device=self.device)
-        self._gamma_t = torch.zeros((), **kw)
-        self._T_t = torch.zeros((), **kw)
-        self._tout_t = torch.zeros((), **kw)
         return self._runner
 
-    def _step_split(self, X, S, t_outer, t_step, total_steps, do_gn):
-        """One `al_svgd` / `tsvgd` step as `fused`'s three stages with the collision pool
-        between them: stage 1 (the configuration), the pool DISPATCHED, stage 2 (the flow
-        Jacobian and the kinematics) launched while Drake runs, the pool collected, stage 3.
-        The same maths as `_step_al` / `_step_t` plus the lr schedule (`ev.lr_done`)."""
+    def _step_split(self, X, S):
+        """One step as `fused`'s three stages with the collision pool between them; returns
+        `(X_new, clip [N], n_clip [N])`."""
         r = self._runner
-        opts = self.options
         bp = self._tg.bp
         cfg, q_plant = r.s1(X)
         self._tg._count("map_forward")
@@ -967,194 +715,90 @@ class SvgdSolver:
         kw = dict(device=self.device, dtype=self.dtype)
         col_row = None if col[0] is None else torch.as_tensor(col[0]).to(**kw)
         col_grad = None if col[1] is None else torch.as_tensor(col[1]).to(**kw)
-        self._gamma_t.fill_(float(kernels.anneal_gamma(t_outer, opts.svgd_gamma_t)))
-        self._T_t.fill_(float(kernels.anneal_T(t_step, opts.svgd_repulsion_T0,
-                                               opts.svgd_anneal_frac, total_steps)))
-        self._tout_t.fill_(float(t_outer))
-        o = r.s3(do_gn, X, cfg, J_q, kin, col_row, col_grad, fused.state_dict(S),
-                 self._gamma_t, self._T_t, self._tout_t)
-        S = ALState(**o["S"])
-        ev = SimpleNamespace(h=o["h"], g=o["g"], F=o["F"], infeas=o["infeas"], finite=o["finite"],
-                             cfg=cfg, gn_clamped=o["clamped"], dq_adam=o["dq_adam"],
-                             gn_ratio=o["ratio"], lr_done=True, n_tangent=o.get("tangent"))
-        if "P" in o:
-            self._last_P = o["P"]
-        return o["X"], S, ev
+        o = r.s3(X, cfg, J_q, kin, col_row, col_grad, fused.state_dict(S))
+        return o["X"], o["clip"], o["n_clip"]
 
-    ## ------------------------------- resampling ---------------------------------------
-    def _reset_state(self, S, mask):
-        """Fresh AL / Adam state on the masked particles; the best is kept."""
-        opts = self.options
-        m1 = mask.unsqueeze(1)
-        z = lambda a: torch.where(m1, torch.zeros_like(a), a)
-        return replace(S, lam=z(S.lam), mu=z(S.mu),
-                       rho=torch.where(mask, torch.full_like(S.rho, float(opts.svgd_rho0)), S.rho),
-                       eta=torch.where(mask, torch.full_like(S.eta, self._eta0), S.eta),
-                       adam_m=z(S.adam_m), adam_v=z(S.adam_v),
-                       step=torch.where(mask, torch.zeros_like(S.step), S.step),
-                       lr=torch.where(mask, torch.full_like(S.lr, float(opts.svgd_lr)), S.lr),
-                       gn_lam=torch.where(mask, torch.full_like(S.gn_lam, float(opts.svgd_gn_lm)), S.gn_lam),
-                       gn_r2=torch.where(mask, torch.full_like(S.gn_r2, float("nan")), S.gn_r2))
-
-    def _resample(self, X, S, ev_q, finite_rows, merit):
-        """Redraw runaway / non-finite particles (both methods) and, under tsvgd, the worst
-        decile in the tangent space of the best particle. Returns `(X, S, n_resampled)`."""
-        opts = self.options
-        N = X.shape[0]
-        mask = al.resample_mask(ev_q, finite_rows, opts.svgd_resample_q_max)
-        if self.method == "tsvgd" and N >= 10:
-            k = max(1, N // 10)
-            thresh = torch.kthvalue(torch.nan_to_num(merit, nan=float("inf")), N - k + 1).values
-            mask = mask | (merit >= thresh) | ~torch.isfinite(merit)
-        best_i = torch.argmin(torch.nan_to_num(S.best_merit, nan=float("inf")))
-        best_ok = torch.isfinite(S.best_merit[best_i]) & torch.isfinite(S.best_x[best_i]).all()
-        fresh = self._fresh(N)
-        if self.method == "tsvgd" and getattr(self, "_last_P", None) is not None and bool(best_ok):
-            xi = torch.randn(N, self.n, generator=self._gen, dtype=self.dtype, device=self.device)
-            xi = xi * float(opts.svgd_jitter_z)
-            P_best = self._last_P[best_i]
-            tangent = S.best_x[best_i].unsqueeze(0) + xi @ P_best.T
-            tangent, _ = self._tg.project(tangent)
-            fresh = torch.where(torch.isfinite(tangent).all(dim=1, keepdim=True), tangent, fresh)
-        X = torch.where(mask.unsqueeze(1), fresh, X)
-        S = self._reset_state(S, mask)
-        return X, S, int(mask.sum().item())
+    def _step_eager(self, X, S):
+        """The same step through autograd (a robot behind its own pose provider)."""
+        tg = self._tg
+        ev = tg.evaluate(X)
+        ch, cg = al.al_constraint_grad_coefficients(ev.h, ev.g, S)
+        K, R, kernel_on = fused.kernel_terms(self._sc, ev.cfg, ev.finite, X)
+        gF, gC, R_x = tg.al_gradients(ev, ch, cg, R if kernel_on else None)
+        if R_x is None:
+            R_x = torch.zeros_like(X)
+        return fused.update_step(tg, self._sc, X, gF.detach(), gC.detach(), K, R_x.detach(),
+                                 ev.finite, S.rho)
 
     ## ---------------------------------- swarm -----------------------------------------
     def _swarm(self, X, S, deadline, outer_iters, inner_iters, record):
         """The outer/inner loop; returns `(X, S, stop_status, stats)`."""
         opts = self.options
         tg = self._tg
-        total_steps = max(1, outer_iters * inner_iters)
-        if self._runner is not None:
-            step_fn = self._step_split
-        else:
-            step_fn = self._step_al if self.method == "al_svgd" else self._step_t
-        stats = dict(outer=0, inner=0, n_resampled=0, best_history=[], trace=[],
-                     stop_reason="step_cap")
-        prev_q = None
+        N = X.shape[0]
+        step_fn = self._step_split if self._runner is not None else self._step_eager
+        stats = dict(outer=0, inner=0, n_resampled=0, n_multiplier_updates=0,
+                     n_multiplier_clipped=0, bound_clip=0.0, bound_clip_count=0,
+                     best_history=[], trace=[], stop_reason="step_cap")
+        clip_tot = torch.zeros((), dtype=self.dtype, device=self.device)
+        nclip_tot = torch.zeros((), dtype=torch.long, device=self.device)
         best_seen = float("inf")
         stale = 0
         status = STATUS_STEP_CAP
-        t_step = 0
-        last_ev = None
-        dq = None
         for t_outer in range(outer_iters):
-            ## -- resample check (runaway / nan), at the outer boundary --
-            if t_outer % max(1, int(opts.svgd_resample_every)) == 0:
-                with torch.no_grad():
-                    ev0 = tg.evaluate(X, need_grad=False)
-                if t_outer == 0:
-                    ## The AL tolerance seeded from each particle's OWN initial
-                    ## infeasibility (`svgd_eta_rel`); the resample below resets the
-                    ## redrawn particles to the absolute `eta0`, which their first failed
-                    ## test then replaces by the relative one.
-                    S = al.seed_eta(ev0.h, ev0.g, S, opts.svgd_eta_rel)
-                X, S, n_re = self._resample(X, S, ev0.cfg, ev0.finite, tg.merit(ev0))
-                stats["n_resampled"] += n_re
-            for k in range(inner_iters):
-                do_gn = (t_step % max(1, int(opts.svgd_gn_every))) == 0
-                X, S, ev = step_fn(X, S, t_outer, t_step, total_steps, do_gn)
-                q_now = ev.cfg.detach()
-                if prev_q is not None:
-                    dq = torch.nan_to_num((q_now - prev_q).abs().amax(dim=1), nan=float("inf"))
-                else:
-                    dq = torch.zeros(X.shape[0], dtype=self.dtype, device=self.device)
-                ## `dq` (the observed step, for the trace) includes the previous step's GN
-                ## correction; the lr schedule gets Adam's own step where the step reports it.
-                if not getattr(ev, "lr_done", False):          # the split step does its own
-                    dq_lr = getattr(ev, "dq_adam", None)
-                    if dq_lr is None:
-                        dq_lr = dq
-                    S = al.lr_schedule(S, torch.nan_to_num(dq_lr, nan=float("inf")),
-                                       opts.svgd_q_step_max, opts.svgd_lr, opts.svgd_lr_min,
-                                       float(t_outer), opts.svgd_lr_decay_t)
-                prev_q = q_now
-                last_ev = ev
-                t_step += 1
+            clip_check = torch.zeros((), dtype=self.dtype, device=self.device)
+            for _ in range(inner_iters):
+                X, clip, n_clip = step_fn(X, S)
+                clip_check = clip_check + torch.nan_to_num(clip, nan=0.0).sum()
+                nclip_tot = nclip_tot + n_clip.sum()
                 stats["inner"] += 1
-            nw_ok = al.infeasibility(ev.h.detach(), ev.g.detach(), S) <= S.eta
-            S = al.update_multipliers(ev.h.detach(), ev.g.detach(), S, opts.svgd_rho_growth,
-                                      opts.svgd_rho_max, opts.svgd_multiplier_max,
-                                      eta_rel=opts.svgd_eta_rel)
+            clip_tot = clip_tot + clip_check
+            ## -- the outer check, at the current swarm --
+            with torch.no_grad():
+                ev = tg.evaluate(X, need_grad=False)
+            S, updated, n_clipped = al.update(
+                ev.h, ev.g, S, float(opts.svgd_rho_growth), float(opts.svgd_rho_gamma),
+                float(opts.svgd_rho_max), float(opts.svgd_multiplier_max))
+            mask = al.resample_mask(ev.cfg, ev.finite, float(opts.svgd_resample_q_max))
+            n_re = int(mask.sum().item())
+            v = torch.nan_to_num(ev.infeas, nan=float("inf"))
+            feas = (v <= 1.0) & ~mask
+            F = torch.where(feas, torch.nan_to_num(ev.F, nan=float("inf")),
+                            torch.full_like(ev.F, float("inf")))
+            i_best = int(torch.argmin(F).item()) if bool(feas.any()) else int(torch.argmin(v).item())
+            record(X[i_best])
+            stats["trace"].append(tg.trace_row(ev, S, updated, n_clipped, n_re, clip_check))
+            stats["n_multiplier_updates"] += int(updated.sum().item())
+            stats["n_multiplier_clipped"] += int(n_clipped.item())
+            if n_re:
+                fresh, _ = self._draw_native(N, self._gen)
+                fresh, _ = tg.project(fresh)
+                X = torch.where(mask.unsqueeze(1), fresh, X)
+                S = al.reset(S, mask, self._rho0, self._eta0)
+                stats["n_resampled"] += n_re
             stats["outer"] = t_outer + 1
-            stats["trace"].append(tg.trace_row(ev, S, dq, getattr(ev, "gn_clamped", None), nw_ok))
-            ## -- outer boundary: sync, record, clock, patience --
+            ## -- the stop rule: the best feasible particle's objective --
+            f_best = float(F.min().item())
+            stats["best_history"].append(f_best)
+            if math.isfinite(f_best):
+                if not math.isfinite(best_seen) or f_best < best_seen - float(opts.svgd_stop_rel) * abs(best_seen):
+                    best_seen = f_best
+                    stale = 0
+                else:
+                    stale += 1
+                if stale >= int(opts.svgd_stop_patience):
+                    status = STATUS_CONVERGED
+                    stats["stop_reason"] = "converged"
+                    break
             if self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
-            best_i = int(torch.argmin(torch.nan_to_num(S.best_merit, nan=float("inf"))).item())
-            best_m = float(S.best_merit[best_i].item())
-            record(S.best_x[best_i])
-            stats["best_history"].append(best_m)
-            ## The stall test. Before any particle is feasible every improvement of the
-            ## merit counts (PATIENCE_REL); once one is, the merit IS the best feasible
-            ## particle's objective and an outer step counts as progress only if it
-            ## improved by `svgd_stop_rel` relative -- the first wave's 1e-6 never fired
-            ## and every cell polished its cost for the whole cap. It is a stall on the
-            ## objective the solver minimises, not on the harness's reported subset,
-            ## which the solver does not know about.
-            feasible_seen = best_seen < FEASIBLE_WEIGHT
-            rel = float(opts.svgd_stop_rel) if feasible_seen else PATIENCE_REL
-            ## (`best_seen` starts at +inf, and `inf - inf` is nan, which compares False:
-            ## that is why the first wave's patience never fired, not the 1e-6 threshold.)
-            thresh = best_seen - rel * max(1.0, abs(best_seen)) if math.isfinite(best_seen) else float("inf")
-            if math.isfinite(best_m) and best_m < thresh:
-                best_seen = best_m
-                stale = 0
-            else:
-                stale += 1
-            if best_seen < FEASIBLE_WEIGHT and stale >= int(opts.svgd_stop_patience):
-                status = STATUS_CONVERGED
-                stats["stop_reason"] = "feasible_stall"
-                break
             if time.perf_counter() >= deadline:
                 status = STATUS_WALL_CLOCK
                 stats["stop_reason"] = "wall_clock"
                 break
-        return X, S, status, stats, last_ev
-
-    ## ---------------------------------- polish ----------------------------------------
-    def _polish(self, Xc, deadline):
-        """Pure per-particle Gauss-Newton on `[h~ ; violated g~]` in float64, on the `k`
-        candidates `Xc [k, n]`; returns `(Xc, ev, iters)`."""
-        tg = self._tg64
-        opts = self.options
-        Xc = Xc.to(torch.float64)
-        k = Xc.shape[0]
-        iters = 0
-        ev = tg.evaluate(Xc)
-        ## Per-particle step fraction for a backtracking Newton: a rejected step is retried
-        ## at half the length (down to POLISH_ALPHA_MIN), an accepted one lets it grow back.
-        ## Without this a rejected step was recomputed identically and rejected again for
-        ## every remaining iteration -- the polish was a no-op exactly when it was needed.
-        alpha = torch.ones(k, dtype=torch.float64, device=self.device)
-        for i in range(int(opts.svgd_polish_iters)):
-            if bool((ev.infeas <= opts.svgd_polish_tol).all()):
-                break
-            if time.perf_counter() >= deadline:
-                break
-            J_q = tg.jacobian_q(ev)
-            J_h, J_g = tg.row_jacobians(ev, J_q)
-            act = (ev.g > 0.0).to(ev.g.dtype)
-            J = torch.cat([J_h, J_g * act.unsqueeze(2)], dim=1).detach()
-            r = torch.cat([ev.h, ev.g * act], dim=1).detach()
-            J = torch.nan_to_num(J, nan=0.0, posinf=0.0, neginf=0.0)
-            r = torch.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
-            done = (ev.infeas <= opts.svgd_polish_tol).unsqueeze(1)
-            dx = al.gn_correction(J, r, opts.svgd_gn_delta)
-            dx = al.clamp_q_step(dx, J_q if tg.bp.is_learned else None, opts.svgd_q_step_max)
-            dx = torch.where(done, torch.zeros_like(dx), dx * alpha.unsqueeze(1))
-            Xn, _ = tg.project(Xc + dx)
-            ev_n = tg.evaluate(Xn)
-            ## accept where the step did not make things worse (a safeguarded Newton)
-            better = (torch.nan_to_num(ev_n.infeas, nan=float("inf"))
-                      <= torch.nan_to_num(ev.infeas, nan=float("inf")))
-            Xc = torch.where(better.unsqueeze(1), Xn, Xc)
-            alpha = torch.where(better, torch.clamp(2.0 * alpha, max=1.0),
-                                torch.clamp(0.5 * alpha, min=POLISH_ALPHA_MIN))
-            iters += 1
-            ev = tg.evaluate(Xc)
-        return Xc.detach(), ev, iters
+        stats["bound_clip"] = float(clip_tot.item())
+        stats["bound_clip_count"] = int(nclip_tot.item())
+        return X, S, status, stats
 
     ## -------------------------------- Drake re-check ----------------------------------
     def _drake_max_violation(self, x_full):
@@ -1182,49 +826,40 @@ class SvgdSolver:
         t0 = time.perf_counter()
         phase = {}
         wall = float(opts.max_wall_time)
-        reserve = float(opts.svgd_time_reserve)
-        swarm_deadline = t0 + wall * (1.0 - reserve)
-        final_deadline = t0 + wall
+        swarm_deadline = t0 + wall * (1.0 - float(opts.svgd_time_reserve))
 
         self._build()
-        tg, tg64 = self._tg, self._tg64
+        tg = self._tg
         bp = tg.bp
         self._pool.drain()
         self._pool.reset()
         self._make_runner()
         counts0 = dict(getattr(program, "eval_counts", {}) or {})
-        self._init_protocol = opts.svgd_paired_init
 
         x0_np = np.asarray(program.prog.GetInitialGuess(program.lumped_vars), dtype=float)
         X, clip, init_stats = self._init_particles(x0_np)
         N = X.shape[0]
-        extras = dict(init_protocol=self._init_protocol, clip_distance=clip.detach().cpu().numpy().tolist(),
+        extras = dict(init_protocol=opts.svgd_paired_init,
+                      clip_distance=clip.detach().cpu().numpy().tolist(),
                       init_stats=init_stats, workers=self.workers,
-                      step_mode=(self._runner.mode if self._runner is not None else
-                                 ("eager (admm_svgd runs its own loop, never compiled)"
-                                  if self.method == "admm_svgd" else "eager (autograd path)")),
+                      region_scale=tg.s.detach().cpu().double().numpy().tolist(),
+                      step_mode=(self._runner.mode if self._runner is not None else "eager (autograd path)"),
                       step_reused_template=bool(self._runner is not None and self._runner.reused),
                       pool_overlap=self._overlap)
-        phase["init"] = time.perf_counter() - t0
-
-        ## -- AL state --
-        rho0 = float(opts.svgd_rho0)
-        self._eta0 = 1.0 / rho0 ** 0.1
-        S = ALState.init(N, self.n, tg.m_e, tg.m_i, rho0=rho0, eta0=self._eta0,
-                         lr0=float(opts.svgd_lr), dtype=self.dtype, device=self.device,
-                         gn_lam0=float(opts.svgd_gn_lm))
 
         ## -- optional CEM warm-up --
         warmup_steps = 0
         if opts.svgd_warmup == "cem" and N > 1:
             from src.svgd.warmup import cem_warmup
             t = time.perf_counter()
-            X, wstats = cem_warmup(tg, X, rho0, int(opts.svgd_warmup_iters),
+            X, wstats = cem_warmup(tg, X, self._rho0, int(opts.svgd_warmup_iters),
                                    float(opts.svgd_warmup_elite), self._gen,
                                    deadline=swarm_deadline)
             warmup_steps = wstats.get("iters", 0)
             extras["warmup"] = wstats
             phase["warmup"] = time.perf_counter() - t
+        S = self._init_state(X)
+        phase["init"] = time.perf_counter() - t0 - phase.get("warmup", 0.0)
 
         def record(x_best):
             program.RecordIterate(x_best.detach().to(device="cpu", dtype=torch.float64).numpy())
@@ -1233,108 +868,91 @@ class SvgdSolver:
         t = time.perf_counter()
         outer_iters = int(opts.max_iter) if opts.max_iter is not None else int(opts.svgd_outer_iters)
         inner_iters = max(1, int(opts.svgd_inner_iters))
-        if self.method == "admm_svgd":
-            from src.svgd.admm import AdmmSwarm
-            X, S, stop, sstats, last_ev = AdmmSwarm(self).run(X, S, swarm_deadline, outer_iters, record)
-        else:
-            X, S, stop, sstats, last_ev = self._swarm(X, S, swarm_deadline, outer_iters, inner_iters, record)
+        X, S, stop, sstats = self._swarm(X, S, swarm_deadline, outer_iters, inner_iters, record)
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         phase["swarm"] = time.perf_counter() - t
 
-        ## -- candidates: each particle's best, plus its current point where better --
+        ## -- select: feasible on the batched rows, by objective; exact Drake re-check --
         t = time.perf_counter()
-        Xb = torch.where(torch.isfinite(S.best_merit).unsqueeze(1), S.best_x, X)
         with torch.no_grad():
-            evb = tg64.evaluate(Xb.to(torch.float64), need_grad=False)
-        merit_b = tg64.merit(evb)
-        all_nan = not bool(torch.isfinite(merit_b).any())
-        viol_before = torch.nan_to_num(evb.infeas, nan=float("inf")).cpu().numpy()
-
-        if all_nan:
-            x_ret = x0_np.copy()
-            status = STATUS_NAN
-            drake_ok = False
-            solver_ok = False
-            selected = 0
-            n_feasible = 0
-            polish_iters = 0
-            viol_after = viol_before
-            drake_viol = None
-            cands_idx = []
+            evf = tg.evaluate(X, need_grad=False)
+        v = torch.nan_to_num(evf.infeas, nan=float("inf")).cpu().double().numpy()
+        Fv = torch.nan_to_num(evf.F, nan=float("inf")).cpu().double().numpy()
+        feas = v <= 1.0
+        n_feasible = int(feas.sum())
+        cfg_np = evf.cfg.detach().cpu().double().numpy()
+        spread = _median_pairwise_distance(cfg_np[feas]) if n_feasible >= 2 else None
+        ## The swarm's clamp onto B ran in the swarm's dtype, whose rounding of a bound can sit
+        ## an ulp outside the float64 bound Drake holds; the same clamp in float64 removes that
+        ## (it moves no coordinate by more than the swarm dtype's rounding, recorded).
+        X32 = X.detach().cpu().double().numpy()
+        lo64, hi64 = bp._variable_bounds()
+        X_np = np.minimum(np.maximum(X32, lo64), hi64)
+        extras["bound_rounding"] = float(np.nan_to_num(np.abs(X_np - X32), nan=0.0).max(initial=0.0))
+        k = max(1, int(opts.svgd_recheck_topk))
+        if not np.isfinite(v).any():
+            x_ret, status, drake_ok, solver_ok, selected, drake_viol, cands = (
+                x0_np.copy(), STATUS_NAN, False, False, -1, None, [])
         else:
-            k = max(1, min(int(opts.svgd_polish_topk), N))
-            order = torch.argsort(torch.nan_to_num(merit_b, nan=float("inf")))
-            cands_idx = order[:k]
-            Xc, evc, polish_iters = self._polish(Xb[cands_idx], final_deadline)
-            phase["polish"] = time.perf_counter() - t
-            t = time.perf_counter()
-            infeas_c = torch.nan_to_num(evc.infeas.detach(), nan=float("inf"))
-            feas_c = infeas_c <= 1.0
-            Fc = torch.nan_to_num(evc.F.detach(), nan=float("inf"))
-            ## selection key: feasible first, then F; infeasible by infeasibility
-            key = torch.where(feas_c, Fc, FEASIBLE_WEIGHT + infeas_c)
-            sel_order = torch.argsort(key)
-            viol_after = viol_before.copy()
-            viol_after[cands_idx.cpu().numpy()] = infeas_c.cpu().numpy()
-            n_feasible = int((torch.as_tensor(viol_after) <= 1.0).sum())
-            ## exact Drake re-check, in F order, over the top recheck_topk
-            x_ret, drake_ok, selected, drake_viol, solver_ok = None, False, -1, None, False
-            best_v, best_j = np.inf, None
-            Xc_cpu = Xc.detach().cpu().numpy()
-            for j in sel_order[:max(1, int(opts.svgd_recheck_topk))].tolist():
-                xf = bp.to_drake_x(Xc_cpu[j])
-                v = self._drake_max_violation(xf)
-                if v <= self.tol:
-                    x_ret, drake_ok, selected, drake_viol = Xc_cpu[j].copy(), True, j, v
-                    solver_ok = bool(feas_c[j])
+            if n_feasible:
+                order = [int(i) for i in np.argsort(np.where(feas, Fv, np.inf), kind="stable")[:min(k, n_feasible)]]
+            else:
+                order = [int(i) for i in np.argsort(v, kind="stable")[:k]]
+            cands = order
+            selected, drake_viol, drake_ok = None, np.inf, False
+            for j in order:
+                vj = self._drake_max_violation(bp.to_drake_x(X_np[j]))
+                if n_feasible and vj <= self.tol:
+                    selected, drake_viol, drake_ok = j, vj, True
                     break
-                if v < best_v:
-                    best_v, best_j = v, j
-            if x_ret is None:
-                j = best_j if best_j is not None else int(sel_order[0])
-                x_ret, selected, drake_viol = Xc_cpu[j].copy(), j, best_v
-                solver_ok = bool(feas_c[j])
-            selected = int(cands_idx[selected].item())
-            status = STATUS_CONVERGED if drake_ok else (stop if stop in (STATUS_WALL_CLOCK, STATUS_STEP_CAP) else STATUS_INFEASIBLE)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
+                if vj < drake_viol:
+                    selected, drake_viol = j, vj
+            if not drake_ok:
+                drake_ok = bool(drake_viol <= self.tol)
+            x_ret = X_np[selected].copy()
+            solver_ok = bool(feas[selected])
+            status = STATUS_CONVERGED if drake_ok else (
+                stop if stop in (STATUS_WALL_CLOCK, STATUS_STEP_CAP) else STATUS_INFEASIBLE)
         phase["select"] = time.perf_counter() - t
 
         counts = dict(getattr(program, "eval_counts", {}) or {})
         map_evals = int(counts.get("map_forward", 0) - counts0.get("map_forward", 0))
         total = time.perf_counter() - t0
-        ## The per-outer trace: stacked and moved to the host once, here, never per step.
         rows = sstats.get("trace", [])
         if rows:
             T_np = torch.stack(rows).detach().to(device="cpu", dtype=torch.float64).numpy()
-            trace = {name: [float(v) for v in T_np[:, j]] for j, name in enumerate(_Target.TRACE_COLUMNS)}
+            trace = {name: [float(x) for x in T_np[:, j]] for j, name in enumerate(_Target.TRACE_COLUMNS)}
         else:
             trace = {name: [] for name in _Target.TRACE_COLUMNS}
+        rho = S.rho.detach().cpu().double().numpy()
         extras.update(dict(
             trace=trace, derivative_mode="analytic" if tg.analytic else "autograd",
-            violation_before_polish=[float(v) for v in np.asarray(viol_before)],
-            violation_after_polish=[float(v) for v in np.asarray(viol_after)],
-            polish_iters=int(polish_iters), drake_max_violation=None if drake_viol is None else float(drake_viol),
+            violation_at_stop=[float(x) for x in v],
+            drake_max_violation=None if drake_viol is None else float(drake_viol),
             best_history=sstats.get("best_history", []), stop_status=status_name(stop),
             total_steps=int(sstats.get("inner", 0)), eval_counts_delta={
-                k: int(counts.get(k, 0) - counts0.get(k, 0)) for k in counts},
+                key: int(counts.get(key, 0) - counts0.get(key, 0)) for key in counts},
             pool_calls=int(self._pool.calls), pool_configs=int(self._pool.configs),
             pool_span_seconds=float(self._pool.span_seconds),
-            admm_primal_residual=sstats.get("primal_residual"), admm_dual_residual=sstats.get("dual_residual"),
-            admm=sstats.get("admm"),
-            candidates=[int(i) for i in (cands_idx.cpu().numpy() if hasattr(cands_idx, "cpu") else cands_idx)]))
+            rho_at_stop=[float(x) for x in rho], candidates=cands,
+            n_multiplier_updates=int(sstats.get("n_multiplier_updates", 0)),
+            bound_clip_count=int(sstats.get("bound_clip_count", 0)),
+            warmup_steps=int(warmup_steps)))
         details = SvgdSolverDetails(
             status=int(status), status_name=status_name(status), method=self.method,
             n_particles=N, dtype=opts.svgd_dtype,
             iterations=int(sstats.get("outer", 0)), inner_steps=int(sstats.get("inner", 0)),
-            map_evals=map_evals, n_feasible=int(n_feasible), n_resampled=int(sstats.get("n_resampled", 0)),
+            map_evals=map_evals, n_feasible=n_feasible, n_resampled=int(sstats.get("n_resampled", 0)),
             selected_index=int(selected), phase_times=phase,
             timed_out=(stop == STATUS_WALL_CLOCK), hit_iteration_cap=(stop == STATUS_STEP_CAP),
             solver_feasible=bool(solver_ok), drake_feasible=bool(drake_ok),
             solve_seconds=total, collision_seconds=float(self._pool.seconds),
-            stop_reason=str(sstats.get("stop_reason", "")), extras=extras)
-        details.extras["warmup_steps"] = int(warmup_steps)
+            stop_reason=str(sstats.get("stop_reason", "")),
+            rho_median=float(np.median(rho)), rho_max=float(np.max(rho)),
+            bound_clip=float(sstats.get("bound_clip", 0.0)),
+            n_multiplier_clipped=int(sstats.get("n_multiplier_clipped", 0)),
+            feasible_q_spread=spread, extras=extras)
         write_log(opts.file_print_name, details)
         return SvgdResult(program, bp.to_drake_x(x_ret), details, success=bool(drake_ok))
 
@@ -1361,38 +979,22 @@ class SvgdSolver:
 
     ## ---------------------------------- warm-up ---------------------------------------
     def warm_up(self):
-        """Pay the pool spawn, the first flow / FK calls, the autograd machinery and -- under
-        `svgd_compile` / `svgd_cuda_graph` -- the compile of every stage and the capture of
-        every graph this solver's (N, dtype, method, structure) uses, outside any timed cell:
-        a few steps of the configured method on particles drawn around the program's current
-        guess (both `do_gn` variants where `svgd_gn_every > 1`), plus one float64 polish step.
-        Returns the seconds spent; `self.warmup_info` says what was compiled / captured."""
+        """Pay the pool spawn, the first flow / FK calls and -- under `svgd_compile` /
+        `svgd_cuda_graph` -- the compile of every stage and the capture of every graph this
+        solver's (N, dtype, structure, step options) uses, outside any timed cell: a few
+        steps on particles drawn around the program's current guess. Returns the seconds
+        spent; `self.warmup_info` says what was compiled / captured."""
         t0 = time.perf_counter()
         self._build()
-        opts = self.options
-        self._init_protocol = opts.svgd_paired_init
-        x0 = np.asarray(self.program.prog.GetInitialGuess(self.program.lumped_vars), dtype=float)
-        x0 = np.nan_to_num(x0)
+        x0 = np.nan_to_num(np.asarray(self.program.prog.GetInitialGuess(self.program.lumped_vars),
+                                      dtype=float))
         X, _, _ = self._init_particles(x0)
-        N = X.shape[0]
-        rho0 = float(opts.svgd_rho0)
-        self._eta0 = 1.0 / rho0 ** 0.1
-        S = ALState.init(N, self.n, self._tg.m_e, self._tg.m_i, rho0=rho0, eta0=self._eta0,
-                         lr0=float(opts.svgd_lr), dtype=self.dtype, device=self.device,
-                         gn_lam0=float(opts.svgd_gn_lm))
+        S = self._init_state(X)
         self._pool.drain()
         self._make_runner()
-        if self.method == "admm_svgd":
-            from src.svgd.admm import AdmmSwarm
-            AdmmSwarm(self).run(X, S, time.perf_counter() + 60.0, 2, lambda x: None)
-        else:
-            step_fn = self._step_split if self._runner is not None else (
-                self._step_al if self.method == "al_svgd" else self._step_t)
-            variants = (True, False) if int(opts.svgd_gn_every) > 1 else (True,)
-            for do_gn in variants:
-                for t in range(3):
-                    X, S, _ = step_fn(X, S, 0, t, 3, do_gn)
-        self._polish(X[:1], time.perf_counter() + 60.0)
+        step_fn = self._step_split if self._runner is not None else self._step_eager
+        for _ in range(3):
+            X, _, _ = step_fn(X, S)
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         if hasattr(self.program, "ResetEvalCounts"):

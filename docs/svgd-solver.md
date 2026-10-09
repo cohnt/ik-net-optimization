@@ -8,82 +8,181 @@ old text is kept.
 Driver: `scripts/svgd/smoke.py`. Reader: `scripts/report_svgd.py` (it imports the matrix from the
 driver, so the two cannot disagree). Reader's guards: `tests/test_report_svgd.py`.
 
+**Re-registered 2026-10-09 (Thomas: the fielded solver is PLAIN augmented-Lagrangian SVGD, a
+clear, simple method whose every part is nameable).** The method, its options and the variant
+matrix below replace the 2026-10-08 text, which is in git at `f2cb943`; everything beyond the
+method is removed, not switched off (the list at the end of this section). The rules from "Go /
+no-go" on stand; the smoke must be re-run before any of them is read again.
+
 ## What the fourth method class is, and is not
 
 The solver axis is three method classes -- interior point (IPOPT), SQP (SNOPT), augmented Lagrangian
 (NLopt `LD_AUGLAG`) -- and that axis is closed. Thomas reopened it for a **fourth class**:
 batch-parallel, **SVGD-style** particle methods in torch on the GPU, which exploit the fact that the
 flow and the forward kinematics evaluate a batch of N configurations at nearly the cost of one.
-Like the other three it is a **reporting axis, never a choice**: it is shared by both arms within a
-run, and its result is reported beside the other three classes, not instead of them.
+Like the other three it is a **reporting axis, never a choice**: shared by both arms within a run,
+reported beside the other three classes, not instead of them.
 
-What it **is**:
+**The method (`svgd_method = al_svgd`, the only one).** Every arm hands the solver its decision
+vector x, the full objective f(x), equality rows h(x) = 0 and inequality rows g(x) <= 0 -- the
+program's own rows, replayed for N particles by `BatchedProgram` -- and its TRUE variable bounds B
+(learned: the correction box `+-correction_bound`; joint space: the joint limits). The c box and the
+latent ball are inequality ROWS, never bounds.
 
-- **SVGD-style only.** Three methods, all on the same target: `al_svgd` (augmented-Lagrangian SVGD,
-  primary), `tsvgd` (tangent-space SVGD) and `admm_svgd` (Stein-projected consensus ADMM). No other
-  particle method (no CEM-as-solver, no beam, no LM swarm) is fielded.
-- **The controls are the same loop**, not a different optimizer: `svgd_kernel=none` drops the
-  interaction term (N independent augmented-Lagrangian descents, batched), and `svgd_n=1` is the
-  single-particle degenerate case. If the kernel or the population buys nothing, these say so.
-- **The target is the program as written**: the Drake program's own rows, replayed for N particles,
-  turned into a per-particle PHR augmented Lagrangian. Equalities stay equalities; the tolerance
-  ladder is untouched (the solver's feasibility test is `acceptable_constr_viol_tol`, the harness's
-  `verify()` gate is the same as every other solver's, and the task gate stays looser).
-- **No formulation-specific information in the solver.** No latent-prior term, no assumption that the
-  correction is zero-centred, no arm-specific kernel. The only structure used is that every arm has a
-  configuration `q` (the default kernel space and the step clamp's unit).
-- **Exact Drake collision, no proxy.** The collision row is Drake's own
-  `MinimumDistanceLowerBoundConstraint`, batched through a process pool; there is no sphere union or
-  other surrogate on the rigid arms. Its seconds are reported as the collision pool's share of the wall.
-- **CEM warm-up is a phase of the method, A/B tested.** `svgd_warmup=cem` runs a forward-only
-  cross-entropy phase on the penalised merit before the gradient phase; every variant is measured with
-  and without it, on the same cells.
-- **The returned point** is the best particle by objective among those feasible after a float64
-  polish and an exact Drake `EvalBinding` re-check of the top-k. `verify()` then scores it exactly as
-  it scores IPOPT's point. The solver's own verdict (`solver_feasible`), its Drake re-check
-  (`drake_feasible`) and `verify()` must agree; a disagreement is a bug, not a result.
+1. **Rows** are divided by `tol = acceptable_constr_viol_tol`, so `v_i = |(h~_i, max(0, g~_i))|_inf
+   <= 1` is "feasible at the harness gate". Equalities stay equalities; the tolerance ladder is
+   untouched.
+2. **Merit**, per particle: the PHR augmented Lagrangian
+   `L_i = f + lam_i.h~ + (rho_i/2)|h~|^2 + (1/(2 rho_i)) sum_j [max(0, mu_ij + rho_i g~_j)^2 - mu_ij^2]`;
+   target density `exp(-L / T)`, `T = svgd_temperature`, fixed (no annealing of any kind).
+3. **Coordinates**: particles move in `y = x / s`, `s` the region half-widths per block (learned:
+   `c_position_slack` on the conditioning position, pi on its orientation, the latent trust radius --
+   the +-5 box where none is set -- and `correction_bound`; joint space: half of each joint's range),
+   read from the program's own options and bounds and recorded as `extras["region_scale"]`.
+4. **Step**, the Tabor-Hermans form (arXiv 2506.00589, the "Q method"):
+   `phi_i = (1/N) sum_j [K(q_j, q_i)(-grad_y f_j / T) + grad_{y_j} K(q_j, q_i)] - (1/T) grad_y (L - f)_i`
+   -- only the objective's gradient and the repulsion are averaged over the kernel, each particle's
+   OWN constraint gradient is added outside the average -- then the plain gradient step
+   `y_i <- clamp_B(y_i + (svgd_lr / rho_i) phi_i)`: no momentum, no adaptation. The clamp's
+   distance in y is recorded (`bound_clip`).
+5. **Kernel**: RBF on the configuration q (flow output + correction on the learned arm, q itself on
+   joint space), median bandwidth `h = med^2 / log N` floored at `svgd_bandwidth_floor`; the
+   repulsion is pulled back to y through the flow's VJP. `svgd_kernel = none` drops both kernel
+   terms (`phi_i = -(1/T) grad_y L_i`, N independent projected gradient descents, batched).
+6. **Outer check** every `svgd_inner_iters` steps, PER PARTICLE. Multipliers: if `v_i <= eta_i`,
+   `lam_i += rho_i h~_i`, `mu_i = max(0, mu_i + rho_i g~_i)`, `eta_i /= rho_i^0.9` (`eta_i` starts at
+   `rho0^-0.1`); otherwise unchanged; clipped to `+-svgd_multiplier_max`, the clipped entries
+   counted. Penalty (Powell's test): if `v_i > gamma v_i(previous check)`,
+   `rho_i <- min(beta rho_i, rho_max)`. Everything is per particle because a particle stuck in an
+   infeasible local minimum must not drive up the penalty, or shrink the step, of the particles still
+   making progress -- and more than half the population may get stuck on some cells.
+7. **Resampling** at every check: a particle with `|q|_inf > svgd_resample_q_max` or a non-finite row
+   is redrawn from the arm's NATIVE start distribution with fresh multipliers and penalty
+   (`n_resampled`).
+8. **Stop**: the wall clock (`max_wall_time`, less `svgd_time_reserve` for the re-check), the
+   outer-step cap (`svgd_outer_iters`), or -- once some particle is feasible at the gate -- when the
+   best feasible particle's objective f has improved by less than `svgd_stop_rel` (relative) over
+   `svgd_stop_patience` consecutive checks. `stop_reason` is `converged`, `wall_clock` or
+   `step_cap`.
+9. **Selection**: among the particles feasible on the batched rows (in the swarm's dtype), in
+   objective order, the top `svgd_recheck_topk` are re-checked exactly in Drake (`prog.EvalBinding`
+   in float64 on the same x, clamped onto B in float64 to undo the swarm dtype's rounding of a
+   bound); the first passer is returned, else the smallest Drake violation, scored infeasible.
+   `verify()` then scores it exactly as it scores IPOPT's point. The solver's verdict
+   (`solver_feasible`), its Drake re-check (`drake_feasible`) and `verify()` must agree; a
+   disagreement is a bug, not a result.
+10. **Precision**: a float32 swarm; `svgd_dtype = float64` is a control.
+11. **Initialisation**: particle 0 is the cell's initial guess exactly, never clipped; the others are
+    `y0 + svgd_jitter * N(0, I)` (`svgd_paired_init = jitter`) or the arm's native draw (`native`),
+    clamped onto B. The CEM warm-up (`svgd_warmup = cem`) is a phase of the method, A/B tested.
+12. **The literal form** is reachable as an A/B: `svgd_constraint_inside_kernel = True` puts the
+    whole `-grad L / T` inside the kernel average. Nothing else.
 
-What it **is not**:
+What it **is not**: not multi-start (N particles inside ONE solve on ONE clock is the method;
+restarting a solve is multi-start, ruled out of scope); not a re-sweep of the closed Drake classes
+(the IPOPT twin runs the adopted configuration plus `flow_cuda_graph=True`); and it uses **no
+formulation-specific information** (no latent prior, no assumption that the correction is
+zero-centred, no arm-specific kernel; the only structure used is that every arm has a q and that
+every variable block has a region). Recorded future work, not current scope: using
+formulation-specific information rigorously with SVGD. **Exact Drake collision, no proxy**: the
+collision row is Drake's `MinimumDistanceLowerBoundConstraint`, batched through a process pool.
 
-- **Not multi-start.** Particle 0 is always the cell's initial guess exactly (never clipped); the
-  others are drawn around it (`svgd_paired_init=jitter`) or from the arm's native distribution
-  (`native`). N particles inside ONE solve on ONE clock is the method; restarting a solve is
-  multi-start, which Thomas ruled out of scope, and nothing here proposes it.
-- **Not a re-sweep of the closed Drake classes.** No IPOPT, SNOPT or NLopt setting changes. The IPOPT
-  twin runs the adopted configuration plus `flow_cuda_graph=True`.
-- **Recorded future work, not current scope:** *using formulation-specific information rigorously with
-  SVGD* (a latent prior, a correction-aware kernel, arm-specific structure).
+### The options, one table
+
+| option | default | part of the method |
+| --- | --- | --- |
+| `svgd_method` | `al_svgd` | the method (one value) |
+| `svgd_n` | 64 | N particles (1 = the single-particle control) |
+| `svgd_dtype` | `float32` | swarm precision (`float64` a control) |
+| `svgd_seed` | 0 | particle draws, mixed with a CRC of the initial guess |
+| `svgd_paired_init` | `jitter` | 11: `jitter` or `native` |
+| `svgd_jitter` | 0.1 | 11: jitter sigma in the normalised coordinates |
+| `svgd_temperature` | 1.0 | 2: T, fixed |
+| `svgd_lr` | 1e-10 | 4: the step is `svgd_lr / rho_i` (see "The step size") |
+| `svgd_kernel` | `q` | 5: `q` or `none` |
+| `svgd_bandwidth_floor` | 0.05 | 5: floor on the median bandwidth |
+| `svgd_constraint_inside_kernel` | False | 12: the literal form, an A/B |
+| `svgd_rho0` | 10 | 6: initial rho_i (eta_i starts at `rho0^-0.1`) |
+| `svgd_rho_growth` | 10 | 6: beta |
+| `svgd_rho_gamma` | 0.25 | 6: gamma of Powell's test |
+| `svgd_rho_max` | 1e6 | 6: cap on rho_i |
+| `svgd_multiplier_max` | 1e4 | 6: multiplier clip |
+| `svgd_inner_iters` | 10 | 6: steps between outer checks |
+| `svgd_outer_iters` | 300 | 8: the step cap (`max_iter`, when set, also binds) |
+| `svgd_resample_q_max` | 10.0 | 7: runaway threshold, rad |
+| `svgd_stop_patience` | 5 | 8 |
+| `svgd_stop_rel` | 1e-3 | 8 |
+| `svgd_recheck_topk` | 10 | 9 |
+| `svgd_time_reserve` | 0.1 | 8: fraction of the cap kept for selection and re-check |
+| `svgd_warmup`, `svgd_warmup_iters`, `svgd_warmup_elite` | `none`, 10, 0.1 | 11: the CEM phase |
+| `svgd_collision_workers` | None | execution: pool size (`cpu_count // PROCS` in a Slurm job, `min(that, 8)` elsewhere) |
+| `svgd_compile`, `svgd_cuda_graph`, `svgd_pool_overlap` | False, False, True | execution: the split step eager / compiled / graphed, pool overlapped |
+
+**The step size.** `svgd_lr` is the one number the method has no textbook value for. With the rows
+scaled by `1/tol`, the penalty's curvature in y is `rho_i * lambda`, `lambda` the largest eigenvalue
+of `J~ J~^T` over the active rows, so `eps_i = svgd_lr / rho_i` makes the stability limit
+`svgd_lr < 2 / lambda`, independent of rho. Measured at tol 1e-4 on 64 random particles of each of
+the four Panda programs (2026-10-09): median lambda 8e7-3.3e9, 90th percentile 1.1e10 on joint space
+and 3.8e10-5.5e10 on the learned arm, where the latent ball's row is active and dominates; it scales
+as `1/tol^2`. The default 1e-10 is `1/lambda` at the rigid rows' 90th percentile. On one learned pose
+cell (a test cell, not the smoke grid) 1e-9 diverged within the first check, 1e-10 lost the jittered
+initial swarm to resampling once and then descended, and 1e-11 was stable and slower; that probe
+informed the choice and is not a tuning result.
+
+**Memory.** Every collision pool is admitted by a guard (`src/svgd/collision_backend.py`): refused
+if `workers x 0.75 GB > 0.5 x MemAvailable` (from `/proc/meminfo`; swap is never counted) or if the
+process's live workers would exceed `SVGD_MAX_LIVE_WORKERS` (default `os.cpu_count()`). The solver
+keeps ONE pool per process. Local runs set `svgd_collision_workers=4` and run under `systemd-run
+--user --scope -p MemoryMax=... -p MemorySwapMax=0` (the smoke driver does both by default).
+
+### Removed, 2026-10-09
+
+- **Annealed repulsion temperature** (`svgd_repulsion_T0`, `svgd_anneal_frac`) and the
+  **driving-force ramp** (`svgd_gamma_t`): T is fixed.
+- **Gauss-Newton equality correction** (`svgd_gn_every`, `svgd_gn_delta`) with its
+  **Levenberg-Marquardt damping, gain ratio** (`svgd_gn_lm*`) and the cost-weighted metric.
+- **q-step clamp** (`svgd_q_step_max`).
+- **float64 polish** (`svgd_polish_iters`, `svgd_polish_tol`, `svgd_polish_topk`): the re-check is
+  on the swarm's own point.
+- **Adam** and the **per-particle learning-rate schedule** (`svgd_lr_decay_t`, `svgd_lr_min`): a
+  plain gradient step.
+- **Relative-eta multiplier test** (`svgd_eta_rel`) and NW's failure-branch tolerance reset.
+- **Running best per particle**: selection reads the swarm at stop.
+- **`tsvgd`** (tangent-space SVGD, `svgd_tsvgd_switch_infeas`, `svgd_tangent_delta`) and
+  **`admm_svgd`** (`src/svgd/admm.py`, `svgd_admm_*`).
+- **Kernel in x** (`svgd_kernel = x`), the **fixed bandwidth** (`svgd_bandwidth`), the
+  **row-sum kernel normaliser** (the average is the textbook 1/N).
+- **Orientation-row scale** (`svgd_row_scale_rot`), **per-block jitter sigmas** (`svgd_jitter_z`,
+  `_c_pos`, `_c_rot`, `_qc`, `_q`; one `svgd_jitter`), **resample period** (`svgd_resample_every`;
+  every check).
+- **The cuSOLVER pin** (`preferred_linalg_library`): no batched linear solve remains. The
+  recompile-limit raise and the inductor options stay (the profiler's many structures need them).
 
 ## The variants, every option named in full
 
-Every svgd column sets, by `--set`:
+Every svgd column is `al_svgd` and sets, by `--set`, the settings below; every other `svgd_*` field
+is at its `ProgramOptions` default, and the run's metadata records what was handed to the solver
+(`solver_options_emitted`). Each column differs from the primary `al64` in ONE setting, so the
+reporter reads each as an A/B against it.
 
-| column id | `svgd_method` | `svgd_n` | `svgd_kernel` | role |
-| --- | --- | --- | --- | --- |
-| `al1` | `al_svgd` | 1 | `q` | single-particle control |
-| `al64none` | `al_svgd` | 64 | `none` | no-interaction control (batched AL) |
-| `al64` | `al_svgd` | 64 | `q` | primary |
-| `tsvgd64` | `tsvgd` | 64 | `q` | tangent-space SVGD |
-| `admm64` | `admm_svgd` | 64 | `q` | Stein-projected consensus ADMM |
+| column id | `svgd_n` | `svgd_kernel` | `svgd_constraint_inside_kernel` | `svgd_paired_init` | `svgd_warmup` | role |
+| --- | --- | --- | --- | --- | --- | --- |
+| `al1` | 1 | `q` | False | jitter | none | single-particle control |
+| `al64none` | 64 | `none` | False | jitter | none | no-interaction control (batched AL) |
+| `al64` | 64 | `q` | False | jitter | none | **primary** |
+| `al256` | 256 | `q` | False | jitter | none | the N ladder's upper rung |
+| `al64lit` | 64 | `q` | True | jitter | none | the literal SVGD form |
+| `al64native` | 64 | `q` | False | native | none | the native swarm init |
+| `al64cem` | 64 | `q` | False | jitter | cem | the CEM warm-up A/B |
 
-each with `svgd_warmup=none` and `svgd_warmup=cem` (column ids `<base>-none`, `<base>-cem`), and on
-every svgd column also `svgd_paired_init=jitter`, `svgd_dtype=float32`, `svgd_compile=True`,
-`svgd_cuda_graph=True` (mode `graphed`; `admm_svgd` is not fused and runs eager whatever is asked,
-which its log records). `svgd_kernel=q` is the RBF kernel in configuration space with the median
-bandwidth rule (`svgd_bandwidth=median`, `svgd_bandwidth_floor=0.05`). **Every other `svgd_*` field is
-at its `ProgramOptions` default as of `39a5db5`**, and the run's metadata records what Drake / the
-solver was actually handed (`solver_options_emitted`), so a later default change cannot pass silently.
-The defaults that bound a run are `svgd_outer_iters=300` (the step cap), `svgd_inner_iters=10`,
-`svgd_time_reserve=0.1` (of the wall cap, kept for polish and re-check), `svgd_resample_every=10` with
-`svgd_resample_q_max=1000`, `svgd_polish_topk=4`, `svgd_recheck_topk=3`, `svgd_warmup_iters=10`,
-`svgd_warmup_elite=0.1`.
-
-The IPOPT twin (`ipopt`) is `--solver ipopt --set flow_cuda_graph=True` with everything else as the
-record's IPOPT column.
+On every svgd column also `svgd_dtype=float32`, `svgd_compile=True`, `svgd_cuda_graph=True` (mode
+`graphed`) and `svgd_collision_workers=4` (an execution setting, not in the tag). The IPOPT twin
+(`ipopt`) is `--solver ipopt --set flow_cuda_graph=True` with everything else as the record's IPOPT
+column.
 
 Tags name every setting: `smoke_SVGD_<robot>_<rung>_<variant>_<row>_<cells>_<cap>_<start>`, variant
-`svgd-<method>-n<N>-kernel_<kernel>-warmup_<warmup>-init_<paired_init>-<dtype>-<mode>` or
-`ipopt-flow_cuda_graph`.
+`svgd-al_svgd-n<N>-kernel_<kernel>-constraint_inside_kernel_<bool>-warmup_<warmup>-init_<paired_init>-<dtype>-<mode>`
+or `ipopt-flow_cuda_graph`.
 
 ## The smoke matrix
 
@@ -97,7 +196,7 @@ Tags name every setting: `smoke_SVGD_<robot>_<rung>_<variant>_<row>_<cells>_<cap
 - **Rows**: grasp contained (`mugshelf`) and pose contained at the fingertips (`posetip`), each under
   `paired` and `native`: 8 rows.
 - **Arms**: `learned,numerical`.
-- **Columns**: the ten svgd columns above plus the IPOPT twin: 11 per row, 88 runs.
+- **Columns**: the seven svgd columns above plus the IPOPT twin: 8 per row, 64 runs.
 - **Cap**: 20 s per cell (`--wall-time`, a driver option). The record ran at 180 s on SuperCloud V100s;
   the record pairs on successes only, never on seconds, and the twin is the same-machine, same-cap
   comparison.
@@ -127,7 +226,9 @@ and on any row whose record is void, it is the IPOPT twin's learned count on tho
 `drake_feasible == feasible`. In (5), `profile_step` means the same arm, method, N, dtype and mode on
 the same task, overlap on, Panda (the profiler builds Panda programs only); smoke ms/step is the swarm
 phase over outer steps. In (6), per cell `n_resampled / svgd_n`, the worst cell. In (7), success
-counts of `al1-<w>` against `al64-<w>`, per arm, per row, per warm-up.
+counts of `al1` against `al64`, per arm, per row. Beside every success count the reporter prints
+the two population metrics: feasible particles at stop and the median pairwise q-distance among
+them (`feasible_q_spread`).
 
 A flag registered before the smoke was read (2026-10-09 01:45, from the solver wave's 6-cell
 end-to-end checks, not from the smoke): on learned `al_svgd` pose cells the median correction
@@ -166,6 +267,11 @@ record's 180 s:
   feasibility-agreement check, which must read zero.
 
 ## Smoke results
+
+**SUPERSEDED (2026-10-09).** Everything in this section and the next was measured on the
+2026-10-08 solver (Adam, the Gauss-Newton correction, the float64 polish, tsvgd / admm_svgd and the
+other removed pieces), not on plain AL-SVGD. It is kept as the record of that solver and is read for
+nothing now; the re-smoke of the re-registered method replaces it.
 
 Measured 2026-10-09 01:40-05:43 EDT on the laptop (RTX 3080 Ti, 20 cores), `scripts/svgd/smoke.py`
 at its defaults: 88 runs, 8 rows (Panda `n6` and iiwa `n6` x grasp/pose x paired/native) x 11
@@ -226,6 +332,9 @@ cost Hessian, so the correction direction pays its `w_c = 10`), **not applied; T
 the smoke's numbers stand as the pre-fix measurement.
 
 ## Selected variant
+
+**SUPERSEDED (2026-10-09)** with the section above: the selection below was of the removed solver;
+a new selection is written after the re-smoke, before any cluster manifest.
 
 Written 2026-10-09 06:05 EDT, before any manifest exists; **pending Thomas's gate** on the
 correction-box item above, which may change the fielded solver and therefore void this selection.

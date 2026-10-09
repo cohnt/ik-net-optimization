@@ -225,27 +225,20 @@ def CheckNloptOptions(options):
 ## NLopt. Like that check it is NOT gated on `which_solver == "svgd"`: a manifest that sets
 ## a nonsense svgd value on an IPOPT arm is a broken sweep and should say so.
 SVGD_ENUM_FIELDS = {
-    "svgd_method": ("al_svgd", "tsvgd", "admm_svgd"),
+    "svgd_method": ("al_svgd",),
     "svgd_dtype": ("float32", "float64"),
     "svgd_paired_init": ("jitter", "native"),
-    "svgd_kernel": ("q", "x", "none"),
+    "svgd_kernel": ("q", "none"),
     "svgd_warmup": ("none", "cem"),
 }
 
-
-## The METHOD-SPECIFIC svgd knobs: each is read by one method only. Setting one away from
-## its default while `svgd_method` names another is a sweep that measures nothing (the knob
-## is inert on that run), so it is refused here, by name, like a bad enum value.
-SVGD_METHOD_KNOBS = {
-    "admm_svgd": ("svgd_admm_rho", "svgd_admm_gamma", "svgd_admm_x_iters", "svgd_admm_q_iters"),
-    "tsvgd": ("svgd_tsvgd_switch_infeas", "svgd_tangent_delta"),
-}
+## The svgd step size's default (`svgd_lr`): see `docs/svgd-solver.md`, "The step size".
+SVGD_LR_DEFAULT = 1e-10
 
 
 def CheckSvgdOptions(options):
-    """Refuse an svgd enum value outside its choices, a non-positive particle count, a
-    method-specific knob set away from its default under another method, and the CUDA-graph
-    switch without the compile switch."""
+    """Refuse an svgd enum value outside its choices, a non-positive particle count,
+    temperature or step size, and the CUDA-graph switch without the compile switch."""
     for name, allowed in SVGD_ENUM_FIELDS.items():
         value = getattr(options, name)
         if value not in allowed:
@@ -253,19 +246,9 @@ def CheckSvgdOptions(options):
     if int(options.svgd_n) < 1:
         raise ValueError(f"svgd_n must be >= 1, got {options.svgd_n!r} (N = 1 is the "
                          f"degenerate single-particle control, not 0)")
-    defaults = {f.name: f.default for f in dataclass_fields(type(options))}
-    for method, knobs in SVGD_METHOD_KNOBS.items():
-        if options.svgd_method == method:
-            continue
-        for knob in knobs:
-            if getattr(options, knob) != defaults[knob]:
-                raise ValueError(f"{knob}={getattr(options, knob)!r} is read by svgd_method="
-                                 f"{method!r} only, but svgd_method={options.svgd_method!r}: "
-                                 f"the knob would be inert")
-    if int(options.svgd_admm_x_iters) < 1 or int(options.svgd_admm_q_iters) < 0:
-        raise ValueError("svgd_admm_x_iters must be >= 1 and svgd_admm_q_iters >= 0")
-    if float(options.svgd_admm_rho) <= 0.0:
-        raise ValueError(f"svgd_admm_rho must be > 0, got {options.svgd_admm_rho!r}")
+    for name in ("svgd_temperature", "svgd_lr", "svgd_rho0"):
+        if not float(getattr(options, name)) > 0.0:
+            raise ValueError(f"{name} must be > 0, got {getattr(options, name)!r}")
     if options.svgd_cuda_graph and not options.svgd_compile:
         raise ValueError("svgd_cuda_graph=True requires svgd_compile=True (the graphs replay "
                          "the compiled stages)")
@@ -670,8 +653,8 @@ class ProgramOptions:
     ## `svgd_` and is INERT unless `which_solver == "svgd"`: none is read by `_IpoptOptions`,
     ## `_SnoptOptions` or `_NloptOptions`, so a Drake column emits exactly what it always
     ## has (tests/test_solver_plumbing.py pins that). `use_float64` is untouched and governs
-    ## the Drake path only; the swarm's dtype is `svgd_dtype`, and the polish is always
-    ## float64. The enum fields are validated in `__post_init__` (CheckSvgdOptions) so a bad
+    ## the Drake path only; the swarm's dtype is `svgd_dtype`, and the Drake re-check is
+    ## always float64. The enum fields are validated in `__post_init__` (CheckSvgdOptions) so a bad
     ## `--set` dies before the first cell. Everything actually handed to the solver is
     ## recorded in `emitted_solver_options["svgd"]` like the Drake solvers' options are.
     ##
@@ -680,63 +663,40 @@ class ProgramOptions:
     ## term, no assumption that the correction or any residual is zero-centred, no kernel or
     ## schedule that knows what one arm's variables mean. What IS allowed is
     ## formulation-agnostic: a kernel in configuration space (every arm has a q), row
-    ## scaling by tolerance, and the native start's own draw. The jitter sigmas below name
-    ## variable GROUPS so a paired start can be perturbed per group; they say nothing about
-    ## where those variables ought to sit, and a group an arm lacks is simply unused.
-    svgd_method: str = field(default="al_svgd", metadata={"help": "svgd: which SVGD-style method. 'al_svgd' (PHR augmented-Lagrangian SVGD, primary), 'tsvgd' (tangent-space SVGD), 'admm_svgd' (Stein-projected consensus ADMM). Named in full in every table"})
+    ## scaling by tolerance, coordinates normalised by each region's half-width (read from
+    ## the program's own options and bounds), and the native start's own draw.
+    ##
+    ## PLAIN AUGMENTED-LAGRANGIAN SVGD, nothing else (Thomas, 2026-10-09): every field below
+    ## names one part of the method in `docs/svgd-solver.md`; the removed pieces are listed
+    ## there under "Removed, 2026-10-09".
+    svgd_method: str = field(default="al_svgd", metadata={"help": "svgd: the method -- 'al_svgd', plain augmented-Lagrangian SVGD (docs/svgd-solver.md), the only one. Named in full in every table"})
     svgd_n: int = field(default=64, metadata={"help": "svgd: number of particles N -- a METHOD PARAMETER, reported everywhere; N = 1 is the degenerate single-particle control"})
-    svgd_dtype: str = field(default="float32", metadata={"help": "svgd: the swarm's torch dtype, 'float32' or 'float64'. The polish and the Drake re-check are always float64"})
+    svgd_dtype: str = field(default="float32", metadata={"help": "svgd: the swarm's torch dtype, 'float32' (fielded) or 'float64' (a control). The Drake re-check is always float64"})
     svgd_seed: int = field(default=0, metadata={"help": "svgd: base seed for the particle draws (combined with the cell's initial guess)"})
-    svgd_paired_init: str = field(default="jitter", metadata={"help": "svgd: how the swarm is drawn under the paired start protocol -- 'jitter' perturbs the shared guess per variable group (particle 0 is never clipped), 'native' draws the arm's own start distribution"})
-    svgd_jitter_z: float = field(default=0.5, metadata={"help": "svgd: paired-jitter sigma on the latent block, where the arm has one"})
-    svgd_jitter_c_pos: float = field(default=0.0, metadata={"help": "svgd: paired-jitter sigma (m) on the conditioning pose's translation, where the arm has one"})
-    svgd_jitter_c_rot: float = field(default=0.0, metadata={"help": "svgd: paired-jitter sigma (rad) on the conditioning pose's rotation, where the arm has one"})
-    svgd_jitter_qc: float = field(default=0.0, metadata={"help": "svgd: paired-jitter sigma on the correction block, where the arm has one"})
-    svgd_jitter_q: float = field(default=0.1, metadata={"help": "svgd: paired-jitter sigma (rad) on joint-space decision variables"})
-    svgd_lr: float = field(default=0.05, metadata={"help": "svgd: Adam learning rate for the particle update"})
-    svgd_lr_decay_t: float = field(default=200.0, metadata={"help": "svgd: learning-rate decay time constant in outer steps"})
-    svgd_lr_min: float = field(default=1e-4, metadata={"help": "svgd: floor on the decayed learning rate"})
-    svgd_q_step_max: float = field(default=0.5, metadata={"help": "svgd: clamp on |J_q dx|_inf per step (rad), applied to the Gauss-Newton equality correction"})
-    svgd_kernel: str = field(default="q", metadata={"help": "svgd: kernel space -- 'q' (configuration, default), 'x' (decision variables), 'none' (no interaction: the batched-AL control)"})
-    svgd_bandwidth: str = field(default="median", metadata={"help": "svgd: kernel bandwidth rule ('median' heuristic, or a number as a string for a fixed bandwidth)"})
-    svgd_bandwidth_floor: float = field(default=0.05, metadata={"help": "svgd: floor on the kernel bandwidth"})
-    svgd_repulsion_T0: float = field(default=1.0, metadata={"help": "svgd: initial repulsion temperature, annealed to exactly zero before polish"})
-    svgd_anneal_frac: float = field(default=0.7, metadata={"help": "svgd: fraction of the outer budget over which the repulsion temperature anneals to zero"})
-    svgd_gamma_t: float = field(default=50.0, metadata={"help": "svgd: driving-force gain time constant (D'Angelo-Fortuin), in outer steps"})
-    svgd_rho0: float = field(default=10.0, metadata={"help": "svgd: initial augmented-Lagrangian penalty rho"})
-    svgd_rho_growth: float = field(default=10.0, metadata={"help": "svgd: multiplicative rho growth when a particle's violation does not fall enough (Nocedal-Wright 17.4)"})
-    svgd_rho_max: float = field(default=1e6, metadata={"help": "svgd: cap on rho"})
-    svgd_multiplier_max: float = field(default=1e4, metadata={"help": "svgd: box on the magnitude of every multiplier"})
-    svgd_row_scale_rot: float = field(default=1.0, metadata={"help": "svgd: extra scale on orientation rows relative to position rows (rows are otherwise scaled by their tolerance)"})
-    svgd_inner_iters: int = field(default=10, metadata={"help": "svgd: gradient steps per outer step, between multiplier updates"})
-    svgd_outer_iters: int = field(default=300, metadata={"help": "svgd: cap on outer steps (the 'iterations' column); `max_iter`, when set, also binds"})
-    svgd_gn_every: int = field(default=1, metadata={"help": "svgd: apply the Gauss-Newton equality correction every this many inner steps"})
-    svgd_gn_delta: float = field(default=1e-6, metadata={"help": "svgd: Levenberg damping delta in (J J^T + delta I)^-1 for the GN correction"})
-    svgd_tangent_delta: float = field(default=1e-6, metadata={"help": "svgd: damping delta in the tangent-space projector (tsvgd)"})
-    svgd_resample_every: int = field(default=10, metadata={"help": "svgd: check for runaway / non-finite particles every this many outer steps and re-draw them (counted as n_resampled)"})
-    svgd_resample_q_max: float = field(default=1000.0, metadata={"help": "svgd: |q|_inf above which a particle counts as runaway and is re-drawn"})
-    svgd_admm_rho: float = field(default=100.0, metadata={"help": "svgd: initial ADMM consensus penalty per particle, then residual balancing (admm_svgd)"})
-    svgd_admm_gamma: float = field(default=0.2, metadata={"help": "svgd: gain on the q-block's Stein repulsion relative to the annealed temperature (admm_svgd)"})
-    svgd_admm_x_iters: int = field(default=5, metadata={"help": "svgd: x-block GN iterations per ADMM round (admm_svgd)"})
-    svgd_admm_q_iters: int = field(default=3, metadata={"help": "svgd: q-block projection iterations per ADMM round (admm_svgd)"})
-    svgd_polish_iters: int = field(default=20, metadata={"help": "svgd: float64 polish iterations on the top-k particles"})
-    svgd_polish_tol: float = field(default=1e-3, metadata={"help": "svgd: polish stops once the scaled violation falls below this"})
-    svgd_polish_topk: int = field(default=4, metadata={"help": "svgd: how many particles, in objective order among the feasible, are polished"})
-    svgd_recheck_topk: int = field(default=3, metadata={"help": "svgd: how many polished particles get the exact Drake `EvalBinding` re-check; the first passer is returned"})
-    svgd_time_reserve: float = field(default=0.1, metadata={"help": "svgd: fraction of `max_wall_time` held back from the swarm for polish and re-check"})
-    svgd_stop_patience: int = field(default=5, metadata={"help": "svgd: outer steps without improvement of the best particle's merit before stopping early (the improvement threshold is svgd_stop_rel once a particle is feasible)"})
-    svgd_stop_rel: float = field(default=1e-3, metadata={"help": "svgd: once at least one particle is feasible, an outer step counts as progress only if the best feasible particle's objective improved by this relative amount; svgd_stop_patience such stalls -> status converged (before that, any improvement of the merit counts)"})
-    svgd_eta_rel: float = field(default=0.5, metadata={"help": "svgd: the AL's Nocedal-Wright test passes when a particle's infeasibility has shrunk to this fraction of its value at the last failed test (and at the start); 0 restores the textbook absolute tolerance rho^-0.1, which a far start never meets, so rho saturates and the multipliers never update"})
-    svgd_gn_lm: float = field(default=1e-3, metadata={"help": "svgd: initial Levenberg-Marquardt damping of the Gauss-Newton correction, relative to the Gram's diagonal (Marquardt scaling), adapted per particle on the gain ratio (actual / linearly predicted reduction of the GN rows' |r|^2 over the step taken); 0 disables LM (plain GN with svgd_gn_delta)"})
-    svgd_gn_lm_min: float = field(default=1e-6, metadata={"help": "svgd: floor on the LM damping"})
-    svgd_gn_lm_growth: float = field(default=10.0, metadata={"help": "svgd: per-particle LM damping is multiplied by this where the gain ratio is below 0.25 and divided by it where it is above 0.75"})
-    svgd_gn_lm_max: float = field(default=1e3, metadata={"help": "svgd: cap on the LM damping"})
-    svgd_tsvgd_switch_infeas: float = field(default=100.0, metadata={"help": "svgd: tsvgd runs each particle as al_svgd until its scaled infeasibility is below this (1 = the gate), then in tangent mode; inf = tangent from the start, 0 = never"})
+    svgd_paired_init: str = field(default="jitter", metadata={"help": "svgd: how the swarm is drawn around the program's initial guess -- 'jitter' adds svgd_jitter * N(0, I) in the normalised coordinates (particle 0 is the guess, never clipped), 'native' draws the arm's own start distribution"})
+    svgd_jitter: float = field(default=0.1, metadata={"help": "svgd: paired-jitter sigma, as a fraction of each variable's region half-width (the normalised coordinates)"})
+    svgd_temperature: float = field(default=1.0, metadata={"help": "svgd: the temperature T of the target exp(-L_rho / T); fixed for the whole solve"})
+    svgd_lr: float = field(default=SVGD_LR_DEFAULT, metadata={"help": "svgd: the step size; particle i steps svgd_lr / rho_i along its Stein direction in the normalised coordinates (plain gradient step, no momentum, no adaptation)"})
+    svgd_kernel: str = field(default="q", metadata={"help": "svgd: 'q' (RBF kernel on the configuration, median bandwidth) or 'none' (no interaction: both kernel terms dropped, the batched-AL control)"})
+    svgd_bandwidth_floor: float = field(default=0.05, metadata={"help": "svgd: floor on the median-heuristic kernel bandwidth"})
+    svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho / T), the whole AL gradient inside it -- an A/B"})
+    svgd_rho0: float = field(default=10.0, metadata={"help": "svgd: initial penalty rho_i of every particle"})
+    svgd_rho_growth: float = field(default=10.0, metadata={"help": "svgd: beta -- rho_i *= beta at an outer check where particle i's violation did not fall below svgd_rho_gamma times its value at the previous check (Powell's test)"})
+    svgd_rho_gamma: float = field(default=0.25, metadata={"help": "svgd: gamma of Powell's test on each particle's violation"})
+    svgd_rho_max: float = field(default=1e6, metadata={"help": "svgd: cap on every rho_i"})
+    svgd_multiplier_max: float = field(default=1e4, metadata={"help": "svgd: box on the magnitude of every multiplier; the clipped entries are counted"})
+    svgd_inner_iters: int = field(default=10, metadata={"help": "svgd: gradient steps between outer checks (multipliers, penalties, resampling, the stop rule)"})
+    svgd_outer_iters: int = field(default=300, metadata={"help": "svgd: cap on outer checks (the 'iterations' column); `max_iter`, when set, also binds"})
+    svgd_resample_q_max: float = field(default=10.0, metadata={"help": "svgd: |q|_inf (rad) above which a particle counts as runaway and is redrawn from the arm's native start at the next outer check (counted as n_resampled)"})
+    svgd_recheck_topk: int = field(default=10, metadata={"help": "svgd: how many particles feasible on the batched rows, in objective order, get the exact Drake `EvalBinding` re-check; the first passer is returned"})
+    svgd_time_reserve: float = field(default=0.1, metadata={"help": "svgd: fraction of `max_wall_time` held back from the swarm for the selection and the Drake re-check"})
+    svgd_stop_patience: int = field(default=5, metadata={"help": "svgd: once a particle is feasible at the gate, stop (converged) after this many consecutive outer checks at which the best feasible particle's objective improved by less than svgd_stop_rel"})
+    svgd_stop_rel: float = field(default=1e-3, metadata={"help": "svgd: the relative improvement of the best feasible objective that counts as progress for the stop rule"})
     svgd_warmup: str = field(default="none", metadata={"help": "svgd: 'none' or 'cem' -- a forward-only Cross-Entropy phase on the penalised merit before the gradient phase; a phase of the population method, named in full in every table and A/B tested"})
     svgd_warmup_iters: int = field(default=10, metadata={"help": "svgd: CEM warm-up iterations"})
     svgd_warmup_elite: float = field(default=0.1, metadata={"help": "svgd: CEM elite fraction"})
-    svgd_collision_workers: int = field(default=None, metadata={"help": "svgd: processes in the exact-collision pool; None resolves to os.cpu_count() // PROCS inside the solver"})
-    svgd_compile: bool = field(default=False, metadata={"help": "svgd: torch.compile the split step's three stages (src/svgd/fused.py; compiled by WarmUpSvgdStep, outside any timed cell). al_svgd and tsvgd only; admm_svgd runs eager and says so"})
+    svgd_collision_workers: int = field(default=None, metadata={"help": "svgd: processes in the exact-collision pool; None resolves inside the solver to os.cpu_count() // PROCS in a Slurm job (SLURM_JOB_ID set) and to min(os.cpu_count() // PROCS, 8) elsewhere. Every pool is admitted by the memory guard (src/svgd/collision_backend.py: workers x 0.75 GB <= half of MemAvailable, live workers <= SVGD_MAX_LIVE_WORKERS)"})
+    svgd_compile: bool = field(default=False, metadata={"help": "svgd: torch.compile the split step's three stages (src/svgd/fused.py; compiled by WarmUpSvgdStep, outside any timed cell)"})
     svgd_cuda_graph: bool = field(default=False, metadata={"help": "svgd: replay the compiled stages as CUDA graphs, captured by WarmUpSvgdStep before the first timed cell (requires svgd_compile and CUDA)"})
     svgd_pool_overlap: bool = field(default=True, metadata={"help": "svgd: dispatch the collision batch to the pool BEFORE the flow Jacobian and the kinematics are launched, collecting it after, so Drake's IPC and compute run behind the GPU work; False collects at once (the measurement's control)"})
 

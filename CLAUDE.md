@@ -1890,6 +1890,20 @@ neither is diagnosed or mitigated. This file previously asserted the opposite an
 hold `systemd-inhibit --what=sleep:idle`; that guarded nothing. Long benchmarks run on the cluster
 anyway, where a laptop's state is irrelevant.
 
+**Local compute must never take the laptop down (Thomas, 2026-10-09: *"If a pytest sweep crashes my
+machine, that is unacceptable"*).** On 2026-10-09 at 16:02 the svgd solver's Drake collision pools --
+one 4-worker pool per cached BatchedProgram in a test file, plus 20-worker pools sized at
+`cpu_count // PROCS` in benchmark subprocesses, run concurrently by a subagent -- reached 81 worker
+processes and 44.8 GB on a 62 GB machine with no swap, and the kernel OOM killer took his Slack. Rules,
+all enforced in code, not by instruction: a `DrakeCollisionPool` REFUSES to spawn when its workers
+would need more than half of `MemAvailable` (from `/proc/meminfo`; **swap is never counted** -- the 8 GB
+of swap is his emergency buffer, and the capped runs carry `MemorySwapMax=0`) or when live workers
+process-wide would exceed the core count (a registry counts them; tests assert zero live at file end); one pool per process; off the
+cluster the default is at most 8 workers; and every local test file, smoke or end-to-end run that can
+build a program runs ONE AT A TIME, in the foreground, under
+`systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0`, so a runaway kills the run and not
+the user's applications. Subagent briefs state this.
+
 Two details of that paragraph survive it, being about process handling rather than power: detach a
 long local process with **`setsid`, not `nohup`** -- `nohup` only ignores SIGHUP, so a teardown group
 kill takes the process *and* anything it was guarding -- and `pgrep -f <script>` run from a Bash tool

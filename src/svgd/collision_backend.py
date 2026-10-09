@@ -44,6 +44,16 @@ padding 0 the checker would pass the 0 <= d < bound sliver the row rejects (7 of
 
 Upstream item for Thomas, not patched here: releasing the GIL in the `Eval` /
 `CalcRobotClearance` bindings would turn this pool into a thread pool with no IPC.
+
+**THE MEMORY GUARD (2026-10-09).** A worker holds a whole Drake scene, ~0.53-0.64 GB resident
+(the kernel OOM table of the 2026-10-09 laptop incident: 81 workers, 44.8 GB, from 4-worker test
+pools cached per program and 20-worker benchmark pools cached two per process, on a 62 GB host
+with no swap). So a pool is ADMITTED, before anything is spawned, against two limits, and
+refused with `PoolRefused` otherwise: (1) `workers * WORKER_GB` must not exceed `MEM_FRACTION`
+of the host's `MemAvailable` (`/proc/meminfo`, which excludes swap; swap is never counted); (2) this process's live workers (the
+module-level registry, `live_workers()`) plus the new ones must not exceed
+`SVGD_MAX_LIVE_WORKERS` (environment; default `os.cpu_count()`). The refusal names how many
+workers are live and which pools own them. `close()` deregisters.
 """
 
 import atexit
@@ -56,6 +66,72 @@ from dataclasses import dataclass
 import numpy as np
 
 from src.utils import BuildEnv, HiddenPrints, RepoDir
+
+## ------------------------------------------------------------------------------------ ##
+##                      the memory guard: admission and the live registry                 ##
+## ------------------------------------------------------------------------------------ ##
+
+WORKER_GB = 0.75          # budget per worker process (measured 0.53-0.64 GB resident)
+MEM_FRACTION = 0.5        # a pool may take at most this fraction of MemAvailable
+_LIVE = {}                # id(pool) -> (workers, owner) for every open pool in this process
+_PEAK = [0]               # the most workers live at once in this process
+
+
+class PoolRefused(RuntimeError):
+    """A pool the memory guard would not spawn (nothing was started)."""
+
+
+def mem_available_gb():
+    """`MemAvailable` from `/proc/meminfo`, GB; None where it cannot be read (no check). ONLY
+    `MemAvailable`, which excludes swap: swap is an emergency buffer, never memory the guard
+    may count."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return float(line.split()[1]) / (1024.0 ** 2)
+    except OSError:
+        pass
+    return None
+
+
+def max_live_workers():
+    """`SVGD_MAX_LIVE_WORKERS` from the environment, default `os.cpu_count()`."""
+    raw = os.environ.get("SVGD_MAX_LIVE_WORKERS")
+    return int(raw) if raw else int(os.cpu_count() or 1)
+
+
+def live_workers():
+    """Worker processes of every open pool in this process."""
+    return sum(w for w, _ in _LIVE.values())
+
+
+def peak_live_workers():
+    """The most worker processes live at once in this process so far."""
+    return _PEAK[0]
+
+
+def live_pools():
+    """`[(workers, owner)]` of every open pool in this process."""
+    return list(_LIVE.values())
+
+
+def admit(workers, owner):
+    """Raise `PoolRefused` unless a pool of `workers` may be spawned now (module docstring)."""
+    live = live_workers()
+    cap = max_live_workers()
+    holders = "; ".join(f"{w} x {o}" for w, o in live_pools()) or "none"
+    if live + workers > cap:
+        raise PoolRefused(
+            f"collision pool of {workers} workers for {owner} refused: {live} workers are "
+            f"already live in pid {os.getpid()} ({holders}) and SVGD_MAX_LIVE_WORKERS is {cap}")
+    avail = mem_available_gb()
+    if avail is not None and workers * WORKER_GB > MEM_FRACTION * avail:
+        raise PoolRefused(
+            f"collision pool of {workers} workers for {owner} refused: {workers} x "
+            f"{WORKER_GB} GB > {MEM_FRACTION} x MemAvailable {avail:.1f} GB "
+            f"({live} workers already live in pid {os.getpid()}: {holders})")
+
 
 MUG_URDF = "package://combining_kinematics/models/mug/mug_simple_red.urdf"
 MUG_MODEL_NAME = "target_mug"
@@ -297,13 +373,22 @@ class DrakeCollisionPool:
         self._conns = []
         self._closed = False
         self._broken = None
-        for _ in range(self.workers):
-            parent_conn, child_conn = self._ctx.Pipe(duplex=True)
-            proc = self._ctx.Process(target=_worker_main, args=(spec, child_conn), daemon=True)
-            proc.start()
-            child_conn.close()
-            self._procs.append(proc)
-            self._conns.append(parent_conn)
+        mug = "" if getattr(spec, "mug_xyz", None) is None else " + mug"
+        self.owner = f"{os.path.basename(str(getattr(spec, 'yaml_path', spec)))}{mug}"
+        admit(self.workers, self.owner)             # raises before anything is spawned
+        _LIVE[id(self)] = (self.workers, self.owner)
+        _PEAK[0] = max(_PEAK[0], live_workers())
+        try:
+            for _ in range(self.workers):
+                parent_conn, child_conn = self._ctx.Pipe(duplex=True)
+                proc = self._ctx.Process(target=_worker_main, args=(spec, child_conn), daemon=True)
+                proc.start()
+                child_conn.close()
+                self._procs.append(proc)
+                self._conns.append(parent_conn)
+        except BaseException:
+            self.close()
+            raise
         atexit.register(self.close)
 
     # -- lifecycle ------------------------------------------------------------------- #
@@ -319,6 +404,7 @@ class DrakeCollisionPool:
         if self._closed:
             return
         self._closed = True
+        _LIVE.pop(id(self), None)
         try:
             atexit.unregister(self.close)
         except Exception:

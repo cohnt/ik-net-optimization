@@ -1,4 +1,4 @@
-"""The svgd smoke: every pre-registered variant on a FIXED SUBSET of the record's own cells.
+"""The svgd smoke: every variant of plain AL-SVGD on a FIXED SUBSET of the record's own cells.
 
     .venv/bin/python scripts/svgd/smoke.py --dry-run                 # print every command
     .venv/bin/python scripts/svgd/smoke.py --only-missing            # run what is not on disk
@@ -34,11 +34,20 @@ Tags name every setting in full and parallel the record's
 `sc_<STAGE>_<robot>_<rung>_<solver>_<row>_<cells>_<cap>_<start>`:
 
     smoke_SVGD_<robot>_<rung>_<variant>_<row>_<cells>_<cap>_<start>
-    variant = svgd-<method>-n<N>-kernel_<kernel>-warmup_<warmup>-init_<paired_init>-<dtype>-<mode>
+    variant = svgd-al_svgd-n<N>-kernel_<kernel>-constraint_inside_kernel_<bool>
+              -warmup_<warmup>-init_<paired_init>-<dtype>-<mode>
             | ipopt-flow_cuda_graph
 
 `init_<paired_init>` is in every svgd tag although `svgd_paired_init` is read only under the
-paired protocol, so one variant has one token on both protocols.
+paired protocol, so one variant has one token on both protocols. Columns that fix their own
+`svgd_paired_init` (`al64native`) carry it whatever `--paired-init` says.
+
+**Memory.** Every child is launched under `systemd-run --user --scope -p MemoryMax=<cap>
+-p MemorySwapMax=0` where `systemd-run` exists (`--memory-max`, default 24G; `--no-memory-cap`
+disables), so a runaway kills the run and not the user's session, and every svgd child gets
+`--set svgd_collision_workers=<--collision-workers, default 4>` (each worker is a whole Drake
+scene in memory; the 2026-10-09 laptop OOM). Neither is part of the tag: they are execution
+settings, recorded in the run's metadata through `--set`.
 
 Writes only under `results/` (gitignored): each run's `summary.json` from the benchmark script,
 and its stdout beside it as `driver.log`. Touches no tracked file. Runs sequentially by default
@@ -48,6 +57,7 @@ so the svgd collision pool sizes itself to `cpu_count // K` (`src/svgd/solver.py
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -91,47 +101,51 @@ TASK_ROWS = {
 ROW_NAME = {"mugshelf": "grasp contained", "posetip": "pose contained (tip)"}
 STARTS = ("paired", "native")
 
-## The svgd columns: base id -> (svgd_method, svgd_n, svgd_kernel). `svgd_kernel` is the
-## dataclass's own vocabulary: 'q' is the RBF kernel in configuration space (the default),
-## 'none' drops the interaction term -- the batched-AL control. N = 1 is the single-particle
-## control. Every base id is run with svgd_warmup 'none' and 'cem' (the CEM A/B).
+## The svgd columns: id -> the settings it FIXES (everything else at its ProgramOptions default).
+## `al64` is the primary (N = 64, RBF kernel on q, the Tabor-Hermans form, no warm-up); every
+## other column differs from it in exactly one setting, so each is an A/B against `al64`:
+## N = 1 (single particle), kernel none (no interaction: batched AL), N = 256, the literal
+## form (the whole AL gradient inside the kernel average), the native swarm init, and the CEM
+## warm-up.
+PRIMARY = "al64"
+_BASE = dict(svgd_n=64, svgd_kernel="q", svgd_constraint_inside_kernel=False, svgd_warmup="none")
 SVGD_BASES = {
-    "al1": ("al_svgd", 1, "q"),
-    "al64none": ("al_svgd", 64, "none"),
-    "al64": ("al_svgd", 64, "q"),
-    "tsvgd64": ("tsvgd", 64, "q"),
-    "admm64": ("admm_svgd", 64, "q"),
+    "al1": dict(_BASE, svgd_n=1),
+    "al64none": dict(_BASE, svgd_kernel="none"),
+    "al64": dict(_BASE),
+    "al256": dict(_BASE, svgd_n=256),
+    "al64lit": dict(_BASE, svgd_constraint_inside_kernel=True),
+    "al64native": dict(_BASE, svgd_paired_init="native"),
+    "al64cem": dict(_BASE, svgd_warmup="cem"),
 }
-WARMUPS = ("none", "cem")
 IPOPT = "ipopt"
-SVGD_COLUMNS = tuple(f"{b}-{w}" for b in SVGD_BASES for w in WARMUPS)
+SVGD_COLUMNS = tuple(SVGD_BASES)
 ALL_COLUMNS = (IPOPT,) + SVGD_COLUMNS
 
-## The svgd step modes, as `ProgramOptions` fields. admm_svgd runs eager whatever is asked
-## (it is not fused) and says so in its own log; the tag still names what was ASKED for.
+## The svgd step modes, as `ProgramOptions` fields.
 MODES = {"eager": {"svgd_compile": False, "svgd_cuda_graph": False},
          "compiled": {"svgd_compile": True, "svgd_cuda_graph": False},
          "graphed": {"svgd_compile": True, "svgd_cuda_graph": True}}
 
 
-def column_settings(column):
-    """column id -> dict of the svgd settings it fixes (empty for the IPOPT twin)."""
+def column_settings(column, paired_init="jitter"):
+    """column id -> the full svgd settings it runs with (empty for the IPOPT twin):
+    `svgd_method`, the column's own settings, and `svgd_paired_init` (the column's where it
+    fixes one, else `paired_init`)."""
     if column == IPOPT:
         return {}
-    base, _, warmup = column.rpartition("-")
-    if base not in SVGD_BASES or warmup not in WARMUPS:
-        raise SystemExit(f"unknown column {column!r}; columns are {', '.join(ALL_COLUMNS)} "
-                         f"(or a base id {', '.join(SVGD_BASES)} for both warm-ups)")
-    method, n, kernel = SVGD_BASES[base]
-    return dict(svgd_method=method, svgd_n=n, svgd_kernel=kernel, svgd_warmup=warmup)
+    if column not in SVGD_BASES:
+        raise SystemExit(f"unknown column {column!r}; columns are {', '.join(ALL_COLUMNS)}")
+    return dict(dict(svgd_method="al_svgd", svgd_paired_init=paired_init), **SVGD_BASES[column])
 
 
 def variant_token(column, paired_init="jitter", dtype="float32", mode="graphed"):
     if column == IPOPT:
         return "ipopt-flow_cuda_graph"
-    s = column_settings(column)
+    s = column_settings(column, paired_init)
     return (f"svgd-{s['svgd_method']}-n{s['svgd_n']}-kernel_{s['svgd_kernel']}"
-            f"-warmup_{s['svgd_warmup']}-init_{paired_init}-{dtype}-{mode}")
+            f"-constraint_inside_kernel_{s['svgd_constraint_inside_kernel']}"
+            f"-warmup_{s['svgd_warmup']}-init_{s['svgd_paired_init']}-{dtype}-{mode}")
 
 
 def cap_token(cap):
@@ -192,21 +206,29 @@ def parse_columns(spec):
         return list(ALL_COLUMNS)
     out = []
     for tok in (t.strip() for t in spec.split(",") if t.strip()):
-        expanded = [f"{tok}-{w}" for w in WARMUPS] if tok in SVGD_BASES else [tok]
-        for c in expanded:
-            column_settings(c)                       # validates
-            if c not in out:
-                out.append(c)
+        column_settings(tok)                         # validates
+        if tok not in out:
+            out.append(tok)
     return out
 
 
-def command(robot, row, start, column, cells, cap, paired_init, dtype, mode, prefix=PREFIX):
+def memory_wrapper(memory_max):
+    """The `systemd-run` scope prefix that caps a child's memory (no swap), or [] where
+    `systemd-run` is unavailable or `memory_max` is None."""
+    if not memory_max or shutil.which("systemd-run") is None:
+        return []
+    return ["systemd-run", "--user", "--scope", "-p", f"MemoryMax={memory_max}",
+            "-p", "MemorySwapMax=0", "--quiet"]
+
+
+def command(robot, row, start, column, cells, cap, paired_init, dtype, mode, prefix=PREFIX,
+            collision_workers=4, memory_max="24G"):
     spec = ROBOTS[robot]
     task, placement = TASK_ROWS[row]
     n_cells = len(cells.split(","))
     tag = make_tag(robot, row, start, column, n_cells, cap, prefix,
                    paired_init=paired_init, dtype=dtype, mode=mode)
-    args = [sys.executable, os.path.join(REPO, spec["script"]),
+    args = memory_wrapper(memory_max) + [sys.executable, os.path.join(REPO, spec["script"]),
             "--task", task, "--start", start, "--arms", ARMS, "--wall-time", f"{float(cap):g}",
             "--cells", cells, "--tag", tag, "--checkpoint", spec["checkpoint"]]
     args += GRID_FLAGS + placement
@@ -214,8 +236,8 @@ def command(robot, row, start, column, cells, cap, paired_init, dtype, mode, pre
         args += ["--solver", "ipopt", "--set", "flow_cuda_graph=True"]
     else:
         args += ["--solver", "svgd"]
-        settings = dict(column_settings(column), svgd_paired_init=paired_init, svgd_dtype=dtype,
-                        **MODES[mode])
+        settings = dict(column_settings(column, paired_init), svgd_dtype=dtype,
+                        svgd_collision_workers=collision_workers, **MODES[mode])
         for k, v in settings.items():
             args += ["--set", f"{k}={v}"]
     return tag, args
@@ -232,8 +254,7 @@ def parse_args(argv=None):
                    help="filter tokens: robots (panda, iiwa), rows (mugshelf/mug, posetip/pose), "
                         "starts (paired, native); OR within a dimension, AND across")
     p.add_argument("--columns", default=None,
-                   help=f"column ids ({', '.join(ALL_COLUMNS)}) or base ids "
-                        f"({', '.join(SVGD_BASES)}) for both warm-ups; default all")
+                   help=f"column ids ({', '.join(ALL_COLUMNS)}); default all")
     p.add_argument("--wall-time", type=float, default=20.0, help="the per-cell cap, seconds")
     p.add_argument("--cells", default=RECORD_CELLS, help="TI:GI list; default the record subset")
     p.add_argument("--paired-init", choices=("jitter", "native"), default="jitter",
@@ -244,6 +265,11 @@ def parse_args(argv=None):
                    help="svgd step mode: eager, compiled (svgd_compile) or graphed "
                         "(svgd_compile + svgd_cuda_graph); named in the tag")
     p.add_argument("--prefix", default=PREFIX)
+    p.add_argument("--collision-workers", type=int, default=4,
+                   help="svgd_collision_workers for every svgd child (default 4: memory)")
+    p.add_argument("--memory-max", default="24G",
+                   help="systemd-run MemoryMax per child (MemorySwapMax=0); default 24G")
+    p.add_argument("--no-memory-cap", action="store_true", help="launch children uncapped")
     p.add_argument("--dry-run", action="store_true", help="print the commands and exit")
     p.add_argument("--only-missing", action="store_true",
                    help="skip every tag whose summary.json already exists")
@@ -264,7 +290,9 @@ def main(argv=None):
     for robot, row, start in matrix:              # rows outer: a partial smoke has whole rows
         for column in columns:
             tag, cmd = command(robot, row, start, column, args.cells, args.wall_time,
-                               args.paired_init, args.dtype, args.mode, args.prefix)
+                               args.paired_init, args.dtype, args.mode, args.prefix,
+                               args.collision_workers,
+                               None if args.no_memory_cap else args.memory_max)
             plan.append((robot, tag, cmd))
     skipped = [t for r, t, _ in plan if args.only_missing and os.path.exists(summary_path(r, t))]
     todo = [(r, t, c) for r, t, c in plan if t not in skipped]
@@ -275,6 +303,9 @@ def main(argv=None):
           f"{n_cells} cells x 2 arms each at {args.wall_time:g} s; {len(skipped)} on disk, "
           f"{len(todo)} to run; worst case {len(todo) * n_cells * 2 * args.wall_time / 3600:.1f} h "
           f"of solve clock", flush=True)
+    wrap = memory_wrapper(None if args.no_memory_cap else args.memory_max)
+    print(f"memory cap per child: {'MemoryMax=' + args.memory_max + ', MemorySwapMax=0 (systemd-run)' if wrap else 'NONE'}; "
+          f"svgd_collision_workers={args.collision_workers}", flush=True)
     if args.dry_run:
         for _, tag, cmd in todo:
             print(shlex.join(cmd))

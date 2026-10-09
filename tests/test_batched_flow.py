@@ -344,9 +344,9 @@ def test_float32_uses_a_cached_private_copy():
         # tens of float32 ulps, which is the invariant. On the iiwa's runaway
         # population (|q| ~ 1e5, |dq/dc| ~ 1e6; CLAUDE.md, the gain ceiling) the raw error
         # is RADIANS -- measured 25 rad on one of 256 particles -- which is a fact about
-        # running a float32 swarm on that chart, recorded because the plan's default is a
-        # float32 swarm with a float64 polish: those particles are the ones the swarm
-        # re-draws (|q|_inf > 1000), and the polish runs in float64.
+        # running a float32 swarm on that chart, recorded because the fielded swarm is
+        # float32: those particles are the ones the swarm re-draws (|q|_inf >
+        # svgd_resample_q_max = 10), and the Drake re-check of the returned point is float64.
         X64 = torch.tensor(X_np, dtype=torch.float64, device=dev)
         gain = torch.stack([bf64_jac(bf64, X64[i]) for i in range(256)])
         normalised = diff / (1.0 + gain)
