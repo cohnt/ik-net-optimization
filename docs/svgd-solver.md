@@ -167,8 +167,80 @@ record's 180 s:
 
 ## Smoke results
 
-*(empty -- to be filled from `scripts/report_svgd.py` after the smoke runs; not before)*
+Measured 2026-10-09 01:40-05:43 EDT on the laptop (RTX 3080 Ti, 20 cores), `scripts/svgd/smoke.py`
+at its defaults: 88 runs, 8 rows (Panda `n6` and iiwa `n6` x grasp/pose x paired/native) x 11
+columns, 10 cells x 2 arms each, 20 s cap, graphed mode, float32 swarm, `init_jitter`, one run at a
+time. Full tables: `python scripts/report_svgd.py --profile
+results/profiling/svgd_step_tuxedo-stellaris_20261009T045946Z.json`. The iiwa rows are PLUMBING
+evidence only (the record's rung is `n4`, not local); the Panda rows pair against the record.
+
+**Go / no-go.** (1) PASS: 0 error records, 88 of 88 summaries, every test file green. (2) PASS on all
+8 rows: `al_svgd` N=64 (kernel `q` and kernel `none` alike) solves **10 of 10 learned cells on every
+row**, against the IPOPT twin's 10/9/9/10 (Panda grasp p/n, pose p/n) and 7/10/6/9 (iiwa) and the
+record's own 9/10/6/9 on the Panda cells. (3) PASS: 0 disagreements between the solver's verdict, the
+Drake re-check and `verify()` on 1,760 svgd cells. (4) PASS: 0 cells over cap + 1 s (the kill test
+is still owed). (5) PASS once compared per INNER step (the profiler times one fused step; an outer
+step holds `svgd_inner_iters` = 10): every Panda block is 0.83-1.37x its profile. (6) **FAIL as
+written, and the failure is informative**: `al_svgd` resamples 0.000 of N on every Panda cell and
+0.19-0.45 N (cumulative over the run) on a few iiwa cells; `tsvgd` redraws 2-6 N on the Panda and up
+to **15.7 N** on iiwa pose, `admm_svgd` up to 6.9 N. (7) PASS: N=1 never beats N=64 (N=64 gains 0-4
+cells per arm and row, 64q+ / 1+ = 32 / 0 pooled).
+
+**Success, learned v joint space, al_svgd N=64 kernel q, no warm-up** (IPOPT twin in brackets):
+Panda grasp paired 10 v 10 [10 v 9], native 10 v 10 [9 v 9]; Panda pose paired 10 v 7 [9 v 6],
+native 10 v 7 [10 v 6]; iiwa grasp paired 10 v 10 [7 v 10], native 10 v 10 [10 v 10]; iiwa pose
+paired 10 v 10 [6 v 9], native 10 v 10 [9 v 9]. Joint space under svgd hits the 300-outer-step cap
+on 1-2 Panda pose cells per row (so those rows carry no verdict under the cap rule) and on 4-6 cells
+per row at N=1; **the cluster stage lifts `svgd_outer_iters` so only the clock binds.** Solved cells
+reach `max_violation` 1e-9 to 1e-12, below IPOPT's 1e-8.
+
+**Wall, same machine, mean over all cells, learned arm**: `al_svgd` N=64 1.0-1.8 s against the
+IPOPT twin's 1.0-10.1 s (Panda grasp paired 1.8 v 4.9; iiwa grasp paired 1.5 v 10.1; iiwa pose paired
+1.7 v 9.2). Per outer step 65-78 ms (6.5-7.8 per inner step, ~50-60% of it the exact collision pool),
+against IPOPT's 15-25 ms per major; `al_svgd` needs 10-22 outer steps where IPOPT needs 32-195 majors.
+Joint space under svgd is SLOWER than under IPOPT everywhere (0.9-6.0 s against 0.04-1.3 s): a
+batched first-order method on a 7-variable problem buys nothing over a second-order one.
+
+**CEM warm-up is inert**: over 176 arm-rows the A/B flips 0 cells on 168 of them, +2/-0 on two
+`admm_svgd` learned rows and 0/-1 on four iiwa pose joint-space rows (p = 0.5-1 everywhere); outer
+steps and wall move by noise. `svgd_kernel=none` against `q` is also indistinguishable on success
+(identical counts on every row); the kernel's effect is on the solution set, not on whether one is
+found.
+
+**tsvgd** solves 10 of 10 learned cells on every row too, but from the paired start it runs to the
+clock on 6-10 cells per row (196-224 outer steps, 15-18.5 s) while already feasible: its stop rule
+does not fire in tangent mode, so its wall column is the cap. **admm_svgd** is the weak method on the
+learned arm from the paired start (8/10, 7/10, 9/10, **5/10**), clock-bound, and its joint-space
+degenerate form sits at the step cap on 9-10 cells per iiwa row.
+
+**The pre-registered correction-box flag is CONFIRMED and is the main open item.** Under `al_svgd`
+N=64 the learned arm's median `|q_c|_inf` is 0.072-0.100 with 20-60% of solutions ON the +-0.1 box
+(`correction_binding`), against the IPOPT twin's 2e-5 and 0% on the same cells; the median reported
+cost over each arm's own solved cells is correspondingly higher (Panda grasp paired 7.99 against
+IPOPT's 4.22; pose paired 7.56 against 5.08; not mutual-cell medians, so indicative only). `tsvgd`
+sits at 0.005-0.099 with 0-40% binding. The learned svgd arm is finding feasible points by spending
+the correction, i.e. partly as a reparameterised joint-space arm. The likely mechanism is the
+minimum-norm Gauss-Newton correction, which is cheapest in `q_c` under the unscaled metric. The
+candidate fix is solver-internal and formulation-agnostic (weight the GN metric by the program's own
+cost Hessian, so the correction direction pays its `w_c = 10`), **not applied; Thomas's call**, and
+the smoke's numbers stand as the pre-fix measurement.
 
 ## Selected variant
 
-*(empty -- written here, with N and the reason, BEFORE any cluster manifest is generated)*
+Written 2026-10-09 06:05 EDT, before any manifest exists; **pending Thomas's gate** on the
+correction-box item above, which may change the fielded solver and therefore void this selection.
+
+- **Primary: `al_svgd`, N = 64, `svgd_kernel=q`, `svgd_warmup=none`, `init_jitter`, float32 swarm +
+  float64 polish, graphed** -- the only method that passes (2), (3), (5), (6) on the Panda and stops
+  on its own (`feasible_stall` on 100% of cells).
+- **Controls in the stage**: `svgd_kernel=none` at N = 64 (the no-interaction control; the smoke
+  cannot separate it from `q` on success, so the cluster's 480 cells decide), and N = 1 (the
+  single-particle control). N = 256 only on the survivors, as the ladder's upper rung.
+- **Dropped from the first cluster manifest**: the CEM warm-up on every row (inert to the cell on
+  176 arm-rows; one A/B column on the primary variant is kept so the A/B is a 480-cell statement, not
+  a 10-cell one); `admm_svgd` (weak and clock-bound on the learned arm, degenerate on joint space);
+  `tsvgd` is kept as the second candidate only if its stop rule is fixed first, since a method that
+  polishes to the cap cannot have a wall column.
+- **Settings for the stage**: `svgd_outer_iters` lifted so only the 180 s clock binds (cap rule);
+  `PROCS=2`; the comparison columns are the record (no IPOPT re-run), paired by `(target, guess)`
+  after the `grid_hash` check.
