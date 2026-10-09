@@ -100,7 +100,7 @@ def load_remeasure():
 def load_before():
     """The record as the 'before' column: STATUSQUO + SOFT12 + SCREW (lifted rows substituted,
     exactly as report_statusquo reads them) and stage GVS's primary rung."""
-    runs, _ = load_record()
+    runs, _ = load_record(which="legacy")
     runs.update(load(f"sc_GVS_{GVS}_", cells=CELLS))
     out = {}
     for tag, s in runs.items():
