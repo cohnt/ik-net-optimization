@@ -50,7 +50,13 @@ MUST_MATCH = ("robot", "task", "solver", "config", "wall_time", "seed", "grid_ha
               # `grid_hash`, and a change to the sampling instrumentation must not be able to
               # block a merge.
               "scene", "scene_mode", "target_placement", "shelf_inset", "target_screen",
-              "placement_point", "placement_point_mode")
+              "placement_point", "placement_point_mode",
+              # The scene's own fingerprint (sha1 over the directives and every model file,
+              # src/benchmark.py: scene_fingerprint). `scene` is only the YAML's name, and the
+              # wsg gripper's yaw fix (2026-10-08) changed an SDF under an unchanged YAML and an
+              # unchanged grid_hash -- so two shards staged from trees either side of that fix
+              # would otherwise pool into one summary that describes neither scene.
+              "scene_fingerprint")
 
 # `host` is deliberately NOT in MUST_MATCH. Shards of one run are distributed across
 # nodes -- that is the entire point of sharding -- so their hostnames can never agree,
