@@ -2536,8 +2536,12 @@ def stage_CUDAGRAPH(suffix=""):
 ## The clock stays at 180 s (Thomas: "Don't raise the wall clock timeout").
 ##
 ## THREE SUB-STAGES, three manifests, so the controls can be queued AFTER the primary rows:
-##   REMEASURE         the primary: 4 record robots x 2 rows x 2 starts x 3 solvers
-##                     + GVS o1 x 2 x 2 x 2 solvers = 56 logical runs, `--config latent`.
+##   REMEASURE         the primary: 5 robots x 2 rows x 2 starts x 2 solvers = 40 logical
+##                     runs, `--config latent`. IPOPT and SNOPT ONLY: NLopt is NOT re-measured
+##                     (Thomas, 2026-10-08: "Skip remeasuring NLopt, it's way too slow" -- its
+##                     rows run to the 180 s clock on both arms and were ~85 of the 102
+##                     node-hours). Its record columns stand as measured on the old scene and
+##                     are reported with that caveat.
 ##   REMEASURE_LEGACY  IPOPT only, all five robots, `--set legacy_robot_settings=True`:
 ##                     the fixed scene under the OLD settings, so against the primary it
 ##                     attributes settings-vs-scene (both arms, since the unification touched
@@ -2554,17 +2558,17 @@ def stage_CUDAGRAPH(suffix=""):
 ##
 ## ORDER (render()'s `order` key, claimed in file order): the grasp rows on the four wsg
 ## robots first -- the rows the yaw defect sat under -- then Panda grasp, then every pose
-## row, IPOPT before SNOPT throughout, and NLopt last because its rows run to the clock on
-## both arms and carry the least information per node-hour.
+## row, IPOPT before SNOPT throughout. (The NLopt-last rank in `_remeasure_order` is kept so
+## the function stays total over SOLVER_CLASSES; no REMEASURE item carries it.)
 
 #: One entry per robot of the re-measurement: (robot, builder, only-filter, solvers, wsg?).
 #: `wsg` marks the robots whose gripper SDF carried the yaw defect -- their grasp rows go first.
 REMEASURE_ROBOTS = (
-    ("iiwa", "STATUSQUO", "iiwa:n4", "ipopt,snopt,nlopt", True),
-    ("soft12", "SOFT12", "soft12", "ipopt,snopt,nlopt", True),
-    (SCREW_PRIMARY, "SCREW", SCREW_PRIMARY, "ipopt,snopt,nlopt", True),
+    ("iiwa", "STATUSQUO", "iiwa:n4", "ipopt,snopt", True),
+    ("soft12", "SOFT12", "soft12", "ipopt,snopt", True),
+    (SCREW_PRIMARY, "SCREW", SCREW_PRIMARY, "ipopt,snopt", True),
     (GVS_PRIMARY, "GVS", GVS_PRIMARY, GVS_SOLVERS, True),
-    ("panda", "STATUSQUO", "panda:n6", "ipopt,snopt,nlopt", False),
+    ("panda", "STATUSQUO", "panda:n6", "ipopt,snopt", False),
 )
 REMEASURE_VARIANTS = {
     ## name: (tag, solvers restricted to, robots restricted to, extra --set, config)
@@ -4389,12 +4393,13 @@ def selftest():
     ## fingertips, arms learned,numerical), every item graphed and compiled, the lifted
     ## iteration budgets on IPOPT and SNOPT and none on NLopt, the record's six-token tag
     ## tail, no `--set` outside the whitelist (a solver knob here would make it a tuning
-    ## run), and the queue order the rows were given. Counts: 56 / 20 / 8 logical runs.
+    ## run), and the queue order the rows were given. Counts: 40 / 20 / 8 logical runs;
+    ## no NLopt item anywhere (Thomas, 2026-10-08).
     rm_fails = []
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                     "scripts"))
     from report_statusquo import parse_tag as _sq_parse_tag
-    rm_expected = {"REMEASURE": (56, 4 * 2 * 2 * (8 + 8 + 24) + 1 * 2 * 2 * (8 + 8)),
+    rm_expected = {"REMEASURE": (40, 5 * 2 * 2 * (8 + 8)),
                    "REMEASURE_LEGACY": (20, 20 * 8),
                    "REMEASURE_RULE": (8, 8 * 8)}
     on_disk_rm = {}
@@ -4479,7 +4484,7 @@ def selftest():
                                 f"{8 * STATUSQUO_SHARD_SCALE[solver]}")
             if it["seconds"] > 28800:
                 rm_fails.append(f"{variant}: {it['id']} estimates past ITEM_TIMEOUT")
-        want_solvers = {"REMEASURE": set(SOLVER_CLASSES), "REMEASURE_LEGACY": {"ipopt"},
+        want_solvers = {"REMEASURE": {"ipopt", "snopt"}, "REMEASURE_LEGACY": {"ipopt"},
                         "REMEASURE_RULE": {"ipopt"}}[variant]
         if solvers_seen != want_solvers:
             rm_fails.append(f"{variant}: solvers {sorted(solvers_seen)}, expected "
@@ -4513,8 +4518,8 @@ def selftest():
                                            not first.startswith("sc_REMEASURE_panda_")):
             rm_fails.append(f"{variant}: first item is {first}, not a wsg IPOPT grasp row")
         last = render(items)[-1].split("|", 1)[0]
-        if variant == "REMEASURE" and "_nlopt_posetip_" not in last:
-            rm_fails.append(f"{variant}: last item is {last}, not an NLopt pose row")
+        if variant == "REMEASURE" and "_snopt_posetip_" not in last:
+            rm_fails.append(f"{variant}: last item is {last}, not a SNOPT pose row")
         ## And the committed manifest must be what this file generates now.
         here = os.path.dirname(os.path.abspath(__file__))
         path = os.path.join(here, f"manifest_stage{variant}.txt")
@@ -4557,8 +4562,8 @@ def selftest():
         print(f"FAIL stage REMEASURE: {msg}")
     fails += len(rm_fails)
     if not rm_fails:
-        print("ok   stages REMEASURE/REMEASURE_LEGACY/REMEASURE_RULE: 56/20/8 logical runs, the "
-              "record's rows re-tagged + graphs + lifted budgets, wsg grasp first, NLopt last")
+        print("ok   stages REMEASURE/REMEASURE_LEGACY/REMEASURE_RULE: 40/20/8 logical runs, the "
+              "record's IPOPT and SNOPT rows re-tagged + graphs + lifted budgets, wsg grasp first, no NLopt")
 
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:

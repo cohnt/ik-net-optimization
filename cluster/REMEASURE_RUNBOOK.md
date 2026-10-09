@@ -13,19 +13,22 @@ the record's own rows, generated FROM the status-quo builders -- STATUSQUO (Pand
 `n4`), SOFT12, SCREW (`screw7_p050` `n6`), GVS (`o1` `n6`, IPOPT and SNOPT only) -- so rungs,
 checkpoints, seed 1, 60 x 8 contained cells and the 180 s clock are the record's by construction.
 Every item adds `--set flow_cuda_graph=True` and the lifted iteration budgets (IPOPT `max_iter`
-1e6; SNOPT 1e5 majors, 1e8 minors; NLopt untouched). The clock is never raised.
+1e6; SNOPT 1e5 majors, 1e8 minors). The clock is never raised. **NLopt is not re-measured**
+(Thomas, 2026-10-08: *"Skip remeasuring NLopt, it's way too slow"*): its rows run to the 180 s clock
+on both arms and were ~85 of the primary's node-hours. The record's NLopt columns stand as
+measured on the old scene and are reported with that caveat.
 
 ## Three manifests, in this order
 
 | manifest | what | logical runs | items | est. node-h |
 | --- | --- | --- | --- | --- |
-| `manifest_stageREMEASURE.txt` | the primary, `--config latent` | 56 | 704 | 102 |
+| `manifest_stageREMEASURE.txt` | the primary, IPOPT and SNOPT, `--config latent` | 40 | 320 | 17 |
 | `manifest_stageREMEASURE_LEGACY.txt` | IPOPT, all five robots, `--set legacy_robot_settings=True`: settings vs scene | 20 | 160 | 5.3 |
 | `manifest_stageREMEASURE_RULE.txt` | IPOPT, Panda and iiwa, `--config latent_rule`: the trust-region A/B | 8 | 64 | 1.4 |
 
-Within the primary, items are claimed wsg grasp (IPOPT, then SNOPT), Panda grasp, pose, and NLopt
-last; NLopt is ~85 of the 102 node-hours, running to the clock on most rows. The estimate is
-`python cluster/gen_manifest.py --allotment` (about 1.1 days on 4 idle nodes); its assumptions are
+Within the primary, items are claimed wsg grasp (IPOPT, then SNOPT), Panda grasp, then pose. The
+estimate is `python cluster/gen_manifest.py --allotment` (about 24 node-hours, a quarter of a day
+on 4 idle nodes, at PROCS=8 under MPS); its assumptions are
 printed with it. Regenerate a manifest with `--stage REMEASURE[_LEGACY|_RULE] -o
 cluster/manifest_stage<...>.txt`; `--selftest` fails if a committed manifest is stale.
 
