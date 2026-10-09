@@ -166,16 +166,64 @@ closes over, so compiling a *bound method* re-triggers dynamo per program. It is
 with `--compile`, because more iterations inside a fixed cap **moves the learned arm's success
 rate** and only that arm benefits, so **every run being compared must set it the same way**.
 
-### Profiling
+### Profiling, and CUDA graphs (`flow_cuda_graph`)
 
-No profiler in the tree; recover one with `git show ab3ea15:scripts/profiling/profile_flow.py`. At
-batch size 1 the flow evaluation is **entirely CPU-bound**: the GPU is never behind the CPU, and
-float64 and float32 cost the same wall time despite a 3.4x difference in GPU kernel time. Roughly
-70% of a `jacrev` is CPU-side dispatch (PyTorch eager + FrEIA Python; `cudaLaunchKernel` only ~17%),
-so runtime is bounded by how fast the CPU can describe 2853 operations and **even zero-overhead
-execution leaves only a ~3x ceiling**. **Reducing that dispatch cost is out of scope** (Thomas: infra
-fixes for the CPU bottleneck are "future work/possibly not in scope at all") — report the number,
-do not make it a project.
+Recover the old profiler with `git show ab3ea15:scripts/profiling/profile_flow.py`. At batch size 1
+the flow evaluation **was CPU-dispatch-bound**: ~70% of a `jacrev` is describing ~2853 ops to the GPU.
+**`--compile --set flow_cuda_graph=True` removes that** (Thomas asked for it, 2026-10-08). The
+compiled `jacrev` and a compiled `no_grad` forward pass are each captured once per process as a CUDA
+graph and then replayed (`GraphedFlowCall`). Afterwards a call is GPU-bound: kernel time ≈ call time.
+The old "~3x ceiling" is superseded.
+
+- **How it is used.**
+  - It requires `--compile`.
+  - Graphs are captured in `WarmUpJacobian` before the grid, then frozen. A capture inside a timed
+    solve raises, because compile and capture are offline compute.
+  - Like `--compile`, it moves the learned arm's success within a cap, so **every compared run sets
+    it the same way**.
+- **Why manual capture.**
+  - Eager `jacrev` cannot be captured: jrl's import-time `set_default_device` makes it do a
+    host-to-device copy.
+  - `mode="reduce-overhead"` exceeds the cudagraph-trees re-record limit and falls back to ungraphed.
+  - Probe: `scripts/profiling/probe_cuda_graphs.py`.
+- **Why the forward pass too.**
+  - Under IPOPT, Drake evaluates constraint values in double and costs in AutoDiffXd. So each trial
+    point is one `jacrev` plus one plain forward pass.
+  - That forward pass was eager and recorded autograd even under `--compile`: 7.1 ms against the
+    compiled `jacrev`'s 4.4 ms on a V100.
+- **Exactness.**
+  - Replay is bit-identical to the compiled Jacobian.
+  - The forward pass, now compiled, agrees with eager to ~1e-14.
+
+**Measured end to end** (stages CUDAGRAPH / CUDAGRAPHP2 / CUDAGRAPHMPS; IPOPT, the record's 8 rows
+on the record's grids; `scripts/report_cudagraph.py [P2|MPS]`), at one process per V100:
+
+- Learned ms/it falls **2.3-2.6x**.
+- Iterations are identical on 100% of mutually solved cells, and no cell is lost.
+- The per-iteration premium over joint space falls from ~8-11x to **3.1-4.2x**.
+- Both iiwa contained-grasp ties become learned wins: 472 and 476 v 452, p ≤ 0.016.
+
+**The record's runtime columns predate this and are unchanged.**
+
+**Processes per GPU now matter.** Without MPS, processes sharing a V100 are time-sliced, and a graphed
+process is GPU-bound. One IPOPT trial point (one `jacrev` plus one forward pass):
+
+| processes per GPU | speedup from graphs |
+| --- | --- |
+| 1 | 3.6x |
+| 4, without MPS | 1.35x |
+| 4, with `MPS=1` (`submit_bench.sh` starts a job-local daemon) | 3.0x |
+
+End to end (stage CUDAGRAPHMPS, the same 8 rows at PROCS=8 under `MPS=1`), graphed learned ms/it is
+**1.12-1.19x** slower than at one per GPU, against 1.31-1.91x without MPS. That is about 3.4x the node
+throughput. Iterations are identical on 100% of shared cells, nothing is lost, and the success verdicts
+match one-per-GPU on every row.
+
+The record ran PROCS=8 without MPS, so its learned wall times carry a **1.15-1.30x GPU-contention
+penalty** that joint space does not pay (1.07x). **Paper numbers run at one solve per GPU
+(PROCS=2)** (Thomas: *"those are the conditions in which the final paper results will be drawn"*).
+4 per GPU under `MPS=1` is for development throughput only. Never run 4 per GPU without MPS once graphs
+are on.
 
 ### The conditioning frame (read this before touching the learned formulation)
 
@@ -292,6 +340,56 @@ machine precision.
 frame its target *is*, recorded per run as `placement_point`. And the panda *grasp* scene never had
 decorative mugs, so hardening removes strictly less from it than from the other two; say so
 wherever grasp and pose deltas appear in one table.
+
+**The mug handle must point through the finger gap, and until 2026-10-08 it did not on the
+wsg finray (PENDING the PI's acceptance of branch `mug-handle-yaw`).** `GenerateDiagramWithMug`
+welds the mug at the FULL pose of `between_fingers` at q*, handle along that frame's +x
+(three r = 9 mm cylinders to x = 90 mm). `panda_finray.sdf` defines the frame with yaw 1.57, so
++x runs out past the fingertips and the handle clears both fingers by 9.5 mm;
+`wsg50_110_finray_fingers_box_collision.sdf` -- the gripper of the iiwa, soft PCS, screw and
+GVS scenes -- defined it with yaw 0, so +x ran INTO the right finger plate and the handle
+penetrated it by **18.0 mm on 150/150 collision-free q\*** (iiwa and screw7 alike). Nothing
+caught it: the sampler's `collision_free` runs without the mug, `FloatingMugScreen` filters the
+robot out, and a welded mug against a welded finger is anchored-vs-anchored, which Drake never
+reports. So on every wsg robot the "known to admit a valid grasp" target started the solve
+scene in self-penetration at q\*. The fix is the one-token yaw change to 1.57 in that SDF (the
+two gripper files are otherwise identical); `X_grasp_ee` and `X_ee_flow` are measured at
+runtime and containment uses the frame's position only, so no code depends on the yaw.
+Verified by `scripts/probe_mug_contact.py`: 0/150 contact at +9.5 mm on iiwa, screw7_p050 and
+soft12 after, 150/150 at -18.0 mm before, Panda unchanged. Acceptance and the benchmark impact
+are still to be measured (the branch's report lists the commands).
+
+**Cross-robot settings unified before the grasp re-run (PI's decisions, 2026-10-08).** An
+inventory found five settings that differed between robots with no deliberate reason; four are
+now one code path each in `generic_program.py` and the fifth is an A/B flag. (1) The native
+grasp start for `c` is `mug.middle @ X_grasp_ee` as xyz + rpy on every robot (`GraspCStart`;
+the iiwa and screw arms seeded `[mug xyz, 0, 0, 0]`) -- the PI accepts that this conditions
+the learned arm on a known-valid grasp pose. (2) The joint-space arm's variable bound is
+`ConfigLimits()` everywhere (`QBoundingBoxConstraint`; the Panda used +-10 rad, the iiwa a
+hand-typed table 1e-6 off the plant's). (3) `q_nominal` is a **nonsingular home pose**, held in
+one place per robot and read through `NominalConfiguration`: Panda `Q_NOMINAL` = Franka's ready
+pose `[0, -0.785, 0, -2.356, 0, 1.571, 0.785]` (sigma_min 0.224; zeros was outside q4's range,
+singular and in collision with the table), iiwa `Q_NOMINAL` = `[0, 0.6, 0, -1.75, 0, 1.0, 0]`
+(sigma_min 0.252; the straight arm is singular at 0.0), `ScrewArmSpec.q_nominal` the same bend
+(sigma_min 0.204), the soft PCS and GVS arms the straight rod (zeros, their natural nominal).
+All measured in-limits and collision-free in the hardened scenes. (5) The grasp `c` box is
+centred on that same flow-frame pose, +-`c_position_slack` (`GraspCBoxConstraint`): `c` is
+the flow frame, 0.10-0.20 m behind the grasp point, so a mug-centred box gave each robot a
+different margin; the five per-robot copies of the box are gone and the base
+`BoundingBoxConstraint` dispatches on `target_mug`. (4) The **latent trust region is NOT
+unified**: `--config latent_rule` on every script sets `latent_trust_region_rule=True`, which
+sizes it `round(sqrt(dim_latent) + 1.5, 2)` from the loaded chart; against `--config latent`
+that moves the Panda 4.0 -> 4.15 and the iiwa 4.3 -> 4.33 (its constant was the rule rounded)
+and nothing else. **`--set legacy_robot_settings=True` restores 1, 2, 3 and 5 together** -- the
+control for the re-run; what each arm actually built with lands in
+`metadata["robot_settings"]` per arm (`RobotSettings`). `tests/test_robot_settings_unified.py`
+pins both states on all five robots. Alongside, every benchmark now records
+`metadata["scene_fingerprint"]` -- sha1 over the directives YAML and every model file it
+references (plus the in-memory mug on the grasp task), `src/benchmark.py: scene_fingerprint`
+-- with its first 8 hex in the auto tag, because `grid_hash` hashes only q's and a run on the
+defective gripper SDF shares a grid with one on the fixed SDF; `collate --pair` refuses a
+fingerprint mismatch as it refuses a solver mismatch. Every grasp row of record predates all
+of this and is to be re-measured.
 
 **Guesses are deliberately not containment-filtered.** They are initial configurations, not
 targets; filtering them would couple the start distribution to the target distribution.
@@ -882,9 +980,9 @@ iterate (2898 against 2961 Jacobians at the 180 s cutoff), verdict-identical -- 
 
 ### The honest caveats, and what is closed
 
-The one caveat everywhere is **per-iteration cost**, an implementation property with a known ~3x
-dispatch floor that is **out of scope to fix** (Thomas: architecture/infra work on the CPU bottleneck
-is "future work/possibly not in scope at all"). It is a number to report, and it is not a constant --
+The one caveat everywhere is **per-iteration cost**, an implementation property. `flow_cuda_graph`
+cuts the learned arm's cost 2.3-2.6x at one solve per GPU (see Profiling); the record's columns
+predate that switch. It is a number to report, and it is not a constant --
 on Panda contained grasp the premium is ~2-3x, because hardening costs the joint-space arm its
 cheapness.
 
@@ -1741,7 +1839,8 @@ adjusted on the cluster."* So the wall-clock cap stays as the measurement — no
 caps for portability's sake — but its value comes from `cluster/calibrate.sh` on that hardware.
 `metadata.host`/`metadata.device` exist so a cluster run cannot be paired against a laptop one. The
 corollary: **CPU contention still corrupts the measurement**, so workers per node is a measured
-quantity.
+quantity. So is **GPU** contention, which only the learned arm pays. Paper runs use one solve per
+GPU (PROCS=2); development stages may use PROCS=8 with `MPS=1` (Profiling).
 
 **`--shard K/N` is a no-op by construction.** It splits **target-major** — whole targets per shard,
 never a target's guesses split — because `success_ci` bootstraps over whole targets and

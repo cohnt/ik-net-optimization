@@ -132,6 +132,11 @@ class ScrewArmIKProgram(IKFlowProgram):
         """The frame the task's target pose is expressed in. The grasp subclass moves it."""
         return self.spec.flange_link
 
+    def NominalConfiguration(self):
+        """The joint-centering target, held on the spec (`ScrewArmSpec.q_nominal`): the
+        robot is `params.py`, so its home pose lives there and nowhere else."""
+        return np.asarray(self.spec.q_nominal, dtype=float)
+
     ## -- the program -------------------------------------------------------------
 
     def create_prog(self, target_pose=np.array([0., 0., 0., 1., 0., 0., 0.]), q_nominal=None):
@@ -146,7 +151,7 @@ class ScrewArmIKProgram(IKFlowProgram):
             self.lumped_vars = np.hstack([self.lumped_vars, self.q_lift])
 
         self.target_pose = target_pose
-        self.q_nominal = np.zeros(self.num_pos) if q_nominal is None else q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
 
         ## `c` is the NETWORK's conditioning input, so it lives in the frame the flow was
         ## trained on rather than in whatever frame the scene calls the end effector.
@@ -239,6 +244,11 @@ class ScrewArmIKProgram(IKFlowProgram):
 class ScrewArmMugProgram(ScrewArmIKProgram):
     """The learned formulation on the grasp task."""
 
+    #: Before 2026-10-08 this program seeded `c` at the mug centre with zero rpy, as the
+    #: iiwa's did; the unified start is the flow-frame grasp pose. The old form survives
+    #: only as the `legacy_robot_settings` control.
+    LEGACY_GRASP_C_MUG_CENTRED = True
+
     def TargetFrameName(self):
         return "between_fingers"
 
@@ -267,9 +277,11 @@ class ScrewArmMugProgram(ScrewArmIKProgram):
             self.lumped_vars = np.hstack([self.lumped_vars, self.q_lift])
 
         self.target_mug = target_mug
-        self.q_nominal = np.zeros(self.num_pos) if q_nominal is None else q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
 
-        self.prog.SetInitialGuess(self.c, [*target_mug.middle.translation(), 0, 0, 0])
+        ## The flow-frame pose of the generating configuration (`GraspCStart`), the same
+        ## start every robot uses since 2026-10-08; `[mug xyz, 0, 0, 0]` under the control.
+        self.prog.SetInitialGuess(self.c, self.GraspCStart())
         self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
         self.jacobian_gen = self.MakeJacobianGen()
@@ -296,26 +308,8 @@ class ScrewArmMugProgram(ScrewArmIKProgram):
         self.constraints.append(self.ik_constraint)
         return self.ik_constraint
 
-    def BoundingBoxConstraint(self):
-        self.LatentBoxConstraint()
-        centre = self.target_mug.middle.translation()
-        slack = self.options.c_position_slack
-        ## A general linear constraint, deliberately NOT a bounding box. IPOPT's bound_push
-        ## projects the initial guess into every VARIABLE BOX before evaluating anything,
-        ## which would teleport `c` to the face while the latent stayed tuned to the
-        ## unprojected pose -- destroying the exact paired start. A general constraint may
-        ## start violated; the violation just lands in inf_pr.
-        self.c_box = (np.concatenate([centre - slack, -2 * np.pi * np.ones(3)]),
-                      np.concatenate([centre + slack, 2 * np.pi * np.ones(3)]))
-        self.c_box_constraint = self.prog.AddLinearConstraint(
-            np.eye(6), self.c_box[0], self.c_box[1], self.c)
-        self.c_box_constraint.evaluator().set_description("CBoxConstraint")
-        bound = self.options.correction_bound
-        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -bound * np.ones(self.num_arm_dof), bound * np.ones(self.num_arm_dof),
-            self.correction)
-        self.correction_bounding_box_constraint.evaluator().set_description(
-            "CorrectionBoundingBoxConstraint")
+    ## `BoundingBoxConstraint` is the base class's: it sees `target_mug` and builds the
+    ## shared grasp box (`GraspCBoxConstraint`). No per-robot copy lives here any more.
 
 
 class _NumericalMixin:
@@ -332,7 +326,7 @@ class _NumericalMixin:
         self.prog = MathematicalProgram()
         self.q = self.prog.NewContinuousVariables(self.num_arm_dof)
         self.lumped_vars = self.q
-        self.q_nominal = (np.zeros(self.num_arm_dof) if q_nominal is None else q_nominal)
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         self.prog.SetInitialGuess(self.q, self.q_nominal[:self.num_arm_dof])
 
     def VarsToQ(self, rpy_vars, add_correction=False):
@@ -351,13 +345,15 @@ class _NumericalMixin:
         return self.SetStartFromQ(q_init)
 
     def BoundingBoxConstraint(self):
-        ## Read off the PLANT rather than from a hardcoded table, because the screw joint's
-        ## limits arrive by repair rather than from the parser and a second copy of them
-        ## here would be a place for the two to disagree.
-        lower, upper = RequireFiniteLimits(self.plant, f"{self.spec.name} plant")
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            lower[:self.num_arm_dof], upper[:self.num_arm_dof], self.q)
-        self.bounding_box_constraint.evaluator().set_description("QBoundingBoxConstraint")
+        ## Read off the PLANT (`ConfigLimits()`, through the shared helper) rather than
+        ## from a hardcoded table, because the screw joint's limits arrive by repair rather
+        ## than from the parser and a second copy of them here would be a place for the two
+        ## to disagree. The helper refuses a non-finite bound, so a plant whose repair was
+        ## skipped fails here rather than solving with an unbounded screw coordinate. This
+        ## robot never had another bound, so the `legacy_robot_settings` control changes
+        ## nothing here.
+        RequireFiniteLimits(self.plant, f"{self.spec.name} plant")
+        self.QBoundingBoxConstraint()
 
 
 class ScrewArmIKProgramNumerical(_NumericalMixin, ScrewArmIKProgram):

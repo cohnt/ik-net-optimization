@@ -387,8 +387,13 @@ def metric_tables(runs):
          lambda L, J: (L["iters"], J["iters"]), fi, lambda a, b: a < b)
 
 
-def main(only):
-    want = [s for s in SOLVERS if not only or s in only]
+def load_record(cells=CELLS):
+    """The campaign of record: tag -> summary, and {original tag: lifted tag}.
+
+    Stages STATUSQUO + SOFT12 + SCREW, with every iteration-budget-bound run replaced by its
+    lifted re-measurement (ITCAP, SCREWCAP) under the original tag. Shared with
+    scripts/report_remeasure.py, which reads the record as its "before" column.
+    """
     ## Filtered at LOAD time, not per table. The campaign also produced 12 runs on
     ## --target-placement free, which is a retired SETTING of the grasp experiment and not a
     ## third experiment (Thomas, 2026-09-21: "preserving old settings and old experimental
@@ -396,7 +401,7 @@ def main(only):
     ## used to read them in and drop them one layer later inside each table -- so a single
     ## line in one table function was all that kept a retired row out of the campaign of
     ## record. Refusing them here means no table CAN show one.
-    runs = load("sc_STATUSQUO_", cells=CELLS)
+    runs = load("sc_STATUSQUO_", cells=cells)
 
     ## The soft PCS arm joins the record from stage SOFT12 rather than from a re-run under
     ## stage_STATUSQUO. Its twelve rows were measured at conditions IDENTICAL to this stage's
@@ -408,7 +413,7 @@ def main(only):
     ## them with no special case; only the PROVENANCE differs, which is why this is one
     ## explicit merge rather than a wildcard prefix. The record is therefore 36 logical runs
     ## across two stages, and says so.
-    runs.update(load("sc_SOFT12_", cells=CELLS))
+    runs.update(load("sc_SOFT12_", cells=cells))
 
     ## The screw-joint arm joins the same way, from stage SCREW: 180 s, seed 1, --compile,
     ## 60 x 8 contained cells at the fingertips, arms learned,numerical, each solver at its
@@ -416,7 +421,7 @@ def main(only):
     ## (cluster/gen_manifest.py, stage_SCREW, refuses any other cap). Its robot name carries an
     ## underscore, which is why every table reads tags through parse_tag. The record is 48
     ## logical runs across three stages.
-    runs.update(load("sc_SCREW_", cells=CELLS))
+    runs.update(load("sc_SCREW_", cells=cells))
 
     ## Rows that were iteration-budget-bound are REPORTED AT THE LIFTED BUDGET (Thomas,
     ## 2026-10-08). Stages SCREWCAP (screw arm) and ITCAP (the rest) re-ran each such row on
@@ -426,7 +431,7 @@ def main(only):
     lifted = {}
     for prefix, pattern in (("sc_ITCAP1e", r"^sc_ITCAP1e[56]_(STATUSQUO|SOFT12)_"),
                             ("sc_SCREWCAP_", r"^sc_SCREWCAP_")):
-        for tag, s in load(prefix, cells=CELLS).items():
+        for tag, s in load(prefix, cells=cells).items():
             if not re.match(pattern, tag):
                 continue
             orig = re.sub(r"^sc_ITCAP1e[56]_", "sc_", re.sub(r"^sc_SCREWCAP_", "sc_SCREW_", tag))
@@ -436,6 +441,13 @@ def main(only):
                 raise SystemExit(f"{tag}: grid_hash differs from {orig}; refusing to substitute")
             runs[orig] = s
             lifted[orig] = tag
+
+    return runs, lifted
+
+
+def main(only):
+    want = [s for s in SOLVERS if not only or s in only]
+    runs, lifted = load_record()
 
     retired = [tag for tag in runs if parse_tag(tag)["row"] not in STATUS_QUO_ROWS]
     for tag in retired:

@@ -20,9 +20,25 @@ from src.panda_analytic_ik import Analytic_IK_Panda
 from src.flow_loading import LoadFlowSolver
 
 
+#: The joint-space arm's variable bound BEFORE unification (2026-10-08): +-10 rad on every
+#: joint, i.e. no bound at all against the plant's +-2.9. Kept only as the
+#: `legacy_robot_settings` control; the unified bound is `ConfigLimits()`.
+PANDA_LEGACY_Q_BOUNDS = (-10.0 * np.ones(7), 10.0 * np.ones(7))
 
 
 class PandaIKProgram(IKFlowProgram):
+    #: The joint-centering target: Franka's standard "ready" pose. Zeros is NOT a valid
+    #: nominal on this arm -- it sits outside q4's range [-3.0718, -0.0698] and on q6's
+    #: lower limit, is singular, and is in collision with the table in the hardened scene.
+    #: Measured in the hardened scene (2026-10-08): inside the limits by 0.716 rad at the
+    #: closest joint, manipulator-Jacobian sigma_min 0.224, collision value 0.62 (clear).
+    #: The ONE place this robot's home pose lives; every Panda program reads it through
+    #: `NominalConfiguration`.
+    Q_NOMINAL = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+
+    def NominalConfiguration(self):
+        return self.Q_NOMINAL.copy()
+
     def __init__(self, diagram, options = ProgramOptions(), model = None, checkpoint = None):
         self.diagram = diagram
         self.plant = diagram.GetSubsystemByName("plant")
@@ -92,10 +108,7 @@ class PandaIKProgram(IKFlowProgram):
 
 
         self.target_pose = target_pose
-        if q_nominal is None:
-            self.q_nominal = np.zeros(7)
-        else:
-            self.q_nominal = q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
 
         self.initial_guess = np.zeros(6)
         # `c` is the NETWORK's conditioning input, so it lives in the frame the flow was
@@ -246,18 +259,14 @@ class PandaMugProgram(PandaIKProgram):
             self.lumped_vars = np.hstack([self.lumped_vars, self.q_lift])
 
         self.target_mug = target_mug
-        if q_nominal is None:
-            self.q_nominal = np.zeros(self.num_pos)
-        else:
-            self.q_nominal = q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
 
         # `c` is the pose of the frame the flow was trained on, not of the grasp point, so
         # the mug centre is not a valid guess for it -- the two differ by X_grasp_ee, 0.1 m
-        # for this gripper. Seeding or SetStartFromQ overwrites this, but a wrong default
-        # is a trap for any caller that runs neither.
-        X_W_ee = target_mug.middle @ self.X_grasp_ee
-        self.prog.SetInitialGuess(self.c, np.concatenate(
-            [X_W_ee.translation(), X_W_ee.rotation().ToRollPitchYaw().vector()]))
+        # for this gripper. The shared `GraspCStart` is that flow-frame pose on every
+        # robot since 2026-10-08. Seeding or SetStartFromQ overwrites this, but a wrong
+        # default is a trap for any caller that runs neither.
+        self.prog.SetInitialGuess(self.c, self.GraspCStart())
         self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
         self.jacobian_gen = self.MakeJacobianGen()
@@ -287,37 +296,8 @@ class PandaMugProgram(PandaIKProgram):
         self.constraints.append(self.ik_constraint)
         return self.ik_constraint
 
-    def BoundingBoxConstraint(self):
-        self.LatentBoxConstraint()
-        # Keep the conditioning pose near the mug. A +-5 m box lets the optimizer walk
-        # the flow far outside the workspace it was trained on, where its output is
-        # meaningless. Orientation stays free (+-2*pi avoids clipping rpy wraparound).
-        centre = self.target_mug.middle.translation()
-        slack = self.options.c_position_slack
-        # A general linear constraint, deliberately NOT a bounding box, and the
-        # distinction is load-bearing. IPOPT (an interior-point method) requires every
-        # iterate to sit strictly inside the *variable bounds* -- its bound_push projects
-        # the initial guess into the box before evaluating anything, which silently
-        # destroyed the exact paired start: `c` was teleported to the box face while the
-        # latent stayed tuned to the unprojected pose, so the first evaluated point was
-        # 1-3 rad from q_init and bit-identical to the old pre-clipped protocol (measured:
-        # identical iterate-0 lines in the IPOPT logs). General constraints carry no such
-        # interiority requirement -- they may start violated, the violation just lands in
-        # inf_pr -- so with the box written this way the solver genuinely starts at the
-        # guess and walks `c` into the region continuously while `z` and the correction
-        # adapt, instead of being jolted onto the face at iterate 0.
-        self.c_box = (np.concatenate([centre - slack, -2 * np.pi * np.ones(3)]),
-                      np.concatenate([centre + slack, 2 * np.pi * np.ones(3)]))
-        self.c_box_constraint = self.prog.AddLinearConstraint(
-            np.eye(6), self.c_box[0], self.c_box[1], self.c)
-        self.c_box_constraint.evaluator().set_description("CBoxConstraint")
-        bound = self.options.correction_bound
-        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -bound * np.ones(7), bound * np.ones(7), self.correction
-        )
-        self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
-
-
+    ## `BoundingBoxConstraint` is the base class's: it sees `target_mug` and builds the
+    ## shared grasp box (`GraspCBoxConstraint`). No per-robot copy lives here any more.
 
 
 class PandaIKProgramNumerical(PandaIKProgram):
@@ -333,10 +313,7 @@ class PandaIKProgramNumerical(PandaIKProgram):
         self.lumped_vars = self.q
 
         self.target_pose = target_pose
-        if q_nominal is None:
-            self.q_nominal = np.zeros(7)
-        else:
-            self.q_nominal = q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         self.prog.SetInitialGuess(self.q, self.q_nominal)
         self.add_constraints()
         self.add_costs()
@@ -362,9 +339,8 @@ class PandaIKProgramNumerical(PandaIKProgram):
         return self.SetStartFromQ(q_init)
 
     def BoundingBoxConstraint(self):
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-                    -10. * np.ones(7), 10. * np.ones(7), self.q
-        )
+        ## The plant's limits, through the one shared helper; +-10 only under the control.
+        self.QBoundingBoxConstraint(legacy_bounds=PANDA_LEGACY_Q_BOUNDS)
 
 def AnalyticBranchOptions(branches):
     """The discrete branch set of the Panda analytic chart.
@@ -393,10 +369,7 @@ class PandaIKProgramAnalytic(PandaIKProgram):
         self.lumped_vars = np.hstack([self.xyz_rpy, self.psi])
 
         self.target_pose = target_pose
-        if q_nominal is None:
-            self.q_nominal = np.zeros(7)
-        else:
-            self.q_nominal = q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         if gc is None:
             opts = AnalyticBranchOptions(self.options.analytic_branches)
             self.gc = opts[np.random.randint(len(opts))]
@@ -559,10 +532,7 @@ class PandaMugProgramNumerical(PandaMugProgram):
         self.lumped_vars = self.q
 
         self.target_mug = target_mug
-        if q_nominal is None:
-            self.q_nominal = np.zeros(7)
-        else:
-            self.q_nominal = q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         self.prog.SetInitialGuess(self.q, self.q_nominal)
         self.add_constraints()
         self.add_costs()
@@ -581,9 +551,7 @@ class PandaMugProgramNumerical(PandaMugProgram):
         return self.SetStartFromQ(q_init)
 
     def BoundingBoxConstraint(self):
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-                    -10. * np.ones(7), 10. * np.ones(7), self.q
-        )
+        self.QBoundingBoxConstraint(legacy_bounds=PANDA_LEGACY_Q_BOUNDS)
 
 
 class PandaMugProgramAnalytic(PandaIKProgramAnalytic):
@@ -604,10 +572,7 @@ class PandaMugProgramAnalytic(PandaIKProgramAnalytic):
         self.lumped_vars = np.hstack([self.xyz_rpy, self.psi])
 
         self.target_mug = target_mug
-        if q_nominal is None:
-            self.q_nominal = np.zeros(7)
-        else:
-            self.q_nominal = q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         if gc is None:
             opts = AnalyticBranchOptions(self.options.analytic_branches)
             self.gc = opts[np.random.randint(len(opts))]

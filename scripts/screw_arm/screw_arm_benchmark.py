@@ -65,6 +65,10 @@ def Configs(spec):
         "eval":     dict(share_flow_evaluations=True),
         "latent":   dict(share_flow_evaluations=True,
                          latent_trust_region=spec.latent_trust_region),
+        ## The cross-robot A/B of the rule (PI, 2026-10-08): the same radius, but computed
+        ## from the loaded chart inside the program, so one flag sizes every robot alike.
+        ## Identical to `latent` on this robot; it exists so the A/B is one flag everywhere.
+        "latent_rule": dict(share_flow_evaluations=True, latent_trust_region_rule=True),
     }
 
 
@@ -219,10 +223,17 @@ def main():
     ## of the same grid under DIFFERENT solvers are not the same measurement, and without
     ## this they resolve to the same log_dir and the same summary.json and silently
     ## overwrite each other. The panda script has always included it; this one did not.
+    ## The scene's fingerprint goes in the tag AND the metadata: `grid_hash` hashes only
+    ## q's, so a run on a defective gripper SDF and one on the fixed SDF share a grid hash
+    ## and would otherwise pair. The grasp task's in-memory mug is folded in.
+    yaml_file = SceneFile(args.robot, args.task, args.scene)
+    scene_fp = bm.scene_fingerprint(
+        yaml_file, extra_models=([os.path.join(RepoDir(), bm.MUG_MODEL_FILE)]
+                                 if args.task == "mug" else ()))
     tag = args.tag or "_".join(
         [args.robot, args.task, args.config, args.solver, args.start] + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
-        + (["compiled"] if args.compile else []))
+        + (["compiled"] if args.compile else []) + [scene_fp[:8]])
     if shard is not None:
         tag = f"{tag}_shard{shard[0]}of{shard[1]}"
     log_dir = os.path.join(RepoDir(), "results/screw_arm/benchmark", tag)
@@ -259,7 +270,6 @@ def main():
     # the containment test applies to. `--scene legacy` restores the pre-2026-09-15
     # obstacle set (the bin and the seven decorative mugs).
     spec = SCENES[(args.robot, args.task)]
-    yaml_file = SceneFile(args.robot, args.task, args.scene)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
         sampler_cls = ScrewArmMugProgram if args.task == "mug" else ScrewArmIKProgram
@@ -444,6 +454,9 @@ def main():
                                         grid_hash=grid_hash, compiled=args.compile,
                                         scene=os.path.basename(yaml_file),
                                         scene_mode=args.scene,
+                                        scene_fingerprint=scene_fp,
+                                        latent_trust_region_effective=(
+                                            sampler.LatentTrustRadius()),
                                         target_placement=placement,
                                         shelf_inset=(args.shelf_inset
                                                      if placement == "shelf"
