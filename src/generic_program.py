@@ -233,8 +233,19 @@ SVGD_ENUM_FIELDS = {
 }
 
 
+## The METHOD-SPECIFIC svgd knobs: each is read by one method only. Setting one away from
+## its default while `svgd_method` names another is a sweep that measures nothing (the knob
+## is inert on that run), so it is refused here, by name, like a bad enum value.
+SVGD_METHOD_KNOBS = {
+    "admm_svgd": ("svgd_admm_rho", "svgd_admm_gamma", "svgd_admm_x_iters", "svgd_admm_q_iters"),
+    "tsvgd": ("svgd_tsvgd_switch_infeas", "svgd_tangent_delta"),
+}
+
+
 def CheckSvgdOptions(options):
-    """Refuse an svgd enum value outside its choices, and a non-positive particle count."""
+    """Refuse an svgd enum value outside its choices, a non-positive particle count, a
+    method-specific knob set away from its default under another method, and the CUDA-graph
+    switch without the compile switch."""
     for name, allowed in SVGD_ENUM_FIELDS.items():
         value = getattr(options, name)
         if value not in allowed:
@@ -242,6 +253,22 @@ def CheckSvgdOptions(options):
     if int(options.svgd_n) < 1:
         raise ValueError(f"svgd_n must be >= 1, got {options.svgd_n!r} (N = 1 is the "
                          f"degenerate single-particle control, not 0)")
+    defaults = {f.name: f.default for f in dataclass_fields(type(options))}
+    for method, knobs in SVGD_METHOD_KNOBS.items():
+        if options.svgd_method == method:
+            continue
+        for knob in knobs:
+            if getattr(options, knob) != defaults[knob]:
+                raise ValueError(f"{knob}={getattr(options, knob)!r} is read by svgd_method="
+                                 f"{method!r} only, but svgd_method={options.svgd_method!r}: "
+                                 f"the knob would be inert")
+    if int(options.svgd_admm_x_iters) < 1 or int(options.svgd_admm_q_iters) < 0:
+        raise ValueError("svgd_admm_x_iters must be >= 1 and svgd_admm_q_iters >= 0")
+    if float(options.svgd_admm_rho) <= 0.0:
+        raise ValueError(f"svgd_admm_rho must be > 0, got {options.svgd_admm_rho!r}")
+    if options.svgd_cuda_graph and not options.svgd_compile:
+        raise ValueError("svgd_cuda_graph=True requires svgd_compile=True (the graphs replay "
+                         "the compiled stages)")
 
 
 @dataclass
@@ -648,8 +675,8 @@ class ProgramOptions:
     svgd_tangent_delta: float = field(default=1e-6, metadata={"help": "svgd: damping delta in the tangent-space projector (tsvgd)"})
     svgd_resample_every: int = field(default=10, metadata={"help": "svgd: check for runaway / non-finite particles every this many outer steps and re-draw them (counted as n_resampled)"})
     svgd_resample_q_max: float = field(default=1000.0, metadata={"help": "svgd: |q|_inf above which a particle counts as runaway and is re-drawn"})
-    svgd_admm_rho: float = field(default=100.0, metadata={"help": "svgd: ADMM consensus penalty (admm_svgd)"})
-    svgd_admm_gamma: float = field(default=0.2, metadata={"help": "svgd: ADMM dual step relaxation (admm_svgd)"})
+    svgd_admm_rho: float = field(default=100.0, metadata={"help": "svgd: initial ADMM consensus penalty per particle, then residual balancing (admm_svgd)"})
+    svgd_admm_gamma: float = field(default=0.2, metadata={"help": "svgd: gain on the q-block's Stein repulsion relative to the annealed temperature (admm_svgd)"})
     svgd_admm_x_iters: int = field(default=5, metadata={"help": "svgd: x-block GN iterations per ADMM round (admm_svgd)"})
     svgd_admm_q_iters: int = field(default=3, metadata={"help": "svgd: q-block projection iterations per ADMM round (admm_svgd)"})
     svgd_polish_iters: int = field(default=20, metadata={"help": "svgd: float64 polish iterations on the top-k particles"})
@@ -657,13 +684,21 @@ class ProgramOptions:
     svgd_polish_topk: int = field(default=4, metadata={"help": "svgd: how many particles, in objective order among the feasible, are polished"})
     svgd_recheck_topk: int = field(default=3, metadata={"help": "svgd: how many polished particles get the exact Drake `EvalBinding` re-check; the first passer is returned"})
     svgd_time_reserve: float = field(default=0.1, metadata={"help": "svgd: fraction of `max_wall_time` held back from the swarm for polish and re-check"})
-    svgd_stop_patience: int = field(default=5, metadata={"help": "svgd: outer steps without improvement in the best scaled violation before stopping early"})
+    svgd_stop_patience: int = field(default=5, metadata={"help": "svgd: outer steps without improvement of the best particle's merit before stopping early (the improvement threshold is svgd_stop_rel once a particle is feasible)"})
+    svgd_stop_rel: float = field(default=1e-3, metadata={"help": "svgd: once at least one particle is feasible, an outer step counts as progress only if the best feasible particle's objective improved by this relative amount; svgd_stop_patience such stalls -> status converged (before that, any improvement of the merit counts)"})
+    svgd_eta_rel: float = field(default=0.5, metadata={"help": "svgd: the AL's Nocedal-Wright test passes when a particle's infeasibility has shrunk to this fraction of its value at the last failed test (and at the start); 0 restores the textbook absolute tolerance rho^-0.1, which a far start never meets, so rho saturates and the multipliers never update"})
+    svgd_gn_lm: float = field(default=1e-3, metadata={"help": "svgd: initial Levenberg-Marquardt damping of the Gauss-Newton correction, relative to the Gram's diagonal (Marquardt scaling), adapted per particle on the gain ratio (actual / linearly predicted reduction of the GN rows' |r|^2 over the step taken); 0 disables LM (plain GN with svgd_gn_delta)"})
+    svgd_gn_lm_min: float = field(default=1e-6, metadata={"help": "svgd: floor on the LM damping"})
+    svgd_gn_lm_growth: float = field(default=10.0, metadata={"help": "svgd: per-particle LM damping is multiplied by this where the gain ratio is below 0.25 and divided by it where it is above 0.75"})
+    svgd_gn_lm_max: float = field(default=1e3, metadata={"help": "svgd: cap on the LM damping"})
+    svgd_tsvgd_switch_infeas: float = field(default=100.0, metadata={"help": "svgd: tsvgd runs each particle as al_svgd until its scaled infeasibility is below this (1 = the gate), then in tangent mode; inf = tangent from the start, 0 = never"})
     svgd_warmup: str = field(default="none", metadata={"help": "svgd: 'none' or 'cem' -- a forward-only Cross-Entropy phase on the penalised merit before the gradient phase; a phase of the population method, named in full in every table and A/B tested"})
     svgd_warmup_iters: int = field(default=10, metadata={"help": "svgd: CEM warm-up iterations"})
     svgd_warmup_elite: float = field(default=0.1, metadata={"help": "svgd: CEM elite fraction"})
     svgd_collision_workers: int = field(default=None, metadata={"help": "svgd: processes in the exact-collision pool; None resolves to os.cpu_count() // PROCS inside the solver"})
-    svgd_compile: bool = field(default=False, metadata={"help": "svgd: torch.compile the fused batched step (warmed up by WarmUpSvgdStep, outside any timed cell)"})
-    svgd_cuda_graph: bool = field(default=False, metadata={"help": "svgd: capture the fused step in a CUDA graph (requires svgd_compile)"})
+    svgd_compile: bool = field(default=False, metadata={"help": "svgd: torch.compile the split step's three stages (src/svgd/fused.py; compiled by WarmUpSvgdStep, outside any timed cell). al_svgd and tsvgd only; admm_svgd runs eager and says so"})
+    svgd_cuda_graph: bool = field(default=False, metadata={"help": "svgd: replay the compiled stages as CUDA graphs, captured by WarmUpSvgdStep before the first timed cell (requires svgd_compile and CUDA)"})
+    svgd_pool_overlap: bool = field(default=True, metadata={"help": "svgd: dispatch the collision batch to the pool BEFORE the flow Jacobian and the kinematics are launched, collecting it after, so Drake's IPC and compute run behind the GPU work; False collects at once (the measurement's control)"})
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
     visualize: bool = field(default=False, metadata={"help": "If true, visualizes the IK solving process in Meshcat"})
@@ -976,6 +1011,14 @@ class IKFlowProgram:
         """
         from src.svgd.solver import SvgdSolver
         return SvgdSolver(self).warm_up()
+
+    def PrepareSvgdSolve(self):
+        """The svgd solver's per-cell infrastructure -- the batched program and this scene's
+        collision pool with its workers' scenes built -- paid in a cell's SETUP, before its
+        clock starts (`run_grid` calls it), as a Drake arm's scene is built in setup. No
+        solver state survives into the solve except the pool. Returns the seconds spent."""
+        from src.svgd.solver import SvgdSolver
+        return SvgdSolver(self).prepare()
 
     def fk(self, q, matrix = False):
         frame, context = self.SetPositions(q)

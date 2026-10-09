@@ -228,6 +228,18 @@ def test_closed_form_derivatives_match_autograd():
             err_chain = max((a[i] - b[i]).abs().max().item() for a, b in zip(fast, full) for i in (0, 1))
             ev2 = bp.evaluate(X, detach_kinematics=True, row_jacobians=True)
             err_det = max((ev2.drake_rows - D).abs().max().item(), (ev2.F - ev.F).abs().max().item())
+            ## The SOLVER's path (`_Target.evaluate`: detached kinematics on the learned
+            ## arm, no graph at all on joint space) must carry the collision row's gradient
+            ## too -- until 2026-10-08 it was read off an autograd node that path never
+            ## builds, so the solver's collision Jacobian was silently zero on both arms.
+            tg = _Target(bp, 1e-4, 1.0)
+            evs = tg.evaluate(X)
+            has_cg = evs.out.extras.get("collision_grad") is not None
+            Ds = tg.generic_jacobian_cfg(evs)
+            err_solver = (Ds - Dq)[ok].abs().amax().item()
+            check(f"panda/{task}/{arm}: the solver path's row Jacobian (collision row included) "
+                  f"matches autograd", has_cg and err_solver < 1e-12,
+                  f"collision_grad present {has_cg}, err {err_solver}")
             print(f"    panda/{task}/{arm}: rows {err_rows:.2e}  cost {err_cost:.2e}  extra rows "
                   f"{err_extra:.2e}  frame chain {err_chain:.2e}  detached evaluate {err_det:.2e} "
                   f"({int(ok.sum())}/{N} ordinary particles)")
@@ -369,6 +381,214 @@ def test_benchmark_subprocess():
     shutil.rmtree(out_dir, ignore_errors=True)
 
 
+def test_scaled_rows_map_back_to_drake_rows():
+    """Task D's contract. The solver scales every row by `1 / (tol * s)` so that
+    `||[h~; g~+]||_inf <= 1` is "feasible at the gate"; `unscale` must recover, for EVERY
+    entry, exactly the signed violation of the Drake row it came from -- `value - lb` (eq),
+    `lb - value` (lo), `value - ub` (hi) of `prog.EvalBinding(binding, x)` -- at
+    `svgd_row_scale_rot` 1 and 4, and at scale 1 the solver's infeasibility times `tol` is
+    the worst Drake violation over those rows. All four Panda programs, float64."""
+    print("\n--- scaled rows map back to the Drake rows exactly ---")
+    rng = np.random.default_rng(11)
+    tol = 1e-4
+    for task in ("pose", "mug"):
+        for arm in ("learned", "numerical"):
+            bp = T.batched("panda", task, arm)
+            p = bp.program
+            by_desc = T.bindings_by_description(p)
+            X_np = T.lumped_batch(bp, rng, 8)
+            X = torch.tensor(X_np, dtype=torch.float64, device=bp.device)
+            worst_map, worst_inf = 0.0, 0.0
+            for rot in (1.0, 4.0):
+                tg = _Target(bp, tol, rot)
+                with torch.no_grad():
+                    ev = tg.evaluate(X, need_grad=False)
+                h_u, g_u = tg.unscale(ev.h, ev.g)
+                for i in range(X.shape[0]):
+                    if not (bool(ev.finite[i]) and float(ev.cfg[i].abs().max()) < 100):
+                        continue
+                    xf = bp.to_drake_x(X_np[i])
+                    vals = {d: np.asarray(p.prog.EvalBinding(b[0], xf), dtype=float).ravel()
+                            for d, b in by_desc.items()}
+                    drake_viol = []
+                    for col, specs in ((h_u, bp.h_spec), (g_u, bp.g_spec)):
+                        for j, r in enumerate(specs):
+                            v = vals[r.drake_binding][r.drake_row]
+                            ref = {"eq": v - r.lb, "lo": r.lb - v, "hi": v - r.ub}[r.kind]
+                            worst_map = max(worst_map, abs(float(col[i, j]) - ref) / max(1.0, abs(ref)))
+                            drake_viol.append(abs(ref) if r.kind == "eq" else max(ref, 0.0))
+                    if rot == 1.0:
+                        worst_inf = max(worst_inf, abs(float(ev.infeas[i]) * tol - max(drake_viol))
+                                        / max(1e-12, max(drake_viol)))
+            print(f"    panda/{task}/{arm}: max |unscaled - Drake| (rel) {worst_map:.2e}; "
+                  f"|infeas * tol - Drake max violation| (rel) {worst_inf:.2e}")
+            check(f"panda/{task}/{arm}: unscaled rows equal the Drake rows' signed violations",
+                  worst_map < 1e-9, f"{worst_map}")
+            check(f"panda/{task}/{arm}: infeasibility * tol is the Drake max violation",
+                  worst_inf < 1e-9, f"{worst_inf}")
+
+
+def test_stop_reasons_and_log():
+    """Task A's contract: the swarm's reason for stopping is recorded on the details and in
+    the log -- `feasible_stall` (some particle feasible, the best objective stalled for
+    `svgd_stop_patience` outer steps), `step_cap`, `wall_clock` -- and the log carries the
+    per-outer rho / eta trajectories (task B)."""
+    print("\n--- stop reasons ---")
+    p = pose_program("learned")
+    _, d, _ = run_cell(p, "pose", "patience=2", dict(svgd_method="al_svgd", svgd_n=32, svgd_kernel="q",
+                                                     svgd_stop_patience=2, svgd_outer_iters=300),
+                       wall=20.0, quiet=True)
+    check("stop: a feasible swarm that stalls stops with stop_reason 'feasible_stall'",
+          d.stop_reason == "feasible_stall" and d.status_name == "converged",
+          f"{d.stop_reason} {d.status_name}")
+    with open(p.options.file_print_name) as f:
+        log = f.read()
+    check("stop: the log records the stop reason and the rho / eta trajectories",
+          "SVGD stop reason: feasible_stall" in log and "SVGD trace med_rho = " in log
+          and "SVGD trace med_eta = " in log, log[-400:])
+    _, d, _ = run_cell(p, "pose", "outer=2", dict(svgd_method="al_svgd", svgd_n=16, svgd_kernel="q",
+                                                  svgd_stop_patience=10 ** 6, svgd_outer_iters=2),
+                       wall=20.0, quiet=True)
+    check("stop: the outer-step cap stops with stop_reason 'step_cap'", d.stop_reason == "step_cap",
+          d.stop_reason)
+    rho = d.extras["trace"]["med_rho"]
+    check("stop: rho is capped at svgd_rho_max", max(rho) <= float(p.options.svgd_rho_max), str(rho))
+
+
+def test_admm_degenerates_on_joint_space():
+    """Task F's contract. On the joint-space arm `f = I`: the x-block IS the projection
+    `x <- Pi_box(q_bar - u)` (to within `svgd_gn_delta / rho`), and the solve's details say
+    it degenerated to the projection split; on the learned arm they say it did not."""
+    print("\n--- admm_svgd: the joint-space arm is the projection split, and says so ---")
+    from src.svgd.admm import AdmmSwarm
+    for arm in ("numerical", "learned"):
+        p = pose_program(arm)
+        _, d, _ = run_cell(p, "pose", "admm", dict(svgd_method="admm_svgd", svgd_n=16, svgd_kernel="q",
+                                                   svgd_outer_iters=3, svgd_stop_patience=10 ** 6),
+                           wall=20.0, quiet=True)
+        a = d.extras.get("admm") or {}
+        check(f"admm/{arm}: details record degenerate={arm == 'numerical'}",
+              a.get("degenerate") is (arm == "numerical")
+              and (("projection split" in a.get("split", "")) == (arm == "numerical")), str(a))
+        p.options = replace(p.options, svgd_method="al_svgd")
+    p = pose_program("numerical")
+    p.options = replace(p.options, svgd_method="admm_svgd", svgd_n=16)
+    s = SvgdSolver(p)
+    s._build()
+    sw = AdmmSwarm(s)
+    rng = np.random.default_rng(5)
+    X = torch.tensor(T.lumped_batch(s._tg.bp, rng, 16), dtype=s.dtype, device=s.device)
+    v = X + 0.05 * torch.randn_like(X)
+    rho = torch.full((16,), 100.0, dtype=s.dtype, device=s.device)
+    Xn, _, _ = sw.x_block(X, v, rho)
+    lo, hi = s._tg.bp.bounds
+    err = float((Xn - torch.minimum(torch.maximum(v, lo), hi)).abs().max())
+    print(f"    joint space: |x_block(v) - Pi_box(v)|_inf = {err:.2e}")
+    check("admm/numerical: the x-block is the box projection of q_bar - u", err < 1e-4, f"{err}")
+    p.options = replace(p.options, svgd_method="al_svgd")
+
+
+def test_graph_replay_is_bitwise():
+    """Task G's contract: a captured stage replays BIT-IDENTICALLY to the compiled function
+    it captured, on a fixed input -- all three stages, learned and joint-space pose, N=16,
+    float32 -- and the compiled stages agree with eager to float32 rounding. Also: a second
+    program of the same structure REUSES the cached graphs (constants rebound, no capture),
+    and after `FreezeSvgdSteps()` a new structure raises instead of capturing."""
+    print("\n--- CUDA-graph replay vs the compiled step, bitwise ---")
+    if not torch.cuda.is_available():
+        print("    (no CUDA: skipped)")
+        return
+    from src.svgd import fused
+    from src.svgd.al import ALState
+    for arm in ("learned", "numerical"):
+        p = pose_program(arm)
+        p.options = replace(p.options, which_solver="svgd", svgd_method="al_svgd", svgd_n=16,
+                            svgd_kernel="q", svgd_compile=True, svgd_cuda_graph=True,
+                            acceptable_constr_viol_tol=1e-4)
+        rng = np.random.default_rng(9)
+        with HiddenPrints():
+            p.SetStartFromQ(T.collision_free_q(p, rng, 1)[0])
+        s = SvgdSolver(p)
+        s.warm_up()
+        r = s._make_runner()
+        check(f"graph/{arm}: three stages captured", r.mode == "graphed" and r.graphs_captured() >= 3,
+              f"{r.mode} {r.graphs_captured()}")
+        X, _, _ = s._init_particles(np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float))
+        tg = r.tg
+        S = ALState.init(16, s.n, tg.m_e, tg.m_i, 10.0, 1.0, 0.05, s.dtype, s.device, gn_lam0=1e-3)
+        g1, g2, g3 = r.fns["s1"], r.fns["s2"], r.fns[("s3", True)]
+        cfg, qp = g1(X)
+        J_q, kin = g2(X, cfg)
+        v, gr = s._pool.eval(qp.to("cpu", torch.float64).numpy())
+        col = torch.as_tensor(v).to(X), torch.as_tensor(gr).to(X)
+        sc = [torch.full((), x, dtype=s.dtype, device=s.device) for x in (0.5, 0.3, 2.0)]
+        args3 = (X, cfg, J_q, kin, col[0], col[1], fused.state_dict(S), *sc)
+        out_g = g3(*args3)
+        with torch.no_grad():
+            out_c = g3.fn(*args3)
+            cfg_c, _ = g1.fn(X)
+        with torch.enable_grad():
+            J_c, _ = g2.fn(X, cfg)
+        flat_g, _ = torch.utils._pytree.tree_flatten(out_g)
+        flat_c, _ = torch.utils._pytree.tree_flatten(out_c)
+        bit = all(torch.equal(a, b) if a.dtype == torch.bool else
+                  bool(((a == b) | (torch.isnan(a) & torch.isnan(b))).all())
+                  for a, b in zip(flat_g, flat_c) if isinstance(a, torch.Tensor))
+        bit12 = torch.equal(cfg, cfg_c) and torch.equal(J_q, J_c)
+        with torch.no_grad():
+            out_e = fused.stage3_al(tg, s._sc, True, *args3)
+        dX = float((out_e["X"] - out_g["X"]).abs().max())
+        print(f"    {arm}: replay == compiled bitwise: stages 1-2 {bit12}, stage 3 {bit}; "
+              f"|X_eager - X_graph| = {dX:.2e}")
+        check(f"graph/{arm}: replay is bit-identical to the compiled stages", bit and bit12)
+        check(f"graph/{arm}: compiled agrees with eager to float32 rounding", dX < 1e-3, f"{dX}")
+        ## a second program of the same structure reuses the graphs
+        p2 = TS_second_pose_program(arm)
+        p2.options = p.options
+        s2 = SvgdSolver(p2)
+        s2._build()
+        r2 = s2._make_runner()
+        check(f"graph/{arm}: a second program of one structure reuses the cached graphs",
+              r2.reused and r2.fns is r.fns, f"reused {r2.reused}")
+        p.options = replace(p.options, svgd_compile=False, svgd_cuda_graph=False)
+    fused.FreezeSvgdSteps()
+    try:
+        p = pose_program("learned")
+        p.options = replace(p.options, svgd_compile=True, svgd_cuda_graph=True, svgd_n=8)
+        s = SvgdSolver(p)
+        s._build()
+        try:
+            s._make_runner()
+            check("graph: a new structure after the freeze raises", False, "no raise")
+        except RuntimeError as exc:
+            check("graph: a new structure after the freeze raises", "frozen" in str(exc), str(exc))
+    finally:
+        fused.FreezeSvgdSteps(False)
+        p.options = replace(p.options, svgd_compile=False, svgd_cuda_graph=False)
+
+
+_POSE2 = {}
+
+
+def TS_second_pose_program(arm):
+    """A second pose program on the same scene with a DIFFERENT target: same structure,
+    different constants -- the template-rebinding case."""
+    if arm in _POSE2:
+        return _POSE2[arm]
+    pose_program(arm)
+    rng = np.random.default_rng(77)
+    oracle = T.program("panda", "pose", "numerical")
+    q_t = T.collision_free_q(oracle, rng, 1)[0]
+    translation, wxyz = oracle.fk(oracle.ConfigToPlantQ(q_t))
+    cls = PandaIKProgram if arm == "learned" else PandaIKProgramNumerical
+    with HiddenPrints():
+        p = cls(_POSE["diagram"], options=T._options("panda", "pose", arm), model=T._solver("panda"))
+        p.create_prog(np.concatenate([translation, wxyz]))
+        p.SetStartFromQ(T.collision_free_q(p, rng, 1)[0])
+    _POSE2[arm] = p
+    return p
+
+
 ## ------------------------------------------------------------------------------------ ##
 ##                          the go/no-go sweep and the profile                          ##
 ## ------------------------------------------------------------------------------------ ##
@@ -425,11 +645,15 @@ def main():
     which = sys.argv[1:] or ["short"]
     if "short" in which:
         test_closed_form_derivatives_match_autograd()
+        test_scaled_rows_map_back_to_drake_rows()
         test_grasp_cells()
         test_determinism()
         test_wall_clock_stop()
         test_nan_injection()
         test_cem_warmup_toggle()
+        test_stop_reasons_and_log()
+        test_admm_degenerates_on_joint_space()
+        test_graph_replay_is_bitwise()
         test_benchmark_subprocess()
     if "sweep" in which:
         sweep()

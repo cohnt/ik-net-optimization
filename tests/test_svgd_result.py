@@ -214,9 +214,32 @@ def test_bad_svgd_set_is_refused_at_options():
               "svgd_method" in str(exc) and "foo" in str(exc), str(exc))
 
 
+def test_method_knob_guard():
+    """A method-specific knob set away from its default under another method is refused at
+    ProgramOptions (it would be inert); under its own method it is accepted; the CUDA-graph
+    switch without the compile switch is refused."""
+    print("\n--- method-specific svgd knobs are refused under another method ---")
+    cases = [(dict(svgd_method="al_svgd", svgd_admm_rho=5.0), True),
+             (dict(svgd_method="admm_svgd", svgd_admm_rho=5.0), False),
+             (dict(svgd_method="tsvgd", svgd_admm_x_iters=2), True),
+             (dict(svgd_method="al_svgd", svgd_tsvgd_switch_infeas=10.0), True),
+             (dict(svgd_method="tsvgd", svgd_tsvgd_switch_infeas=10.0), False),
+             (dict(svgd_cuda_graph=True), True),
+             (dict(svgd_compile=True, svgd_cuda_graph=True), False)]
+    for kw, should_raise in cases:
+        try:
+            ProgramOptions(which_solver="svgd", **kw)
+            raised, msg = False, ""
+        except ValueError as exc:
+            raised, msg = True, str(exc)
+        check(f"ProgramOptions({kw}) {'raises' if should_raise else 'is accepted'}",
+              raised == should_raise, msg or "no raise")
+
+
 def main():
     test_svgd_result_duck_type()
     test_bad_svgd_set_is_refused_at_options()
+    test_method_knob_guard()
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")
     for name in FAILURES:
         print(f"  FAILED: {name}")

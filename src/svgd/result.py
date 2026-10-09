@@ -82,7 +82,8 @@ class SvgdSolverDetails:
     solver_feasible: bool = False  # the returned particle passed the solver's own rows
     drake_feasible: bool = False   # ... and the exact `prog.EvalBinding` re-check
     solve_seconds: float = 0.0
-    collision_seconds: float = 0.0 # time inside the collision backend (the exactness premium)
+    collision_seconds: float = 0.0 # host time blocked in the collision backend (the exactness premium)
+    stop_reason: str = ""          # why the SWARM stopped: feasible_stall | wall_clock | step_cap
     extras: dict = field(default_factory=dict)
 
 
@@ -174,3 +175,10 @@ def write_log(path, details):
             f.write(line.format(**fields) + "\n")
         for k, v in sorted(details.phase_times.items()):
             f.write(f"SVGD phase {k} = {float(v):.6f}\n")
+        if getattr(details, "stop_reason", ""):
+            f.write(f"SVGD stop reason: {details.stop_reason}\n")
+        ## The per-outer-step trace, one line per column (`_Target.TRACE_COLUMNS`): the AL
+        ## schedule's rho / eta trajectories, the LM damping and gain ratio, feasibility.
+        ## Informational -- the harness parses none of these lines.
+        for name, values in (details.extras or {}).get("trace", {}).items():
+            f.write(f"SVGD trace {name} = " + " ".join(f"{float(v):.4g}" for v in values) + "\n")

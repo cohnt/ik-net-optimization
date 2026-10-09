@@ -284,6 +284,88 @@ def test_gn_correction_ignores_masked_rows_and_survives_singular_j():
     print("PASS GN ignores zeroed rows exactly and is finite on singular J")
 
 
+def test_relative_eta_seed_and_lm_gain_ratio():
+    """The second wave's three AL additions. (a) `update_multipliers(eta_rel)`: on the
+    failing branch the new tolerance is `max(rho_new^-0.1, eta_rel * infeasibility)`, on the
+    passing one `max(eta / rho^0.9, eta_rel * infeasibility)`, and `eta_rel = 0` is bitwise
+    the textbook rule.
+    (b) `seed_eta` raises `eta` to `eta_rel * infeasibility` where that is larger and is a
+    no-op at 0. (c) `lm_gain_update` grows the damping by `growth` (capped) where the gain
+    ratio (actual / predicted reduction of |r|^2) is below 0.25, shrinks it (floored) above
+    0.75, and leaves it alone without information (no prediction yet, a non-decreasing
+    prediction); on linear rows the ratio is exactly 1; `gn_correction(lam)` with a large
+    `lam` is a short step along the Marquardt-scaled gradient `-J^T D^-1 r / lam`."""
+    for dtype, device, tol in _targets():
+        gen = _gen(13, device)
+        N, n, m_e, m_i = 12, 4, 2, 2
+        S = ALState.init(N, n, m_e, m_i, rho0=10.0, eta0=0.5, lr0=0.1, dtype=dtype, device=device)
+        h = _randn(N, m_e, dtype=dtype, device=device, gen=gen)
+        h[::2] *= 1e-3                                           # even: pass; odd: fail
+        h[1::2] += 5.0
+        g = -torch.ones(N, m_i, dtype=dtype, device=device)
+        v = al.infeasibility(h, g, S)
+        ok = v <= S.eta
+        assert bool(ok[::2].all()) and not bool(ok[1::2].any())
+        S_nw = al.update_multipliers(h, g, S, 10.0, 1e4, 1e3)
+        S_0 = al.update_multipliers(h, g, S, 10.0, 1e4, 1e3, eta_rel=0.0)
+        assert bool((S_nw.eta == S_0.eta).all()) and bool((S_nw.rho == S_0.rho).all())
+        S_r = al.update_multipliers(h, g, S, 10.0, 1e4, 1e3, eta_rel=0.5)
+        exp_fail = torch.maximum(S_r.rho ** -0.1, 0.5 * v)
+        assert _maxabs(S_r.eta[1::2], exp_fail[1::2]) <= tol * 10
+        exp_pass = torch.maximum(S_nw.eta, 0.5 * v)
+        assert _maxabs(S_r.eta[::2], exp_pass[::2]) <= tol * 10, "passing branch: max(eta/rho^0.9, eta_rel v)"
+        assert bool((S_r.lam == S_nw.lam).all()) and bool((S_r.rho == S_nw.rho).all())
+        S_s = al.seed_eta(h, g, S, 0.5)
+        assert _maxabs(S_s.eta, torch.maximum(S.eta, 0.5 * v)) <= tol
+        assert bool((al.seed_eta(h, g, S, 0.0).eta == S.eta).all())
+        ## LM: the gain ratio, case by case (m_e = 2, m_i = 2 rows; mask on the h rows)
+        kw = dict(dtype=dtype, device=device)
+        S_l = al.replace(S, gn_lam=torch.full((N,), 1e-2, **kw),
+                         gn_r2=torch.full((N,), 1.0, **kw), gn_pred2=torch.zeros(N, **kw),
+                         gn_mask=torch.cat([torch.ones(N, m_e, **kw), torch.zeros(N, m_i, **kw)], 1))
+        a2 = torch.tensor([0.9, 0.1, 0.5, 0.5, 0.5, 0.9] * 2, **kw)   # actual |r|^2 per particle
+        h_l = torch.zeros(N, m_e, **kw)
+        h_l[:, 0] = a2.sqrt()
+        g_l = torch.full((N, m_i), 123.0, **kw)                          # masked out: ignored
+        S_l = al.replace(S_l, gn_r2=torch.where(torch.arange(N, device=device) % 6 == 3,
+                                                 torch.full_like(S_l.gn_r2, float("nan")), S_l.gn_r2),
+                         gn_pred2=torch.where(torch.arange(N, device=device) % 6 == 4,
+                                              torch.full_like(S_l.gn_pred2, 2.0), S_l.gn_pred2))
+        S_l2, ratio = al.lm_gain_update(S_l, h_l, g_l, growth=10.0, lam_min=1e-4, lam_max=1e-1)
+        lam = S_l2.gn_lam.double().cpu().numpy()
+        rat = ratio.double().cpu().numpy()
+        exp_lam = np.array([1e-1, 1e-3, 1e-2, 1e-2, 1e-2, 1e-1] * 2)
+        assert np.allclose(lam, exp_lam, rtol=1e-5), f"lam {lam} vs {exp_lam}"
+        assert np.allclose(rat[[0, 1, 2]], [0.1, 0.9, 0.5], rtol=1e-5) and np.isnan(rat[[3, 4]]).all()
+        S_cap, _ = al.lm_gain_update(S_l2, h_l, g_l, growth=10.0, lam_min=1e-4, lam_max=1e-1)
+        assert abs(float(S_cap.gn_lam[0]) - 1e-1) <= 1e-7, "capped at lam_max"
+        ## record + update on LINEAR rows with the exact GN step: actual == predicted, ratio 1
+        A = _randn(N, m_e, n, dtype=dtype, device=device, gen=gen)
+        b = _randn(N, m_e, dtype=dtype, device=device, gen=gen)
+        x = _randn(N, n, dtype=dtype, device=device, gen=gen)
+        r0 = (A @ x.unsqueeze(2)).squeeze(2) - b
+        d = 0.5 * al.gn_correction(A, r0, 0.0)                       # half the GN step
+        mask = torch.cat([torch.ones(N, m_e, **kw), torch.zeros(N, m_i, **kw)], 1)
+        S_p = al.lm_record_prediction(S_l, torch.cat([A, torch.zeros(N, m_i, n, **kw)], 1),
+                                      torch.cat([r0, torch.zeros(N, m_i, **kw)], 1), mask, d)
+        r1 = (A @ (x + d).unsqueeze(2)).squeeze(2) - b
+        _, ratio_lin = al.lm_gain_update(S_p, r1, g_l, growth=10.0, lam_min=1e-4, lam_max=1e-1)
+        assert _maxabs(ratio_lin, torch.ones_like(ratio_lin)) <= 1e3 * tol, \
+            f"linear rows: ratio {ratio_lin}"
+        J = _randn(N, m_e, n, dtype=dtype, device=device, gen=gen)
+        r = _randn(N, m_e, dtype=dtype, device=device, gen=gen)
+        dx0 = al.gn_correction(J, r, 1e-9)
+        dx_none = al.gn_correction(J, r, 1e-9, torch.zeros(N, dtype=dtype, device=device))
+        assert _maxabs(dx0, dx_none) <= tol, "lam = 0 is plain GN"
+        lam = torch.full((N,), 1e6, dtype=dtype, device=device)
+        dx = al.gn_correction(J, r, 0.0, lam)
+        D = torch.diagonal(J @ J.transpose(1, 2), dim1=1, dim2=2)
+        grad_step = -(J.transpose(1, 2) @ (r / D).unsqueeze(2)).squeeze(2) / lam.unsqueeze(1)
+        rel = _maxabs(dx, grad_step) / max(_maxabs(grad_step), 1e-30)
+        assert rel <= 1e-3, f"large-lam step is not the scaled gradient: rel {rel:.2e}"
+    print("PASS relative eta (update + seed), the LM gain ratio and the damped GN step")
+
+
 ## --------------------------------------------------------------------------------------
 ## 4./5. Tangent projector and the q-step clamp
 ## --------------------------------------------------------------------------------------
@@ -635,7 +717,11 @@ def _code_only(path):
 
 
 def test_no_host_synchronising_calls_in_the_modules():
-    banned = (".item(", ".tolist(", ".numpy(", ".cpu(", ".nonzero(")
+    ## `torch.tensor(` too: a Python scalar or list made into a CUDA tensor is a pageable
+    ## host-to-device copy, which CUDA-graph capture refuses ("Cannot copy between CPU and
+    ## CUDA tensors during CUDA graph capture") -- `median_bandwidth`'s floor was one, found
+    ## by the first capture of the split step (2026-10-08). `torch.full(...)` is a fill kernel.
+    banned = (".item(", ".tolist(", ".numpy(", ".cpu(", ".nonzero(", "torch.tensor(")
     for name in ("al.py", "kernels.py"):
         src = _code_only(os.path.join(SRC, name))
         for b in banned:
@@ -650,7 +736,7 @@ def test_no_host_synchronising_calls_in_the_modules():
                 f"{name}: single-argument torch.where at offset {pos}")
             pos += 1
         assert n_where > 0
-    print("PASS no .item()/.tolist()/.numpy()/.cpu()/.nonzero()/1-arg where in al.py or kernels.py")
+    print("PASS no .item()/.tolist()/.numpy()/.cpu()/.nonzero()/torch.tensor()/1-arg where in al.py or kernels.py")
 
 
 def _compiled_chain(x, F_a, A, b, C, d, lam, mu, rho, eta, adam_m, adam_v, step, lr, best_x,
@@ -716,6 +802,7 @@ if __name__ == "__main__":
     test_gn_correction_is_exact_on_linear_rows()
     test_gn_correction_converges_quadratically_on_a_circle()
     test_gn_correction_ignores_masked_rows_and_survives_singular_j()
+    test_relative_eta_seed_and_lm_gain_ratio()
     test_tangent_projector_algebra()
     test_clamp_q_step_scales_exactly_to_the_bound()
     test_pairwise_sqdist_matches_brute_force()

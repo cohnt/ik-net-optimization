@@ -521,6 +521,27 @@ class BatchedProgram:
         self._hi = (li(hi_idx), t(hi_ub), t(hi_s))
         self.h_spec: List[RowSpec] = eq_spec
         self.g_spec: List[RowSpec] = lo_spec + hi_spec
+        ## The same split restricted to the GENERIC rows (functions of the configuration
+        ## alone), for `evaluate_cfg`: `h_generic_mask[i]` says whether `h[:, i]` is one,
+        ## and `evaluate_cfg`'s `h` is `h[:, h_generic_mask]` in the same order.
+        nd = self._n_drake_rows
+        gen = lambda idx: [k for k, i in enumerate(idx) if i < nd]
+        ke, kl, kh = gen(eq_idx), gen(lo_idx), gen(hi_idx)
+        pick = lambda v, ks: [v[k] for k in ks]
+        self._eq_gen = (li(pick(eq_idx, ke)), t(pick(eq_lb, ke)), t(pick(eq_s, ke)))
+        self._lo_gen = (li(pick(lo_idx, kl)), t(pick(lo_lb, kl)), t(pick(lo_s, kl)))
+        self._hi_gen = (li(pick(hi_idx, kh)), t(pick(hi_ub, kh)), t(pick(hi_s, kh)))
+        self.h_generic_mask = torch.tensor([i < nd for i in eq_idx], dtype=torch.bool, device=self.device)
+        self.g_generic_mask = torch.tensor([i < nd for i in lo_idx] + [i < nd for i in hi_idx],
+                                           dtype=torch.bool, device=self.device)
+        ## ... and the complement, the EXTRA rows (functions of the decision variables
+        ## alone), with their indices shifted into the extra-rows vector (`evaluate_extra`).
+        ex = lambda idx: [k for k, i in enumerate(idx) if i >= nd]
+        xe, xl, xh = ex(eq_idx), ex(lo_idx), ex(hi_idx)
+        shift = lambda v, ks: [v[k] - nd for k in ks]
+        self._eq_ex = (li(shift(eq_idx, xe)), t(pick(eq_lb, xe)), t(pick(eq_s, xe)))
+        self._lo_ex = (li(shift(lo_idx, xl)), t(pick(lo_lb, xl)), t(pick(lo_s, xl)))
+        self._hi_ex = (li(shift(hi_idx, xh)), t(pick(hi_ub, xh)), t(pick(hi_s, xh)))
 
     def _build_costs(self):
         prog = self.program.prog
@@ -660,7 +681,7 @@ class BatchedProgram:
             torch.cuda.synchronize(self.device)
 
     def evaluate(self, X, need_collision=True, detach_kinematics=False,
-                 row_jacobians=False) -> Evaluation:
+                 row_jacobians=False, collision=None) -> Evaluation:
         """All rows and costs at every particle; one flow pass, one FK pass, one pool call.
 
         `need_collision=False` skips the pool: the collision entries of `drake_rows` and
@@ -674,9 +695,24 @@ class BatchedProgram:
         backward a solver still needs), nothing downstream of it does. A solver that takes
         every row derivative in closed form uses both; the tests, which differentiate the
         rows by autograd, use neither.
+
+        THE COLLISION GRADIENT. Where the plant vector carries an autograd graph the row
+        goes through `collision_row` (its backward is the pool's stored gradient, which is
+        also exposed as `extras["collision_grad"]`). Where it does NOT -- the joint-space
+        arm, and every detached-kinematics evaluation -- the pool is called directly, with
+        the gradient requested iff `row_jacobians`. (Until 2026-10-08 the gradient was read
+        off the autograd node only, so in exactly those two cases `collision_grad` was None
+        and the solver's collision-row Jacobian was silently ZERO on both arms.)
+
+        `collision=(row [N], grad [N, nq] or None)`, scaled as the pool returns them,
+        supplies the collision row precomputed (the solver's split step: the pool runs
+        while the GPU does the Jacobians); the pool is then not called.
+
+        The pieces -- `kinematics`, `collision_eval`, `assemble` -- are public so a fused
+        step can run them in stages with the pool call between; `evaluate` is exactly
+        their composition.
         """
         X = self._as_X(X)
-        N = X.shape[0]
         timing = {}
         prof = self.profile
         t0 = time.perf_counter() if prof else 0.0
@@ -687,17 +723,63 @@ class BatchedProgram:
             self._sync(); timing["flow"] = time.perf_counter() - t0; t0 = time.perf_counter()
 
         cfg_k = cfg.detach() if detach_kinematics else cfg
-        q_plant = self.config_to_plant_q(cfg_k)
-        frames = self._frame_poses(q_plant, jacobians=row_jacobians)
-        pose_frame, pose_flow = frames[0][:2], frames[1][:2]
-        frame_jac = (frames[0][2], frames[0][3]) if row_jacobians else None
+        kin = self.kinematics(cfg_k, row_jacobians)
         if prof:
             self._sync(); timing["fk"] = time.perf_counter() - t0; t0 = time.perf_counter()
+
+        col_row, col_grad = None, None
+        if self._has_collision and need_collision:
+            if prof:
+                self._sync(); tc = time.perf_counter()
+            if collision is not None:
+                col_row, col_grad = collision
+            elif kin[0].requires_grad:
+                col_row = collision_row(kin[0], self.pool)
+                ## The pool's own `d row / d q_plant` [N, nq] rides on the autograd node
+                ## (`CollisionRow.save_for_backward`); exposed so a solver assembling a
+                ## row Jacobian reuses it instead of re-evaluating the pool.
+                col_grad = col_row.grad_fn.saved_tensors[0]
+            else:
+                col_row, col_grad = self.collision_eval(kin[0], need_grad=row_jacobians)
+            if prof:
+                timing["collision"] = time.perf_counter() - tc
+        ev = self.assemble(X, cfg, cfg_k, kin, col_row, col_grad)
+        if prof:
+            self._sync(); timing["rows_costs"] = time.perf_counter() - t0 - timing.get("collision", 0.0)
+        ev.timing = timing
+        return ev
+
+    def kinematics(self, cfg_k, row_jacobians=False):
+        """`(q_plant, pose_frame, pose_flow, frame_jac)` at configurations `cfg_k`: the
+        plant vector, the two frames' poses and (with `row_jacobians`) the program frame's
+        geometric Jacobians `(Jp, Jw)`, else None. No pool, no rows."""
+        q_plant = self.config_to_plant_q(cfg_k)
+        frames = self._frame_poses(q_plant, jacobians=row_jacobians)
+        frame_jac = (frames[0][2], frames[0][3]) if row_jacobians else None
+        return q_plant, frames[0][:2], frames[1][:2], frame_jac
+
+    def collision_eval(self, q_plant, need_grad=True):
+        """`(row [N], grad [N, nq] or None)`: the pool's SCALED collision row (and its
+        gradient) at `q_plant`, as tensors on `q_plant`'s device and dtype. No autograd
+        node. A host round trip (Drake runs on the CPU in float64)."""
+        Q = q_plant.detach().to("cpu", torch.float64).numpy()
+        value, grad = self.pool.eval(Q, need_grad=need_grad)
+        row = torch.as_tensor(value).to(device=q_plant.device, dtype=q_plant.dtype)
+        g = None if grad is None else torch.as_tensor(grad).to(device=q_plant.device, dtype=q_plant.dtype)
+        return row, g
+
+    def assemble(self, X, cfg, cfg_k, kin, col_row, col_grad) -> Evaluation:
+        """Rows, costs and the `Evaluation` from the pieces: decision variables `X`, the
+        configuration `cfg` (with its graph, if any) and its kinematics copy `cfg_k`, the
+        `kinematics(cfg_k)` tuple, and the collision row and gradient (`None` row: the
+        collision entries are NaN). Pure tensor arithmetic over a fixed block inventory --
+        no pool, no host sync -- so a fused step can compile and capture it."""
+        N = X.shape[0]
+        q_plant, pose_frame, pose_flow, frame_jac = kin
 
         ## -- the stacked value vector, block by block, in Drake order --
         values = []
         collision_y = None
-        collision_grad = None
         rpy = None
         for blk in self._blocks:
             k = blk.kind
@@ -711,19 +793,9 @@ class BatchedProgram:
                 hom = torch.cat([pose_frame[1], ones], dim=1) @ self._MinvT
                 values.append(hom[:, :3])
             elif k == "collision":
-                if need_collision:
-                    if prof:
-                        self._sync(); tc = time.perf_counter()
-                    row = collision_row(q_plant, self.pool)
-                    if prof:
-                        timing["collision"] = time.perf_counter() - tc
-                    ## The pool's own `d row / d q_plant` [N, nq] rides on the autograd node
-                    ## (`CollisionRow.save_for_backward`); exposed so a solver assembling a
-                    ## row Jacobian reuses it instead of re-evaluating the pool.
-                    if row.grad_fn is not None:
-                        collision_grad = row.grad_fn.saved_tensors[0]
-                    collision_y = row / self.collision_scale
-                    values.append(row.unsqueeze(1))
+                if col_row is not None:
+                    collision_y = col_row / self.collision_scale
+                    values.append(col_row.unsqueeze(1))
                 else:
                     values.append(torch.full((N, 1), float("nan"), dtype=X.dtype, device=X.device))
             elif k == "joint_limit":
@@ -764,18 +836,157 @@ class BatchedProgram:
                 F_rep = F_rep + val
 
         extras = {"q_inf": cfg.detach().abs().max(dim=1).values,
-                  "collision_grad": collision_grad, "frame_jac": frame_jac,
+                  "collision_grad": col_grad, "frame_jac": frame_jac,
                   "rpy": None if rpy is None else rpy.detach()}
         if self.is_learned:
             c6, z, qc = self._split(X)
             extras["z_norm"] = z.detach().norm(dim=1)
             extras["qc_inf"] = qc.detach().abs().max(dim=1).values
-        if prof:
-            self._sync(); timing["rows_costs"] = time.perf_counter() - t0 - timing.get("collision", 0.0)
         return Evaluation(F=F, F_reported=F_rep, h=h, g=g, q=cfg, q_plant=q_plant,
                           pose_frame=pose_frame, pose_flow=pose_flow, collision_y=collision_y,
-                          drake_rows=drake_rows, extra_rows=extra_rows, extras=extras,
-                          timing=timing)
+                          drake_rows=drake_rows, extra_rows=extra_rows, extras=extras)
+
+    def evaluate_cfg(self, Q, need_collision=True, row_jacobians=True) -> Evaluation:
+        """The GENERIC rows (pose / mug, collision, joint limits -- the rows that are
+        functions of the configuration alone) and the configuration-space costs at a
+        batch of CONFIGURATIONS `Q [N, ndof]`, with no flow and no decision variables:
+        the q-space evaluation an ADMM q-block or any projection onto the constraint
+        manifold needs, the same code path as `evaluate` downstream of the configuration.
+
+        Returns an `Evaluation` whose `h` / `g` are the generic entries only (in the order
+        `h[:, h_generic_mask]` / `g[:, g_generic_mask]` of a full `evaluate`), whose `F` /
+        `F_reported` carry the configuration-space cost terms only, whose `extra_rows` is
+        empty, and whose `extras` carry `frame_jac` / `collision_grad` exactly as
+        `evaluate(..., row_jacobians=True)` does, so `generic_rows_jacobian_cfg` applies.
+        Identical to the matching slices of `evaluate(X)` at `Q = q(X)` (a test pins it).
+        Not counted as a map evaluation: the map is not evaluated."""
+        Q = torch.as_tensor(Q, dtype=self.dtype, device=self.device)
+        if Q.dim() != 2 or Q.shape[1] != self.ndof:
+            raise ValueError(f"Q must be [N, {self.ndof}], got {tuple(Q.shape)}")
+        N = Q.shape[0]
+        cfg = Q
+        q_plant = self.config_to_plant_q(cfg)
+        frames = self._frame_poses(q_plant, jacobians=row_jacobians)
+        pose_frame, pose_flow = frames[0][:2], frames[1][:2]
+        frame_jac = (frames[0][2], frames[0][3]) if row_jacobians else None
+        values = []
+        collision_y = None
+        collision_grad = None
+        rpy = None
+        for blk in self._blocks:
+            if blk.binding != GENERIC_BINDING:
+                continue
+            k = blk.kind
+            if k == "pose_pos":
+                values.append(pose_frame[1] - self._target_pos)
+            elif k == "pose_rpy":
+                rpy = rpy_from_quat(canonical_quat(pose_frame[0]))
+                values.append(wrap_residual(rpy - self._target_rpy))
+            elif k == "mug":
+                ones = torch.ones((N, 1), dtype=Q.dtype, device=Q.device)
+                hom = torch.cat([pose_frame[1], ones], dim=1) @ self._MinvT
+                values.append(hom[:, :3])
+            elif k == "collision":
+                if need_collision:
+                    row, collision_grad = self.collision_eval(q_plant, need_grad=row_jacobians)
+                    collision_y = row / self.collision_scale
+                    values.append(row.unsqueeze(1))
+                else:
+                    values.append(torch.full((N, 1), float("nan"), dtype=Q.dtype, device=Q.device))
+            elif k == "joint_limit":
+                values.append(cfg[:, :blk.size])
+            else:                                   # pragma: no cover
+                raise RuntimeError(k)
+        V = torch.cat(values, dim=1)
+        eq_idx, eq_lb, eq_s = self._eq_gen
+        lo_idx, lo_lb, lo_s = self._lo_gen
+        hi_idx, hi_ub, hi_s = self._hi_gen
+        h = (V[:, eq_idx] - eq_lb) * eq_s
+        g = torch.cat([(lo_lb - V[:, lo_idx]) * lo_s, (V[:, hi_idx] - hi_ub) * hi_s], dim=1)
+        F, F_rep, _ = self.cost_cfg_parts(cfg)
+        extras = {"q_inf": cfg.detach().abs().max(dim=1).values, "collision_grad": collision_grad,
+                  "frame_jac": frame_jac, "rpy": None if rpy is None else rpy.detach()}
+        return Evaluation(F=F, F_reported=F_rep, h=h, g=g, q=cfg, q_plant=q_plant,
+                          pose_frame=pose_frame, pose_flow=pose_flow, collision_y=collision_y,
+                          drake_rows=V, extra_rows={}, extras=extras, timing={})
+
+    def extra_rows_values(self, X) -> Tensor:
+        """The extra bindings' value vectors at `X`, stacked in `extra_blocks` order,
+        `[N, n_extra]` (the quantity `extra_row_jacobian` is the derivative of). No graph."""
+        X = self._as_X(X).detach()
+        N = X.shape[0]
+        vals = []
+        for blk in self._blocks:
+            if not blk.key:
+                continue
+            if blk.kind == "linear":
+                vals.append(X[:, blk.var_idx] @ blk.A.T)
+            else:
+                xv = X[:, blk.var_idx]
+                vals.append((0.5 * ((xv @ blk.Q) * xv).sum(dim=1) + xv @ blk.b).unsqueeze(1))
+        if not vals:
+            return torch.zeros(N, 0, dtype=X.dtype, device=X.device)
+        return torch.cat(vals, dim=1)
+
+    def evaluate_extra(self, X):
+        """`(h_ex, g_ex, J_h_ex, J_g_ex)`: the EXTRA rows -- the entries of `h` / `g` that
+        are NOT generic, `h[:, ~h_generic_mask]` and `g[:, ~g_generic_mask]` of a full
+        `evaluate`, same order and same `RowScaling` -- and their closed-form Jacobians
+        w.r.t. `X` (`[N, m, nvars]`). The x-only half of the program, for an ADMM x-block.
+        Empty (zero-width) on the joint-space arm."""
+        X = self._as_X(X).detach()
+        V = self.extra_rows_values(X)
+        J = self.extra_row_jacobian(X)
+        eq_idx, eq_lb, eq_s = self._eq_ex
+        lo_idx, lo_lb, lo_s = self._lo_ex
+        hi_idx, hi_ub, hi_s = self._hi_ex
+        h = (V[:, eq_idx] - eq_lb) * eq_s
+        g = torch.cat([(lo_lb - V[:, lo_idx]) * lo_s, (V[:, hi_idx] - hi_ub) * hi_s], dim=1)
+        J_h = J[:, eq_idx] * eq_s.view(1, -1, 1)
+        J_g = torch.cat([-J[:, lo_idx] * lo_s.view(1, -1, 1), J[:, hi_idx] * hi_s.view(1, -1, 1)], dim=1)
+        return h, g, J_h, J_g
+
+    def cost_cfg_parts(self, cfg):
+        """The cost terms that are functions of the CONFIGURATION (the joint-centering
+        term): `(F [N], F_reported [N], dF/dcfg [N, ndof])` at `cfg [N, ndof]`."""
+        cfg = torch.as_tensor(cfg, dtype=self.dtype, device=self.device)
+        N = cfg.shape[0]
+        F = torch.zeros(N, dtype=cfg.dtype, device=cfg.device)
+        F_rep = torch.zeros_like(F)
+        grad = torch.zeros(N, self.ndof, dtype=cfg.dtype, device=cfg.device)
+        for term in self._costs:
+            if term.kind != "joint_centering":
+                continue
+            d = cfg[:, :self.ndof] - self._q_nominal
+            val = 0.5 * self._w_centering * (d * d).sum(dim=1)
+            F = F + val
+            if term.reported:
+                F_rep = F_rep + val
+            grad = grad + self._w_centering * d
+        return F, F_rep, grad
+
+    def cost_x_parts(self, X):
+        """The cost terms that act on the DECISION VARIABLES directly (the quadratic /
+        linear bindings): `(R [N], dR/dX [N, nvars], d2R/dX2 [nvars, nvars])` at `X`. The
+        Hessian is constant (every such term is at most quadratic) and symmetrised. Zero
+        everything on an arm without such terms (joint space)."""
+        X = self._as_X(X).detach()
+        N = X.shape[0]
+        R = torch.zeros(N, dtype=X.dtype, device=X.device)
+        g = torch.zeros(N, self.nvars, dtype=X.dtype, device=X.device)
+        H = torch.zeros(self.nvars, self.nvars, dtype=X.dtype, device=X.device)
+        for term in self._costs:
+            if term.kind == "quadratic":
+                xv = X[:, term.var_idx]
+                R = R + 0.5 * ((xv @ term.Q) * xv).sum(dim=1) + xv @ term.b + term.c
+                g[:, term.var_idx] += 0.5 * (xv @ term.Q + xv @ term.Q.transpose(0, 1)) + term.b
+                Qs = 0.5 * (term.Q + term.Q.transpose(0, 1))
+                H[term.var_idx.unsqueeze(1), term.var_idx.unsqueeze(0)] += Qs
+            elif term.kind == "linear":
+                xv = X[:, term.var_idx]
+                R = R + xv @ term.b + term.c
+                g[:, term.var_idx] += term.b
+        return R, g, H
 
     def _frame_poses(self, q_plant, jacobians=False):
         """`(pose_frame, pose_flow)`, each `(quat [N, 4], pos [N, 3])` -- or, with

@@ -352,20 +352,27 @@ class DrakeCollisionPool:
     # -- evaluation ------------------------------------------------------------------ #
     def eval(self, q_plant, need_grad=True):
         """(value[N], grad[N, nq]) of the scaled row at every configuration; grad None if
-        `need_grad=False` (a plain `Eval`, a little cheaper when only values are wanted)."""
+        `need_grad=False` (a plain `Eval`, a little cheaper when only values are wanted).
+        Exactly `collect(submit(q_plant, need_grad))`."""
+        return self.collect(self.submit(q_plant, need_grad))
+
+    def submit(self, q_plant, need_grad=True):
+        """Send one chunk of `q_plant` to every worker and return at once with a ticket for
+        `collect`. Between the two the workers run Drake while the caller does other work
+        (the solver's split step launches the flow Jacobian on the GPU here). At most one
+        ticket may be outstanding: the pipes are request/reply, so a second `submit` before
+        the first `collect` would interleave replies -- it raises instead."""
         if self._closed:
             raise RuntimeError("DrakeCollisionPool is closed")
         if self._broken is not None:
             raise RuntimeError("DrakeCollisionPool is broken: %s" % self._broken)
+        if getattr(self, "_outstanding", None) is not None:
+            raise RuntimeError("DrakeCollisionPool.submit: a ticket is already outstanding")
         Q = np.ascontiguousarray(np.asarray(q_plant, dtype=np.float64))
         if Q.ndim != 2:
             raise ValueError("q_plant must be [N, num_positions], got shape %r" % (Q.shape,))
         N, nq = Q.shape
-        values = np.full(N, np.nan)
-        grads = np.full((N, nq), np.nan) if need_grad else None
-        if N == 0:
-            return values, grads
-        chunks = np.array_split(Q, self.workers)
+        chunks = np.array_split(Q, self.workers) if N else []
         sent = []
         for k, chunk in enumerate(chunks):
             if chunk.shape[0] == 0:
@@ -377,6 +384,25 @@ class DrakeCollisionPool:
                 raise RuntimeError(self._broken) from e
             sent.append(k)
         offsets = np.cumsum([0] + [c.shape[0] for c in chunks])
+        ticket = (N, nq, bool(need_grad), sent, offsets)
+        self._outstanding = ticket
+        return ticket
+
+    def drain(self):
+        """Collect and discard an outstanding ticket, if any: a caller that raised between
+        `submit` and `collect` must not leave stale replies in the pipes for the next one."""
+        ticket = getattr(self, "_outstanding", None)
+        if ticket is not None:
+            self.collect(ticket)
+
+    def collect(self, ticket):
+        """Wait for the workers' replies to `ticket` and assemble `(value, grad)`."""
+        if ticket is not getattr(self, "_outstanding", None):
+            raise RuntimeError("DrakeCollisionPool.collect: not the outstanding ticket")
+        self._outstanding = None
+        N, nq, need_grad, sent, offsets = ticket
+        values = np.full(N, np.nan)
+        grads = np.full((N, nq), np.nan) if need_grad else None
         for k in sent:
             conn = self._conns[k]
             if not conn.poll(self.eval_timeout):
