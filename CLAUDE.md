@@ -311,6 +311,38 @@ Verified by `scripts/probe_mug_contact.py`: 0/150 contact at +9.5 mm on iiwa, sc
 soft12 after, 150/150 at -18.0 mm before, Panda unchanged. Acceptance and the benchmark impact
 are still to be measured (the branch's report lists the commands).
 
+**Cross-robot settings unified before the grasp re-run (PI's decisions, 2026-10-08).** An
+inventory found five settings that differed between robots with no deliberate reason; four are
+now one code path each in `generic_program.py` and the fifth is an A/B flag. (1) The native
+grasp start for `c` is `mug.middle @ X_grasp_ee` as xyz + rpy on every robot (`GraspCStart`;
+the iiwa and screw arms seeded `[mug xyz, 0, 0, 0]`) -- the PI accepts that this conditions
+the learned arm on a known-valid grasp pose. (2) The joint-space arm's variable bound is
+`ConfigLimits()` everywhere (`QBoundingBoxConstraint`; the Panda used +-10 rad, the iiwa a
+hand-typed table 1e-6 off the plant's). (3) `q_nominal` is a **nonsingular home pose**, held in
+one place per robot and read through `NominalConfiguration`: Panda `Q_NOMINAL` = Franka's ready
+pose `[0, -0.785, 0, -2.356, 0, 1.571, 0.785]` (sigma_min 0.224; zeros was outside q4's range,
+singular and in collision with the table), iiwa `Q_NOMINAL` = `[0, 0.6, 0, -1.75, 0, 1.0, 0]`
+(sigma_min 0.252; the straight arm is singular at 0.0), `ScrewArmSpec.q_nominal` the same bend
+(sigma_min 0.204), the soft PCS and GVS arms the straight rod (zeros, their natural nominal).
+All measured in-limits and collision-free in the hardened scenes. (5) The grasp `c` box is
+centred on that same flow-frame pose, +-`c_position_slack` (`GraspCBoxConstraint`): `c` is
+the flow frame, 0.10-0.20 m behind the grasp point, so a mug-centred box gave each robot a
+different margin; the five per-robot copies of the box are gone and the base
+`BoundingBoxConstraint` dispatches on `target_mug`. (4) The **latent trust region is NOT
+unified**: `--config latent_rule` on every script sets `latent_trust_region_rule=True`, which
+sizes it `round(sqrt(dim_latent) + 1.5, 2)` from the loaded chart; against `--config latent`
+that moves the Panda 4.0 -> 4.15 and the iiwa 4.3 -> 4.33 (its constant was the rule rounded)
+and nothing else. **`--set legacy_robot_settings=True` restores 1, 2, 3 and 5 together** -- the
+control for the re-run; what each arm actually built with lands in
+`metadata["robot_settings"]` per arm (`RobotSettings`). `tests/test_robot_settings_unified.py`
+pins both states on all five robots. Alongside, every benchmark now records
+`metadata["scene_fingerprint"]` -- sha1 over the directives YAML and every model file it
+references (plus the in-memory mug on the grasp task), `src/benchmark.py: scene_fingerprint`
+-- with its first 8 hex in the auto tag, because `grid_hash` hashes only q's and a run on the
+defective gripper SDF shares a grid with one on the fixed SDF; `collate --pair` refuses a
+fingerprint mismatch as it refuses a solver mismatch. Every grasp row of record predates all
+of this and is to be re-measured.
+
 **Guesses are deliberately not containment-filtered.** They are initial configurations, not
 targets; filtering them would couple the start distribution to the target distribution.
 
