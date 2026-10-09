@@ -33,8 +33,11 @@ latent ball are inequality ROWS, never bounds.
    <= 1` is "feasible at the harness gate". Equalities stay equalities; the tolerance ladder is
    untouched.
 2. **Merit**, per particle: the PHR augmented Lagrangian
-   `L_i = f + lam_i.h~ + (rho_i/2)|h~|^2 + (1/(2 rho_i)) sum_j [max(0, mu_ij + rho_i g~_j)^2 - mu_ij^2]`;
-   target density `exp(-L / T)`, `T = svgd_temperature`, fixed (no annealing of any kind).
+   `L_i = f + lam_i.h~ + (rho/2)|h~|^2 + (1/(2 rho)) sum_j [max(0, mu_ij + rho g~_j)^2 - mu_ij^2]`;
+   target density `exp(-L / T)`, `T = svgd_temperature` and `rho = svgd_rho` both fixed for the
+   whole solve, `rho` ONE scalar shared by every particle. **The augmented Lagrangian is the
+   FORMULATION and SVGD the optimizer running on it** (Thomas, 2026-10-09): one dynamics, no
+   inner/outer structure.
 3. **Coordinates**: particles move in `y = x / s`, `s` the region half-widths per block (learned:
    `c_position_slack` on the conditioning position, pi on its orientation, the latent trust radius --
    the +-5 box where none is set -- and `correction_bound`; joint space: half of each joint's range),
@@ -43,22 +46,20 @@ latent ball are inequality ROWS, never bounds.
    `phi_i = (1/N) sum_j [K(q_j, q_i)(-grad_y f_j / T) + grad_{y_j} K(q_j, q_i)] - (1/T) grad_y (L - f)_i`
    -- only the objective's gradient and the repulsion are averaged over the kernel, each particle's
    OWN constraint gradient is added outside the average -- then the plain gradient step
-   `y_i <- clamp_B(y_i + (svgd_lr / rho_i) phi_i)`: no momentum, no adaptation. The clamp's
+   `y_i <- clamp_B(y_i + (svgd_lr / rho) phi_i)`: no momentum, no adaptation. The clamp's
    distance in y is recorded (`bound_clip`).
 5. **Kernel**: RBF on the configuration q (flow output + correction on the learned arm, q itself on
    joint space), median bandwidth `h = med^2 / log N` floored at `svgd_bandwidth_floor`; the
    repulsion is pulled back to y through the flow's VJP. `svgd_kernel = none` drops both kernel
    terms (`phi_i = -(1/T) grad_y L_i`, N independent projected gradient descents, batched).
-6. **Outer check** every `svgd_inner_iters` steps, PER PARTICLE. Multipliers: if `v_i <= eta_i`,
-   `lam_i += rho_i h~_i`, `mu_i = max(0, mu_i + rho_i g~_i)`, `eta_i /= rho_i^0.9` (`eta_i` starts at
-   `rho0^-0.1`); otherwise unchanged; clipped to `+-svgd_multiplier_max`, the clipped entries
-   counted. Penalty (Powell's test): if `v_i > gamma v_i(previous check)`,
-   `rho_i <- min(beta rho_i, rho_max)`. Everything is per particle because a particle stuck in an
-   infeasible local minimum must not drive up the penalty, or shrink the step, of the particles still
-   making progress -- and more than half the population may get stuck on some cells.
+6. **Dual ascent on a fixed cadence, rho fixed.** Every K = `svgd_inner_iters` steps, on EVERY
+   particle and unconditionally (no feasibility gate of any kind), the textbook dual-ascent step
+   with step rho: `lam_i <- lam_i + rho h~_i`, `mu_i <- max(0, mu_i + rho g~_i)`, at the swarm's
+   current rows; clipped to `+-svgd_multiplier_max`, the clipped entries counted. The multipliers
+   are per particle, the penalty is not. Recorded per cell: the dual updates taken, the median and
+   largest `|lam_i|_inf` and `|mu_i|_inf` at stop, and the clip count.
 7. **Resampling** at every check: a particle with `|q|_inf > svgd_resample_q_max` or a non-finite row
-   is redrawn from the arm's NATIVE start distribution with fresh multipliers and penalty
-   (`n_resampled`).
+   is redrawn from the arm's NATIVE start distribution with zero multipliers (`n_resampled`).
 8. **Stop**: the wall clock (`max_wall_time`, less `svgd_time_reserve` for the re-check), the
    outer-step cap (`svgd_outer_iters`), or -- once some particle is feasible at the gate -- when the
    best feasible particle's objective f has improved by less than `svgd_stop_rel` (relative) over
@@ -98,16 +99,13 @@ collision row is Drake's `MinimumDistanceLowerBoundConstraint`, batched through 
 | `svgd_paired_init` | `jitter` | 11: `jitter` or `native` |
 | `svgd_jitter` | 0.1 | 11: jitter sigma in the normalised coordinates |
 | `svgd_temperature` | 1.0 | 2: T, fixed |
-| `svgd_lr` | 1e-10 | 4: the step is `svgd_lr / rho_i` (see "The step size") |
+| `svgd_lr` | 1e-10 | 4: the step is `svgd_lr / rho` (see "The step size") |
 | `svgd_kernel` | `q` | 5: `q` or `none` |
 | `svgd_bandwidth_floor` | 0.05 | 5: floor on the median bandwidth |
 | `svgd_constraint_inside_kernel` | False | 12: the literal form, an A/B |
-| `svgd_rho0` | 10 | 6: initial rho_i (eta_i starts at `rho0^-0.1`) |
-| `svgd_rho_growth` | 10 | 6: beta |
-| `svgd_rho_gamma` | 0.25 | 6: gamma of Powell's test |
-| `svgd_rho_max` | 1e6 | 6: cap on rho_i |
+| `svgd_rho` | 10 | 2, 4, 6: the penalty -- one scalar, fixed, shared; the dual step |
 | `svgd_multiplier_max` | 1e4 | 6: multiplier clip |
-| `svgd_inner_iters` | 10 | 6: steps between outer checks |
+| `svgd_inner_iters` | 10 | 6, 7, 8: K, the cadence of the dual step, resampling and the stop rule |
 | `svgd_outer_iters` | 300 | 8: the step cap (`max_iter`, when set, also binds) |
 | `svgd_resample_q_max` | 10.0 | 7: runaway threshold, rad |
 | `svgd_stop_patience` | 5 | 8 |
@@ -119,8 +117,8 @@ collision row is Drake's `MinimumDistanceLowerBoundConstraint`, batched through 
 | `svgd_compile`, `svgd_cuda_graph`, `svgd_pool_overlap` | False, False, True | execution: the split step eager / compiled / graphed, pool overlapped |
 
 **The step size.** `svgd_lr` is the one number the method has no textbook value for. With the rows
-scaled by `1/tol`, the penalty's curvature in y is `rho_i * lambda`, `lambda` the largest eigenvalue
-of `J~ J~^T` over the active rows, so `eps_i = svgd_lr / rho_i` makes the stability limit
+scaled by `1/tol`, the penalty's curvature in y is `rho * lambda`, `lambda` the largest eigenvalue
+of `J~ J~^T` over the active rows, so `eps = svgd_lr / rho` makes the stability limit
 `svgd_lr < 2 / lambda`, independent of rho. Measured at tol 1e-4 on 64 random particles of each of
 the four Panda programs (2026-10-09): median lambda 8e7-3.3e9, 90th percentile 1.1e10 on joint space
 and 3.8e10-5.5e10 on the learned arm, where the latent ball's row is active and dominates; it scales
@@ -157,6 +155,14 @@ keeps ONE pool per process. Local runs set `svgd_collision_workers=4` and run un
   every check).
 - **The cuSOLVER pin** (`preferred_linalg_library`): no batched linear solve remains. The
   recompile-limit raise and the inductor options stay (the profiler's many structures need them).
+- **The per-particle penalty and every gate on the multipliers** (later the same day): the
+  per-particle `rho_i` with Powell's growth test (`svgd_rho0`, `svgd_rho_growth`, `svgd_rho_gamma`,
+  `svgd_rho_max`), the feasibility tolerance `eta_i` and its `rho0^-0.1` start, `v_prev`, and the
+  `rho_median` / `rho_max` / `rho_at_stop` details. Thomas: the augmented Lagrangian is the
+  formulation and SVGD the optimizer; the eta / Powell gating was the bilevel method of
+  multipliers. `rho` is now one fixed scalar (`svgd_rho`) and the dual step is unconditional on a
+  fixed cadence. (Its first 6-cell check, 9756ff4: every particle's rho reached the 1e6 cap within
+  six checks and no multiplier ever updated -- learned 2/6 grasp, 0/6 pose.)
 
 ## The variants, every option named in full
 

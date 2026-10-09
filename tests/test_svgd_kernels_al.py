@@ -2,13 +2,13 @@
 
 The modules are pure tensor math on per-particle quantities and know nothing about any
 formulation, so they are tested on problems whose answers are known in closed form: the PHR
-augmented Lagrangian against autograd and against the quadratic penalty it reduces to; the
-outer check's per-particle multiplier step, tolerance and Powell penalty test; AL rounds
-converging to the KKT point of an equality-constrained quadratic, one per particle, each with
-its own penalty; the RBF repulsion against autograd and, the check that pins its SIGN, plain
+augmented Lagrangian (one fixed, shared penalty rho) against autograd and against the
+quadratic penalty it reduces to; the dual-ascent step -- unconditional, per particle, step
+rho, clipped and counted, zeroed on resample; AL rounds converging to the KKT point of an
+equality-constrained quadratic, one per particle; the RBF repulsion against autograd and, the check that pins its SIGN, plain
 SVGD on a 2-D standard Gaussian matching the target's mean and covariance; the Tabor-Hermans
 direction with the kernel off being exactly projected gradient descent on L / T; and the
-step size being `svgd_lr / rho_i`, per particle.
+step size being `svgd_lr / rho` with the one shared rho.
 
 Everything runs on CPU float64 and, where a CUDA device exists, on CUDA float32 with the
 tolerances scaled to that precision. The last tests grep both modules for the
@@ -58,13 +58,14 @@ def _maxabs(a, b=None):
     return float(d.detach().abs().max()) if d.numel() else 0.0
 
 
-def _state(N, m_e, m_i, dtype, device, gen, rho0=2.0, eta0=1.0, random_mult=True):
-    S = ALState.init(N, m_e, m_i, rho0=rho0, eta0=eta0, dtype=dtype, device=device)
+RHO = 2.5
+
+
+def _state(N, m_e, m_i, dtype, device, gen, random_mult=True):
+    S = ALState.init(N, m_e, m_i, dtype=dtype, device=device)
     if random_mult:
         S = al.replace(S, lam=_randn(N, m_e, dtype=dtype, device=device, gen=gen),
-                       mu=_randn(N, m_i, dtype=dtype, device=device, gen=gen).abs(),
-                       rho=0.5 + 3.0 * torch.rand(N, generator=gen, dtype=torch.float64).to(
-                           dtype=dtype, device=device))
+                       mu=_randn(N, m_i, dtype=dtype, device=device, gen=gen).abs())
     return S
 
 
@@ -80,18 +81,17 @@ def test_al_value_and_coefficients_agree_with_autograd():
         F = _randn(N, dtype=dtype, device=device, gen=gen)
         h = _randn(N, m_e, dtype=dtype, device=device, gen=gen).requires_grad_(True)
         g = _randn(N, m_i, dtype=dtype, device=device, gen=gen).requires_grad_(True)
-        L = al.al_value(F, h, g, S)
+        L = al.al_value(F, h, g, S, RHO)
         assert L.shape == (N,)
         dh, dg = torch.autograd.grad(L.sum(), (h, g))
-        ch, cg = al.al_constraint_grad_coefficients(h.detach(), g.detach(), S)
+        ch, cg = al.al_constraint_grad_coefficients(h.detach(), g.detach(), S, RHO)
         err = max(_maxabs(dh, ch), _maxabs(dg, cg))
         assert err <= tol * 10, f"{dtype} {device}: coefficient error {err:.2e}"
-        rho = S.rho.unsqueeze(1)
-        hand = (F + (S.lam * h).sum(1) + 0.5 * S.rho * (h * h).sum(1)
-                + ((torch.clamp(S.mu + rho * g, min=0) ** 2 - S.mu ** 2).sum(1)) / (2 * S.rho))
+        hand = (F + (S.lam * h).sum(1) + 0.5 * RHO * (h * h).sum(1)
+                + ((torch.clamp(S.mu + RHO * g, min=0) ** 2 - S.mu ** 2).sum(1)) / (2 * RHO))
         assert _maxabs(L, hand) <= tol * 10
         print(f"     {str(dtype):14s} {device.type}: dL/dh, dL/dg vs autograd {err:.1e}")
-    print("PASS al_value and its row coefficients agree with autograd (per-particle rho)")
+    print("PASS al_value and its row coefficients agree with autograd")
 
 
 def test_al_with_zero_multipliers_is_the_quadratic_penalty():
@@ -99,13 +99,13 @@ def test_al_with_zero_multipliers_is_the_quadratic_penalty():
         gen = _gen(2, device)
         N, m_e, m_i = 11, 2, 5
         rho0 = 3.5
-        S = ALState.init(N, m_e, m_i, rho0=rho0, eta0=1.0, dtype=dtype, device=device)
+        S = ALState.init(N, m_e, m_i, dtype=dtype, device=device)
         lam = _randn(N, m_e, dtype=dtype, device=device, gen=gen)
         S = al.replace(S, lam=lam)  # mu stays 0
         F = _randn(N, dtype=dtype, device=device, gen=gen)
         h = _randn(N, m_e, dtype=dtype, device=device, gen=gen)
         g = _randn(N, m_i, dtype=dtype, device=device, gen=gen)
-        L = al.al_value(F, h, g, S)
+        L = al.al_value(F, h, g, S, rho0)
         pen = (F + (lam * h).sum(1) + 0.5 * rho0 * (h * h).sum(1)
                + 0.5 * rho0 * (torch.clamp(g, min=0) ** 2).sum(1))
         assert _maxabs(L, pen) <= tol * 10, f"{_maxabs(L, pen):.2e}"
@@ -116,56 +116,42 @@ def test_al_with_zero_multipliers_is_the_quadratic_penalty():
 ## 2. The outer check: per-particle multipliers, tolerance and penalty
 ## --------------------------------------------------------------------------------------
 
-def test_outer_check_is_per_particle():
-    """Multipliers, tolerance AND penalty are per particle. Even particles pass the
-    multiplier test (`v_i <= eta_i`) and odd ones fail it; independently, particles 0..9
-    have shrunk their violation by more than gamma since the last check and 10..19 have
-    not -- so the four combinations all occur, and each particle's state moves by its own
-    branch only. Multipliers are clipped and the clipped entries counted; `rho` is capped."""
+def test_dual_update_is_unconditional_and_per_particle():
+    """The dual step on EVERY particle, whatever its violation (no feasibility gate): each
+    particle's multipliers move by its OWN rows times the one shared rho; clipped to the box
+    with the clipped entries counted; zeroed on the masked (resampled) particles only."""
     for dtype, device, tol in _targets():
         gen = _gen(3, device)
         N, m_e, m_i = 20, 2, 3
-        kw = dict(dtype=dtype, device=device)
-        S = ALState.init(N, m_e, m_i, rho0=2.0, eta0=0.5, **kw)
-        lam = _randn(N, m_e, dtype=dtype, device=device, gen=gen)
-        mu = _randn(N, m_i, dtype=dtype, device=device, gen=gen).abs()
-        h = 0.1 * _randn(N, m_e, dtype=dtype, device=device, gen=gen)
-        g = -0.1 * _randn(N, m_i, dtype=dtype, device=device, gen=gen).abs() - 0.1
-        odd = torch.arange(N, device=device) % 2 == 1
-        h = torch.where(odd.unsqueeze(1), h + 5.0, h)
-        v = al.violation(h, g)
-        ok = v <= S.eta
-        assert bool((ok == ~odd).all()), "the constructed branch split did not come out as intended"
-        first = torch.arange(N, device=device) < 10
-        v_prev = torch.where(first, 100.0 * v, 1.01 * v)         # 0..9 shrank 100x; 10..19 did not
-        S = al.replace(S, lam=lam, mu=mu, v_prev=v_prev,
-                       rho=torch.linspace(1.0, 3.0, N, **kw))
-        beta, gamma, rho_max, mult_max = 10.0, 0.25, 15.0, 1.0
-        S2, updated, n_clipped = al.update(h, g, S, beta, gamma, rho_max, mult_max)
-        rho = S.rho.unsqueeze(1)
-        lam_exp = torch.where(ok.unsqueeze(1), torch.clamp(lam + rho * h, -mult_max, mult_max), lam)
-        mu_exp = torch.where(ok.unsqueeze(1), torch.clamp(mu + rho * g, 0.0, mult_max), mu)
-        eta_exp = torch.where(ok, S.eta / S.rho ** 0.9, S.eta)
-        rho_exp = torch.where(first, S.rho, torch.clamp(beta * S.rho, max=rho_max))
-        for name, got, exp in (("lam", S2.lam, lam_exp), ("mu", S2.mu, mu_exp),
-                               ("eta", S2.eta, eta_exp), ("rho", S2.rho, rho_exp),
-                               ("v_prev", S2.v_prev, v)):
-            assert _maxabs(got, exp) <= tol * 10, f"{name}: {_maxabs(got, exp):.2e}"
-        assert bool((updated == ok).all())
-        exp_clip = int((((lam + rho * h).abs() > mult_max) & ok.unsqueeze(1)).sum()
-                       + ((torch.clamp(mu + rho * g, min=0.0) > mult_max) & ok.unsqueeze(1)).sum())
+        S = _state(N, m_e, m_i, dtype, device, gen)
+        lam, mu = S.lam.clone(), S.mu.clone()
+        h = _randn(N, m_e, dtype=dtype, device=device, gen=gen)
+        g = _randn(N, m_i, dtype=dtype, device=device, gen=gen)
+        h[::2] *= 1e-3                                  # even: near-feasible; odd: far off
+        h[1::2] += 50.0
+        mult_max = 20.0
+        S2, n_clipped = al.dual_update(h, g, S, RHO, mult_max)
+        lam_raw, mu_raw = lam + RHO * h, torch.clamp(mu + RHO * g, min=0.0)
+        assert _maxabs(S2.lam, torch.clamp(lam_raw, -mult_max, mult_max)) <= tol * 10
+        assert _maxabs(S2.mu, torch.clamp(mu_raw, max=mult_max)) <= tol * 10
+        assert bool((S2.lam != lam).any(dim=1).all()), "every particle's lam moves, feasible or not"
+        exp_clip = int((lam_raw.abs() > mult_max).sum() + (mu_raw > mult_max).sum())
         assert int(n_clipped) == exp_clip and exp_clip > 0, (int(n_clipped), exp_clip)
-        assert S2.rho.shape == (N,) and S2.eta.shape == (N,)
-        assert len(set(S2.rho.tolist())) > 2, "rho must differ between particles"
-        assert float(S2.rho.max()) <= rho_max and float(S2.mu.min()) >= 0.0
-        ## reset: a redrawn particle gets fresh state, the others are untouched
+        assert float(S2.mu.min()) >= 0.0 and float(S2.lam.abs().max()) <= mult_max
+        ## per particle: particle j's step depends on particle j's rows only
+        h_alt = h.clone()
+        h_alt[5] += 1.0
+        S3, _ = al.dual_update(h_alt, g, S, RHO, 1e9)
+        S4, _ = al.dual_update(h, g, S, RHO, 1e9)
+        diff = (S3.lam - S4.lam).abs().amax(dim=1)
+        assert float(diff[5]) > 0 and float(torch.cat([diff[:5], diff[6:]]).max()) == 0.0
+        ## reset: a redrawn particle gets zero multipliers, the others are untouched
         mask = torch.zeros(N, dtype=torch.bool, device=device)
         mask[[1, 4]] = True
-        S3 = al.reset(S2, mask, 10.0, 0.7)
-        assert bool((S3.lam[mask] == 0).all()) and bool((S3.mu[mask] == 0).all())
-        assert bool((S3.rho[mask] == 10.0).all()) and bool(torch.isinf(S3.v_prev[mask]).all())
-        assert bool((S3.rho[~mask] == S2.rho[~mask]).all()) and bool((S3.lam[~mask] == S2.lam[~mask]).all())
-    print("PASS outer check: per-particle multiplier step / eta / Powell rho test, clip counted, reset")
+        S5 = al.reset(S2, mask)
+        assert bool((S5.lam[mask] == 0).all()) and bool((S5.mu[mask] == 0).all())
+        assert bool((S5.lam[~mask] == S2.lam[~mask]).all()) and bool((S5.mu[~mask] == S2.mu[~mask]).all())
+    print("PASS dual update: unconditional, per particle, step rho, clipped and counted, zeroed on resample")
 
 
 def _toy_equality_qp(N, n, m, dtype, device, gen):
@@ -182,24 +168,24 @@ def _toy_equality_qp(N, n, m, dtype, device, gen):
 
 
 def test_al_rounds_converge_to_the_kkt_point_on_every_particle():
-    """The outer loop on its own: each round minimises L exactly (the quadratic's normal
-    equations, per particle -- the inner solver is not under test here), then runs
-    `al.update`. The multipliers converge to the KKT multipliers and the iterate to the KKT
-    point on every particle, each particle with its own penalty trajectory."""
+    """Dual ascent on its own: each round minimises L exactly at the fixed rho (the
+    quadratic's normal equations, per particle -- not the swarm's step, which is not under
+    test here), then runs `al.dual_update`. The multipliers converge to the KKT multipliers
+    and the iterate to the KKT point on every particle."""
     for dtype, device, tol in _targets():
         gen = _gen(4, device)
         N, n, m = 50, 6, 2
         a, B, c, x_star, lam_star = _toy_equality_qp(N, n, m, dtype, device, gen)
-        S = ALState.init(N, m, 0, rho0=10.0, eta0=10.0 ** -0.1, dtype=dtype, device=device)
+        rho = 10.0
+        S = ALState.init(N, m, 0, dtype=dtype, device=device)
         g = torch.zeros(N, 0, dtype=dtype, device=device)
         I = torch.eye(n, dtype=dtype, device=device)
         for _ in range(30):
             ## argmin_x 1/2|x - a|^2 + lam.(Bx - c) + rho/2 |Bx - c|^2, per particle
-            A = I.unsqueeze(0) + S.rho.view(-1, 1, 1) * (B.T @ B).unsqueeze(0)
-            rhs = a - S.lam @ B + S.rho.unsqueeze(1) * (c @ B).unsqueeze(0)
+            A = I.unsqueeze(0) + rho * (B.T @ B).unsqueeze(0)
+            rhs = a - S.lam @ B + rho * (c @ B).unsqueeze(0)
             x = torch.linalg.solve(A, rhs.unsqueeze(2)).squeeze(2)
-            S, _, _ = al.update(x @ B.T - c, g, S, beta=10.0, gamma=0.25, rho_max=1e4,
-                                multiplier_max=1e6)
+            S, _ = al.dual_update(x @ B.T - c, g, S, rho, multiplier_max=1e6)
         h_inf = float((x @ B.T - c).abs().max())
         x_err = _maxabs(x, x_star)
         lam_err = _maxabs(S.lam, lam_star)
@@ -208,7 +194,7 @@ def test_al_rounds_converge_to_the_kkt_point_on_every_particle():
         assert x_err <= 100 * gate, f"{dtype}: |x - x*| {x_err:.2e}"
         assert lam_err <= 1e4 * gate, f"{dtype}: |lam - lam*| {lam_err:.2e}"
         print(f"     {str(dtype):14s} {device.type}: |h|inf {h_inf:.1e}  |x-x*| {x_err:.1e}  "
-              f"|lam-lam*| {lam_err:.1e}  rho in [{float(S.rho.min()):.0e}, {float(S.rho.max()):.0e}]")
+              f"|lam-lam*| {lam_err:.1e}  (rho {rho:g} fixed)")
     print("PASS AL rounds converge to the KKT point of an equality-constrained quadratic, all 50 particles")
 
 
@@ -345,7 +331,8 @@ def test_kernel_none_is_projected_gradient_descent_on_L():
         C = _randn(m_i, n, dtype=dtype, device=device, gen=gen)
         a = _randn(N, n, dtype=dtype, device=device, gen=gen)
         S = _state(N, m_e, m_i, dtype, device, gen)
-        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=0.5, T=0.8)
+        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=0.5, T=0.8,
+                              rho=RHO)
 
         def rows(x):
             return 0.5 * ((x - a) ** 2).sum(1), x @ A.T - 0.1, x @ C.T - 0.2
@@ -356,17 +343,17 @@ def test_kernel_none_is_projected_gradient_descent_on_L():
             xg = X.clone().requires_grad_(True)
             F, h, g = rows(xg)
             (gF,) = torch.autograd.grad(F.sum(), xg)
-            ch, cg = al.al_constraint_grad_coefficients(h.detach(), g.detach(), S)
+            ch, cg = al.al_constraint_grad_coefficients(h.detach(), g.detach(), S, RHO)
             gC = ch @ A + cg @ C
             K = torch.eye(N, **kw)
             fin = torch.ones(N, dtype=torch.bool, device=device)
-            X, clip, n_clip = fused.update_step(tg, sc, X, gF, gC, K, torch.zeros_like(X), fin, S.rho)
+            X, clip, n_clip = fused.update_step(tg, sc, X, gF, gC, K, torch.zeros_like(X), fin)
             clipped += int(n_clip.sum())
             ## the reference: PGD on L / T, by autograd of al_value, in y = x / s
             yg = (X_ref / s).clone().requires_grad_(True)
             F2, h2, g2 = rows(yg * s)
-            (gy,) = torch.autograd.grad(al.al_value(F2, h2, g2, S).sum(), yg)
-            y_new = yg.detach() - (sc.lr / S.rho).unsqueeze(1) * gy / sc.T
+            (gy,) = torch.autograd.grad(al.al_value(F2, h2, g2, S, RHO).sum(), yg)
+            y_new = yg.detach() - (sc.lr / RHO) * gy / sc.T
             X_ref = torch.minimum(torch.maximum(y_new * s, lo), hi)
             rel = _maxabs(X, X_ref) / max(1.0, _maxabs(X_ref))
             assert rel <= tol * 100, f"{dtype}: PGD mismatch (relative) {rel:.2e}"
@@ -374,21 +361,23 @@ def test_kernel_none_is_projected_gradient_descent_on_L():
     print("PASS kernel none: the step is projected gradient descent on L_rho / T in y = x / s")
 
 
-def test_step_size_is_per_particle():
-    """`svgd_lr / rho_i`: two particles with the same gradient and penalties 1 and 100 move by
-    exactly 100:1 (kernel off, no bound)."""
+def test_step_size_is_lr_over_the_shared_rho():
+    """`svgd_lr / rho`, the same for every particle: at rho 4 a particle with gradient G moves
+    by exactly -(lr / 4) G (kernel off, no bound), and doubling rho halves every step."""
     dtype, device = torch.float64, torch.device("cpu")
     kw = dict(dtype=dtype, device=device)
     s = torch.ones(3, **kw)
     tg = _toy_target(s, torch.full((3,), -1e9, **kw), torch.full((3,), 1e9, **kw))
-    sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=0.1, T=1.0)
     X = torch.zeros(2, 3, **kw)
-    gF = torch.tensor([[1.0, -2.0, 0.5], [1.0, -2.0, 0.5]], **kw)
-    rho = torch.tensor([1.0, 100.0], **kw)
-    Xn, _, _ = fused.update_step(tg, sc, X, gF, torch.zeros_like(gF), torch.eye(2, **kw),
-                                 torch.zeros_like(X), torch.ones(2, dtype=torch.bool), rho)
-    assert _maxabs(Xn[0], -0.1 * gF[0]) <= 1e-15 and _maxabs(Xn[1], -0.001 * gF[1]) <= 1e-15, Xn
-    print("PASS the step is svgd_lr / rho_i, per particle")
+    gF = torch.tensor([[1.0, -2.0, 0.5], [3.0, 1.0, -1.0]], **kw)
+    out = []
+    for rho in (4.0, 8.0):
+        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=0.1, T=1.0, rho=rho)
+        Xn, _, _ = fused.update_step(tg, sc, X, gF, torch.zeros_like(gF), torch.eye(2, **kw),
+                                     torch.zeros_like(X), torch.ones(2, dtype=torch.bool))
+        out.append(Xn)
+    assert _maxabs(out[0], -0.025 * gF) <= 1e-15 and _maxabs(out[1], 0.5 * out[0]) <= 1e-15, out
+    print("PASS the step is svgd_lr / rho with the one shared rho")
 
 
 def test_resample_mask():
@@ -470,23 +459,24 @@ def test_no_host_synchronising_calls_in_the_modules():
     print("PASS no .item()/.tolist()/.numpy()/.cpu()/.nonzero()/torch.tensor()/1-arg where in al.py or kernels.py")
 
 
-def _compiled_chain(x, a, A, b, C, d, lam, mu, rho, eta, v_prev):
-    """al_value -> gradient -> the kernel-off Stein step -> the outer check -> resample mask,
-    all tensors in and out (ALState is rebuilt inside so the compiled signature is tensors)."""
-    S = ALState(lam=lam, mu=mu, rho=rho, eta=eta, v_prev=v_prev)
+def _compiled_chain(x, a, A, b, C, d, lam, mu):
+    """al_value -> gradient -> the kernel-off Stein step -> the dual update -> reset of a
+    resample mask, all tensors in and out (ALState rebuilt inside, tensors-only signature)."""
+    S = ALState(lam=lam, mu=mu)
 
     def merit(xx):
         h = (A @ xx.unsqueeze(2)).squeeze(2) - b
         g = (C @ xx.unsqueeze(2)).squeeze(2) - d
-        return al.al_value(0.5 * ((xx - a) ** 2).sum(1), h, g, S).sum(), (h, g)
+        return al.al_value(0.5 * ((xx - a) ** 2).sum(1), h, g, S, RHO).sum(), (h, g)
 
     grad, (h, g) = torch.func.grad(merit, has_aux=True)(x)
     phi = kernels.stein_direction(torch.eye(x.shape[0], dtype=x.dtype, device=x.device),
                                   torch.zeros_like(x), grad, torch.zeros_like(x), 1.0, kernel=False)
-    x1 = x + (0.01 / S.rho).unsqueeze(1) * phi
-    S, ok, clipped = al.update(h, g, S, 10.0, 0.25, 1e4, 1e3)
-    rm = al.resample_mask(x1, torch.isfinite(x1).all(dim=1), 10.0)
-    return x1, S.lam, S.mu, S.rho, S.eta, S.v_prev, ok, clipped, rm
+    x1 = x + (0.01 / RHO) * phi
+    S, clipped = al.dual_update(h, g, S, RHO, 1e3)
+    rm = al.resample_mask(x1, torch.isfinite(x1).all(dim=1), 1.0)
+    S = al.reset(S, rm)
+    return x1, S.lam, S.mu, clipped, rm
 
 
 def test_compiled_chain_matches_eager():
@@ -498,8 +488,7 @@ def test_compiled_chain_matches_eager():
     N, n, m_e, m_i = 32, 6, 2, 3
     r = lambda *sh: _randn(*sh, dtype=dtype, device=device, gen=gen)
     S = _state(N, m_e, m_i, dtype, device, gen)
-    args = (r(N, n), r(N, n), r(N, m_e, n), r(N, m_e), r(N, m_i, n), r(N, m_i),
-            S.lam, S.mu, S.rho, torch.full((N,), 2.0, dtype=dtype, device=device), r(N).abs())
+    args = (r(N, n), r(N, n), r(N, m_e, n), r(N, m_e), r(N, m_i, n), r(N, m_i), S.lam, S.mu)
     eager = _compiled_chain(*args)
     compiled = torch.compile(_compiled_chain, dynamic=False, fullgraph=True)
     out = compiled(*args)
@@ -517,7 +506,7 @@ def test_compiled_chain_matches_eager():
 if __name__ == "__main__":
     test_al_value_and_coefficients_agree_with_autograd()
     test_al_with_zero_multipliers_is_the_quadratic_penalty()
-    test_outer_check_is_per_particle()
+    test_dual_update_is_unconditional_and_per_particle()
     test_al_rounds_converge_to_the_kkt_point_on_every_particle()
     test_pairwise_sqdist_matches_brute_force()
     test_median_bandwidth_matches_numpy_on_the_upper_triangle()
@@ -525,7 +514,7 @@ if __name__ == "__main__":
     test_stein_direction_forms()
     test_plain_svgd_matches_a_gaussians_moments()
     test_kernel_none_is_projected_gradient_descent_on_L()
-    test_step_size_is_per_particle()
+    test_step_size_is_lr_over_the_shared_rho()
     test_resample_mask()
     test_no_host_synchronising_calls_in_the_modules()
     test_compiled_chain_matches_eager()

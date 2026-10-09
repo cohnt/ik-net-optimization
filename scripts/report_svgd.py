@@ -29,8 +29,8 @@ wall clock") and the pre-registration's (`docs/svgd-solver.md`):
     budget carries no verdict" rule is scaled to the cell count (>= 5%, at least one cell).
   - from `record["svgd"]`: the two POPULATION metrics -- feasible particles at stop and the
     median pairwise distance in q among them (`feasible_q_spread`) -- resampled particles (as a
-    fraction of N), `selected_index`, the per-particle penalties at stop (median, max), the
-    collision pool's share of the wall, `stop_reason` counts, warm-up and compile seconds --
+    fraction of N), `selected_index`, the dual updates and the multiplier magnitudes at stop
+    (median and max |lam_i|_inf, |mu_i|_inf) with the clip count, the collision pool's share of the wall, `stop_reason` counts, warm-up and compile seconds --
     and `solver_feasible` vs `drake_feasible`, and `drake_feasible` vs `verify()`'s verdict.
     Any disagreement is a BUG and prints as one.
 
@@ -205,8 +205,12 @@ def arm_stats(summary, arm, other):
             n_particles=median([sv.get("n_particles") for sv in svgd]),
             n_feasible=median([sv.get("n_feasible") for sv in svgd]),
             q_spread=median([sv.get("feasible_q_spread") for sv in svgd]),
-            rho_median=median([sv.get("rho_median") for sv in svgd]),
-            rho_max=max([sv.get("rho_max") or 0.0 for sv in svgd], default=None),
+            n_dual=median([sv.get("n_dual_updates") for sv in svgd]),
+            lam_med=median([sv.get("lam_inf_median") for sv in svgd]),
+            lam_max=max([sv.get("lam_inf_max") or 0.0 for sv in svgd], default=None),
+            mu_med=median([sv.get("mu_inf_median") for sv in svgd]),
+            mu_max=max([sv.get("mu_inf_max") or 0.0 for sv in svgd], default=None),
+            mclip=sum(sv.get("n_multiplier_clipped") or 0 for sv in svgd),
             resampled_median=median(frac), resampled_max=max(frac, default=None),
             selected_median=median([sv.get("selected_index") for sv in svgd]),
             selected_none=sum(1 for sv in svgd if sv.get("selected_index") == -1),
@@ -339,8 +343,10 @@ def print_row(rep, root, robot, row, start, columns, n_cells, cap, prefix, varia
                 continue
             print(f"    svgd {ARM_NAME[arm]:<12} N {fmt(st['n_particles'], 0)}  feasible particles "
                   f"(median) {fmt(st['n_feasible'], 0, 1)}  q-spread among them (median) "
-                  f"{fmt(st['q_spread'], 0, 3)}  rho at stop median {fmt_e(st['rho_median'], 0)} "
-                  f"max {fmt_e(st['rho_max'], 0)}  resampled/N median "
+                  f"{fmt(st['q_spread'], 0, 3)}  dual updates (median) {fmt(st['n_dual'], 0, 0)}  "
+                  f"|lam|_inf at stop median {fmt_e(st['lam_med'], 0)} max {fmt_e(st['lam_max'], 0)}  "
+                  f"|mu|_inf median {fmt_e(st['mu_med'], 0)} max {fmt_e(st['mu_max'], 0)}  "
+                  f"multiplier clips {st['mclip']}  resampled/N median "
                   f"{fmt(st['resampled_median'], 0, 3)} max {fmt(st['resampled_max'], 0, 3)}  "
                   f"selected idx median {fmt(st['selected_median'], 0, 0)} (none: {st['selected_none']})  "
                   f"collision share of wall {fmt(st['coll_share'], 0, 2)}")

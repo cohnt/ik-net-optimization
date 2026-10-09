@@ -226,7 +226,7 @@ def test_option_guard():
              (dict(svgd_kernel="none"), False),
              (dict(svgd_temperature=0.0), True),
              (dict(svgd_lr=-1.0), True),
-             (dict(svgd_rho0=0.0), True),
+             (dict(svgd_rho=0.0), True),
              (dict(svgd_constraint_inside_kernel=True), False),
              (dict(svgd_cuda_graph=True), True),
              (dict(svgd_compile=True, svgd_cuda_graph=True), False)]
@@ -241,7 +241,8 @@ def test_option_guard():
     removed = ("svgd_polish_iters", "svgd_gn_every", "svgd_gn_lm", "svgd_eta_rel", "svgd_q_step_max",
                "svgd_repulsion_T0", "svgd_anneal_frac", "svgd_gamma_t", "svgd_admm_rho",
                "svgd_tsvgd_switch_infeas", "svgd_lr_decay_t", "svgd_bandwidth",
-               "svgd_row_scale_rot", "svgd_resample_every", "svgd_jitter_z")
+               "svgd_row_scale_rot", "svgd_resample_every", "svgd_jitter_z", "svgd_rho0",
+               "svgd_rho_growth", "svgd_rho_gamma", "svgd_rho_max")
     present = [f for f in removed if hasattr(ProgramOptions(), f)]
     check("no field of a removed piece survives on ProgramOptions", not present, str(present))
 

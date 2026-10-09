@@ -175,8 +175,8 @@ def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet
             print(f"      ms/step = {1e3 * d.phase_times.get('swarm', 0.0) / d.inner_steps:.1f}; "
                   f"trace tail: min_infeas {tr.get('min_infeas', [float('nan')])[-1]:.3g} "
                   f"n_feasible {tr.get('n_feasible', [float('nan')])[-1]:.0f} "
-                  f"med_rho {tr.get('med_rho', [float('nan')])[-1]:.3g} "
-                  f"max_rho {tr.get('max_rho', [float('nan')])[-1]:.3g} "
+                  f"med |lam| {tr.get('med_lam_inf', [float('nan')])[-1]:.3g} "
+                  f"med |mu| {tr.get('med_mu_inf', [float('nan')])[-1]:.3g} "
                   f"bound_clip {d.bound_clip:.3g} spread {d.feasible_q_spread}")
     tag = f"[{task}/{arm}] {label}"
     check(f"{tag}: returns an SvgdResult", isinstance(result, SvgdResult))
@@ -447,11 +447,11 @@ def test_stop_reasons_and_log():
     """The swarm's reason for stopping is recorded on the details and in the log --
     `converged` (some particle feasible at the gate, the best feasible objective improved
     by less than `svgd_stop_rel` over `svgd_stop_patience` checks), `step_cap`,
-    `wall_clock` -- and the log carries the per-check penalty / tolerance trajectories. The
+    `wall_clock` -- and the log carries the per-check multiplier trajectories. The
     converged case is the JOINT-SPACE arm started AT the target configuration, so particle 0
     is feasible (v = 0) from the first check: this is a test of the stop rule, not of the
-    method's reach. The penalty and the tolerance are PER PARTICLE: the details carry one
-    rho per particle."""
+    method's reach. One dual update is taken per check, and the details carry the
+    multiplier magnitudes at stop."""
     print("\n--- stop reasons ---")
     p = pose_program("numerical")
     _, d, _ = run_cell(p, "pose", "patience=2", dict(svgd_n=32, svgd_kernel="q", svgd_stop_patience=2,
@@ -462,30 +462,31 @@ def test_stop_reasons_and_log():
           f"{d.stop_reason} {d.status_name}")
     with open(p.options.file_print_name) as f:
         log = f.read()
-    check("stop: the log records the stop reason and the rho / eta trajectories",
-          "SVGD stop reason: converged" in log and "SVGD trace med_rho = " in log
-          and "SVGD trace med_eta = " in log and "SVGD trace max_rho = " in log, log[-400:])
-    rho = d.extras["rho_at_stop"]
-    check("stop: rho is per particle (one entry per particle; median and max on the details)",
-          len(rho) == 32 and d.rho_median == float(np.median(rho)) and d.rho_max == max(rho),
-          f"{len(rho)} {d.rho_median} {d.rho_max}")
+    check("stop: the log records the stop reason and the multiplier trajectories",
+          "SVGD stop reason: converged" in log and "SVGD trace med_lam_inf = " in log
+          and "SVGD trace max_mu_inf = " in log and "SVGD dual updates: " in log, log[-400:])
+    check("stop: one dual update per check; multiplier magnitudes on the details",
+          d.n_dual_updates == d.iterations and d.lam_inf_max is not None
+          and d.lam_inf_median <= d.lam_inf_max and d.mu_inf_median <= d.mu_inf_max,
+          f"{d.n_dual_updates} {d.iterations} {d.lam_inf_median} {d.lam_inf_max}")
     p = pose_program("learned")
     _, d, _ = run_cell(p, "pose", "outer=2", dict(svgd_n=16, svgd_kernel="q",
                                                   svgd_stop_patience=10 ** 6, svgd_outer_iters=2),
                        wall=20.0, quiet=True)
     check("stop: the outer-step cap stops with stop_reason 'step_cap'", d.stop_reason == "step_cap",
           d.stop_reason)
-    check("stop: rho is capped at svgd_rho_max", max(d.extras["trace"]["max_rho"])
-          <= float(p.options.svgd_rho_max), str(d.extras["trace"]["max_rho"]))
+    check("stop: multipliers stay inside +-svgd_multiplier_max",
+          max(d.extras["trace"]["max_lam_inf"] + d.extras["trace"]["max_mu_inf"])
+          <= float(p.options.svgd_multiplier_max), str(d.extras["trace"]["max_lam_inf"]))
 
 
 def test_step_with_kernel_off_is_pgd_on_the_programs_L():
     """On the real learned pose program (float64 swarm, collision row included), one step
     with `svgd_kernel = none` is projected gradient descent on the program's own L_rho / T in
-    the normalised coordinates, `x <- clamp_B(x - (svgd_lr / rho_i) s^2 grad_x L_i / T)`, with
+    the normalised coordinates, `x <- clamp_B(x - (svgd_lr / rho) s^2 grad_x L_i / T)`, with
     the reference gradient from FULL AUTOGRAD through the batched program (flow, kinematics
     and the collision row's autograd node) -- not from the closed forms the step uses. Each
-    particle carries its own rho_i and random multipliers."""
+    particle carries its own random multipliers; rho (here 37) is the one shared scalar."""
     print("\n--- one step with the kernel off == PGD on L_rho / T (full autograd reference) ---")
     from dataclasses import replace as dc_replace
     for arm in ("learned", "numerical"):
@@ -493,7 +494,8 @@ def test_step_with_kernel_off_is_pgd_on_the_programs_L():
         p.options = replace(p.options, which_solver="svgd", svgd_n=8, svgd_kernel="none",
                             svgd_collision_workers=WORKERS,
                             svgd_dtype="float64", svgd_compile=False, svgd_cuda_graph=False,
-                            svgd_lr=1e-9, svgd_temperature=0.5, acceptable_constr_viol_tol=1e-4)
+                            svgd_lr=1e-9, svgd_temperature=0.5, svgd_rho=37.0,
+                            acceptable_constr_viol_tol=1e-4)
         rng = np.random.default_rng(4)
         with HiddenPrints():
             p.SetStartFromQ(T.collision_free_q(p, rng, 1)[0])
@@ -504,22 +506,22 @@ def test_step_with_kernel_off_is_pgd_on_the_programs_L():
         S = s._init_state(X)
         g = torch.Generator(device=s.device).manual_seed(0)
         kw = dict(dtype=s.dtype, device=s.device)
-        S = dc_replace(S, rho=10.0 ** torch.linspace(1, 3, 8, **kw),
-                       lam=torch.randn(S.lam.shape, generator=g, **kw),
+        S = dc_replace(S, lam=torch.randn(S.lam.shape, generator=g, **kw),
                        mu=torch.randn(S.mu.shape, generator=g, **kw).abs())
         Xn, _, _ = s._step_split(X, S)
         tg, bp = s._tg, s._tg.bp
         Xg = X.clone().requires_grad_(True)
         out = bp.evaluate(Xg)
-        L = al.al_value(out.F, out.h * tg.sh, out.g * tg.sg, S)
+        L = al.al_value(out.F, out.h * tg.sh, out.g * tg.sg, S, 37.0)
         (gx,) = torch.autograd.grad(L.sum(), Xg)
-        ref, _ = bp.project(X - tg.s ** 2 * (p.options.svgd_lr / S.rho).unsqueeze(1) * gx
+        ref, _ = bp.project(X - tg.s ** 2 * (p.options.svgd_lr / 37.0) * gx
                             / p.options.svgd_temperature)
         rel = float((Xn - ref).abs().max() / max(1e-30, float((ref - X).abs().max())))
         print(f"    {arm}: |x_step - x_PGD|_inf / |x_PGD - x|_inf = {rel:.2e}")
         check(f"pgd/{arm}: the kernel-off step is PGD on the program's L_rho / T", rel < 1e-8, f"{rel}")
         p.options = replace(p.options, svgd_kernel="q", svgd_dtype="float32", svgd_n=64,
-                            svgd_lr=ProgramOptions().svgd_lr, svgd_temperature=1.0)
+                            svgd_lr=ProgramOptions().svgd_lr, svgd_temperature=1.0,
+                            svgd_rho=ProgramOptions().svgd_rho)
 
 
 def test_graph_replay_is_bitwise():

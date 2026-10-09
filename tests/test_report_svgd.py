@@ -57,7 +57,8 @@ def _rec(i, ok, cost, svgd=True, solver_ok=None, drake_ok=None):
                          drake_feasible=ok if drake_ok is None else drake_ok,
                          phase_times={"swarm": 1.0}, collision_seconds=0.5,
                          feasible_q_spread=(0.1 * (i % 3 + 1)) if ok else None,
-                         rho_median=10.0, rho_max=1e3 if ok else 1e6,
+                         n_dual_updates=4, lam_inf_median=2.0, lam_inf_max=50.0 if ok else 1e4,
+                         mu_inf_median=0.0, mu_inf_max=3.0, n_multiplier_clipped=0 if ok else 2,
                          stop_reason="converged" if ok else "wall_clock")
     return r
 
@@ -127,7 +128,8 @@ def test_mcnemar_directions_cost_and_bugs():
         assert "!!!!!! BUG" in text and rep.status == 3
         ## The population metrics: medians over the cells that recorded them.
         assert b["L"]["n_feasible"] == 8.0 and abs(b["L"]["q_spread"] - 0.2) < 1e-12, b["L"]
-        assert b["L"]["rho_max"] == 1e6 and "q-spread among them" in text
+        assert b["L"]["lam_max"] == 1e4 and b["L"]["mclip"] == 4 and "q-spread among them" in text
+        assert "dual updates (median)" in text and "multiplier clips 4" in text
         ## A/B against the primary: al64none has 6 learned cells only al64 solved.
         assert "A/B against the primary al64" in text
         line = next(l for l in text.splitlines() if "al64none" in l and "learned" in l
