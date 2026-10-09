@@ -383,6 +383,166 @@ class BatchedFK:
         quat, pos = self.body_poses(q)
         return self.frame_pose(quat, pos, body, (qBF, pBF))
 
+    def frame_chain(self, frames):
+        """A `FrameChain` evaluating ONLY the joints on the paths from the world to the
+        given frames (`[(body_index, (quat4, pos3)), ...]`), with every fixed transform
+        between two moving joints pre-composed. See `FrameChain`."""
+        return FrameChain(self, frames)
+
+
+class FrameChain:
+    """The fast path for a few frames: the moving joints on their root paths and nothing else.
+
+    `BatchedFK.body_poses` replays every joint of the plant and is launch-bound on CUDA
+    (~22 joints x ~10 small kernels, flat in the batch size), while the rows of a program
+    need two frames on the same arm. Here the path from the world to each requested frame
+    is walked once at construction: anchored ancestors are constants, a weld is a fixed
+    transform, and every run of fixed transforms between two MOVING joints -- `X_MC` of
+    one, the welds between, `X_PF` of the next -- is composed once into a single offset.
+    The chain state is the pose of each moving joint's M frame; a requested frame is one
+    fixed compose from the M frame of its nearest moving ancestor (or a constant when no
+    joint on its path moves). Exact: only the association of constant products changes.
+
+    `poses(q) -> [(quat [B, 4], pos [B, 3]), ...]` in the order the frames were given.
+    """
+
+    def __init__(self, fk: BatchedFK, frames):
+        self.fk = fk
+        tree = fk.tree
+        joint_of_child = {r.child: j for j, r in zip(fk._joints, tree.joints)}
+        ident = ((1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+
+        def const_pose(b):
+            return (tuple(float(v) for v in fk._anchored_quat[b].detach().cpu().tolist()),
+                    tuple(float(v) for v in fk._anchored_pos[b].detach().cpu().tolist()))
+
+        ## resolve(body) -> (step index of the nearest moving ancestor or None, fixed offset
+        ## from that step's M frame -- or from the world -- to the body).
+        self._steps = []            # dicts: joint, parent (step index or None), pre (pose) or anchor
+        memo = {}
+
+        def resolve(body):
+            if body in memo:
+                return memo[body]
+            if body == 0 or body in tree.anchored:
+                out = (None, const_pose(body))
+            else:
+                j = joint_of_child[body]
+                r = j["record"]
+                parent_step, off = resolve(r.parent)
+                if r.kind == "weld":
+                    out = (parent_step, _compose(_compose(off, r.X_PF), r.X_MC))
+                else:
+                    pre = _compose(off, r.X_PF)
+                    self._steps.append(dict(joint=j, parent=parent_step,
+                                            pre=None if parent_step is None else pre,
+                                            anchor=pre if parent_step is None else None))
+                    out = (len(self._steps) - 1, r.X_MC)
+            memo[body] = out
+            return out
+
+        self._frames = []
+        for body, X_BF in frames:
+            step, off = resolve(int(body))
+            self._frames.append((step, _compose(off, (tuple(X_BF[0]), tuple(X_BF[1])))))
+
+        dtype, device = fk.dtype, fk.device
+
+        def t(v, n):
+            return torch.tensor(v, dtype=dtype, device=device).reshape(n)
+        for s in self._steps:
+            for key in ("pre", "anchor"):
+                if s[key] is not None:
+                    s[key + "_q"], s[key + "_p"] = t(s[key][0], 4), t(s[key][1], 3)
+        self._frame_consts = [(t(off[0], 4), t(off[1], 3)) for _, off in self._frames]
+        self.num_moving = len(self._steps)
+        self.num_positions = fk.num_positions
+
+        ## Geometric-Jacobian bookkeeping per frame: its ancestor steps (root first), their
+        ## position slots, and per ancestor the coefficients of the two column formulas
+        ##     dp/dq_j = rot_j * (w_j x (p_frame - o_j)) + lin_j * w_j,   dw/dq_j = rot_j * w_j
+        ## with w_j the joint axis in the world and o_j a point on it (the F origin):
+        ## revolute (rot 1, lin 0), prismatic (rot 0, lin 1), screw (rot 1, lin pitch/2pi).
+        self._frame_anc = []
+        for step, _ in self._frames:
+            anc = []
+            while step is not None:
+                anc.append(step)
+                step = self._steps[step]["parent"]
+            anc.reverse()
+            kinds = [self._steps[a]["joint"]["record"] for a in anc]
+            self._frame_anc.append(dict(
+                steps=anc,
+                slots=torch.tensor([r.position_slot for r in kinds], dtype=torch.long, device=device),
+                rot=t([0.0 if r.kind == "prismatic" else 1.0 for r in kinds], (1, len(anc), 1)),
+                lin=t([1.0 if r.kind == "prismatic" else (r.pitch / TWO_PI if r.kind == "screw" else 0.0)
+                       for r in kinds], (1, len(anc), 1))))
+
+    def poses(self, q, jacobians=False):
+        """`[(quat [B, 4], pos [B, 3]), ...]` per frame; with `jacobians=True` each entry
+        is `(quat, pos, Jp [B, 3, nq], Jw [B, 3, nq])` -- the geometric Jacobian of the
+        frame's origin and of its angular velocity (world frame, `d omega / d qdot`) with
+        respect to the plant's positions, by the column formulas above. Plain forward
+        tensor ops, so a solver gets the rows' derivative without a backward through the
+        chain; `tests/test_svgd_solver.py` pins it against autograd of these very poses."""
+        fk = self.fk
+        q = torch.as_tensor(q, dtype=fk.dtype, device=fk.device)
+        if q.dim() != 2 or q.shape[1] != self.num_positions:
+            raise ValueError(f"expected q of shape [B, {self.num_positions}], got {tuple(q.shape)}")
+        B = q.shape[0]
+        M, W, O = [], [], []
+        for s in self._steps:
+            j = s["joint"]
+            r = j["record"]
+            if s["parent"] is None:
+                Q, p = s["anchor_q"].expand(B, 4), s["anchor_p"].expand(B, 3)
+            else:
+                qp, pp = M[s["parent"]]
+                p = pp + quat_rotate(qp, s["pre_p"].expand(B, 3))
+                Q = quat_multiply(qp, s["pre_q"].expand(B, 4))
+            if jacobians:
+                W.append(quat_rotate(Q, j["axis"].expand(B, 3)))      # axis in the world
+                O.append(p)                                           # a point on it
+            step_q, step_p = fk._joint_motion(j, q[:, r.position_slot], B)
+            p = p + quat_rotate(Q, step_p)
+            Q = quat_multiply(Q, step_q)
+            M.append((Q, p))
+        out = []
+        for k, ((step, _), (oq, op)) in enumerate(zip(self._frames, self._frame_consts)):
+            if step is None:
+                quat, pos = oq.expand(B, 4), op.expand(B, 3)
+            else:
+                Q, p = M[step]
+                quat, pos = quat_multiply(Q, oq.expand(B, 4)), p + quat_rotate(Q, op.expand(B, 3))
+            if not jacobians:
+                out.append((quat, pos))
+                continue
+            Jp = torch.zeros(B, 3, self.num_positions, dtype=fk.dtype, device=fk.device)
+            Jw = torch.zeros_like(Jp)
+            anc = self._frame_anc[k]
+            if anc["steps"]:
+                Wk = torch.stack([W[a] for a in anc["steps"]], dim=1)     # [B, K, 3]
+                Ok = torch.stack([O[a] for a in anc["steps"]], dim=1)
+                lever = torch.cross(Wk, pos.unsqueeze(1) - Ok, dim=-1)
+                cols_p = anc["rot"] * lever + anc["lin"] * Wk
+                cols_w = anc["rot"] * Wk
+                Jp[:, :, anc["slots"]] = cols_p.transpose(1, 2)
+                Jw[:, :, anc["slots"]] = cols_w.transpose(1, 2)
+            out.append((quat, pos, Jp, Jw))
+        return out
+
+
+def _compose(a: Pose, b: Pose) -> Pose:
+    """`X_a * X_b` on `(quat4, pos3)` tuples, with the chain's own quaternion algebra on
+    CPU float64 so a pre-composed offset equals what the full replay would have formed."""
+    qa = torch.tensor(a[0], dtype=torch.float64, device=_CPU).reshape(1, 4)
+    pa = torch.tensor(a[1], dtype=torch.float64, device=_CPU).reshape(1, 3)
+    qb = torch.tensor(b[0], dtype=torch.float64, device=_CPU).reshape(1, 4)
+    pb = torch.tensor(b[1], dtype=torch.float64, device=_CPU).reshape(1, 3)
+    q = quat_multiply(qa, qb)[0]
+    p = (pa + quat_rotate(qa, pb))[0]
+    return (tuple(float(v) for v in q.tolist()), tuple(float(v) for v in p.tolist()))
+
 
 ## -- pose algebra the rows need --------------------------------------------------------
 

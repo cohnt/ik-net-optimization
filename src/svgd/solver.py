@@ -43,13 +43,21 @@ OUTER boundary, after `svgd_inner_iters` steps. The per-particle best is tracked
 `F` where the particle is feasible (`infeas <= 1`) and `F + FEASIBLE_WEIGHT * infeas` otherwise,
 so any feasible particle outranks any infeasible one and feasible particles rank by objective.
 
-JACOBIANS come from ONE evaluate graph per step: `J_q = dq/dx` by a vmapped backward
-(`is_grads_batched`, ndof cotangents), the generic rows' derivatives w.r.t. `q` by another
-vmapped backward through the kinematics and the pool's stored collision gradient, the extra
-(region) rows' derivatives w.r.t. `x` directly; rows are assembled from the public `RowSpec`
-bookkeeping. Region rows whose Jacobian is constant (checked at construction on two random
-particles) are cached. Both vmapped backwards were checked against per-row loops (exact in
-float64, float32 round-off otherwise).
+DERIVATIVES: THE ONLY BACKWARD IS THROUGH THE FLOW. On the fielded robots
+(`BatchedProgram.has_analytic_row_jacobians`) every derivative downstream of the
+configuration is closed form -- the task rows from the frame's geometric Jacobian
+(`FrameChain.poses(jacobians=True)`, `generic_rows_jacobian_cfg`), the collision row from the
+pool's own stored gradient, the joint-limit rows the identity, the region rows and the costs
+in `x` directly (`extra_row_jacobian`, `cost_gradient_parts`) -- so `evaluate` detaches the
+kinematics and the per-step autograd is ONE vmapped backward through the flow
+(`_Target.pullback`: `dF/dcfg`, the rows' cotangent and the q-space repulsion stacked as
+three cotangents), or `J_q` itself (ndof cotangents) on a Gauss-Newton step; the
+joint-space arm, whose map is the identity, builds no graph at all. A robot behind its own
+`BodyPoseProvider` falls back to autograd through its kinematics (`_Target.analytic = False`).
+Measured at N = 64 float32 on the laptop (the IPOPT smoke sharing the GPU): a step fell from
+181 / 106 ms (GN / no GN) to 40 / 34 ms, with the closed forms agreeing with autograd to
+1e-15 on all four Panda programs (`tests/test_svgd_solver.py`). What remains is launch-bound
+(evaluate at N = 1 is 14 ms) plus the pool's ~8 ms round trip.
 
 THE INIT PROTOCOL cannot be read off the program (the harness called `SetStartFromQ` or
 `SetNativeStart` before `Solve()`), so particle 0 is ALWAYS the program's initial guess,
@@ -80,6 +88,7 @@ import atexit
 import math
 import os
 import time
+import warnings
 import zlib
 from collections import OrderedDict
 from dataclasses import replace
@@ -102,6 +111,7 @@ FEASIBLE_WEIGHT = 1e6
 POOL_CACHE_SIZE = 2
 NATIVE_DRAW_ROUNDS = 20       # bounded rejection sampling for the joint-space native start
 PATIENCE_REL = 1e-6
+POLISH_ALPHA_MIN = 1.0 / 64   # shortest backtracked Newton step in the float64 polish
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -123,6 +133,30 @@ def resolve_workers(option):
     return max(1, (os.cpu_count() or 2) // procs)
 
 
+def _spawn_pool(spec, workers):
+    """Spawn the pool with the GPU HIDDEN from its workers.
+
+    Under the `spawn` start method every worker re-imports the main script as
+    `__mp_main__`, and a benchmark script's (or a test's) module-level imports pull in
+    `src.generic_program` -> ikflow -> `jrl.config`, whose import initialises CUDA. So
+    twenty workers that only ever run Drake on the CPU each took a ~0.5 GB CUDA context,
+    and in a parent already holding the GPU they died at import with `CUDA error: out of
+    memory` -- surfacing as "worker k died (ConnectionResetError)" with the worker's own
+    traceback lost to `HiddenPrints` (the plumbing test, 2026-10-08). The environment is
+    what the child receives at exec, so it is masked for the spawn and restored after;
+    the parent's own CUDA state is untouched (the variable is read at CUDA init only).
+    """
+    old = os.environ.get("CUDA_VISIBLE_DEVICES")
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    try:
+        return DrakeCollisionPool(spec, workers=int(workers))
+    finally:
+        if old is None:
+            del os.environ["CUDA_VISIBLE_DEVICES"]
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = old
+
+
 def shared_pool(spec, workers):
     key = (spec, int(workers))
     pool = _POOLS.get(key)
@@ -132,7 +166,7 @@ def shared_pool(spec, workers):
     if pool is not None:
         pool.close()
         del _POOLS[key]
-    pool = DrakeCollisionPool(spec, workers=int(workers))
+    pool = _spawn_pool(spec, workers)
     _POOLS[key] = pool
     while len(_POOLS) > POOL_CACHE_SIZE:
         _, old = _POOLS.popitem(last=False)
@@ -229,12 +263,12 @@ class _Target:
 
         ## Row index bookkeeping: each h/g entry maps to a row of the stacked
         ## `[drake_rows | extra rows...]` Jacobian, with a sign (eq/hi: +1, lo: -1).
-        self._extra_keys = []
         self._extra_offsets = {}
-        self._n_extra = 0
-        self._extra_const = None     # [n_extra] bool: Jacobian independent of x
-        self._extra_J_const = None   # [n_extra, n]
-        self._probe_extras()
+        off = 0
+        for key, size in bp.extra_blocks:
+            self._extra_offsets[key] = off
+            off += int(size)
+        self._n_extra = off
 
         def locate(spec):
             if spec.drake_binding == GENERIC_BINDING:
@@ -247,58 +281,70 @@ class _Target:
         self.g_idx = li([locate(r) for r in bp.g_spec])
         self.h_coef = (torch.tensor([sign[r.kind] for r in bp.h_spec], **kw) * self.sh)
         self.g_coef = (torch.tensor([sign[r.kind] for r in bp.g_spec], **kw) * self.sg)
+        ## Row groups of `h`, for the trace: which equality rows are position / rotation.
+        self.h_is_rot = torch.tensor([r.group == "rotation" for r in bp.h_spec],
+                                     dtype=torch.bool, device=self.device)
+        self._n_rot = sum(1 for r in bp.h_spec if r.group == "rotation")
 
-    ## -- extra rows: which have a constant Jacobian ------------------------------------
-    def _probe_extras(self):
-        bp = self.bp
-        g = torch.Generator(device="cpu").manual_seed(12345)
-        X = torch.randn(2, self.n, generator=g, dtype=torch.float64, device="cpu").to(device=self.device, dtype=self.dtype)
-        Xg = X.requires_grad_(True)
-        out = bp.evaluate(Xg, need_collision=False)
-        keys = list(out.extra_rows.keys())
-        off = 0
-        for k in keys:
-            self._extra_offsets[k] = off
-            off += int(out.extra_rows[k].shape[1])
-        self._extra_keys = keys
-        self._n_extra = off
-        if off == 0:
-            return
-        J = self._extra_jacobian_full(Xg, out)                 # [2, n_extra, n]
-        const = (J[0] == J[1]).all(dim=1)
-        self._extra_const = const
-        self._extra_J_const = torch.where(const.unsqueeze(1), J[0], torch.zeros_like(J[0]))
-        self._extra_var_rows = torch.nonzero(~const).flatten()
+        ## Routing of the GENERIC rows' derivative w.r.t. the configuration (`generic_blocks`):
+        ## task rows (pose / mug) by a vmapped backward through the frame chain, the
+        ## collision row from the pool's stored gradient, the joint-limit rows the identity.
+        task, jl, col = [], [], []
+        for kind, start, size in bp.generic_blocks:
+            rows = list(range(start, start + size))
+            if kind in ("pose_pos", "pose_rpy", "mug"):
+                task += rows
+            elif kind == "joint_limit":
+                jl += rows
+            elif kind == "collision":
+                col += rows
+            else:                                   # pragma: no cover
+                raise RuntimeError(f"unknown generic row kind {kind!r}")
+        self._task_rows = li(task)
+        self._jl_rows = li(jl)
+        self._col_rows = li(col)
+        self._E_task = torch.eye(len(task), **kw).unsqueeze(1)           # [nt, 1, nt]
+        self._E_q = torch.eye(self.ndof, **kw).unsqueeze(1)              # [ndof, 1, ndof]
+        ## Derivative mode (see `evaluate`): closed-form rows where the batched program
+        ## offers them, autograd through the kinematics otherwise.
+        self.analytic = bool(bp.has_analytic_row_jacobians)
 
-    def _extra_cat(self, out):
-        return torch.cat([out.extra_rows[k] for k in self._extra_keys], dim=1)
+    ## -- batched autograd, with the vmap-fallback chatter silenced ----------------------
+    @staticmethod
+    def _batched_grad(outputs, inputs, E, N):
+        """`autograd.grad` with `is_grads_batched` over the rows of `E [m, 1, m]`
+        (expanded to `[m, N, m]`), returning `[N, m, ...]`. torch warns, per call, about
+        every op without a batching rule ("There is a performance drop because we have not
+        yet implemented the batching rule for ..."); the fallback is correct and the warning
+        is noise at thousands of steps, so it is filtered HERE, around this call only."""
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*batching rule.*")
+            warnings.filterwarnings("ignore", category=UserWarning, module="torch._functorch")
+            (J,) = torch.autograd.grad(outputs, inputs, grad_outputs=E.expand(-1, N, -1),
+                                       is_grads_batched=True, retain_graph=True)
+        return J.transpose(0, 1)
 
-    def _extra_jacobian_full(self, Xg, out):
-        ex = self._extra_cat(out)
-        N, m = ex.shape
-        E = torch.eye(m, dtype=ex.dtype, device=ex.device).unsqueeze(1).expand(m, N, m)
-        (J,) = torch.autograd.grad(ex, Xg, grad_outputs=E, is_grads_batched=True,
-                                   retain_graph=True)
-        return J.transpose(0, 1)                                # [N, m, n]
-
-    def _extra_jacobian(self, Xg, out, N):
+    def _extra_jacobian(self, X, N):
         if self._n_extra == 0:
             return torch.zeros(N, 0, self.n, dtype=self.dtype, device=self.device)
-        J = self._extra_J_const.unsqueeze(0).expand(N, -1, -1).clone()
-        if self._extra_var_rows.numel() > 0:
-            ex = self._extra_cat(out)
-            for r in self._extra_var_rows.tolist():       # static: fixed at construction
-                (g,) = torch.autograd.grad(ex[:, r].sum(), Xg, retain_graph=True)
-                J[:, r, :] = g
-        return J
+        return self.bp.extra_row_jacobian(X)                     # closed form, no autograd
 
     ## -- evaluation -------------------------------------------------------------------
     def evaluate(self, X, need_grad=True):
         """Rows and costs at `X [N, n]`; the scaled `h`, `g`, infeasibility and a per-particle
-        finiteness flag. The graph is kept when `need_grad`."""
-        Xg = X.detach().requires_grad_(bool(need_grad))
-        with torch.set_grad_enabled(bool(need_grad)):
-            out = self.bp.evaluate(Xg)
+        finiteness flag. With `need_grad`, the derivative machinery is set up in the mode
+        the target supports: ANALYTIC (`bp.has_analytic_row_jacobians`) keeps a graph through
+        the flow only (`q <- x`), everything downstream of `q` -- kinematics, rows, costs --
+        is detached and differentiated in closed form (`generic_rows_jacobian_cfg`,
+        `extra_row_jacobian`, `cost_gradient_parts`); on the joint-space arm, whose map is
+        the identity, no graph is built at all. AUTOGRAD (a robot behind its own pose
+        provider) keeps the full graph and differentiates the rows with `autograd`."""
+        need_grad = bool(need_grad)
+        graph = need_grad and (self.bp.is_learned or not self.analytic)
+        Xg = X.detach().requires_grad_(graph)
+        with torch.set_grad_enabled(graph):
+            out = self.bp.evaluate(Xg, detach_kinematics=self.analytic and graph,
+                                   row_jacobians=self.analytic and need_grad)
         h = out.h * self.sh
         g = out.g * self.sg
         finite = (torch.isfinite(h).all(dim=1) & torch.isfinite(g).all(dim=1)
@@ -315,9 +361,69 @@ class _Target:
         excess = torch.where(ev.infeas <= 1.0, torch.zeros_like(ev.infeas), ev.infeas)
         return al.best_merit(ev.F.detach(), excess, FEASIBLE_WEIGHT)
 
-    def grad_F(self, ev):
+    ## -- derivatives ------------------------------------------------------------------
+    def pullback(self, ev, cots):
+        """`[J_q^T v for v in cots]`, each `v [N, ndof]` -> `[N, n]`: the configuration
+        cotangents pulled back to the decision variables. Learned arm: ONE vmapped backward
+        through the flow with all of them stacked; joint space: the identity."""
+        if not self.bp.is_learned:
+            return [v.detach().clone() for v in cots]
+        N = ev.Xg.shape[0]
+        E = torch.stack([v.detach() for v in cots])                   # [k, N, ndof]
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*batching rule.*")
+            warnings.filterwarnings("ignore", category=UserWarning, module="torch._functorch")
+            (G,) = torch.autograd.grad(ev.cfg, ev.Xg, grad_outputs=E, is_grads_batched=True,
+                                       retain_graph=True)
+        self._count("map_jacobian")
+        return [G[i] for i in range(len(cots))]
+
+    def cost_parts(self, ev):
+        """`(dF/dcfg [N, ndof], dF/dx|direct [N, n])`: closed form in analytic mode; in
+        autograd mode the whole gradient lands in the direct part (`dF/dcfg = 0`)."""
+        if self.analytic:
+            return self.bp.cost_gradient_parts(ev.Xg, ev.cfg)
         (g,) = torch.autograd.grad(ev.F.sum(), ev.Xg, retain_graph=True)
-        return g
+        return torch.zeros_like(ev.cfg), g
+
+    def row_cotangents(self, ev, ch, cg):
+        """The cotangent on the stacked UNSCALED rows `[drake_rows | extra rows]` that the
+        scaled `h`, `g` cotangents `ch`, `cg` induce: `[N, nr + n_extra]`."""
+        N = ev.Xg.shape[0]
+        c = torch.zeros(N, self.bp.n_rows + self._n_extra, dtype=self.dtype, device=self.device)
+        c.index_add_(1, self.h_idx, ch * self.h_coef)
+        c.index_add_(1, self.g_idx, cg * self.g_coef)
+        return c
+
+    def al_gradients(self, ev, ch, cg, R):
+        """`(dF/dx, J_h^T ch + J_g^T cg, J_q^T R)` -- the three gradients a non-GN
+        `al_svgd` step needs -- with ONE backward through the flow (`R` may be None).
+        Analytic mode: the rows' cotangent is carried to the configuration through the
+        closed-form row Jacobians, the extras' directly to `x`. Autograd mode: the row
+        term is one VJP through the full graph."""
+        N = ev.Xg.shape[0]
+        nr = self.bp.n_rows
+        dFc, dFx = self.cost_parts(ev)
+        if self.analytic:
+            c = self.row_cotangents(ev, ch, cg)
+            Dq = self.generic_jacobian_cfg(ev)                            # [N, nr, ndof]
+            v_cfg = (Dq.transpose(1, 2) @ c[:, :nr].unsqueeze(2)).squeeze(2)
+            J_ex = self._extra_jacobian(ev.Xg, N)
+            v_x = (J_ex.transpose(1, 2) @ c[:, nr:].unsqueeze(2)).squeeze(2) if self._n_extra else 0.0
+            cots = [dFc, v_cfg] + ([R] if R is not None else [])
+            G = self.pullback(ev, cots)
+            gF = G[0] + dFx
+            gC = G[1] + v_x
+            R_pulled = G[2] if R is not None else None
+            return gF, gC, R_pulled
+        s = (ev.h * ch).sum() + (ev.g * cg).sum()
+        (gC,) = torch.autograd.grad(s, ev.Xg, retain_graph=True)
+        R_pulled = self.pullback(ev, [R])[0] if R is not None else None
+        return dFx, gC, R_pulled
+
+    def grad_F(self, ev):
+        dFc, dFx = self.cost_parts(ev)
+        return self.pullback(ev, [dFc])[0] + dFx if self.analytic else dFx
 
     def jacobian_q(self, ev):
         """`dq/dx [N, ndof, n]` from the live graph (identity on joint space)."""
@@ -325,42 +431,85 @@ class _Target:
         N = ev.Xg.shape[0]
         if not bp.is_learned:
             return bp.jacobian_q(ev.Xg.detach())
-        cfg = ev.cfg
-        E = torch.eye(self.ndof, dtype=cfg.dtype, device=cfg.device).unsqueeze(1).expand(
-            self.ndof, N, self.ndof)
-        (J,) = torch.autograd.grad(cfg, ev.Xg, grad_outputs=E, is_grads_batched=True,
-                                   retain_graph=True)
+        J = self._batched_grad(ev.cfg, ev.Xg, self._E_q, N)
         self._count("map_jacobian")
-        return J.transpose(0, 1)
+        return J
+
+    def generic_jacobian_cfg(self, ev):
+        """`d drake_rows / d cfg`, `[N, nr, ndof]`. Analytic mode: the batched program's
+        closed form (geometric Jacobian of the task frame, the pool's collision gradient,
+        identity joint limits). Autograd mode: routed by row kind -- the task rows by one
+        vmapped backward through the kinematics, the collision row from the pool's stored
+        `d row / d q_plant` through `config_to_plant_q`, the joint-limit rows the identity."""
+        out = ev.out
+        if self.analytic:
+            return torch.nan_to_num(self.bp.generic_rows_jacobian_cfg(out), nan=0.0,
+                                    posinf=0.0, neginf=0.0)
+        D = out.drake_rows
+        N, nr = D.shape
+        Dq = torch.zeros(N, nr, self.ndof, dtype=D.dtype, device=D.device)
+        if self._task_rows.numel():
+            Jt = self._batched_grad(D[:, self._task_rows], ev.cfg, self._E_task, N)
+            Dq[:, self._task_rows] = Jt
+        if self._jl_rows.numel():
+            Dq[:, self._jl_rows] = torch.eye(self.ndof, dtype=D.dtype, device=D.device)[
+                :self._jl_rows.numel()].unsqueeze(0).expand(N, -1, -1)
+        if self._col_rows.numel():
+            cg = out.extras.get("collision_grad")
+            if cg is None:                          # evaluated without a graph: no row grad
+                cg = torch.zeros(N, out.q_plant.shape[1], dtype=D.dtype, device=D.device)
+            if self.bp.plant_q_is_padded_cfg:
+                gcol = cg[:, :self.ndof]
+            else:
+                (gcol,) = torch.autograd.grad((out.q_plant * cg).sum(), ev.cfg, retain_graph=True)
+            Dq[:, self._col_rows[0]] = gcol
+        return torch.nan_to_num(Dq, nan=0.0, posinf=0.0, neginf=0.0)
 
     def row_jacobians(self, ev, J_q):
         """`(J_h [N, m_e, n], J_g [N, m_i, n])` of the SCALED rows."""
-        out = ev.out
-        D = out.drake_rows
-        N, nr = D.shape
-        E = torch.eye(nr, dtype=D.dtype, device=D.device).unsqueeze(1).expand(nr, N, nr)
-        (Dq,) = torch.autograd.grad(D, ev.cfg, grad_outputs=E, is_grads_batched=True,
-                                    retain_graph=True)                 # [nr, N, ndof]
-        Dq = torch.nan_to_num(Dq.transpose(0, 1), nan=0.0, posinf=0.0, neginf=0.0)
-        J_gen = Dq @ J_q                                                # [N, nr, n]
-        J_ex = self._extra_jacobian(ev.Xg, out, N)
+        N = ev.Xg.shape[0]
+        J_gen = self.generic_jacobian_cfg(ev) @ J_q                     # [N, nr, n]
+        J_ex = self._extra_jacobian(ev.Xg, N)
         J_stack = torch.cat([J_gen, J_ex], dim=1)
         J_h = J_stack[:, self.h_idx] * self.h_coef.view(1, -1, 1)
         J_g = J_stack[:, self.g_idx] * self.g_coef.view(1, -1, 1)
         return J_h, J_g
 
-    def vjp_rows(self, ev, ch, cg, with_F=True):
-        """`dF/dx + J_h^T ch + J_g^T cg` in ONE backward (the non-GN step's AL gradient)."""
-        s = (ev.h * ch).sum() + (ev.g * cg).sum()
-        if with_F:
-            s = s + ev.F.sum()
-        (g,) = torch.autograd.grad(s, ev.Xg, retain_graph=True)
-        return g
+    ## -- the per-outer-iteration trace ---------------------------------------------------
+    TRACE_COLUMNS = ("min_infeas", "med_infeas", "n_feasible", "med_rho", "med_lr",
+                     "frac_gn_clamped", "med_h_pos", "med_h_rot", "med_g_plus",
+                     "min_F_feasible", "med_dq", "med_nw_infeas")
 
-    def vjp_q(self, ev, R):
-        (g,) = torch.autograd.grad((ev.cfg * R).sum(), ev.Xg, retain_graph=True)
-        self._count("map_jacobian")
-        return g
+    def trace_row(self, ev, S, dq, clamped):
+        """One `[len(TRACE_COLUMNS)]` tensor of swarm statistics at an outer boundary, all
+        on the device (the caller stacks them and moves them to the host ONCE at the end):
+        the best and median scaled violation, the feasible count, median rho and lr, the
+        fraction of particles whose last GN step hit the q-step clamp (`nan` when none ran),
+        the median over particles of the worst position / rotation equality row and of the
+        worst violated inequality, the best objective among feasible particles, the median
+        configuration step, and the median Nocedal-Wright infeasibility measure."""
+        kw = dict(dtype=self.dtype, device=self.device)
+        nan = torch.tensor(float("nan"), **kw)
+        infeas = torch.nan_to_num(ev.infeas, nan=float("inf"))
+        feas = infeas <= 1.0
+        habs = torch.nan_to_num(ev.h.detach().abs(), nan=float("inf"))
+        gpos = torch.nan_to_num(torch.clamp(ev.g.detach(), min=0.0), nan=float("inf"))
+
+        def med_group(mask, count):           # `count` is a Python int fixed at construction
+            if count == 0:
+                return nan
+            return habs[:, mask].amax(dim=1).median()
+        F = torch.nan_to_num(ev.F.detach(), nan=float("inf"))
+        minF = torch.where(feas, F, torch.full_like(F, float("inf"))).min()
+        minF = torch.where(torch.isfinite(minF), minF, nan)
+        frac = clamped.to(self.dtype).mean() if clamped is not None else nan
+        dqm = torch.nan_to_num(dq, nan=float("inf")).median() if dq is not None else nan
+        return torch.stack([
+            infeas.min(), infeas.median(), feas.sum().to(self.dtype),
+            S.rho.median(), S.lr.median(), frac,
+            med_group(~self.h_is_rot, self.m_e - self._n_rot), med_group(self.h_is_rot, self._n_rot),
+            gpos.amax(dim=1).median() if gpos.shape[1] else nan,
+            minF, dqm, al.infeasibility(ev.h.detach(), ev.g.detach(), S).median()])
 
     def _count(self, bucket):
         counts = getattr(self.bp.program, "eval_counts", None)
@@ -504,15 +653,18 @@ class SvgdSolver:
         return Xp
 
     ## ------------------------------- the steps ----------------------------------------
-    def _kernel_terms(self, ev, X, J_q):
-        """`(K, R_pulled)` in the configured space; non-finite particles are isolated so a NaN
-        cannot spread through the kernel average (their K row/column is the identity's)."""
+    def _kernel_terms(self, ev, X):
+        """`(K, R, needs_pullback)`: the kernel matrix and the repulsion IN THE KERNEL'S
+        SPACE (q for `svgd_kernel = "q"`, x otherwise); the caller pulls `R` back through
+        `J_q^T` (one VJP, or the Jacobian when it has it) when `needs_pullback`. Non-finite
+        particles are isolated so a NaN cannot spread through the kernel average (their K
+        row/column is the identity's)."""
         opts = self.options
         N = X.shape[0]
         which = opts.svgd_kernel
         if which == "none" or N < 2:
             K, R = kernels.identity_terms(N, self.n, self.dtype, self.device)
-            return K, R
+            return K, R, False
         y = ev.cfg.detach() if which == "q" else X
         finite = ev.finite & torch.isfinite(y).all(dim=1)
         y0 = torch.where(finite.unsqueeze(1), y, torch.zeros_like(y))
@@ -528,43 +680,76 @@ class SvgdSolver:
         ## the repulsion with the masked kernel (same formula as rbf_terms, sign included)
         R = (2.0 / hbw) * (K.sum(dim=1, keepdim=True) * y0 - K @ y0)
         R = torch.where(finite.unsqueeze(1), R, torch.zeros_like(R))
-        if which == "q":
-            R_pulled = (J_q.transpose(1, 2) @ R.unsqueeze(2)).squeeze(2)
+        return K, R, which == "q"
+
+    def _gn_step(self, ev, S, J_h, J_g, rows_active):
+        """The (unclamped) Gauss-Newton correction onto the equality rows and, when
+        `rows_active`, the PHR-active inequality rows."""
+        opts = self.options
+        if rows_active:
+            act = al.active_mask(ev.g, S.mu, S.rho)
+            J = torch.cat([J_h, J_g * act.unsqueeze(2)], dim=1)
+            r = torch.cat([ev.h, ev.g * act], dim=1).detach()
         else:
-            R_pulled = kernels.pullback_identity(R)
-        return K, R_pulled
+            J, r = J_h, ev.h.detach()
+        J = torch.nan_to_num(J.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+        r = torch.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
+        return al.gn_correction(J, r, opts.svgd_gn_delta)
+
+    def _clamp(self, dx, J_q):
+        """`clamp_q_step` plus the per-particle flag that the bound was hit (for the trace:
+        a clamp that binds every step says `svgd_q_step_max` is the knob)."""
+        Jq = J_q if self._tg.bp.is_learned else None
+        dq = dx if Jq is None else (Jq @ dx.unsqueeze(2)).squeeze(2)
+        clamped = dq.abs().amax(dim=1) > float(self.options.svgd_q_step_max)
+        return al.clamp_q_step(dx, Jq, self.options.svgd_q_step_max), clamped
 
     def _step_al(self, X, S, t_outer, t_step, total_steps, do_gn):
+        """One `al_svgd` step. Without a GN correction (`do_gn=False`) the whole derivative
+        work is ONE vmapped backward (`vjp_three`: dF/dx, the AL row cotangents, the q-space
+        repulsion pullback); with it, `J_q` and the row Jacobians are added."""
         tg = self._tg
         opts = self.options
         ev = tg.evaluate(X)
-        gF = tg.grad_F(ev)
         ch, cg = al.al_constraint_grad_coefficients(ev.h, ev.g, S)
-        ## J_q serves the q-space pullback, the GN row Jacobians and the q-step clamp.
-        J_q = tg.jacobian_q(ev)
+        K, R, pull = self._kernel_terms(ev, X)
+        J_q = None
         if do_gn:
+            J_q = tg.jacobian_q(ev)
             J_h, J_g = tg.row_jacobians(ev, J_q)
-            gAL = gF + (J_h.transpose(1, 2) @ ch.unsqueeze(2)).squeeze(2) \
-                     + (J_g.transpose(1, 2) @ cg.unsqueeze(2)).squeeze(2)
+            dFc, dFx = tg.cost_parts(ev)
+            gF = (J_q.transpose(1, 2) @ dFc.unsqueeze(2)).squeeze(2) + dFx
+            gC = (J_h.transpose(1, 2) @ ch.unsqueeze(2)).squeeze(2) \
+                + (J_g.transpose(1, 2) @ cg.unsqueeze(2)).squeeze(2)
+            R_pulled = (J_q.transpose(1, 2) @ R.unsqueeze(2)).squeeze(2) if pull else R
         else:
-            gAL = tg.vjp_rows(ev, ch, cg, with_F=True)
+            gF, gC, R_pulled = tg.al_gradients(ev, ch, cg, R if pull else None)
+            if not pull:
+                R_pulled = R
         fin = ev.finite.unsqueeze(1)
         gF = torch.where(fin, gF, torch.zeros_like(gF))
-        gAL = torch.where(fin, gAL, torch.zeros_like(gAL))
-        K, R_pulled = self._kernel_terms(ev, X, J_q)
+        gAL = torch.where(fin, gF + gC, torch.zeros_like(gF))
+        R_pulled = torch.where(fin, R_pulled, torch.zeros_like(R_pulled))
         gamma = kernels.anneal_gamma(t_outer, opts.svgd_gamma_t)
         T = kernels.anneal_T(t_step, opts.svgd_repulsion_T0, opts.svgd_anneal_frac, total_steps)
         phi = kernels.svgd_direction(K, -gF, R_pulled, gamma, T)
         Xn, S = al.adam_step(X, -(phi - gAL), S)
+        ev.gn_clamped = None
+        ev.dq_adam = None
         if do_gn:
-            act = al.active_mask(ev.g, S.mu, S.rho)
-            J = torch.cat([J_h, J_g * act.unsqueeze(2)], dim=1)
-            r = torch.cat([ev.h, ev.g * act], dim=1).detach()
-            J = torch.nan_to_num(J.detach(), nan=0.0, posinf=0.0, neginf=0.0)
-            r = torch.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
-            dx = al.gn_correction(J, r, opts.svgd_gn_delta)
-            dx = al.clamp_q_step(dx, J_q if tg.bp.is_learned else None, opts.svgd_q_step_max)
+            ## The lr schedule must see ADAM'S OWN configuration step, not the total
+            ## movement: the clamped GN correction alone sits at ~q_step_max, so measuring
+            ## the sum halved the learning rate on every GN step and froze the Stein/AL
+            ## part at `svgd_lr_min` (read off the trace: med_lr at the floor from outer 1).
+            ## On a GN step it is estimated linearly with the J_q already in hand; on a
+            ## non-GN step the observed step IS Adam's and the caller measures it.
+            if tg.bp.is_learned:
+                ev.dq_adam = (J_q @ (Xn - X).unsqueeze(2)).squeeze(2).abs().amax(dim=1)
+            else:
+                ev.dq_adam = (Xn - X).abs().amax(dim=1)
+            dx, clamped = self._clamp(self._gn_step(ev, S, J_h, J_g, rows_active=True), J_q)
             Xn = Xn + dx
+            ev.gn_clamped = clamped
         Xn, _ = tg.project(Xn)
         S = al.track_best(S, X, tg.merit(ev))
         return Xn.detach(), S, ev
@@ -573,9 +758,10 @@ class SvgdSolver:
         tg = self._tg
         opts = self.options
         ev = tg.evaluate(X)
-        gF = tg.grad_F(ev)
         J_q = tg.jacobian_q(ev)
         J_h, J_g = tg.row_jacobians(ev, J_q)
+        dFc, dFx = tg.cost_parts(ev)
+        gF = (J_q.transpose(1, 2) @ dFc.unsqueeze(2)).squeeze(2) + dFx
         J_h = torch.nan_to_num(J_h.detach(), nan=0.0, posinf=0.0, neginf=0.0)
         J_g = torch.nan_to_num(J_g.detach(), nan=0.0, posinf=0.0, neginf=0.0)
         _, cg = al.al_constraint_grad_coefficients(ev.h, ev.g, S)
@@ -587,18 +773,27 @@ class SvgdSolver:
         fin = ev.finite.unsqueeze(1)
         driving = torch.where(fin, driving, torch.zeros_like(driving))
         driving = (P @ driving.unsqueeze(2)).squeeze(2)
-        K, R_pulled = self._kernel_terms(ev, X, J_q)
+        K, R, pull = self._kernel_terms(ev, X)
+        R_pulled = (J_q.transpose(1, 2) @ R.unsqueeze(2)).squeeze(2) if pull else R
+        R_pulled = torch.where(fin, R_pulled, torch.zeros_like(R_pulled))
         gamma = kernels.anneal_gamma(t_outer, opts.svgd_gamma_t)
         T = kernels.anneal_T(t_step, opts.svgd_repulsion_T0, opts.svgd_anneal_frac, total_steps)
         phi = kernels.svgd_direction(K, driving, R_pulled, gamma, T)
         phi = (P @ phi.unsqueeze(2)).squeeze(2)
-        h = torch.nan_to_num(ev.h.detach(), nan=0.0, posinf=0.0, neginf=0.0)
-        dx_c = al.gn_correction(J_h, h, opts.svgd_gn_delta)
-        step = S.lr.unsqueeze(1) * phi + dx_c
-        step = al.clamp_q_step(step, J_q if tg.bp.is_learned else None, opts.svgd_q_step_max)
+        dx_c = self._gn_step(ev, S, J_h, J_g, rows_active=False)
+        step_lr = S.lr.unsqueeze(1) * phi
+        step, clamped = self._clamp(step_lr + dx_c, J_q)
+        ## The lr schedule sees the Stein step's own configuration motion, not the manifold
+        ## correction's (the same defect as al_svgd's: the correction alone saturates the
+        ## clamp and drove lr to its floor on every step -- the trace of stage-0 tsvgd).
+        if tg.bp.is_learned:
+            ev.dq_adam = (J_q @ step_lr.unsqueeze(2)).squeeze(2).abs().amax(dim=1)
+        else:
+            ev.dq_adam = step_lr.abs().amax(dim=1)
         Xn, _ = tg.project(X + step)
         S = al.track_best(S, X, tg.merit(ev))
         self._last_P = P.detach()
+        ev.gn_clamped = clamped
         return Xn.detach(), S, ev
 
     ## ------------------------------- resampling ---------------------------------------
@@ -645,13 +840,14 @@ class SvgdSolver:
         tg = self._tg
         total_steps = max(1, outer_iters * inner_iters)
         step_fn = self._step_al if self.method == "al_svgd" else self._step_t
-        stats = dict(outer=0, inner=0, n_resampled=0, best_history=[])
+        stats = dict(outer=0, inner=0, n_resampled=0, best_history=[], trace=[])
         prev_q = None
         best_seen = float("inf")
         stale = 0
         status = STATUS_STEP_CAP
         t_step = 0
         last_ev = None
+        dq = None
         for t_outer in range(outer_iters):
             ## -- resample check (runaway / nan), at the outer boundary --
             if t_outer % max(1, int(opts.svgd_resample_every)) == 0:
@@ -667,8 +863,13 @@ class SvgdSolver:
                     dq = torch.nan_to_num((q_now - prev_q).abs().amax(dim=1), nan=float("inf"))
                 else:
                     dq = torch.zeros(X.shape[0], dtype=self.dtype, device=self.device)
-                S = al.lr_schedule(S, dq, opts.svgd_q_step_max, opts.svgd_lr, opts.svgd_lr_min,
-                                   float(t_outer), opts.svgd_lr_decay_t)
+                ## `dq` (the observed step, for the trace) includes the previous step's GN
+                ## correction; the lr schedule gets Adam's own step where the step reports it.
+                dq_lr = getattr(ev, "dq_adam", None)
+                if dq_lr is None:
+                    dq_lr = dq
+                S = al.lr_schedule(S, torch.nan_to_num(dq_lr, nan=float("inf")), opts.svgd_q_step_max,
+                                   opts.svgd_lr, opts.svgd_lr_min, float(t_outer), opts.svgd_lr_decay_t)
                 prev_q = q_now
                 last_ev = ev
                 t_step += 1
@@ -676,6 +877,7 @@ class SvgdSolver:
             S = al.update_multipliers(ev.h.detach(), ev.g.detach(), S, opts.svgd_rho_growth,
                                       opts.svgd_rho_max, opts.svgd_multiplier_max)
             stats["outer"] = t_outer + 1
+            stats["trace"].append(tg.trace_row(ev, S, dq, getattr(ev, "gn_clamped", None)))
             ## -- outer boundary: sync, record, clock, patience --
             if self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
@@ -703,8 +905,14 @@ class SvgdSolver:
         tg = self._tg64
         opts = self.options
         Xc = Xc.to(torch.float64)
+        k = Xc.shape[0]
         iters = 0
         ev = tg.evaluate(Xc)
+        ## Per-particle step fraction for a backtracking Newton: a rejected step is retried
+        ## at half the length (down to POLISH_ALPHA_MIN), an accepted one lets it grow back.
+        ## Without this a rejected step was recomputed identically and rejected again for
+        ## every remaining iteration -- the polish was a no-op exactly when it was needed.
+        alpha = torch.ones(k, dtype=torch.float64, device=self.device)
         for i in range(int(opts.svgd_polish_iters)):
             if bool((ev.infeas <= opts.svgd_polish_tol).all()):
                 break
@@ -720,13 +928,15 @@ class SvgdSolver:
             done = (ev.infeas <= opts.svgd_polish_tol).unsqueeze(1)
             dx = al.gn_correction(J, r, opts.svgd_gn_delta)
             dx = al.clamp_q_step(dx, J_q if tg.bp.is_learned else None, opts.svgd_q_step_max)
-            dx = torch.where(done, torch.zeros_like(dx), dx)
+            dx = torch.where(done, torch.zeros_like(dx), dx * alpha.unsqueeze(1))
             Xn, _ = tg.project(Xc + dx)
             ev_n = tg.evaluate(Xn)
             ## accept where the step did not make things worse (a safeguarded Newton)
             better = (torch.nan_to_num(ev_n.infeas, nan=float("inf"))
-                      <= torch.nan_to_num(ev.infeas, nan=float("inf"))).unsqueeze(1)
-            Xc = torch.where(better, Xn, Xc)
+                      <= torch.nan_to_num(ev.infeas, nan=float("inf")))
+            Xc = torch.where(better.unsqueeze(1), Xn, Xc)
+            alpha = torch.where(better, torch.clamp(2.0 * alpha, max=1.0),
+                                torch.clamp(0.5 * alpha, min=POLISH_ALPHA_MIN))
             iters += 1
             ev = tg.evaluate(Xc)
         return Xc.detach(), ev, iters
@@ -868,7 +1078,15 @@ class SvgdSolver:
         counts = dict(getattr(program, "eval_counts", {}) or {})
         map_evals = int(counts.get("map_forward", 0) - counts0.get("map_forward", 0))
         total = time.perf_counter() - t0
+        ## The per-outer trace: stacked and moved to the host once, here, never per step.
+        rows = sstats.get("trace", [])
+        if rows:
+            T_np = torch.stack(rows).detach().to(device="cpu", dtype=torch.float64).numpy()
+            trace = {name: [float(v) for v in T_np[:, j]] for j, name in enumerate(_Target.TRACE_COLUMNS)}
+        else:
+            trace = {name: [] for name in _Target.TRACE_COLUMNS}
         extras.update(dict(
+            trace=trace, derivative_mode="analytic" if tg.analytic else "autograd",
             violation_before_polish=[float(v) for v in np.asarray(viol_before)],
             violation_after_polish=[float(v) for v in np.asarray(viol_after)],
             polish_iters=int(polish_iters), drake_max_violation=None if drake_viol is None else float(drake_viol),

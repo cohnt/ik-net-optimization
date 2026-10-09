@@ -11,9 +11,11 @@ assert). The harness reads a result through exactly seven calls, and this file d
 does -- `verify`, `reported_cost`, `solver_diagnostics`, `parse_log`, `summarise` -- so a
 contract break shows up here rather than as a column of `fail_reason="error"`.
 
-The solver is the SKELETON for now: it returns the initial guess with status "not
-implemented". Checks marked TODO(svgd) assume that and are to be revised when the algorithm
-lands; the rest are the contract and must keep holding.
+This is a CONTRACT test, not a quality one: the solve is a 5 s Panda joint-space pose cell
+and nothing here asserts that it converges. What is asserted of the returned point is that
+it is a real point of the program -- finite, inside the variable bounds, not necessarily the
+start -- that `is_success()` agrees with the solver's own Drake re-check, and that the status
+is one of the real statuses with its name on the log's exit line.
 """
 import os
 import sys
@@ -29,7 +31,8 @@ sys.path.append(REPO)
 import src.benchmark as bm                                              # noqa: E402
 from src.generic_program import ProgramOptions                          # noqa: E402
 from src.panda_program import PandaIKProgram, PandaIKProgramNumerical  # noqa: E402
-from src.svgd.result import SvgdResult, STATUS_NOT_IMPLEMENTED          # noqa: E402
+from src.svgd.result import (SvgdResult, STATUS_NAMES,                   # noqa: E402
+                             STATUS_NOT_IMPLEMENTED, status_name)
 from src.utils import BuildEnv, HiddenPrints                            # noqa: E402
 
 SCENE = os.path.join(REPO, "models/panda/panda_finray_collision_hardened.yaml")
@@ -99,12 +102,31 @@ def test_svgd_result_duck_type():
     check("... equal to that entry of GetSolution(lumped_vars)", single == lumped[2])
     check("GetSolution accepts a plain list of Variables",
           np.array_equal(result.GetSolution(list(p.lumped_vars[:3])), lumped[:3]))
-    ## TODO(svgd): the skeleton returns the start untouched; the algorithm will not.
-    check("TODO(svgd) skeleton: GetSolution(lumped_vars) is the start vector",
-          np.array_equal(lumped, x0), f"max |diff| {np.max(np.abs(lumped - x0))}")
-    check("TODO(svgd) skeleton: status is 'not implemented' and is_success() is False",
-          result.get_solver_details().status == STATUS_NOT_IMPLEMENTED
-          and not result.is_success())
+    ## The returned point is a point of the program: finite and inside the program's own
+    ## BOUNDING BOXES (on this arm a +-10 box on q -- the joint limits are generic rows, which
+    ## an unconverged return may violate). It is NOT required to be the start (the skeleton
+    ## returned the start; the solver moves).
+    lo = np.full(len(lumped), -np.inf)
+    hi = np.full(len(lumped), np.inf)
+    idx_of = {int(k): i for i, k in enumerate(p.prog.FindDecisionVariableIndices(p.lumped_vars))}
+    for b in p.prog.bounding_box_constraints():
+        for row, k in enumerate(p.prog.FindDecisionVariableIndices(b.variables())):
+            i = idx_of.get(int(k))
+            if i is not None:
+                lo[i] = max(lo[i], float(b.evaluator().lower_bound()[row]))
+                hi[i] = min(hi[i], float(b.evaluator().upper_bound()[row]))
+    check("GetSolution(lumped_vars) is finite and inside the program's variable bounds",
+          np.all(np.isfinite(lumped)) and np.all(lumped >= lo - 1e-12) and np.all(lumped <= hi + 1e-12),
+          f"lumped {lumped} bounds {lo} {hi}")
+    details = result.get_solver_details()
+    print(f"        (status {details.status_name!r}, moved |x - x0|_inf = "
+          f"{np.max(np.abs(lumped - x0)):.3g}, drake_feasible {details.drake_feasible})")
+    check("status is one of the real statuses, not the skeleton's",
+          details.status in STATUS_NAMES and details.status != STATUS_NOT_IMPLEMENTED
+          and details.status_name == status_name(details.status), str(details.status))
+    check("is_success() == the solver's own exact Drake re-check (drake_feasible)",
+          result.is_success() == bool(details.drake_feasible),
+          f"{result.is_success()} vs {details.drake_feasible}")
 
     ## The harness side, exactly as run_grid drives it.
     check("last_iterate was recorded", getattr(p, "last_iterate", None) is not None)
@@ -133,15 +155,20 @@ def test_svgd_result_duck_type():
     parsed = bm.parse_log(log, "svgd")
     check("parse_log recovers the step count from the svgd log",
           parsed["iterations"] is not None and parsed["iterations"] >= 1, str(parsed))
-    check("parse_log recovers the exit line", parsed["exit"] == "not implemented", str(parsed))
+    check("parse_log recovers the exit line (== the details' status_name)",
+          parsed["exit"] == result.get_solver_details().status_name, str(parsed))
     check("parse_log recovers solver_seconds", parsed["solver_seconds"] is not None, str(parsed))
     check("parse_log leaves IPOPT-only keys None",
           parsed["objective_evals"] is None and parsed["jacobian_evals"] is None, str(parsed))
 
     diag = bm.solver_diagnostics(result, "svgd")
     check("solver_diagnostics names the solver", diag["solver"] == "svgd", str(diag))
+    ## Decoded from the details' status, not from log text: each flag is a bool and agrees
+    ## with the status code (a 5 s cell may or may not reach the clock; either way is fine).
     check("solver_diagnostics decodes the budget flags numerically",
-          diag["timed_out_status"] is False and diag["hit_iteration_cap_status"] is False,
+          isinstance(diag["timed_out_status"], bool) and isinstance(diag["hit_iteration_cap_status"], bool)
+          and diag["timed_out_status"] == (details.status_name == "wall-clock limit")
+          and diag["hit_iteration_cap_status"] == (details.status_name == "step cap"),
           str(diag))
     block = diag.get("svgd") or {}
     check("the svgd block carries the particle count and the method",
