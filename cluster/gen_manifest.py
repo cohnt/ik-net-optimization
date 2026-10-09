@@ -2537,11 +2537,14 @@ def stage_CUDAGRAPH(suffix=""):
 ##
 ## THREE SUB-STAGES, three manifests, so the controls can be queued AFTER the primary rows:
 ##   REMEASURE         the primary: 5 robots x 2 rows x 2 starts x 2 solvers = 40 logical
-##                     runs, `--config latent`. IPOPT and SNOPT ONLY: NLopt is NOT re-measured
-##                     (Thomas, 2026-10-08: "Skip remeasuring NLopt, it's way too slow" -- its
-##                     rows run to the 180 s clock on both arms and were ~85 of the 102
-##                     node-hours). Its record columns stand as measured on the old scene and
-##                     are reported with that caveat.
+##                     runs, `--config latent`. IPOPT and SNOPT only (Thomas, 2026-10-08:
+##                     "Skip remeasuring NLopt, it's way too slow" -- its rows run to the 180 s
+##                     clock on both arms and were ~85 of the 102 node-hours).
+##   REMEASURE_NLOPT   the primary's NLopt rows, 4 record robots x 2 x 2 = 16 logical runs,
+##                     same tag family, queued LAST with a dependency on every other job so
+##                     they run only if the nodes would otherwise idle, and may be killed
+##                     unrun. Until they complete the record's NLopt columns stand as measured
+##                     on the old scene and are reported with that caveat.
 ##   REMEASURE_LEGACY  IPOPT only, all five robots, `--set legacy_robot_settings=True`:
 ##                     the fixed scene under the OLD settings, so against the primary it
 ##                     attributes settings-vs-scene (both arms, since the unification touched
@@ -2564,18 +2567,24 @@ def stage_CUDAGRAPH(suffix=""):
 #: One entry per robot of the re-measurement: (robot, builder, only-filter, solvers, wsg?).
 #: `wsg` marks the robots whose gripper SDF carried the yaw defect -- their grasp rows go first.
 REMEASURE_ROBOTS = (
-    ("iiwa", "STATUSQUO", "iiwa:n4", "ipopt,snopt", True),
-    ("soft12", "SOFT12", "soft12", "ipopt,snopt", True),
-    (SCREW_PRIMARY, "SCREW", SCREW_PRIMARY, "ipopt,snopt", True),
+    ("iiwa", "STATUSQUO", "iiwa:n4", "ipopt,snopt,nlopt", True),
+    ("soft12", "SOFT12", "soft12", "ipopt,snopt,nlopt", True),
+    (SCREW_PRIMARY, "SCREW", SCREW_PRIMARY, "ipopt,snopt,nlopt", True),
     (GVS_PRIMARY, "GVS", GVS_PRIMARY, GVS_SOLVERS, True),
-    ("panda", "STATUSQUO", "panda:n6", "ipopt,snopt", False),
+    ("panda", "STATUSQUO", "panda:n6", "ipopt,snopt,nlopt", False),
 )
 REMEASURE_VARIANTS = {
-    ## name: (tag, solvers restricted to, robots restricted to, extra --set, config)
-    "REMEASURE": ("REMEASURE", None, None, [], "latent"),
-    "REMEASURE_LEGACY": ("REMEASURE_LEGACY", "ipopt", None,
+    ## name: (tag, solvers fielded, robots restricted to, extra --set, config)
+    "REMEASURE": ("REMEASURE", ("ipopt", "snopt"), None, [], "latent"),
+    "REMEASURE_LEGACY": ("REMEASURE_LEGACY", ("ipopt",), None,
                          ["--set", "legacy_robot_settings=True"], "latent"),
-    "REMEASURE_RULE": ("REMEASURE_RULE", "ipopt", ("panda", "iiwa"), [], "latent_rule"),
+    "REMEASURE_RULE": ("REMEASURE_RULE", ("ipopt",), ("panda", "iiwa"), [], "latent_rule"),
+    ## The primary's NLopt rows, split out so they queue LAST and can be killed unrun
+    ## (Thomas, 2026-10-08: "queue up the NLopt jobs at the very end of all this, just so they
+    ## get run if there's nothing else"). Same tag family as the primary -- they ARE its NLopt
+    ## rows -- so the reporter reads them as such if they complete. GVS never ran NLopt.
+    "REMEASURE_NLOPT": ("REMEASURE", ("nlopt",), ("iiwa", "soft12", SCREW_PRIMARY, "panda"),
+                        [], "latent"),
 }
 REMEASURE_GRAPH = ["--set", "flow_cuda_graph=True"]
 #: The only `--set` names a REMEASURE item may carry, by sub-stage. Anything else would make
@@ -2587,6 +2596,7 @@ REMEASURE_ALLOWED_SETS = {
                          "snopt_iterations_limit", "legacy_robot_settings"},
     "REMEASURE_RULE": {"correction_cost_weight", "flow_cuda_graph", "max_iter",
                        "snopt_iterations_limit"},
+    "REMEASURE_NLOPT": {"correction_cost_weight", "flow_cuda_graph"},
 }
 _REMEASURE_BUILDERS = {"STATUSQUO": lambda **kw: stage_STATUSQUO(180, 60, 8, 8, **kw),
                        "SOFT12": lambda **kw: stage_SOFT12(180, 60, 8, 8, **kw),
@@ -2612,12 +2622,14 @@ def _remeasure_order(solver, task, wsg):
 
 def stage_REMEASURE(variant="REMEASURE"):
     """The record re-measured on the fixed scene, unified settings, CUDA graphs, lifted budgets."""
-    tag, only_solver, only_robots, extra_set, config = REMEASURE_VARIANTS[variant]
+    tag, fielded, only_robots, extra_set, config = REMEASURE_VARIANTS[variant]
     items = []
     for robot, builder, only, solvers, wsg in REMEASURE_ROBOTS:
         if only_robots is not None and robot not in only_robots:
             continue
-        want = [sv for sv in solvers.split(",") if only_solver is None or sv == only_solver]
+        want = [sv for sv in solvers.split(",") if sv in fielded]
+        if not want:
+            continue
         for it in _REMEASURE_BUILDERS[builder](only=only, solvers=",".join(want), tag=tag):
             args = list(it["args"])
             solver = args[args.index("--solver") + 1]
@@ -2733,7 +2745,8 @@ def _remeasure_seconds(robot, task, solver, args):
     return 480 * (L + J) / shards + REMEASURE_ITEM_OVERHEAD_S
 
 
-def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE"),
+def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE",
+                                  "REMEASURE_NLOPT"),
                         detail=True):
     """Print the node-hour arithmetic: per logical run, then per sub-stage and in total."""
     print("ALLOTMENT -- base: the record's mean wall per cell, both arms (docs/status-quo-tables.md")
@@ -4400,6 +4413,7 @@ def selftest():
                                     "scripts"))
     from report_statusquo import parse_tag as _sq_parse_tag
     rm_expected = {"REMEASURE": (40, 5 * 2 * 2 * (8 + 8)),
+                   "REMEASURE_NLOPT": (16, 4 * 2 * 2 * 24),
                    "REMEASURE_LEGACY": (20, 20 * 8),
                    "REMEASURE_RULE": (8, 8 * 8)}
     on_disk_rm = {}
@@ -4485,13 +4499,14 @@ def selftest():
             if it["seconds"] > 28800:
                 rm_fails.append(f"{variant}: {it['id']} estimates past ITEM_TIMEOUT")
         want_solvers = {"REMEASURE": {"ipopt", "snopt"}, "REMEASURE_LEGACY": {"ipopt"},
-                        "REMEASURE_RULE": {"ipopt"}}[variant]
+                        "REMEASURE_RULE": {"ipopt"}, "REMEASURE_NLOPT": {"nlopt"}}[variant]
         if solvers_seen != want_solvers:
             rm_fails.append(f"{variant}: solvers {sorted(solvers_seen)}, expected "
                             f"{sorted(want_solvers)}")
         want_robots = {"REMEASURE": {r for r, *_ in REMEASURE_ROBOTS},
                        "REMEASURE_LEGACY": {r for r, *_ in REMEASURE_ROBOTS},
-                       "REMEASURE_RULE": {"panda", "iiwa"}}[variant]
+                       "REMEASURE_RULE": {"panda", "iiwa"},
+                       "REMEASURE_NLOPT": {r for r, *_ in REMEASURE_ROBOTS} - {GVS_PRIMARY}}[variant]
         if robots_seen != want_robots:
             rm_fails.append(f"{variant}: robots {sorted(robots_seen)}, expected "
                             f"{sorted(want_robots)}")
@@ -4536,7 +4551,7 @@ def selftest():
     rm_builder_of = {"STATUSQUO": stage_STATUSQUO, "SOFT12": stage_SOFT12,
                      "SCREW": stage_SCREW, "GVS": stage_GVS}
     for variant in rm_expected:
-        tag, only_solver, only_robots, extra_set, config = REMEASURE_VARIANTS[variant]
+        tag, fielded, only_robots, extra_set, config = REMEASURE_VARIANTS[variant]
         for it in stage_REMEASURE(variant):
             a = list(it["args"])
             core = a[:a.index("--tag")] + a[a.index("--tag") + 2:]
@@ -4562,8 +4577,8 @@ def selftest():
         print(f"FAIL stage REMEASURE: {msg}")
     fails += len(rm_fails)
     if not rm_fails:
-        print("ok   stages REMEASURE/REMEASURE_LEGACY/REMEASURE_RULE: 40/20/8 logical runs, the "
-              "record's IPOPT and SNOPT rows re-tagged + graphs + lifted budgets, wsg grasp first, no NLopt")
+        print("ok   stages REMEASURE/LEGACY/RULE/NLOPT: 40/20/8/16 logical runs, the record's rows "
+              "re-tagged + graphs + lifted budgets, wsg grasp first, NLopt split out and last")
 
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
@@ -4582,7 +4597,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -4717,6 +4732,7 @@ def main():
              "REMEASURE": lambda: stage_REMEASURE("REMEASURE"),
              "REMEASURE_LEGACY": lambda: stage_REMEASURE("REMEASURE_LEGACY"),
              "REMEASURE_RULE": lambda: stage_REMEASURE("REMEASURE_RULE"),
+             "REMEASURE_NLOPT": lambda: stage_REMEASURE("REMEASURE_NLOPT"),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),

@@ -25,6 +25,7 @@ measured on the old scene and are reported with that caveat.
 | `manifest_stageREMEASURE.txt` | the primary, IPOPT and SNOPT, `--config latent` | 40 | 320 | 17 |
 | `manifest_stageREMEASURE_LEGACY.txt` | IPOPT, all five robots, `--set legacy_robot_settings=True`: settings vs scene | 20 | 160 | 5.3 |
 | `manifest_stageREMEASURE_RULE.txt` | IPOPT, Panda and iiwa, `--config latent_rule`: the trust-region A/B | 8 | 64 | 1.4 |
+| `manifest_stageREMEASURE_NLOPT.txt` | the primary's NLopt rows (four record robots), same tag family; queued LAST on a dependency, run only if the nodes would otherwise idle, killable unrun | 16 | 384 | 85 |
 
 Within the primary, items are claimed wsg grasp (IPOPT, then SNOPT), Panda grasp, then pose. The
 estimate is `python cluster/gen_manifest.py --allotment` (about 24 node-hours, a quarter of a day
@@ -49,6 +50,9 @@ ssh ... 'cat ~/learned-ik/repo/.staged-commit'   # must be this checkout's HEAD
 PROCS=8 MPS=1 bash cluster/submit_bench.sh manifest_stageREMEASURE.txt 4
 PROCS=8 MPS=1 bash cluster/submit_bench.sh manifest_stageREMEASURE_LEGACY.txt 2
 PROCS=8 MPS=1 bash cluster/submit_bench.sh manifest_stageREMEASURE_RULE.txt 1
+# NLopt last, gated on every job above (Thomas: run only if there is nothing else; kill if he
+# wakes early). A dependency defers the checkpoint check to job start.
+DEPENDENCY=afterany:<primary>:<legacy>:<rule job ids> PROCS=8 MPS=1 bash cluster/submit_bench.sh manifest_stageREMEASURE_NLOPT.txt 4
 ```
 
 The control jobs queue behind the primary's four under the 4-node cap and start as it drains.
