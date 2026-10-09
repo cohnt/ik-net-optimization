@@ -268,6 +268,24 @@ Worker() {
 
 echo "run_items: $PROCS worker(s) on $(hostname), manifest $MANIFEST_NAME, TMPDIR=$TMPDIR"
 RC=0
+
+## --- MPS (optional) ----------------------------------------------------------
+## MPS=1 starts a job-local NVIDIA MPS daemon over the node's GPUs (held exclusively).
+## Without it, workers sharing a V100 are TIME-SLICED -- their batch-1 kernels never run
+## side by side -- and that costs only the arm that evaluates the network: a graphed
+## jacrev went 2.11 -> 8.90 ms per call at four workers per GPU, and 2.93 ms under MPS
+## (cluster/cuda_graphs_contention_job.sh). A run's MPS setting therefore changes what is
+## measured, like PROCS, and lands in the job log so a run can be told apart afterwards.
+if [ "${MPS:-0}" = 1 ] && [ -n "$SLURM_GPUS" ]; then
+    command -v nvidia-cuda-mps-control >/dev/null \
+        || { echo "run_items: MPS=1 but no nvidia-cuda-mps-control on $(hostname)" >&2; exit 3; }
+    export CUDA_MPS_PIPE_DIRECTORY="$TMPDIR/mps_pipe" CUDA_MPS_LOG_DIRECTORY="$TMPDIR/mps_log"
+    mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+    CUDA_VISIBLE_DEVICES="$SLURM_GPUS" nvidia-cuda-mps-control -d \
+        || { echo "run_items: MPS daemon failed to start" >&2; exit 3; }
+    trap 'echo quit | nvidia-cuda-mps-control >/dev/null 2>&1' EXIT
+    echo "run_items: MPS daemon started over [$SLURM_GPUS]"
+fi
 ## Wait on PIDs we collected ourselves, never on a bare `wait` and never on
 ## `jobs -p`. Both of those also pick up the `tee` of an `exec > >(tee ...)`
 ## redirection, which can never exit while the script holds its stdout -- see

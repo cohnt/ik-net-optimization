@@ -74,6 +74,10 @@ CONFIGS = {
     "eval":         dict(share_flow_evaluations=True),
     "latent":       dict(share_flow_evaluations=True,
                          latent_trust_region=4.0),
+    # The A/B of the trust-region RULE (PI, 2026-10-08): `round(sqrt(dim_latent) + 1.5, 2)`
+    # computed from the loaded chart, which every other robot already carries. On the Panda
+    # that is 4.15 against `latent`'s 4.0; it is a flag, so the A/B needs no code edit.
+    "latent_rule":  dict(share_flow_evaluations=True, latent_trust_region_rule=True),
 }
 
 
@@ -233,10 +237,18 @@ def main():
     # resolve to the same summary.json and overwrite each other (the same trap --shard hit).
     ckpt_tok = ([os.path.splitext(os.path.basename(args.checkpoint))[0]]
                 if args.checkpoint else [])
+    # The scene's fingerprint goes in the tag AND the metadata, for the same reason the
+    # checkpoint does: `grid_hash` hashes only q's, so a run on a defective gripper SDF and
+    # one on the fixed SDF share a grid hash and would otherwise pair. The grasp task's mug
+    # is appended in memory per target and no YAML names it, so it is folded in here.
+    yaml_file = SceneFile("panda", args.task, args.scene)
+    scene_fp = bm.scene_fingerprint(
+        yaml_file, extra_models=([os.path.join(RepoDir(), bm.MUG_MODEL_FILE)]
+                                 if args.task == "mug" else ()))
     tag = args.tag or "_".join(
         [args.task, args.config, args.solver, args.start] + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
-        + (["compiled"] if args.compile else []))
+        + (["compiled"] if args.compile else []) + [scene_fp[:8]])
     # The suffix is what makes a shard shard-safe: without it every shard of a run
     # resolves to the same log_dir and the same summary.json and they overwrite one
     # another. Matches the `_shard(\d+)of(\d+)$` convention the merger keys on.
@@ -284,7 +296,6 @@ def main():
     # The hardened scene drops the bin and (on the pose scene) the seven decorative mugs;
     # `--scene legacy` restores the pre-2026-09-15 obstacle set. See src/target_screening.py.
     spec = SCENES[("panda", args.task)]
-    yaml_file = SceneFile("panda", args.task, args.scene)
 
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
@@ -507,6 +518,8 @@ def main():
                       wall_time=args.wall_time, seed=args.seed, grid_hash=grid_hash,
                       robot="panda",
                       scene=os.path.basename(yaml_file), scene_mode=args.scene,
+                      scene_fingerprint=scene_fp,
+                      latent_trust_region_effective=sampler.LatentTrustRadius(),
                       target_placement=placement,
                       shelf_inset=(args.shelf_inset
                                    if placement == "shelf" else None),

@@ -26,6 +26,7 @@ Three things distinguish it from the older per-script harnesses:
     a success by any definition that matters.
 """
 import glob
+import hashlib
 import json
 import math
 import os
@@ -311,6 +312,60 @@ def shard_cells(index, count, n_targets, n_guesses):
     """
     return [(ti, gi) for ti in range(n_targets) if ti % count == index
             for gi in range(n_guesses)]
+
+
+def scene_model_files(yaml_file):
+    """Every model file a directives YAML pulls in, as absolute paths, in directive order.
+
+    `add_model` entries are resolved through the same package map `BuildEnv` uses
+    (`package.xml` for `combining_kinematics`, Drake's own for `drake_models`), and
+    `add_directives` entries recurse. Duplicates are kept: the fingerprint below hashes
+    the scene as DECLARED, so a shelf added four times contributes four times.
+    """
+    from pydrake.all import LoadModelDirectives, PackageMap
+    from src.utils import RepoDir
+    package_map = PackageMap()
+    package_map.AddPackageXml(os.path.join(RepoDir(), "package.xml"))
+
+    def resolve(uri):
+        if uri.startswith("package://"):
+            return package_map.ResolveUrl(uri)
+        return os.path.abspath(os.path.join(os.path.dirname(yaml_file), uri))
+
+    files = []
+    for directive in LoadModelDirectives(yaml_file).directives:
+        if directive.add_model is not None:
+            files.append(resolve(directive.add_model.file))
+        if directive.add_directives is not None:
+            files.extend(scene_model_files(resolve(directive.add_directives.file)))
+    return files
+
+
+def scene_fingerprint(yaml_file, extra_models=()):
+    """sha1 over the directives YAML text and the text of every model file it references.
+
+    WHY, in one sentence: `grid_hash` hashes only the sampled q's, so a run on a scene with
+    a defective gripper SDF and a run on the fixed one share a grid hash and `collate
+    --pair` would pair them. The wsg finray's `between_fingers` yaw (2026-10-08) was exactly
+    that: a one-token change in an SDF, with every q unchanged. The first 8 hex characters
+    go into the auto tag; the whole value into `metadata["scene_fingerprint"]`.
+
+    `extra_models` are model files the experiment appends in memory -- the grasp task's
+    target mug, which `GenerateDiagramWithMug` adds per target and no YAML names.
+    """
+    h = hashlib.sha1()
+    with open(yaml_file, "rb") as f:
+        h.update(f.read())
+    for path in list(scene_model_files(yaml_file)) + [os.path.abspath(p) for p in extra_models]:
+        h.update(b"\0" + os.path.basename(path).encode() + b"\0")
+        with open(path, "rb") as f:
+            h.update(f.read())
+    return h.hexdigest()
+
+
+#: The model `GenerateDiagramWithMug` appends to every grasp scene, as a repo-relative path,
+#: so the five benchmark scripts can fold it into the fingerprint without naming it twice.
+MUG_MODEL_FILE = "models/mug/mug_simple_red.urdf"
 
 
 def provenance():
@@ -907,6 +962,18 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                 if emitted and metadata is not None:
                     metadata.setdefault("solver_options_emitted", {}).setdefault(
                         arm.name, emitted)
+                ## Likewise the cross-robot settings each arm ACTUALLY built with (home
+                ## pose, q bounds, grasp start and box centre, trust radius): `overrides`
+                ## records only that `legacy_robot_settings` was asked for. Per arm, since
+                ## the joint-space arm carries bounds the learned arm does not.
+                settings = getattr(program, "RobotSettings", None)
+                if settings is not None and metadata is not None:
+                    try:
+                        metadata.setdefault("robot_settings", {}).setdefault(
+                            arm.name, settings())
+                    except Exception as exc:        # a record, never a reason to die
+                        metadata.setdefault("robot_settings", {}).setdefault(
+                            arm.name, {"error": f"{type(exc).__name__}: {exc}"})
                 records[arm.name].append(record)
                 _abort_on_dead_arm(arm.name, records[arm.name])
                 if progress is not None:

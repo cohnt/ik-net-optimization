@@ -302,6 +302,20 @@ class ScrewArmSpec:
         """The convention the rigid arms and the soft arm share: `sqrt(dim) + 1.5`."""
         return round(math.sqrt(self.ndof) + 1.5, 2)
 
+    @property
+    def q_nominal(self) -> Tuple[float, ...]:
+        """The joint-centering target: a NONSINGULAR home pose, in joint order.
+
+        Zeros -- the fully straight arm -- is singular on this S-R-S chain exactly as on
+        the iiwa (base yaw, screw roll, forearm roll and wrist roll collinear; measured
+        manipulator-Jacobian sigma_min 0.0), so the nominal is the iiwa's mild elbow bend
+        on the same joint pattern. Measured on `screw7_p050` in the hardened scene
+        (2026-10-08): inside the limits by 0.85 rad at the closest joint, sigma_min 0.204,
+        collision value 0.73 (clear). The screw coordinate sits at zero, mid-stroke. Shared
+        by every rung: the pose depends on no number the pitch ladder varies.
+        """
+        return (0.0, 0.6, 0.0, -1.75, 0.0, 1.0, 0.0)
+
 
 ## The ladder. The PRIMARY rung is pre-registered here, before any acceptance rate or cell
 ## count has been read, exactly as the soft arm's `n6` was: 0.050 m/rev telescopes the upper

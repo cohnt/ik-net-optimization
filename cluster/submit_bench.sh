@@ -87,7 +87,7 @@ else
 fi
 
 LAUNCH_R="\$HOME/$SC_ROOT/results/_bench_launch_${MANIFEST%.txt}.sh"
-echo "Submitting $NJOBS job(s): PROCS=$PROCS PARTITION=$PARTITION DEP='${DEPENDENCY:-none}'"
+echo "Submitting $NJOBS job(s): PROCS=$PROCS MPS=${MPS:-0} PARTITION=$PARTITION DEP='${DEPENDENCY:-none}'"
 
 sc_run "cat > $LAUNCH_R && chmod +x $LAUNCH_R" <<LAUNCH
 #!/bin/bash
@@ -112,7 +112,7 @@ done
 ## state/ (the mkdir-based item claims) and results/ from it, and a fallback to the default
 ## tree would have two campaigns claiming items in one state directory.
 LEARNED_IK_ROOT="\$HOME/$SC_ROOT" \
-MANIFEST=cluster/$MANIFEST PROCS=$PROCS "\$HOME/$SC_ROOT/repo/cluster/run_items.sh"
+MANIFEST=cluster/$MANIFEST PROCS=$PROCS MPS=${MPS:-0} "\$HOME/$SC_ROOT/repo/cluster/run_items.sh"
 LAUNCH
 
 for i in $(seq 1 "$NJOBS"); do

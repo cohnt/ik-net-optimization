@@ -326,6 +326,19 @@ class ProgramOptions:
     # compile; the benchmark scripts turn it on and warm it up before the grid.
     compile_flow_jacobian: bool = field(default=False, metadata={"help": "torch.compile the flow Jacobian once per process and share it between programs"})
 
+    # CUDA-graph replay of the compiled flow, on BOTH paths a solve uses: the jacrev and the
+    # plain forward pass, which IPOPT runs as often as the jacrev (Drake evaluates constraint
+    # values in double and costs in AutoDiffXd, so each trial point costs one of each) and
+    # which is otherwise eager, uncompiled and recording autograd for nothing. Replay drops
+    # the CPU dispatch that bounds a batch-1 call. Measured on a V100, float64, against
+    # --compile: jacrev 4.40 -> 2.37 ms (Panda n6), 3.14 -> 1.62 ms (iiwa n4); forward pass
+    # 7.07 -> 0.70 and 4.79 -> 0.49 ms against the eager path it replaces -- about 3.7x on
+    # the flow work of an IPOPT trial point and ~1.9x under SNOPT, which never takes the
+    # value path. The replayed Jacobian is the compiled one's kernels. Requires
+    # compile_flow_jacobian, and like it moves iterations per wall-clock cap, so every run
+    # being compared must set it the same way. Capture is offline: WarmUpJacobian pays it.
+    flow_cuda_graph: bool = field(default=False, metadata={"help": "Replay the compiled flow (jacrev and forward pass) as CUDA graphs; requires compile_flow_jacobian"})
+
 
     ## Evaluation sharing ##
     # Every Drake binding evaluates its own callback, so the joint-centering cost used to
@@ -352,6 +365,33 @@ class ProgramOptions:
     latent_trust_region: float = field(default=None, metadata={"help": "Bound on ||z||; None keeps the per-component box only"})
     latent_cost_weight: float = field(default=0.0, metadata={"help": "Weight on ||z||^2, keeping the latent in the flow's typical set"})
     correction_bound: float = field(default=0.1, metadata={"help": "Half-width of the box on the joint-space correction"})
+    ## The trust-region RULE, as an alternative to a per-robot constant. Every robot but the
+    ## Panda sizes its region as `round(sqrt(dim_latent) + 1.5, 2)` (iiwa 4.3 by hand, soft
+    ## 4.96, screw 4.15, GVS 4.5, computed); the Panda's `--config latent` carries 4.0. With
+    ## this on, the radius is computed from the LOADED chart's width inside the program and
+    ## `latent_trust_region` is ignored, so one flag selects the rule for every robot at once
+    ## -- the A/B the PI asked for (2026-10-08) rather than a per-script edit. What moves
+    ## under it: the Panda 4.0 -> 4.15, and the iiwa 4.3 -> 4.33 (its hand constant was the
+    ## rule rounded to one decimal); the soft, screw and GVS arms already carry the rule.
+    latent_trust_region_rule: bool = field(default=False, metadata={"help": "Size the latent trust region as round(sqrt(dim_latent)+1.5, 2) from the loaded chart, ignoring latent_trust_region. Panda 4.0->4.15, iiwa 4.3->4.33; the other robots already use the rule"})
+
+    ## ---- cross-robot settings, unified 2026-10-08 (PI's decision) -------------------
+    ## An inventory ahead of re-measuring the grasp rows found five settings that differed
+    ## between robots with no deliberate reason. Four are unified here behind ONE flag (the
+    ## fifth, the trust region, is the A/B above):
+    ##   1. the native grasp start for `c` is the flow-frame pose of the generating
+    ##      configuration, `mug.middle @ X_grasp_ee` (the iiwa and screw arms seeded at the
+    ##      mug centre with zero rpy);
+    ##   2. the joint-space arm's variable bound is `ConfigLimits()` (the Panda used +-10 rad,
+    ##      the iiwa a hand-typed table);
+    ##   3. `q_nominal` is a NONSINGULAR HOME pose per robot (it was zeros everywhere, which
+    ##      on the Panda is outside q4's range and singular, and singular on every S-R-S arm);
+    ##   5. the grasp `c` box is centred on that same flow-frame pose, so every robot gets the
+    ##      same +-c_position_slack rather than a margin that depends on its gripper standoff.
+    ## `legacy_robot_settings=True` restores all four old behaviours together -- the CONTROL
+    ## for the re-run, reachable from `--set`, recorded in `metadata["overrides"]` and in
+    ## `metadata["robot_settings"]` (IKFlowProgram.RobotSettings).
+    legacy_robot_settings: bool = field(default=False, metadata={"help": "Restore the pre-2026-10-08 per-robot settings together: Panda +-10 q bound and iiwa's hand-typed limits, zeros q_nominal, mug-centred grasp c start (iiwa, screw) and mug-centred grasp c box. The control arm for the unified re-run"})
 
     ## Solver behaviour ##
     ipopt_mu_strategy: str = field(default=None, metadata={"help": "IPOPT 'mu_strategy'; 'adaptive' often helps on badly scaled problems"})
@@ -718,6 +758,11 @@ class ProgramOptions:
         CheckNloptOptions(self)
         ## Same rule, same place, for the svgd enum fields.
         CheckSvgdOptions(self)
+        ## Graphing the eager jacrev is not possible (it allocates its basis offsets with a
+        ## host-to-device copy every call, illegal under capture), and graphing anything
+        ## else would be a third configuration nobody measured.
+        if self.flow_cuda_graph and not self.compile_flow_jacobian:
+            raise ValueError("flow_cuda_graph requires compile_flow_jacobian (--compile)")
 
 
 
@@ -821,9 +866,86 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
 
 _COMPILED_JACOBIANS = {}
 
+## ------------------------------ CUDA-graph replay ------------------------------ ##
+#
+# At batch 1 a compiled flow call is still ~290 kernel launches described one at a time from
+# Python; a CUDA graph records them once and replays them in one launch. What it bakes in:
+# the kernels, the parameters' and buffers' ADDRESSES, and the input/output buffers. So the
+# network must not be re-cast or have its parameters reassigned after capture (`.to()` to the
+# dtype it already has is a no-op, which is why ConfigureNetworkDtype stays safe), and dynamo's
+# guards are evaluated at capture only -- replay checks nothing. Keyed like the compiled
+# Jacobian, so one graph per process serves every program in a grid.
 
-def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_error_scale=0.0):
-    """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked.
+_FLOW_GRAPHS = {}
+## Set by WarmUpJacobian once the graphs exist. A capture after that point would be paid
+## inside a timed solve -- compile and capture are offline compute and must not be -- so it
+## raises instead of quietly eating the cap.
+_FLOW_GRAPHS_FROZEN = False
+
+
+def FreezeFlowGraphs(frozen=True):
+    global _FLOW_GRAPHS_FROZEN
+    _FLOW_GRAPHS_FROZEN = frozen
+
+
+class GraphedFlowCall:
+    """`fn` replayed as a CUDA graph; same signature, returns a tuple of fresh tensors.
+
+    Captured lazily, on the first call, at that call's input shape; any other shape, or a
+    CPU device, falls through to `fn`. Outputs are cloned out of the graph's static buffers,
+    because the next replay overwrites them.
+    """
+
+    def __init__(self, fn, grad_enabled):
+        self.fn = fn
+        self.grad_enabled = grad_enabled
+        self.graph = None
+        self.captures = 0
+
+    def _capture(self, example):
+        if _FLOW_GRAPHS_FROZEN:
+            raise RuntimeError(
+                "a flow CUDA graph would be captured inside a timed solve; WarmUpJacobian "
+                "must capture every graph the grid uses (is a program holding a different "
+                "network, dtype or input width?)")
+        mode = torch.enable_grad if self.grad_enabled else torch.no_grad
+        self.static_in = example.detach().clone()
+        current = torch.cuda.current_stream(example.device)
+        side = torch.cuda.Stream(device=example.device)
+        side.wait_stream(current)
+        with torch.cuda.stream(side), mode():       # warm up (and compile) off the capture
+            for _ in range(3):
+                self.fn(self.static_in)
+        current.wait_stream(side)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph), mode():
+            out = self.fn(self.static_in)
+        self.static_out = out if isinstance(out, tuple) else (out,)
+        torch.cuda.synchronize(example.device)
+        self.graph = graph
+        self.captures += 1
+
+    def __call__(self, x):
+        if x.device.type != "cuda":
+            return self.fn(x)
+        if self.graph is None:
+            self._capture(x)
+        elif x.shape != self.static_in.shape or x.dtype != self.static_in.dtype:
+            return self.fn(x)
+        self.static_in.copy_(x)
+        self.graph.replay()
+        return tuple(t.clone() for t in self.static_out)
+
+
+def _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale):
+    return (id(nn_model), width, num_arm_dof, str(device),
+            next(nn_model.parameters()).dtype, float(chart_error_scale))
+
+
+def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_error_scale=0.0,
+                    cuda_graph=False):
+    """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked, and
+    replayed as a CUDA graph on top of that if asked.
 
     Reverse mode is the right primitive at this shape -- 7 outputs against 21 inputs, of
     which 13 reach the network -- and the measurements behind that are in CLAUDE.md.
@@ -833,11 +955,38 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
         has_aux=True)
     if not compile_it:
         return jacobian_gen
-    key = (id(nn_model), width, num_arm_dof, str(device),
-           next(nn_model.parameters()).dtype, float(chart_error_scale))
+    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale)
     if key not in _COMPILED_JACOBIANS:
         _COMPILED_JACOBIANS[key] = torch.compile(jacobian_gen)
-    return _COMPILED_JACOBIANS[key]
+    if not cuda_graph:
+        return _COMPILED_JACOBIANS[key]
+    graph_key = key + ("jacobian",)
+    if graph_key not in _FLOW_GRAPHS:
+        _FLOW_GRAPHS[graph_key] = GraphedFlowCall(_COMPILED_JACOBIANS[key], grad_enabled=True)
+    return _FLOW_GRAPHS[graph_key]
+
+
+def FlowValueGen(nn_model, width, num_arm_dof, device, chart_error_scale=0.0):
+    """`vars -> (q, q)` for the plain forward pass: compiled, under no_grad, CUDA-graphed.
+
+    Used only under `flow_cuda_graph`; otherwise the forward pass stays the eager
+    `MakeFlowInference`, so a run without the switch is exactly what it always was.
+    """
+    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale) + ("value",)
+    if key not in _FLOW_GRAPHS:
+        infer = MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale)
+
+        def forward(vars):
+            with torch.no_grad():
+                return infer(vars)[0]
+        graphed = GraphedFlowCall(torch.compile(forward), grad_enabled=False)
+
+        def value(vars):
+            (q,) = graphed(vars)
+            return q, q
+        value.graphed = graphed
+        _FLOW_GRAPHS[key] = value
+    return _FLOW_GRAPHS[key]
 
 
 def regularize_jacobian(jacobian_np, options):
@@ -922,7 +1071,7 @@ class IKFlowProgram:
         # Only the learned formulations have a latent; the joint-space and analytic arms
         # share this options object so that budgets and tolerances stay identical between
         # them, which means options that name learned-only variables must be guarded.
-        if self.options.latent_trust_region is not None and hasattr(self, "z"):
+        if hasattr(self, "z") and self.LatentTrustRadius() is not None:
             self.LatentTrustRegion()
 
     def add_costs(self):
@@ -963,18 +1112,183 @@ class IKFlowProgram:
         of +-5 admits norms far outside it. An inequality is deliberate: its gradient,
         `2 z`, does not vanish where the constraint is active, so it does not reproduce
         the degenerate active set that a norm-residual equality would create.'''
-        radius = self.options.latent_trust_region
+        radius = self.LatentTrustRadius()
         width = self.ik_solver.network_width
         self.latent_trust_constraint = self.prog.AddQuadraticConstraint(
             2.0 * np.eye(width), np.zeros(width), -np.inf, radius ** 2, self.z)
         self.latent_trust_constraint.evaluator().set_description("LatentTrustRegion")
 
+    def LatentTrustRadius(self):
+        '''The trust-region radius this program imposes, or None for no region.
+
+        Under `latent_trust_region_rule` it is `round(sqrt(dim_latent) + 1.5, 2)` computed
+        from the LOADED chart's width -- the one place that width is known for certain --
+        so one flag sizes every robot's region by the same rule. Otherwise it is the
+        per-robot constant in `latent_trust_region` (None keeps the +-5 box only).'''
+        if getattr(self.options, "latent_trust_region_rule", False):
+            return float(round(np.sqrt(self.ik_solver.network_width) + 1.5, 2))
+        radius = self.options.latent_trust_region
+        return None if radius is None else float(radius)
+
+    ## ---------------- settings unified across robots (2026-10-08) ----------------- ##
+    #
+    # Each method below is the ONE place a formerly per-robot setting lives; a subclass
+    # calls it and carries nothing but its robot-specific constant (a home pose, a legacy
+    # bound). `legacy_robot_settings` restores the old behaviour INSIDE the same method, so
+    # the control and the unified arm cannot drift apart by a copy being missed -- the
+    # lesson of the latent box, repaired once in this file while three mug-program copies
+    # kept the bug.
+
+    #: Mug programs whose LEGACY native start seeded `c` at the mug centre with zero rpy
+    #: (the iiwa and screw arms) set this True; the others always seeded the flow-frame
+    #: grasp pose. Read only under `legacy_robot_settings`.
+    LEGACY_GRASP_C_MUG_CENTRED = False
+
+    def NominalConfiguration(self):
+        '''The joint-centering target: a nonsingular home pose, in CONFIGURATION space.
+
+        Zeros by default, which is right for the soft arms (the straight unstretched rod
+        is their natural nominal) and wrong for every rigid S-R-S arm, where the straight
+        configuration is singular -- and on the Panda outside q4's range. The rigid
+        programs override this with a per-robot constant held in one place.'''
+        return np.zeros(self.num_arm_dof)
+
+    def ResolveQNominal(self, q_nominal):
+        '''`q_nominal` as `create_prog` stores it: the caller's if given, else the robot's
+        home pose, else -- under `legacy_robot_settings` -- zeros.'''
+        if q_nominal is not None:
+            return np.asarray(q_nominal, dtype=float)
+        if self.options.legacy_robot_settings:
+            return np.zeros(self.num_arm_dof)
+        q = np.asarray(self.NominalConfiguration(), dtype=float)
+        if q.shape != (self.num_arm_dof,):
+            raise ValueError(f"{type(self).__name__}.NominalConfiguration() has shape "
+                             f"{q.shape}; expected ({self.num_arm_dof},)")
+        return q
+
+    def QBoundingBoxConstraint(self, legacy_bounds=None):
+        '''The joint-space arm's variable bound on `q`: the robot's own `ConfigLimits()`.
+
+        A variable bound rather than a general constraint is right here, because a start
+        never violates it -- `q_init` is drawn inside the limits. `legacy_bounds` is what
+        this robot's program used before unification (the Panda's +-10 rad, the iiwa's
+        hand-typed table), applied only under `legacy_robot_settings`.'''
+        if self.options.legacy_robot_settings and legacy_bounds is not None:
+            lower, upper = (np.asarray(b, dtype=float) for b in legacy_bounds)
+        else:
+            lower, upper = (np.asarray(b, dtype=float)[:self.num_arm_dof]
+                            for b in self.ConfigLimits())
+        if not (np.all(np.isfinite(lower)) and np.all(np.isfinite(upper))):
+            ## Drake accepts an infinite bounding box without comment; on the screw arm
+            ## that is exactly the parser's silent +-inf, so refuse it here.
+            raise RuntimeError(f"non-finite q bounds {lower} .. {upper}: the plant's "
+                               f"limits were not repaired before the program was built")
+        self.q_bounds = (lower, upper)
+        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(lower, upper, self.q)
+        self.bounding_box_constraint.evaluator().set_description("QBoundingBoxConstraint")
+        return self.bounding_box_constraint
+
+    def GraspFlowPose(self):
+        '''The flow-frame pose of the configuration that GENERATED the target mug.
+
+        The mug is welded at the grasp frame of a sampled configuration, so
+        `mug.middle @ X_grasp_ee` is exactly the conditioning pose that configuration has
+        -- a pose known to admit a valid grasp. The PI accepts (2026-10-08) that the native
+        start and the `c` box are both anchored on it.'''
+        return self.target_mug.middle @ self.X_grasp_ee
+
+    def GraspCStart(self):
+        '''`c`'s native initial guess on the grasp task, as xyz + rpy.
+
+        The flow-frame grasp pose, not the mug centre: `c` is the pose of the frame the
+        flow was trained on, which sits `X_grasp_ee` (0.1-0.2 m) behind the grasp point,
+        so seeding at the mug is what once put the Panda's `c` 120 degrees from where the
+        network expects it.'''
+        if self.options.legacy_robot_settings and self.LEGACY_GRASP_C_MUG_CENTRED:
+            return np.array([*self.target_mug.middle.translation(), 0.0, 0.0, 0.0])
+        X = self.GraspFlowPose()
+        return np.concatenate([X.translation(), X.rotation().ToRollPitchYaw().vector()])
+
+    def GraspCBoxConstraint(self):
+        '''`c`'s region on the grasp task: +-c_position_slack about the flow-frame grasp
+        pose's position, +-2*pi on each rpy (orientation free, no wraparound clipping).
+
+        Centred on the FLOW frame's pose rather than on the mug: `c` is the flow frame,
+        which sits a per-robot standoff (0.10-0.20 m, `X_grasp_ee`) behind the grasp
+        point, so a mug-centred box left 0.05-0.15 m of per-axis margin depending on the
+        gripper. Centred here, every robot gets the same +-0.25.
+
+        A general linear constraint, deliberately NOT a bounding box, and the distinction
+        is load-bearing: IPOPT's bound_push projects the initial guess into every variable
+        box before evaluating anything, which silently destroyed the exact paired start
+        (`c` teleported to the box face while the latent stayed tuned to the unprojected
+        pose). A general constraint may start violated -- the violation lands in inf_pr --
+        and the solver walks `c` in continuously while `z` and the correction adapt.'''
+        slack = self.options.c_position_slack
+        centre = (self.target_mug.middle.translation() if self.options.legacy_robot_settings
+                  else self.GraspFlowPose().translation())
+        self.c_box = (np.concatenate([centre - slack, -2 * np.pi * np.ones(3)]),
+                      np.concatenate([centre + slack, 2 * np.pi * np.ones(3)]))
+        self.c_box_constraint = self.prog.AddLinearConstraint(
+            np.eye(6), self.c_box[0], self.c_box[1], self.c)
+        self.c_box_constraint.evaluator().set_description("CBoxConstraint")
+        return self.c_box_constraint
+
+    def PoseCBoxConstraint(self):
+        '''`c`'s region on the pose task: +-1 (metres on xyz, radians on rpy) about the
+        target's flow-frame pose. A general linear constraint, for the reason given on
+        `GraspCBoxConstraint`.'''
+        self.c_box = (self.initial_guess - 1, self.initial_guess + 1)
+        self.c_box_constraint = self.prog.AddLinearConstraint(
+            np.eye(len(self.c)), self.c_box[0], self.c_box[1], self.c)
+        self.c_box_constraint.evaluator().set_description("CBoxConstraint")
+        return self.c_box_constraint
+
+    def CorrectionBoxConstraint(self):
+        '''The correction's +-correction_bound box. A genuine variable bound: a paired start
+        sets the correction to the residual clipped into it, so no start violates it.'''
+        bound = self.options.correction_bound
+        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
+            -bound * np.ones(self.num_arm_dof), bound * np.ones(self.num_arm_dof),
+            self.correction)
+        self.correction_bounding_box_constraint.evaluator().set_description(
+            "CorrectionBoundingBoxConstraint")
+        return self.correction_bounding_box_constraint
+
+    def RobotSettings(self):
+        '''What this program ACTUALLY uses of the unified settings, for a run's metadata.
+
+        `metadata["overrides"]` records that `--set legacy_robot_settings=True` was asked
+        for; this records what each program did with it -- the home pose, the q bounds,
+        the grasp start and box centre, the trust radius -- so a run can be read off the
+        run rather than reconstructed from the code that produced it.'''
+        out = dict(legacy_robot_settings=bool(self.options.legacy_robot_settings),
+                   latent_trust_region_rule=bool(
+                       getattr(self.options, "latent_trust_region_rule", False)))
+        if hasattr(self, "q_nominal"):
+            out["q_nominal"] = [float(v) for v in np.asarray(self.q_nominal).ravel()]
+        if hasattr(self, "z"):
+            out["latent_trust_region"] = self.LatentTrustRadius()
+        if hasattr(self, "q_bounds"):
+            out["q_bounds"] = [[float(v) for v in b] for b in self.q_bounds]
+        if hasattr(self, "c_box"):
+            out["c_box_lower"] = [float(v) for v in self.c_box[0]]
+            out["c_box_upper"] = [float(v) for v in self.c_box[1]]
+        if getattr(self, "target_mug", None) is not None and hasattr(self, "c"):
+            out["grasp_c_start"] = [float(v) for v in self.GraspCStart()]
+            out["grasp_c_box_centre"] = ("mug" if self.options.legacy_robot_settings
+                                         else "flow_pose")
+        return out
+
     def FlowInference(self):
-        """The eager forward pass, built once per program and shared with the compiled
-        Jacobian so both paths run identical code."""
+        """The forward pass, built once per program and shared with the compiled
+        Jacobian so both paths run identical code. Eager, unless `flow_cuda_graph`
+        replays the compiled pass instead."""
         fn = getattr(self, "_flow_inference", None)
         if fn is None:
-            fn = self._flow_inference = MakeFlowInference(
+            make = (FlowValueGen if getattr(self.options, "flow_cuda_graph", False)
+                    else MakeFlowInference)
+            fn = self._flow_inference = make(
                 self.ik_solver.nn_model, self.ik_solver.network_width,
                 self.num_arm_dof, DEVICE, self.options.chart_error_scale)
         return fn
@@ -982,7 +1296,8 @@ class IKFlowProgram:
     def MakeJacobianGen(self):
         return FlowJacobianGen(
             self.ik_solver.nn_model, self.ik_solver.network_width, self.num_arm_dof,
-            DEVICE, self.options.compile_flow_jacobian, self.options.chart_error_scale)
+            DEVICE, self.options.compile_flow_jacobian, self.options.chart_error_scale,
+            cuda_graph=getattr(self.options, "flow_cuda_graph", False))
 
     def WarmUpJacobian(self):
         """Pay torch.compile's one-off cost outside any timed solve.
@@ -998,6 +1313,10 @@ class IKFlowProgram:
         start = time.time()
         gen = self.MakeJacobianGen()
         gen(tensor)
+        if getattr(self.options, "flow_cuda_graph", False):
+            ## Both graphs, here and not in the first solve; then no more may be made.
+            self.FlowInference()(tensor)
+            FreezeFlowGraphs()
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         return time.time() - start
@@ -1704,29 +2023,20 @@ class IKFlowProgram:
         return self.bounding_box_constraint
 
     def BoundingBoxConstraint(self):
+        '''The learned arm's three regions: the latent box, the conditioning-pose box and
+        the correction's bound.
+
+        ONE method for every learned program, pose and grasp alike, dispatching on whether
+        the program carries a target mug. The five mug programs used to override this with
+        five copies of the grasp box, which is how the latent-box repair once fixed the
+        pose arms and silently missed the grasp arms. The joint-space arms override it
+        with `QBoundingBoxConstraint`; the analytic arms with their own regions.'''
         self.LatentBoxConstraint()
-        # A general linear constraint, deliberately NOT a bounding box, and the
-        # distinction is load-bearing. IPOPT (an interior-point method) requires every
-        # iterate to sit strictly inside the *variable bounds* -- its bound_push projects
-        # the initial guess into the box before evaluating anything, which silently
-        # destroyed the exact paired start: `c` was teleported to the box face while the
-        # latent stayed tuned to the unprojected pose, so the first evaluated point was
-        # 1-3 rad from q_init and bit-identical to the old pre-clipped protocol (measured:
-        # identical iterate-0 lines in the IPOPT logs). General constraints carry no such
-        # interiority requirement -- they may start violated, the violation just lands in
-        # inf_pr -- so with the box written this way the solver genuinely starts at the
-        # guess and walks `c` into the region continuously while `z` and the correction
-        # adapt, instead of being jolted onto the face at iterate 0.
-        self.c_box = (self.initial_guess - 1, self.initial_guess + 1)
-        self.c_box_constraint = self.prog.AddLinearConstraint(
-            np.eye(len(self.c)), self.c_box[0], self.c_box[1], self.c)
-        self.c_box_constraint.evaluator().set_description("CBoxConstraint")
-        bound = self.options.correction_bound
-        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -bound * np.ones(self.num_arm_dof), bound * np.ones(self.num_arm_dof),
-            self.correction
-        )
-        self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
+        if getattr(self, "target_mug", None) is not None:
+            self.GraspCBoxConstraint()
+        else:
+            self.PoseCBoxConstraint()
+        self.CorrectionBoxConstraint()
     
 
     

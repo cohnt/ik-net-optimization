@@ -246,7 +246,7 @@
       <child>right_finger</child>
     </joint>
     <frame name="between_fingers">
-      <pose relative_to="hand">0 0.1 0 0 0 0</pose>
+      <pose relative_to="hand">0 0.1 0 0 0 1.57</pose>
     </frame>
     <static>0</static>
   </model>

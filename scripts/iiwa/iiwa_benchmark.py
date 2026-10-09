@@ -44,6 +44,9 @@ CONFIGS = {
     # The iiwa latent is 8-dimensional, so the trust-region radius is sqrt(8) + ~1.5
     # rather than the Panda's sqrt(7) + ~1.4.
     "latent":   dict(share_flow_evaluations=True, latent_trust_region=4.3),
+    # The A/B of the trust-region RULE (PI, 2026-10-08): `round(sqrt(dim_latent) + 1.5, 2)`
+    # computed from the loaded chart. Here that is 4.33 against `latent`'s hand-rounded 4.3.
+    "latent_rule": dict(share_flow_evaluations=True, latent_trust_region_rule=True),
 }
 
 
@@ -193,10 +196,18 @@ def main():
     ## of the same grid under DIFFERENT solvers are not the same measurement, and without
     ## this they resolve to the same log_dir and the same summary.json and silently
     ## overwrite each other. The panda script has always included it; this one did not.
+    ## The scene's fingerprint goes in the tag AND the metadata, for the same reason the
+    ## checkpoint does: `grid_hash` hashes only q's, so a run on a defective gripper SDF
+    ## and one on the fixed SDF share a grid hash and would otherwise pair. The grasp
+    ## task's mug is appended in memory per target and no YAML names it, so it is folded in.
+    yaml_file = SceneFile("iiwa", args.task, args.scene)
+    scene_fp = bm.scene_fingerprint(
+        yaml_file, extra_models=([os.path.join(RepoDir(), bm.MUG_MODEL_FILE)]
+                                 if args.task == "mug" else ()))
     tag = args.tag or "_".join(
         ["iiwa", args.task, args.config, args.solver, args.start] + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
-        + (["compiled"] if args.compile else []))
+        + (["compiled"] if args.compile else []) + [scene_fp[:8]])
     if shard is not None:
         tag = f"{tag}_shard{shard[0]}of{shard[1]}"
     log_dir = os.path.join(RepoDir(), "results/iiwa/benchmark", tag)
@@ -232,7 +243,6 @@ def main():
     # the containment test applies to. `--scene legacy` restores the pre-2026-09-15
     # obstacle set (the bin and the seven decorative mugs).
     spec = SCENES[("iiwa", args.task)]
-    yaml_file = SceneFile("iiwa", args.task, args.scene)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
         sampler_cls = IiwaMugProgram if args.task == "mug" else Iiwa14IKProgram
@@ -404,6 +414,9 @@ def main():
                                         grid_hash=grid_hash, compiled=args.compile,
                                         scene=os.path.basename(yaml_file),
                                         scene_mode=args.scene,
+                                        scene_fingerprint=scene_fp,
+                                        latent_trust_region_effective=(
+                                            sampler.LatentTrustRadius()),
                                         target_placement=placement,
                                         shelf_inset=(args.shelf_inset
                                                      if placement == "shelf"
