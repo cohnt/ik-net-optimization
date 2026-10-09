@@ -176,8 +176,9 @@ class GvsArmIKProgramNumerical(_NumericalMixin, GvsArmIKProgram):
         self.prog = MathematicalProgram()
         self._CreateVariables()
         self.target_pose = target_pose
-        self.q_nominal = (np.zeros(self.num_arm_dof) if q_nominal is None
-                          else np.asarray(q_nominal, dtype=float))
+        ## Zero rod force -- the straight rod -- is this robot's natural nominal, the base
+        ## class's default `NominalConfiguration`.
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         self.prog.SetInitialGuess(self.q, self.q_nominal)
         self.add_constraints()
         self.add_costs()
@@ -190,8 +191,9 @@ class GvsArmMugProgramNumerical(_NumericalMixin, GvsArmMugProgram):
         self._CreateVariables()
         self.target_mug = target_mug
         self.target_pose = np.array([*target_mug.middle.translation(), 1, 0, 0, 0])
-        self.q_nominal = (np.zeros(self.num_arm_dof) if q_nominal is None
-                          else np.asarray(q_nominal, dtype=float))
+        ## Zero rod force -- the straight rod -- is this robot's natural nominal, the base
+        ## class's default `NominalConfiguration`.
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         self.prog.SetInitialGuess(self.q, self.q_nominal)
         self.add_constraints()
         self.add_costs()

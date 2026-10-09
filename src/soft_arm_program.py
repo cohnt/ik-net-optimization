@@ -208,9 +208,10 @@ class SoftArmIKProgram(IKFlowProgram):
 
         self.target_pose = target_pose
         ## In CONFIGURATION space: the quadratic's zero is the straight, unstretched rod,
-        ## which is this robot's elastic-energy analogue of joint centering.
-        self.q_nominal = (np.zeros(self.num_arm_dof) if q_nominal is None
-                          else np.asarray(q_nominal, dtype=float))
+        ## which is this robot's elastic-energy analogue of joint centering -- the base
+        ## class's default `NominalConfiguration`, kept deliberately when the rigid arms
+        ## moved to a bent home pose (2026-10-08).
+        self.q_nominal = self.ResolveQNominal(q_nominal)
 
         X_W_target = RigidTransform(Quaternion(self.target_pose[3:]), self.target_pose[:3])
         X_W_flow = X_W_target @ self.X_ee_flow
@@ -333,15 +334,13 @@ class SoftArmMugProgram(SoftArmIKProgram):
         self.lumped_vars = np.hstack([self.c, self.z, self.correction])
 
         self.target_mug = target_mug
-        self.q_nominal = (np.zeros(self.num_arm_dof) if q_nominal is None
-                          else np.asarray(q_nominal, dtype=float))
+        self.q_nominal = self.ResolveQNominal(q_nominal)
 
         ## Seed `c` at the conditioning pose a grasp of this mug would have, not at the
         ## mug itself: the two differ by X_grasp_ee, and seeding at the mug is what put
-        ## the Panda's `c` 120 degrees from where the network expects it.
-        X_W_ee = target_mug.middle @ self.X_grasp_ee
-        self.prog.SetInitialGuess(self.c, np.concatenate(
-            [X_W_ee.translation(), X_W_ee.rotation().ToRollPitchYaw().vector()]))
+        ## the Panda's `c` 120 degrees from where the network expects it. The shared
+        ## `GraspCStart` is that pose on every robot since 2026-10-08.
+        self.prog.SetInitialGuess(self.c, self.GraspCStart())
         self.prog.SetInitialGuess(self.z, np.zeros(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(self.num_arm_dof))
 
@@ -368,24 +367,8 @@ class SoftArmMugProgram(SoftArmIKProgram):
         self.constraints.append(self.ik_constraint)
         return self.ik_constraint
 
-    def BoundingBoxConstraint(self):
-        self.LatentBoxConstraint()
-        centre = self.target_mug.middle.translation()
-        slack = self.options.c_position_slack
-        ## A general linear constraint, deliberately NOT a bounding box: IPOPT's bound_push
-        ## projects the initial guess into every variable box before evaluating anything,
-        ## which would silently destroy the exact paired start.
-        self.c_box = (np.concatenate([centre - slack, -2 * np.pi * np.ones(3)]),
-                      np.concatenate([centre + slack, 2 * np.pi * np.ones(3)]))
-        self.c_box_constraint = self.prog.AddLinearConstraint(
-            np.eye(6), self.c_box[0], self.c_box[1], self.c)
-        self.c_box_constraint.evaluator().set_description("CBoxConstraint")
-        bound = self.options.correction_bound
-        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -bound * np.ones(self.num_arm_dof), bound * np.ones(self.num_arm_dof),
-            self.correction)
-        self.correction_bounding_box_constraint.evaluator().set_description(
-            "CorrectionBoundingBoxConstraint")
+    ## `BoundingBoxConstraint` is the base class's: it sees `target_mug` and builds the
+    ## shared grasp box (`GraspCBoxConstraint`). No per-robot copy lives here any more.
 
 
 class _NumericalMixin:
@@ -436,9 +419,9 @@ class _NumericalMixin:
         return self.SetStartFromQ(q_init)
 
     def BoundingBoxConstraint(self):
-        lower, upper = self.ConfigLimits()
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(lower, upper, self.q)
-        self.bounding_box_constraint.evaluator().set_description("QBoundingBoxConstraint")
+        ## `ConfigLimits()` through the shared helper; this robot had no other bound, so
+        ## the `legacy_robot_settings` control changes nothing here.
+        self.QBoundingBoxConstraint()
 
 
 class SoftArmIKProgramNumerical(_NumericalMixin, SoftArmIKProgram):
@@ -446,8 +429,7 @@ class SoftArmIKProgramNumerical(_NumericalMixin, SoftArmIKProgram):
         self.prog = MathematicalProgram()
         self._CreateVariables()
         self.target_pose = target_pose
-        self.q_nominal = (np.zeros(self.num_arm_dof) if q_nominal is None
-                          else np.asarray(q_nominal, dtype=float))
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         self.prog.SetInitialGuess(self.q, self.q_nominal)
         self.add_constraints()
         self.add_costs()
@@ -459,8 +441,7 @@ class SoftArmMugProgramNumerical(_NumericalMixin, SoftArmMugProgram):
         self._CreateVariables()
         self.target_mug = target_mug
         self.target_pose = np.array([*target_mug.middle.translation(), 1, 0, 0, 0])
-        self.q_nominal = (np.zeros(self.num_arm_dof) if q_nominal is None
-                          else np.asarray(q_nominal, dtype=float))
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         self.prog.SetInitialGuess(self.q, self.q_nominal)
         self.add_constraints()
         self.add_costs()

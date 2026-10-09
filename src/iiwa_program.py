@@ -21,6 +21,16 @@ from src.iiwa_analytic_ik import iiwa_limits_lower, iiwa_limits_upper
 
 
 class Iiwa14IKProgram(IKFlowProgram):
+    #: The joint-centering target. Zeros -- the fully straight S-R-S arm -- is SINGULAR
+    #: (joints 1, 3, 5 and 7 collinear; manipulator-Jacobian sigma_min 0.0 measured), so
+    #: the nominal is the common mild elbow bend. Measured in the hardened scene
+    #: (2026-10-08): inside the limits by 0.344 rad at the closest joint, sigma_min 0.252,
+    #: collision value 0.22 (clear). The ONE place this robot's home pose lives.
+    Q_NOMINAL = np.array([0.0, 0.6, 0.0, -1.75, 0.0, 1.0, 0.0])
+
+    def NominalConfiguration(self):
+        return self.Q_NOMINAL.copy()
+
     def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None, checkpoint = None, nb_nodes = 12):
         self.diagram = diagram
         self.plant = diagram.GetSubsystemByName("plant")
@@ -96,10 +106,7 @@ class Iiwa14IKProgram(IKFlowProgram):
             self.lumped_vars = np.hstack([self.lumped_vars, self.q_lift])
 
         self.target_pose = target_pose
-        if q_nominal is None:
-            self.q_nominal = np.zeros(self.num_pos)
-        else:
-            self.q_nominal = q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
 
         self.initial_guess = np.zeros(6)
         # `c` is the NETWORK's conditioning input, so it lives in the frame the flow was
@@ -199,6 +206,11 @@ class Iiwa14IKProgram(IKFlowProgram):
 
 
 class IiwaMugProgram(Iiwa14IKProgram):
+    #: Before 2026-10-08 this program seeded `c` at the mug centre with zero rpy; the
+    #: unified start is the flow-frame grasp pose. The old form survives only as the
+    #: `legacy_robot_settings` control.
+    LEGACY_GRASP_C_MUG_CENTRED = True
+
     def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None, checkpoint = None, nb_nodes = 12):
         super().__init__(diagram, options, model_instance, model, checkpoint, nb_nodes)
         # The flow conditions on iiwa_link_7; the grasp constraint acts between the fingers.
@@ -229,13 +241,11 @@ class IiwaMugProgram(Iiwa14IKProgram):
             self.lumped_vars = np.hstack([self.lumped_vars, self.q_lift])
 
         self.target_mug = target_mug
-        if q_nominal is None:
-            self.q_nominal = np.zeros(self.num_pos)
-        else:
-            self.q_nominal = q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
 
-
-        self.prog.SetInitialGuess(self.c, [*target_mug.middle.translation(), 0, 0, 0])
+        ## The flow-frame pose of the generating configuration (`GraspCStart`), the same
+        ## start every robot uses since 2026-10-08; `[mug xyz, 0, 0, 0]` under the control.
+        self.prog.SetInitialGuess(self.c, self.GraspCStart())
         self.prog.SetInitialGuess(self.z, np.random.randn(self.ik_solver.network_width))
         self.prog.SetInitialGuess(self.correction, np.zeros(7))
         self.jacobian_gen = self.MakeJacobianGen()
@@ -264,34 +274,8 @@ class IiwaMugProgram(Iiwa14IKProgram):
         self.constraints.append(self.ik_constraint)
         return self.ik_constraint
 
-    def BoundingBoxConstraint(self):
-        self.LatentBoxConstraint()
-        # Keep the conditioning pose near the mug so the flow stays inside the workspace
-        # it was trained on. Orientation stays free.
-        centre = self.target_mug.middle.translation()
-        slack = self.options.c_position_slack
-        # A general linear constraint, deliberately NOT a bounding box, and the
-        # distinction is load-bearing. IPOPT (an interior-point method) requires every
-        # iterate to sit strictly inside the *variable bounds* -- its bound_push projects
-        # the initial guess into the box before evaluating anything, which silently
-        # destroyed the exact paired start: `c` was teleported to the box face while the
-        # latent stayed tuned to the unprojected pose, so the first evaluated point was
-        # 1-3 rad from q_init and bit-identical to the old pre-clipped protocol (measured:
-        # identical iterate-0 lines in the IPOPT logs). General constraints carry no such
-        # interiority requirement -- they may start violated, the violation just lands in
-        # inf_pr -- so with the box written this way the solver genuinely starts at the
-        # guess and walks `c` into the region continuously while `z` and the correction
-        # adapt, instead of being jolted onto the face at iterate 0.
-        self.c_box = (np.concatenate([centre - slack, -2 * np.pi * np.ones(3)]),
-                      np.concatenate([centre + slack, 2 * np.pi * np.ones(3)]))
-        self.c_box_constraint = self.prog.AddLinearConstraint(
-            np.eye(6), self.c_box[0], self.c_box[1], self.c)
-        self.c_box_constraint.evaluator().set_description("CBoxConstraint")
-        bound = self.options.correction_bound
-        self.correction_bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            -bound * np.ones(7), bound * np.ones(7), self.correction
-        )
-        self.correction_bounding_box_constraint.evaluator().set_description("CorrectionBoundingBoxConstraint")
+    ## `BoundingBoxConstraint` is the base class's: it sees `target_mug` and builds the
+    ## shared grasp box (`GraspCBoxConstraint`). No per-robot copy lives here any more.
 
 
 class Iiwa14IKProgramNumerical(Iiwa14IKProgram):
@@ -305,7 +289,7 @@ class Iiwa14IKProgramNumerical(Iiwa14IKProgram):
         self.q = self.prog.NewContinuousVariables(7)
         self.lumped_vars = self.q
         self.target_pose = target_pose
-        self.q_nominal = np.zeros(7) if q_nominal is None else q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         self.prog.SetInitialGuess(self.q, self.q_nominal)
         self.add_constraints()
         self.add_costs()
@@ -326,9 +310,9 @@ class Iiwa14IKProgramNumerical(Iiwa14IKProgram):
         return self.SetStartFromQ(q_init)
 
     def BoundingBoxConstraint(self):
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            iiwa_limits_lower, iiwa_limits_upper, self.q)
-        self.bounding_box_constraint.evaluator().set_description("QBoundingBoxConstraint")
+        ## The plant's limits, through the one shared helper. The hand-typed table in
+        ## `iiwa_analytic_ik` differs from the plant's at 1e-6 and is now the control only.
+        self.QBoundingBoxConstraint(legacy_bounds=(iiwa_limits_lower, iiwa_limits_upper))
 
 
 class IiwaMugProgramNumerical(IiwaMugProgram):
@@ -339,7 +323,7 @@ class IiwaMugProgramNumerical(IiwaMugProgram):
         self.q = self.prog.NewContinuousVariables(7)
         self.lumped_vars = self.q
         self.target_mug = target_mug
-        self.q_nominal = np.zeros(7) if q_nominal is None else q_nominal
+        self.q_nominal = self.ResolveQNominal(q_nominal)
         self.prog.SetInitialGuess(self.q, self.q_nominal)
         self.add_constraints()
         self.add_costs()
@@ -360,8 +344,8 @@ class IiwaMugProgramNumerical(IiwaMugProgram):
         return self.SetStartFromQ(q_init)
 
     def BoundingBoxConstraint(self):
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-            iiwa_limits_lower, iiwa_limits_upper, self.q)
-        self.bounding_box_constraint.evaluator().set_description("QBoundingBoxConstraint")
+        ## The plant's limits, through the one shared helper. The hand-typed table in
+        ## `iiwa_analytic_ik` differs from the plant's at 1e-6 and is now the control only.
+        self.QBoundingBoxConstraint(legacy_bounds=(iiwa_limits_lower, iiwa_limits_upper))
 
 
