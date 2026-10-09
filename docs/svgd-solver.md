@@ -129,6 +129,17 @@ the same task, overlap on, Panda (the profiler builds Panda programs only); smok
 phase over outer steps. In (6), per cell `n_resampled / svgd_n`, the worst cell. In (7), success
 counts of `al1-<w>` against `al64-<w>`, per arm, per row, per warm-up.
 
+A flag registered before the smoke was read (2026-10-09 01:45, from the solver wave's 6-cell
+end-to-end checks, not from the smoke): on learned `al_svgd` pose cells the median correction
+`|q_c|_inf` was 0.100, every solution on the +-0.1 box, where IPOPT's record median is ~0.054.
+CLAUDE.md names this exactly ("the check that the learned arm is not quietly becoming a
+reparameterised joint-space arm"). The smoke's `median_correction_inf` and `correction_binding`
+are therefore read beside every success count; a variant whose solutions sit on the box is reported
+with that beside it and is not selected over one that does not on success alone. The suspected
+mechanism is the minimum-norm Gauss-Newton correction spending the residual on `q_c`, the cheapest
+direction in its unscaled metric; it is unaddressed in the fielded code and is NOT a formulation
+change.
+
 ## The cluster stage's per-row analysis rule
 
 For each row (robot x experiment x start protocol), per selected variant, on 480 cells at the
