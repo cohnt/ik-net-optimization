@@ -20,6 +20,8 @@ multi-start would reuse, so the baseline is if anything slightly pessimistic for
 
     python scripts/report_time_matched.py --prefix sc_STATUSQUO_ --root <checkout with results/>
     python scripts/report_time_matched.py --prefix sc_SOFT12_    --root <checkout with results/>
+    python scripts/report_time_matched.py --prefix sc_REMEASURE_ \
+        --exclude sc_REMEASURE_LEGACY_ --exclude sc_REMEASURE_RULE_     # the record since 2026-10-09
 
 Selection matches scripts/report_statusquo.py's `load`: merged runs with --cells learned cells,
 staged and promoted trees both (promoted wins on a duplicate tag), per-shard directories
@@ -35,12 +37,12 @@ import re
 import numpy as np
 
 
-def load(prefix, cells, tag_re):
+def load(prefix, cells, tag_re, exclude=()):
     out = {}
     for root in ("results/_cluster_staging/*/results", "results"):
         for f in sorted(glob.glob(f"{root}/*/benchmark/{prefix}*/summary.json")):
             tag = os.path.basename(os.path.dirname(f))
-            if "_shard" in tag or not tag_re.match(tag):
+            if "_shard" in tag or not tag_re.match(tag) or tag.startswith(tuple(exclude)):
                 continue
             with open(f) as fh:
                 s = json.load(fh)
@@ -81,6 +83,9 @@ def main():
     p.add_argument("--prefix", default="sc_STATUSQUO_")
     p.add_argument("--root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    help="the checkout whose results/ holds the runs (default: this one)")
+    p.add_argument("--exclude", action="append", default=[],
+                   help="skip tags with this prefix; REMEASURE's control sub-stages (LEGACY, RULE) "
+                        "share its prefix and would otherwise parse as robots")
     p.add_argument("--cells", type=int, default=480)
     p.add_argument("--n-perm", type=int, default=2000)
     p.add_argument("--seed", type=int, default=0)
@@ -88,7 +93,7 @@ def main():
     os.chdir(args.root)
     tag_re = re.compile(rf"^{re.escape(args.prefix)}(\w+?)_(n\d+)_(ipopt|snopt|nlopt)_"
                         rf"(mugshelf|posetip)_{args.cells}_\d+_(native|paired)$")
-    runs = load(args.prefix, args.cells, tag_re)
+    runs = load(args.prefix, args.cells, tag_re, args.exclude)
     if not runs:
         raise SystemExit(f"no merged {args.cells}-cell {args.prefix} runs under {args.root}/results")
     rng = np.random.default_rng(args.seed)

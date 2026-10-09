@@ -86,11 +86,15 @@ like SNOPT: **0 timeouts on every row** and 2.3-4.4 s mean wall clock against th
 
 ## The result: IPOPT > SNOPT >>> NLopt, and the whole axis is CLOSED
 
+*Superseded for the record rows (2026-10-09): the per-row numbers in this section are the old-scene
+measurement; the record's rows are stage REMEASURE's (`docs/status-quo-tables.md`). The verdicts on
+the solver axis are unaffected.*
+
 All three method classes have been swept to exhaustion. **Do not re-sweep any of them.** The
 per-stage tables are deleted; each stage's reader regenerates them from the persisted runs
 (`scripts/report_snopttune.py`, `report_snoptcombo.py`, `report_nlopttune.py`, `report_step.py`,
 each of which implements its own pre-registered rule inline so it cannot drift). The success
-numbers of record are stage STATUSQUO's, under "Results" below.
+numbers of record are stage REMEASURE's, in `docs/status-quo-tables.md`.
 
 **This is a CONFIRMATION, not a finding.** Thomas: *"SNOPT performing worse than IPOPT is not
 surprising. In my experience, IPOPT is more robust to ill-posed problems, and our neural network
