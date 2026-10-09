@@ -2504,6 +2504,288 @@ def stage_CUDAGRAPH(suffix=""):
     return items
 
 
+
+## --------------------------------------------------------------------------- REMEASURE --
+##
+## THE WHOLE RECORD, RE-MEASURED ON THE FIXED SCENE (the PI's ruling, 2026-10-08). Three
+## things changed under every grasp row of record at once, and none of them can be
+## attributed from the record's own cells:
+##   - the wsg finray's `between_fingers` yaw: on the iiwa, soft PCS, screw and GVS arms every
+##     grasp target's mug handle started 18 mm inside a finger plate (CLAUDE.md, "The hardened
+##     scene"). The Panda carries a different gripper SDF and is the one robot NOT affected.
+##   - the five cross-robot settings unified behind `legacy_robot_settings` (four unified,
+##     the trust-region rule as an A/B flag).
+##   - CUDA graphs for the compiled flow (`flow_cuda_graph=True`): 2.3-2.6x per learned
+##     iteration at one solve per GPU, +0-11 cells per IPOPT row, no cell lost.
+## `grid_hash` hashes only the sampled q's, so a run on the defective SDF shares a grid with
+## one on the fixed SDF on the pose task and on any grasp target the mug screen did not move;
+## `metadata["scene_fingerprint"]` is what separates them, and `collate --pair` refuses the
+## mismatch. So the re-measurement compares VERDICTS and target-level rates against the
+## record, never cells.
+##
+## SHAPE: status-quo-shaped and built FROM the status-quo builders -- stage_STATUSQUO (Panda n6,
+## iiwa n4), stage_SOFT12 (soft12 n6), stage_SCREW (screw7_p050 n6) and stage_GVS (o1 n6, IPOPT
+## and SNOPT only, as stage GVS ran) -- so the rows, rungs, checkpoints, placement and cap are
+## the record's by construction rather than by copy. Each builder's items get the record's
+## base flags plus:
+##   - `--set flow_cuda_graph=True` (requires --compile, which item() always emits);
+##   - the LIFTED iteration budgets everywhere, `_itcap_extra`: IPOPT max_iter 1e6, SNOPT
+##     1e5 majors / 1e8 minors, NLopt untouched (its eval cap was unset in the record and the
+##     clock binds). Starting at the lifted budgets is what stage ITCAP's lesson buys: no row
+##     needs a second pass to lift a budget it turns out to have been sitting at.
+## The clock stays at 180 s (Thomas: "Don't raise the wall clock timeout").
+##
+## THREE SUB-STAGES, three manifests, so the controls can be queued AFTER the primary rows:
+##   REMEASURE         the primary: 4 record robots x 2 rows x 2 starts x 3 solvers
+##                     + GVS o1 x 2 x 2 x 2 solvers = 56 logical runs, `--config latent`.
+##   REMEASURE_LEGACY  IPOPT only, all five robots, `--set legacy_robot_settings=True`:
+##                     the fixed scene under the OLD settings, so against the primary it
+##                     attributes settings-vs-scene (both arms, since the unification touched
+##                     the joint-space arm's bound and q_nominal too). 20 logical runs.
+##   REMEASURE_RULE    IPOPT only, Panda and iiwa, `--config latent_rule`: the trust-region
+##                     A/B, on the only two robots whose constant the rule changes
+##                     (4.0 -> 4.15, 4.3 -> 4.33; the other three already carry the rule).
+##                     8 logical runs.
+## Tags are `sc_REMEASURE_<robot>_<rung>_<solver>_<row>_480_180_<start>` (the record's
+## six-token tail, so `report_statusquo.parse_tag` reads them), the controls
+## `sc_REMEASURE_LEGACY_...` and `sc_REMEASURE_RULE_...`. The benchmark scripts append the
+## scene fingerprint to the AUTO tag only (`tag = args.tag or ...`), so an explicit `--tag`
+## carries none; the fingerprint is in `metadata` and the reporter checks it there.
+##
+## ORDER (render()'s `order` key, claimed in file order): the grasp rows on the four wsg
+## robots first -- the rows the yaw defect sat under -- then Panda grasp, then every pose
+## row, IPOPT before SNOPT throughout, and NLopt last because its rows run to the clock on
+## both arms and carry the least information per node-hour.
+
+#: One entry per robot of the re-measurement: (robot, builder, only-filter, solvers, wsg?).
+#: `wsg` marks the robots whose gripper SDF carried the yaw defect -- their grasp rows go first.
+REMEASURE_ROBOTS = (
+    ("iiwa", "STATUSQUO", "iiwa:n4", "ipopt,snopt,nlopt", True),
+    ("soft12", "SOFT12", "soft12", "ipopt,snopt,nlopt", True),
+    (SCREW_PRIMARY, "SCREW", SCREW_PRIMARY, "ipopt,snopt,nlopt", True),
+    (GVS_PRIMARY, "GVS", GVS_PRIMARY, GVS_SOLVERS, True),
+    ("panda", "STATUSQUO", "panda:n6", "ipopt,snopt,nlopt", False),
+)
+REMEASURE_VARIANTS = {
+    ## name: (tag, solvers restricted to, robots restricted to, extra --set, config)
+    "REMEASURE": ("REMEASURE", None, None, [], "latent"),
+    "REMEASURE_LEGACY": ("REMEASURE_LEGACY", "ipopt", None,
+                         ["--set", "legacy_robot_settings=True"], "latent"),
+    "REMEASURE_RULE": ("REMEASURE_RULE", "ipopt", ("panda", "iiwa"), [], "latent_rule"),
+}
+REMEASURE_GRAPH = ["--set", "flow_cuda_graph=True"]
+#: The only `--set` names a REMEASURE item may carry, by sub-stage. Anything else would make
+#: the re-measurement a tuning run.
+REMEASURE_ALLOWED_SETS = {
+    "REMEASURE": {"correction_cost_weight", "flow_cuda_graph", "max_iter",
+                  "snopt_iterations_limit"},
+    "REMEASURE_LEGACY": {"correction_cost_weight", "flow_cuda_graph", "max_iter",
+                         "snopt_iterations_limit", "legacy_robot_settings"},
+    "REMEASURE_RULE": {"correction_cost_weight", "flow_cuda_graph", "max_iter",
+                       "snopt_iterations_limit"},
+}
+_REMEASURE_BUILDERS = {"STATUSQUO": lambda **kw: stage_STATUSQUO(180, 60, 8, 8, **kw),
+                       "SOFT12": lambda **kw: stage_SOFT12(180, 60, 8, 8, **kw),
+                       "SCREW": lambda **kw: stage_SCREW(180, 60, 8, 8, **kw),
+                       "GVS": lambda **kw: stage_GVS(180, 60, 8, 8, **kw)}
+
+
+def _remeasure_order(solver, task, wsg):
+    """The claim schedule: wsg grasp (IPOPT, SNOPT), Panda grasp (IPOPT, SNOPT), then pose, NLopt last.
+
+    Robot before solver within the grasp rows, because the yaw defect sat under the wsg rows and
+    they are what the stage exists to answer; the Panda grasp rows next, being the control the
+    defect never touched; pose last of the informative rows. NLopt runs to the clock on both
+    arms on most rows, so it carries the least information per node-hour.
+    """
+    solver_rank = {"ipopt": 0, "snopt": 1, "nlopt": 2}[solver]
+    if solver == "nlopt":
+        return 100 + (0 if task == "mug" else 10)
+    task_rank = 0 if task == "mug" else 1
+    robot_rank = 0 if wsg else 1
+    return task_rank * 10 + robot_rank * 2 + solver_rank
+
+
+def stage_REMEASURE(variant="REMEASURE"):
+    """The record re-measured on the fixed scene, unified settings, CUDA graphs, lifted budgets."""
+    tag, only_solver, only_robots, extra_set, config = REMEASURE_VARIANTS[variant]
+    items = []
+    for robot, builder, only, solvers, wsg in REMEASURE_ROBOTS:
+        if only_robots is not None and robot not in only_robots:
+            continue
+        want = [sv for sv in solvers.split(",") if only_solver is None or sv == only_solver]
+        for it in _REMEASURE_BUILDERS[builder](only=only, solvers=",".join(want), tag=tag):
+            args = list(it["args"])
+            solver = args[args.index("--solver") + 1]
+            task = args[args.index("--task") + 1]
+            ## The builders hard-code `--config latent`; the trust-region A/B is the same
+            ## stage under `latent_rule`, which differs from `latent` in exactly one flag.
+            args[args.index("--config") + 1] = config
+            budget = _itcap_extra(solver)[1] if solver in ("ipopt", "snopt") else []
+            args += REMEASURE_GRAPH + budget + list(extra_set)
+            items.append(dict(it, args=args, order=_remeasure_order(solver, task, wsg),
+                              seconds=_remeasure_seconds(robot, task, solver, args)))
+    return items
+
+
+#: Table 3 of docs/status-quo-tables.md (mean wall over ALL cells, each clamped at the 180 s
+#: clock, learned / joint space), keyed (robot, task, start, solver). The GVS rows are the same
+#: statistic computed from stage GVS's summaries (docs/gvs-arm-tables.md prints medians over
+#: successes, which would undersize a row with 128 timeouts) -- measured at PROCS=2, not 8.
+#: These constants are the allotment's BASE and are not read from results/, so the arithmetic
+#: is the same on a machine without the record.
+RECORD_MEAN_WALL = {
+    ("iiwa", "mug", "native"):  {"ipopt": (28.66, 2.14), "nlopt": (180.00, 180.00), "snopt": (24.00, 19.42)},
+    ("iiwa", "mug", "paired"):  {"ipopt": (26.56, 2.14), "nlopt": (179.25, 180.00), "snopt": (27.54, 19.42)},
+    ("iiwa", "pose", "native"): {"ipopt": (2.19, 0.09), "nlopt": (79.99, 174.21), "snopt": (2.61, 0.25)},
+    ("iiwa", "pose", "paired"): {"ipopt": (4.51, 0.09), "nlopt": (140.93, 174.21), "snopt": (15.64, 1.03)},
+    ("panda", "mug", "native"):  {"ipopt": (11.62, 8.11), "nlopt": (57.79, 180.00), "snopt": (5.46, 13.05)},
+    ("panda", "mug", "paired"):  {"ipopt": (18.79, 7.95), "nlopt": (180.00, 180.00), "snopt": (20.51, 13.05)},
+    ("panda", "pose", "native"): {"ipopt": (2.20, 0.29), "nlopt": (81.85, 177.10), "snopt": (3.18, 0.26)},
+    ("panda", "pose", "paired"): {"ipopt": (7.04, 0.29), "nlopt": (143.39, 177.09), "snopt": (10.82, 0.26)},
+    ("screw7_p050", "mug", "native"):  {"ipopt": (55.56, 2.37), "nlopt": (180.00, 180.00), "snopt": (28.54, 15.10)},
+    ("screw7_p050", "mug", "paired"):  {"ipopt": (54.77, 2.37), "nlopt": (178.88, 180.00), "snopt": (24.17, 15.06)},
+    ("screw7_p050", "pose", "native"): {"ipopt": (3.88, 0.11), "nlopt": (78.84, 173.25), "snopt": (5.30, 0.23)},
+    ("screw7_p050", "pose", "paired"): {"ipopt": (6.91, 0.11), "nlopt": (152.72, 173.21), "snopt": (10.52, 0.23)},
+    ("soft12", "mug", "native"):  {"ipopt": (12.33, 10.31), "nlopt": (180.00, 180.00), "snopt": (30.39, 22.92)},
+    ("soft12", "mug", "paired"):  {"ipopt": (16.24, 10.60), "nlopt": (179.29, 180.00), "snopt": (34.69, 22.96)},
+    ("soft12", "pose", "native"): {"ipopt": (2.21, 0.36), "nlopt": (50.78, 178.68), "snopt": (6.52, 1.48)},
+    ("soft12", "pose", "paired"): {"ipopt": (10.27, 0.36), "nlopt": (65.01, 178.63), "snopt": (28.10, 1.47)},
+    ("gvs_pushrod9_o1", "mug", "native"):  {"ipopt": (25.97, 12.24), "snopt": (51.35, 35.79)},
+    ("gvs_pushrod9_o1", "mug", "paired"):  {"ipopt": (23.36, 12.25), "snopt": (56.07, 35.75)},
+    ("gvs_pushrod9_o1", "pose", "native"): {"ipopt": (1.41, 1.40), "snopt": (3.68, 2.23)},
+    ("gvs_pushrod9_o1", "pose", "paired"): {"ipopt": (22.38, 1.39), "snopt": (69.67, 2.22)},
+}
+#: The SAME rows' UNCLAMPED mean, where it differs from the clamped one by more than 1%: every
+#: SNOPT row the record measured at the lifted budget (stages ITCAP / SCREWCAP) plus stage GVS's
+#: SNOPT grasp rows. SNOPT does not check its clock on a major with zero minors, so a cycling
+#: cell runs on to the major limit (0.4-2.2 h at 1e5) -- and stage REMEASURE lifts EVERY budget,
+#: so that overrun is real node time here, not an artefact to clamp away. Table 3 clamps it
+#: because it is a statement about the solver; an allotment is a statement about the nodes.
+#: Computed from the record's own summaries, 2026-10-08. A SNOPT row the record never lifted
+#: (e.g. pose native) may cycle too once lifted; it is charged its clamped mean, so the SNOPT
+#: block is a floor, not a ceiling.
+RECORD_SNOPT_UNCLAMPED = {
+    ("iiwa", "mug", "native"): (66.64, 19.47), ("iiwa", "mug", "paired"): (73.96, 19.46),
+    ("iiwa", "pose", "paired"): (46.16, 1.03),
+    ("panda", "mug", "native"): (5.46, 15.88), ("panda", "mug", "paired"): (45.48, 15.94),
+    ("screw7_p050", "mug", "native"): (75.58, 15.11), ("screw7_p050", "mug", "paired"): (81.97, 15.07),
+    ("soft12", "mug", "native"): (43.86, 24.71), ("soft12", "mug", "paired"): (42.95, 24.73),
+    ("gvs_pushrod9_o1", "mug", "native"): (54.04, 36.44),
+    ("gvs_pushrod9_o1", "mug", "paired"): (56.93, 36.39),
+}
+#: The learned arm's time is rescaled from the record's conditions to this stage's in three
+#: measured factors (CLAUDE.md, "Profiling, and CUDA graphs"), each at the middle of its band:
+#:   - the record (STATUSQUO, SOFT12, SCREW) ran PROCS=8 WITHOUT MPS, which charged the learned
+#:     arm a 1.15-1.30x GPU-contention penalty -> divide it out (1.225). Stage GVS ran PROCS=2
+#:     -> nothing to divide out there;
+#:   - CUDA graphs cut learned ms/it 2.3-2.6x at one solve per GPU (2.45);
+#:   - PROCS=8 under MPS=1 is 1.12-1.19x slower than one per GPU, graphed (1.155).
+#: Graphs touch only the FLOW, so each factor applies to the flow's share of a learned
+#: iteration, `REMEASURE_FLOW_SHARE`: 0.96 on the rigid arms (the flow is 96% of a Panda grasp
+#: solve); 1 - 1/4 on the soft PCS arm (learned 18-56 against joint space 4.6-11.8 ms/it, the
+#: rest being the 33-body kinematics both arms pay); 1 - 1/1.4 on GVS (per-evaluation premium
+#: 1.31-1.48x, the rest the equilibrium solve). The rest of a learned iteration and the whole
+#: joint-space arm are CPU-bound and pay only the CPU contention PROCS=8 costs (1.07x, charged
+#: to the GVS rows, which were measured at PROCS=2).
+#: NLopt rows stay at the record's values: they run to the clock on both arms on most rows, and
+#: a cell at the clock does not finish sooner because its iterations got cheaper. The same is
+#: true of every timed-out cell on IPOPT and SNOPT, so those rows are slightly optimistic.
+REMEASURE_GRAPH_SPEEDUP = 2.45
+REMEASURE_MPS_PREMIUM = 1.155
+REMEASURE_RECORD_GPU_CONTENTION = {"P8": 1.225, "P2": 1.0}
+REMEASURE_CPU_CONTENTION = 1.07
+REMEASURE_FLOW_SHARE = {"panda": 0.96, "iiwa": 0.96, "screw7_p050": 0.96,
+                        "soft12": 0.75, "gvs_pushrod9_o1": 0.29}
+#: Per manifest item, on top of the solves: imports, torch.compile (~35 s cold), CUDA-graph
+#: capture, and the per-target scene builds. A stated assumption, not a measurement -- the
+#: record's `setup_time` is 0.07-0.11 s per cell, so only the per-process cost is worth charging.
+REMEASURE_ITEM_OVERHEAD_S = 180.0
+REMEASURE_PROCS = 8          # solves in flight per node (PROCS=8 MPS=1, 2 V100s)
+REMEASURE_NODES = 4          # the xeon-g6-volta GrpTRES cap
+
+
+def _remeasure_mean_wall(robot, task, start, solver):
+    """(learned, joint space) expected mean wall per cell under this stage's conditions."""
+    key = (robot, task, start)
+    L, J = RECORD_MEAN_WALL[key][solver]
+    if solver == "snopt" and key in RECORD_SNOPT_UNCLAMPED:
+        L, J = RECORD_SNOPT_UNCLAMPED[key]
+    if solver == "nlopt":
+        return L, J
+    p2 = robot == GVS_PRIMARY            # stage GVS ran PROCS=2; the record PROCS=8, no MPS
+    cpu = REMEASURE_CPU_CONTENTION if p2 else 1.0
+    gpu = REMEASURE_RECORD_GPU_CONTENTION["P2" if p2 else "P8"]
+    f = REMEASURE_FLOW_SHARE[robot]
+    L = L * ((1 - f) * cpu + f * REMEASURE_MPS_PREMIUM / (REMEASURE_GRAPH_SPEEDUP * gpu))
+    return L, J * cpu
+
+
+def _remeasure_seconds(robot, task, solver, args):
+    """The allotment estimate for ONE ITEM, so --summary and LPT use real numbers here."""
+    start = args[args.index("--start") + 1]
+    shards = int(args[args.index("--shard") + 1].split("/")[1]) if "--shard" in args else 1
+    L, J = _remeasure_mean_wall(robot, task, start, solver)
+    return 480 * (L + J) / shards + REMEASURE_ITEM_OVERHEAD_S
+
+
+def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE"),
+                        detail=True):
+    """Print the node-hour arithmetic: per logical run, then per sub-stage and in total."""
+    print("ALLOTMENT -- base: the record's mean wall per cell, both arms (docs/status-quo-tables.md")
+    print("Table 3, clamped at 180 s, except SNOPT rows measured at the lifted budget, which are")
+    print("UNCLAMPED: every budget is lifted here, so a cycling cell's overrun is node time). The")
+    print(f"learned arm's flow share is rescaled: / {REMEASURE_RECORD_GPU_CONTENTION['P8']:g} "
+          f"(the record's PROCS=8-without-MPS contention), / {REMEASURE_GRAPH_SPEEDUP:g} (CUDA "
+          f"graphs), x {REMEASURE_MPS_PREMIUM:g}")
+    print(f"(PROCS=8 under MPS); flow share 0.96 rigid, 0.75 soft PCS, 0.29 GVS. NLopt rows at the")
+    print(f"record's values. +{REMEASURE_ITEM_OVERHEAD_S:g} s per item. {REMEASURE_PROCS} solves in "
+          f"flight per node (PROCS={REMEASURE_PROCS} MPS=1, 2 V100s), {REMEASURE_NODES} nodes.")
+    print("Optimistic where cells sit at the clock (they do not finish sooner under graphs); a floor")
+    print("on SNOPT rows the record never lifted, which may now cycle too.")
+    totals = []
+    for variant in variants:
+        items = stage_REMEASURE(variant)
+        runs = {}
+        for it in items:
+            runs.setdefault(it["id"].rsplit("_shard", 1)[0], []).append(it)
+        secs_total = sum(i["seconds"] for i in items)
+        totals.append((variant, len(runs), len(items), secs_total,
+                       max(i["seconds"] for i in items)))
+        if not detail:
+            continue
+        print(f"\n== {variant}: {len(runs)} logical runs, {len(items)} items")
+        print(f"  {'run':<66}{'L s':>8}{'JS s':>8}{'run h':>8}{'node-h':>8}")
+        for run, its in sorted(runs.items(), key=lambda kv: (kv[1][0]["order"], kv[0])):
+            a = its[0]["args"]
+            L, J = _remeasure_mean_wall(its[0]["robot"], a[a.index("--task") + 1],
+                                        a[a.index("--start") + 1], a[a.index("--solver") + 1])
+            secs = sum(i["seconds"] for i in its)
+            print(f"  {run:<66}{L:>8.2f}{J:>8.2f}{secs / 3600:>8.2f}"
+                  f"{secs / 3600 / REMEASURE_PROCS:>8.2f}")
+    print(f"\n  {'sub-stage':<18}{'runs':>6}{'cells':>8}{'solves':>9}{'items':>7}{'solve-h':>9}"
+          f"{'node-h':>8}{'days@' + str(REMEASURE_NODES):>8}{'max item h':>12}")
+    g = [0, 0, 0, 0.0]
+    for variant, n_runs, n_items, secs, longest in totals:
+        node_h = secs / 3600 / REMEASURE_PROCS
+        g = [g[0] + n_runs, g[1] + n_items, g[2] + secs, max(g[3], longest)]
+        print(f"  {variant:<18}{n_runs:>6}{n_runs * 480:>8}{n_runs * 480 * 2:>9}{n_items:>7}"
+              f"{secs / 3600:>9.1f}{node_h:>8.1f}{node_h / REMEASURE_NODES / 24:>8.2f}"
+              f"{longest / 3600:>12.2f}")
+    node_h = g[2] / 3600 / REMEASURE_PROCS
+    print(f"  {'TOTAL':<18}{g[0]:>6}{g[0] * 480:>8}{g[0] * 480 * 2:>9}{g[1]:>7}{g[2] / 3600:>9.1f}"
+          f"{node_h:>8.1f}{node_h / REMEASURE_NODES / 24:>8.2f}{g[3] / 3600:>12.2f}")
+    print(f"  (cells = logical runs x 480; solves = cells x 2 arms; days = node-h / {REMEASURE_NODES}"
+          " / 24, an idle queue")
+    print("   and perfect packing -- the 4-node GrpTRES cap is shared with everything the account runs.)")
+    print("\nMAINTENANCE: SuperCloud compute is down Mon 2026-10-12 evening to Wed 10-14 morning.")
+    print("Everything running is killed and queued work does not survive: resubmit afterwards, and")
+    print("clear the killed jobs' stale claims with `cluster/collect_results.sh --reclaim <manifest>`")
+    print("once the queue is idle (cluster/README.md).")
+    print("At the estimate above the primary manifest drains in about a day on 4 idle nodes, so")
+    print("submitted by Sat 10-10 it should finish first; anything later straddles the window.")
+
+
 def stage_SCREWCHART(wall, targets, guesses, shards, only=None, tag="SCREWCHART", seed=1,
                      starts="paired,native"):
     """The chart ladder on the primary rung: nb_nodes 4 / 6 / 8, IPOPT only.
@@ -2865,8 +3147,16 @@ def retag(items, prefix):
 
 
 def render(items):
+    """Manifest lines, in claim order.
+
+    `run_items.sh` claims items in FILE order, so this sort is the campaign's schedule. The
+    default is longest-estimate-first (LPT) within a stage. An item may carry an integer
+    `order` (default 0, so no committed manifest moves): items are grouped by it ascending,
+    LPT inside each group. Stage REMEASURE uses it to put the rows the re-measurement exists
+    to answer at the head of the queue, ahead of the rows that merely complete the record.
+    """
     lines = []
-    for it in sorted(items, key=lambda i: (-i["seconds"], i["id"])):
+    for it in sorted(items, key=lambda i: (i.get("order", 0), -i["seconds"], i["id"])):
         args = " ".join(it["args"])
         for field in (it["id"], it["env"], it["script"], args):
             assert field and not any(c.isspace() for c in field.replace(" ", "")) or True
@@ -4093,6 +4383,183 @@ def selftest():
     if not mc_fails:
         print("ok   MERGECHK GVS/REC/SCREW: 32/32/66 items, each a committed stage item re-tagged")
 
+    ## Stage REMEASURE and its two controls. The invariants are what the re-measurement
+    ## must hold fixed to be a re-measurement of the RECORD and not a new campaign: the
+    ## record's shape (480 cells, 180 s, seed 1, hardened, inset 0.10, contained at the
+    ## fingertips, arms learned,numerical), every item graphed and compiled, the lifted
+    ## iteration budgets on IPOPT and SNOPT and none on NLopt, the record's six-token tag
+    ## tail, no `--set` outside the whitelist (a solver knob here would make it a tuning
+    ## run), and the queue order the rows were given. Counts: 56 / 20 / 8 logical runs.
+    rm_fails = []
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    "scripts"))
+    from report_statusquo import parse_tag as _sq_parse_tag
+    rm_expected = {"REMEASURE": (56, 4 * 2 * 2 * (8 + 8 + 24) + 1 * 2 * 2 * (8 + 8)),
+                   "REMEASURE_LEGACY": (20, 20 * 8),
+                   "REMEASURE_RULE": (8, 8 * 8)}
+    on_disk_rm = {}
+    for variant, (want_runs, want_items) in rm_expected.items():
+        items = stage_REMEASURE(variant)
+        ids = [it["id"] for it in items]
+        if len(set(ids)) != len(ids):
+            rm_fails.append(f"{variant}: duplicate item ids")
+        runs = {i.rsplit("_shard", 1)[0] for i in ids}
+        if len(runs) != want_runs or len(items) != want_items:
+            rm_fails.append(f"{variant}: {len(runs)} runs / {len(items)} items, expected "
+                            f"{want_runs} / {want_items}")
+        prefix = f"sc_{REMEASURE_VARIANTS[variant][0]}_"
+        solvers_seen, robots_seen = set(), set()
+        for it in items:
+            a = it["args"]
+            tag = a[a.index("--tag") + 1]
+            if not tag.startswith(prefix) or it["id"].rsplit("_shard", 1)[0] != tag:
+                rm_fails.append(f"{variant}: {it['id']} is not tagged {prefix}...")
+            tail = tag[len(prefix):].split("_")
+            ## <robot>_<rung>_<solver>_<row>_480_180_<start>, robot may carry underscores.
+            if tail[-3:-1] != ["480", "180"] or tail[-1] not in ("paired", "native") \
+                    or tail[-4] not in ("mugshelf", "posetip") or tail[-5] not in SOLVER_CLASSES:
+                rm_fails.append(f"{variant}: {tag} lacks the record's six-token tail")
+            ## And the reporter must read it: scripts/report_remeasure.py hands every tag to
+            ## report_statusquo.parse_tag with the sub-stage prefix collapsed to one token
+            ## (a control's `REMEASURE_LEGACY` would otherwise land in the robot field).
+            t = _sq_parse_tag("sc_X_" + tag[len(prefix):])
+            if (t["robot"], t["solver"], t["cells"], t["cap"]) != (
+                    it["robot"], a[a.index("--solver") + 1], "480", "180") \
+                    or t["start"] != a[a.index("--start") + 1]:
+                rm_fails.append(f"{variant}: parse_tag reads {tag} as {t}")
+            solver = a[a.index("--solver") + 1]
+            solvers_seen.add(solver)
+            robots_seen.add(it["robot"])
+            for flag, want in (("--wall-time", "180.0"), ("--seed", "1"), ("--scene", "hardened"),
+                               ("--shelf-inset", str(HARD_SHELF_INSET)),
+                               ("--target-placement", "shelf"), ("--arms", "learned,numerical"),
+                               ("--targets", "60"), ("--guesses", "8"),
+                               ("--config", REMEASURE_VARIANTS[variant][4])):
+                if a[a.index(flag) + 1] != want:
+                    rm_fails.append(f"{variant}: {it['id']} has {flag} {a[a.index(flag) + 1]}, "
+                                    f"not {want}")
+            if "--compile" not in a:
+                rm_fails.append(f"{variant}: {it['id']} is not compiled")
+            if "--checkpoint" not in a:
+                rm_fails.append(f"{variant}: {it['id']} names no checkpoint")
+            if it["env"] != "-":
+                rm_fails.append(f"{variant}: {it['id']} carries a per-item env")
+            task = a[a.index("--task") + 1]
+            if task == "pose" and a[a.index("--placement-point") + 1] != "fingertips":
+                rm_fails.append(f"{variant}: {it['id']} pose row not at the fingertips")
+            if task == "mug" and "--placement-point" in a:
+                rm_fails.append(f"{variant}: {it['id']} passes --placement-point on a grasp row")
+            sets = {}
+            for i, tok in enumerate(a):
+                if tok == "--set":
+                    k, v = a[i + 1].split("=", 1)
+                    sets[k] = v
+            if set(sets) - REMEASURE_ALLOWED_SETS[variant]:
+                rm_fails.append(f"{variant}: {it['id']} sets "
+                                f"{sorted(set(sets) - REMEASURE_ALLOWED_SETS[variant])}")
+            if sets.get("flow_cuda_graph") != "True":
+                rm_fails.append(f"{variant}: {it['id']} is not graphed")
+            if sets.get("correction_cost_weight") != str(CORR_COST):
+                rm_fails.append(f"{variant}: {it['id']} lacks the correction penalty")
+            if solver == "ipopt" and sets.get("max_iter") != str(ITCAP_IPOPT_MAX_ITER):
+                rm_fails.append(f"{variant}: {it['id']} IPOPT budget not lifted")
+            if solver == "snopt" and (sets.get("max_iter") != str(ITCAP_SNOPT_MAX_ITER) or
+                                      sets.get("snopt_iterations_limit")
+                                      != str(ITCAP_SNOPT_ITERATIONS)):
+                rm_fails.append(f"{variant}: {it['id']} SNOPT budgets not lifted")
+            if solver == "nlopt" and ("max_iter" in sets or "nlopt_max_eval" in sets):
+                rm_fails.append(f"{variant}: {it['id']} sets a budget on NLopt")
+            if variant == "REMEASURE_LEGACY" and sets.get("legacy_robot_settings") != "True":
+                rm_fails.append(f"{variant}: {it['id']} is not the legacy control")
+            if variant != "REMEASURE_LEGACY" and "legacy_robot_settings" in sets:
+                rm_fails.append(f"{variant}: {it['id']} carries the legacy flag")
+            shards = int(a[a.index("--shard") + 1].split("/")[1])
+            if shards != 8 * STATUSQUO_SHARD_SCALE[solver]:
+                rm_fails.append(f"{variant}: {it['id']} sharded {shards}-way, not "
+                                f"{8 * STATUSQUO_SHARD_SCALE[solver]}")
+            if it["seconds"] > 28800:
+                rm_fails.append(f"{variant}: {it['id']} estimates past ITEM_TIMEOUT")
+        want_solvers = {"REMEASURE": set(SOLVER_CLASSES), "REMEASURE_LEGACY": {"ipopt"},
+                        "REMEASURE_RULE": {"ipopt"}}[variant]
+        if solvers_seen != want_solvers:
+            rm_fails.append(f"{variant}: solvers {sorted(solvers_seen)}, expected "
+                            f"{sorted(want_solvers)}")
+        want_robots = {"REMEASURE": {r for r, *_ in REMEASURE_ROBOTS},
+                       "REMEASURE_LEGACY": {r for r, *_ in REMEASURE_ROBOTS},
+                       "REMEASURE_RULE": {"panda", "iiwa"}}[variant]
+        if robots_seen != want_robots:
+            rm_fails.append(f"{variant}: robots {sorted(robots_seen)}, expected "
+                            f"{sorted(want_robots)}")
+        ## GVS fields IPOPT and SNOPT only, as stage GVS did; the other four all three.
+        gvs_solvers = {it["args"][it["args"].index("--solver") + 1] for it in items
+                       if it["robot"] == GVS_PRIMARY}
+        if variant == "REMEASURE" and gvs_solvers != set(GVS_SOLVERS.split(",")):
+            rm_fails.append(f"{variant}: GVS solvers {sorted(gvs_solvers)}, expected "
+                            f"{GVS_SOLVERS}")
+        ## The ORDER is the schedule: wsg grasp before Panda grasp before pose, IPOPT before
+        ## SNOPT, NLopt last. Checked on the rendered lines, which is what run_items.sh reads.
+        by_id = {it["id"]: it for it in items}
+        wsg_of = {r: w for r, *_, w in REMEASURE_ROBOTS}
+        order_seen = []
+        for line in render(items):
+            it = by_id[line.split("|", 1)[0]]
+            a = it["args"]
+            order_seen.append(_remeasure_order(a[a.index("--solver") + 1],
+                                               a[a.index("--task") + 1], wsg_of[it["robot"]]))
+        if order_seen != sorted(order_seen):
+            rm_fails.append(f"{variant}: rendered order is not the schedule")
+        first = render(items)[0].split("|", 1)[0]
+        if variant == "REMEASURE" and not (("_ipopt_mugshelf_" in first) and
+                                           not first.startswith("sc_REMEASURE_panda_")):
+            rm_fails.append(f"{variant}: first item is {first}, not a wsg IPOPT grasp row")
+        last = render(items)[-1].split("|", 1)[0]
+        if variant == "REMEASURE" and "_nlopt_posetip_" not in last:
+            rm_fails.append(f"{variant}: last item is {last}, not an NLopt pose row")
+        ## And the committed manifest must be what this file generates now.
+        here = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(here, f"manifest_stage{variant}.txt")
+        if os.path.exists(path):
+            with open(path) as fh:
+                disk = [l.rstrip("\n") for l in fh if l.strip() and not l.startswith("#")]
+            if disk != render(items):
+                rm_fails.append(f"{variant}: cluster/manifest_stage{variant}.txt is stale; "
+                                f"regenerate it (cluster/REMEASURE_RUNBOOK.md)")
+    ## Every REMEASURE item is its record builder's item, re-tagged, plus the graph switch,
+    ## the lifted budgets and the control's flag -- nothing else may differ.
+    rm_stage_of = {"panda": "STATUSQUO", "iiwa": "STATUSQUO", "soft12": "SOFT12",
+                   SCREW_PRIMARY: "SCREW", GVS_PRIMARY: "GVS"}
+    rm_builder_of = {"STATUSQUO": stage_STATUSQUO, "SOFT12": stage_SOFT12,
+                     "SCREW": stage_SCREW, "GVS": stage_GVS}
+    for variant in rm_expected:
+        tag, only_solver, only_robots, extra_set, config = REMEASURE_VARIANTS[variant]
+        for it in stage_REMEASURE(variant):
+            a = list(it["args"])
+            core = a[:a.index("--tag")] + a[a.index("--tag") + 2:]
+            solver = a[a.index("--solver") + 1]
+            budget = _itcap_extra(solver)[1] if solver != "nlopt" else []
+            suffix = REMEASURE_GRAPH + budget + list(extra_set)
+            if core[-len(suffix):] != suffix:
+                rm_fails.append(f"{variant}: {it['id']} does not end in the stage's additions")
+            core = core[:-len(suffix)]
+            core[core.index("--config") + 1] = "latent"
+            orig_id = it["id"].replace(f"sc_{tag}_", f"sc_{rm_stage_of[it['robot']]}_", 1)
+            builder = rm_builder_of[rm_stage_of[it["robot"]]]
+            matches = [o for o in builder(180, 60, 8, 8, solvers=solver) if o["id"] == orig_id]
+            if len(matches) != 1:
+                rm_fails.append(f"{variant}: {it['id']} has no unique record original")
+                continue
+            o = list(matches[0]["args"])
+            o = o[:o.index("--tag")] + o[o.index("--tag") + 2:]
+            if o != core or matches[0]["script"] != it["script"]:
+                rm_fails.append(f"{variant}: {it['id']} differs from its record original "
+                                f"beyond the stage's additions")
+    for msg in rm_fails[:12]:
+        print(f"FAIL stage REMEASURE: {msg}")
+    fails += len(rm_fails)
+    if not rm_fails:
+        print("ok   stages REMEASURE/REMEASURE_LEGACY/REMEASURE_RULE: 56/20/8 logical runs, the "
+              "record's rows re-tagged + graphs + lifted budgets, wsg grasp first, NLopt last")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -4110,7 +4577,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -4165,10 +4632,17 @@ def main():
     p.add_argument("-o", "--out", default=None)
     p.add_argument("--summary", action="store_true")
     p.add_argument("--selftest", action="store_true")
+    p.add_argument("--allotment", action="store_true",
+                   help="REMEASURE stages only: print the node-hour arithmetic (cells x arms x "
+                        "expected mean wall from the record's Table 3, learned arm / 2.5 under "
+                        "CUDA graphs) for all three sub-stages, and exit")
     args = p.parse_args()
 
     if args.selftest:
         raise SystemExit(selftest())
+    if args.allotment:
+        remeasure_allotment()
+        raise SystemExit(0)
     if not args.stage:
         raise SystemExit("--stage is required (or --selftest)")
 
@@ -4233,6 +4707,11 @@ def main():
              "CUDAGRAPH": lambda: stage_CUDAGRAPH(),
              "CUDAGRAPHP2": lambda: stage_CUDAGRAPH("P2"),
              "CUDAGRAPHMPS": lambda: stage_CUDAGRAPH("MPS"),
+             ## The re-measurement takes no grid arguments: it IS the record's shape, and a
+             ## different --targets/--guesses/--wall-time would be a different measurement.
+             "REMEASURE": lambda: stage_REMEASURE("REMEASURE"),
+             "REMEASURE_LEGACY": lambda: stage_REMEASURE("REMEASURE_LEGACY"),
+             "REMEASURE_RULE": lambda: stage_REMEASURE("REMEASURE_RULE"),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
@@ -4327,7 +4806,9 @@ def main():
     header = [f"# learned-ik stage {args.stage} manifest",
               f"# generated by cluster/gen_manifest.py (edit the spec there, not here)",
               f"# format: <id>|<env assignments or ->|<script>|<args>",
-              f"# {len(lines)} items, ordered longest-estimate-first (LPT)"]
+              f"# {len(lines)} items, ordered longest-estimate-first (LPT)"
+              if not any("order" in it for it in items) else
+              f"# {len(lines)} items, ordered by schedule group (the stage's `order`), LPT within each"]
     text = "\n".join(header + lines) + "\n"
     if args.summary:
         summarise(items, args.procs, args.nodes)
