@@ -156,6 +156,18 @@ def ms_per_step(r):
     return None if seconds is None else 1e3 * seconds / it
 
 
+def ms_per_inner(r):
+    """Per INNER step for svgd: the swarm phase over `inner_steps` (one fused step -- the
+    quantity `profile_step` times as `ms_per_inner`). An outer step holds `svgd_inner_iters`
+    of them, so comparing the per-outer figure against the profiler is a units error."""
+    sv = r.get("svgd") or {}
+    inner = sv.get("inner_steps")
+    swarm = (sv.get("phase_times") or {}).get("swarm")
+    if not inner or swarm is None:
+        return None
+    return 1e3 * swarm / inner
+
+
 def arm_stats(summary, arm, other):
     A, B = by_cell(summary, arm), by_cell(summary, other)
     recs = list(A.values())
@@ -174,6 +186,7 @@ def arm_stats(summary, arm, other):
         n_both=len(both),
         steps=median([r.get("iterations") for r in ok]),
         ms_step=median([ms_per_step(r) for r in recs]),
+        ms_inner=median([ms_per_inner(r) for r in recs]),
         wall=mean([r.get("wall_time") for r in recs]),
         wall_max=max([r.get("wall_time") or 0.0 for r in recs], default=None),
         over_cap=(sum(1 for r in recs if (r.get("wall_time") or 0.0) > cap + 1.0)
@@ -416,7 +429,11 @@ def profile_ms(profile, arm, method, n, dtype, mode):
                 and r.get("dtype") == dtype and r.get("overlap", True)
                 and r.get("mode") == (mode if method != "admm_svgd" else "eager")
                 and "ms_per_step" in r):
-            return r["ms_per_step"]
+            ## Per INNER step: the profiler's own `ms_per_inner`, else its per-step figure
+            ## over the inner steps each of its steps held (`inner_per_step`).
+            if r.get("ms_per_inner") is not None:
+                return r["ms_per_inner"]
+            return r["ms_per_step"] / float(r.get("inner_per_step") or 1)
     return None
 
 
@@ -452,7 +469,8 @@ def go_no_go(rep, matrix, columns, variant_kw, profile):
     rec = sum(b[k]["recovered"] for b in svgd_blocks.values() for k in ("L", "J"))
     print(f"  (4) cells over cap + 1 s: {over} -> {'PASS' if over == 0 and svgd_blocks else 'FAIL' if over else '--'}; "
           f"cells with recovered_*: {rec} (the kill test is a separate run)")
-    print("  (5) ms/step against profile_step (same arm, method, N, dtype, mode; Panda only):")
+    print("  (5) ms per INNER step against profile_step's ms_per_inner (same arm, method, N, dtype, "
+          "mode; Panda only; the table's ms/step is per OUTER step = svgd_inner_iters inner steps):")
     if profile is None:
         print("        no --profile given")
     for (robot, row, start, column), b in sorted(svgd_blocks.items()):
@@ -465,12 +483,12 @@ def go_no_go(rep, matrix, columns, variant_kw, profile):
         for arm, k in (("learned", "L"), ("numerical", "J")):
             ref = profile_ms(profile, arm, s["svgd_method"], s["svgd_n"], variant_kw["dtype"],
                              variant_kw["mode"])
-            got = b[k]["ms_step"]
+            got = b[k].get("ms_inner")
             if ref is None or got is None:
                 continue
             ratio = got / ref
-            print(f"        {robot} {row} {start} {column} {ARM_NAME[arm]}: {got:.1f} against "
-                  f"{ref:.1f} ms/step = {ratio:.2f}x -> {'PASS' if ratio <= 2.0 else 'FAIL'}")
+            print(f"        {robot} {row} {start} {column} {ARM_NAME[arm]}: {got:.2f} against "
+                  f"{ref:.2f} ms/inner step = {ratio:.2f}x -> {'PASS' if ratio <= 2.0 else 'FAIL'}")
     worst = max((b[k].get("resampled_max") or 0.0 for b in svgd_blocks.values() for k in ("L", "J")),
                 default=None)
     print(f"  (6) worst per-cell resampled / N: {fmt(worst, 0, 3)} -> "
