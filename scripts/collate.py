@@ -87,12 +87,21 @@ def pair(arm, paths):
             # rather than by suffixing the Panda hash: changing that hash would make every
             # new Panda run incomparable to every archived one, which is a far larger loss
             # than the trap, and `task` has always been in the metadata.
-            differs = [k for k in ("scene", "target_placement", "shelf_inset",
-                                   "start", "solver", "checkpoint", "task")
+            #
+            # And `scene_fingerprint`, since 2026-10-08: `scene` is only the YAML's
+            # basename, and the wsg finray's `between_fingers` yaw fix was a one-token edit
+            # to an SDF the YAML references -- same file name, same grid hash, a different
+            # scene. The fingerprint hashes the YAML and every model file it pulls in.
+            differs = [k for k in ("scene", "scene_fingerprint", "target_placement",
+                                   "shelf_inset", "start", "solver", "checkpoint", "task")
                        if data["metadata"].get(k) != ref["metadata"].get(k)]
             if differs:
                 note = ("DIFFERENT SCENE/PLACEMENT/PROTOCOL (%s) -- not comparable"
                         % ", ".join(differs))
+            elif (data["metadata"].get("scene_fingerprint") is None
+                  or ref["metadata"].get("scene_fingerprint") is None):
+                note = ("no scene_fingerprint on one side -- a shared grid does not prove "
+                        "a shared scene")
         shared = sorted(set(cells) & set(ref_cells))
         m = mcnemar_exact([cells[c] for c in shared], [ref_cells[c] for c in shared])
         print(f"{name:<28} {sum(cells.values()):>4}/{len(cells):<4} {m['a_only']:>7} "

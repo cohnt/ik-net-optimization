@@ -56,6 +56,10 @@ def Configs(spec):
         "frame":    dict(share_flow_evaluations=False),
         "eval":     dict(share_flow_evaluations=True),
         "latent":   dict(share_flow_evaluations=True, latent_trust_region=radius),
+        ## The cross-robot A/B of the rule (PI, 2026-10-08): the same radius, but computed
+        ## from the loaded chart inside the program, so one flag sizes every robot alike.
+        ## Identical to `latent` on this robot; it exists so the A/B is one flag everywhere.
+        "latent_rule": dict(share_flow_evaluations=True, latent_trust_region_rule=True),
     }
 
 
@@ -145,11 +149,18 @@ def main():
         raise SystemExit("--shard and --cells are mutually exclusive")
 
     ckpt_tok = [os.path.basename(args.checkpoint).replace(".pkl", "")]
+    ## The scene's fingerprint goes in the tag AND the metadata: `grid_hash` hashes only
+    ## q's, so a run on a defective gripper SDF and one on the fixed SDF share a grid hash
+    ## and would otherwise pair. The grasp task's in-memory mug is folded in.
+    yaml_file = SceneFile(args.rung, args.task, args.scene)
+    scene_fp = bm.scene_fingerprint(
+        yaml_file, extra_models=([os.path.join(RepoDir(), bm.MUG_MODEL_FILE)]
+                                 if args.task == "mug" else ()))
     tag = args.tag or "_".join(
         [args.rung, args.task, args.config, args.solver, args.start]
         + ([] if args.fk == "analytic" else [f"fk{args.fk}"]) + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
-        + (["compiled"] if args.compile else []))
+        + (["compiled"] if args.compile else []) + [scene_fp[:8]])
     if shard is not None:
         tag = f"{tag}_shard{shard[0]}of{shard[1]}"
     log_dir = os.path.join(RepoDir(), f"results/{args.rung}/benchmark", tag)
@@ -171,7 +182,6 @@ def main():
     meshcat = Meshcat() if base_options.visualize else None
 
     scene_spec = SCENES[(args.rung, args.task)]
-    yaml_file = SceneFile(args.rung, args.task, args.scene)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
         sampler_cls = SoftArmMugProgram if args.task == "mug" else SoftArmIKProgram
@@ -335,6 +345,8 @@ def main():
                       wall_time=args.wall_time, seed=args.seed,
                       grid_hash=grid_hash, compiled=args.compile,
                       scene=os.path.basename(yaml_file), scene_mode=args.scene,
+                      scene_fingerprint=scene_fp,
+                      latent_trust_region_effective=sampler.LatentTrustRadius(),
                       target_placement=placement,
                       shelf_inset=(args.shelf_inset if placement == "shelf" else None),
                       target_screen=(mug_screen is not None),
