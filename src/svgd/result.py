@@ -84,8 +84,11 @@ class SvgdSolverDetails:
     solve_seconds: float = 0.0
     collision_seconds: float = 0.0 # host time blocked in the collision backend (the exactness premium)
     stop_reason: str = ""          # why the SWARM stopped: converged | wall_clock | step_cap
-    rho_median: float = None       # the per-particle penalties rho_i at stop: median ...
-    rho_max: float = None          # ... and largest
+    n_dual_updates: int = 0        # dual-ascent steps taken (each on every particle)
+    lam_inf_median: float = None   # |lam_i|_inf over the particles at stop: median ...
+    lam_inf_max: float = None      # ... and largest
+    mu_inf_median: float = None    # |mu_i|_inf over the particles at stop: median ...
+    mu_inf_max: float = None       # ... and largest
     bound_clip: float = 0.0        # total clamp distance onto the true bounds (normalised y)
     n_multiplier_clipped: int = 0  # multiplier entries the +-svgd_multiplier_max clip bound
     feasible_q_spread: float = None  # median pairwise |q_a - q_b| among feasible particles at stop
@@ -151,7 +154,9 @@ LOG_LINES = (
     "SVGD feasible particles: {n_feasible}",
     "SVGD resampled particles: {n_resampled}",
     "SVGD selected index: {selected_index}",
-    "SVGD rho at stop: median {rho_median} max {rho_max}",
+    "SVGD dual updates: {n_dual_updates}",
+    "SVGD |lam|_inf at stop: median {lam_inf_median} max {lam_inf_max}",
+    "SVGD |mu|_inf at stop: median {mu_inf_median} max {mu_inf_max}",
     "SVGD seconds = {solve_seconds:.6f}",
     "SVGD collision seconds = {collision_seconds:.6f}",
     "EXIT: {status_name}",
@@ -172,7 +177,9 @@ def write_log(path, details):
         "inner_steps": details.inner_steps, "map_evals": details.map_evals,
         "n_feasible": details.n_feasible, "n_resampled": details.n_resampled,
         "selected_index": details.selected_index,
-        "rho_median": details.rho_median, "rho_max": details.rho_max,
+        "n_dual_updates": details.n_dual_updates,
+        "lam_inf_median": details.lam_inf_median, "lam_inf_max": details.lam_inf_max,
+        "mu_inf_median": details.mu_inf_median, "mu_inf_max": details.mu_inf_max,
         "solve_seconds": float(details.solve_seconds),
         "collision_seconds": float(details.collision_seconds),
         "status_name": details.status_name,
@@ -184,8 +191,8 @@ def write_log(path, details):
             f.write(f"SVGD phase {k} = {float(v):.6f}\n")
         if getattr(details, "stop_reason", ""):
             f.write(f"SVGD stop reason: {details.stop_reason}\n")
-        ## The per-outer-check trace, one line per column (`_Target.TRACE_COLUMNS`): the
-        ## penalty and tolerance trajectories, multiplier steps, feasibility, resampling.
+        ## The per-check trace, one line per column (`_Target.TRACE_COLUMNS`): violation,
+        ## feasibility, the multiplier magnitudes, clips, resampling.
         ## Informational -- the harness parses none of these lines.
         for name, values in (details.extras or {}).get("trace", {}).items():
             f.write(f"SVGD trace {name} = " + " ".join(f"{float(v):.4g}" for v in values) + "\n")

@@ -246,7 +246,7 @@ def CheckSvgdOptions(options):
     if int(options.svgd_n) < 1:
         raise ValueError(f"svgd_n must be >= 1, got {options.svgd_n!r} (N = 1 is the "
                          f"degenerate single-particle control, not 0)")
-    for name in ("svgd_temperature", "svgd_lr", "svgd_rho0"):
+    for name in ("svgd_temperature", "svgd_lr", "svgd_rho"):
         if not float(getattr(options, name)) > 0.0:
             raise ValueError(f"{name} must be > 0, got {getattr(options, name)!r}")
     if options.svgd_cuda_graph and not options.svgd_compile:
@@ -680,12 +680,9 @@ class ProgramOptions:
     svgd_kernel: str = field(default="q", metadata={"help": "svgd: 'q' (RBF kernel on the configuration, median bandwidth) or 'none' (no interaction: both kernel terms dropped, the batched-AL control)"})
     svgd_bandwidth_floor: float = field(default=0.05, metadata={"help": "svgd: floor on the median-heuristic kernel bandwidth"})
     svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho / T), the whole AL gradient inside it -- an A/B"})
-    svgd_rho0: float = field(default=10.0, metadata={"help": "svgd: initial penalty rho_i of every particle"})
-    svgd_rho_growth: float = field(default=10.0, metadata={"help": "svgd: beta -- rho_i *= beta at an outer check where particle i's violation did not fall below svgd_rho_gamma times its value at the previous check (Powell's test)"})
-    svgd_rho_gamma: float = field(default=0.25, metadata={"help": "svgd: gamma of Powell's test on each particle's violation"})
-    svgd_rho_max: float = field(default=1e6, metadata={"help": "svgd: cap on every rho_i"})
+    svgd_rho: float = field(default=10.0, metadata={"help": "svgd: the penalty rho of the augmented Lagrangian -- ONE scalar, fixed for the whole solve, shared by every particle; also the dual-ascent step"})
     svgd_multiplier_max: float = field(default=1e4, metadata={"help": "svgd: box on the magnitude of every multiplier; the clipped entries are counted"})
-    svgd_inner_iters: int = field(default=10, metadata={"help": "svgd: gradient steps between outer checks (multipliers, penalties, resampling, the stop rule)"})
+    svgd_inner_iters: int = field(default=10, metadata={"help": "svgd: K -- every K steps the unconditional dual-ascent step on every particle, runaway resampling, the stop rule and the wall clock"})
     svgd_outer_iters: int = field(default=300, metadata={"help": "svgd: cap on outer checks (the 'iterations' column); `max_iter`, when set, also binds"})
     svgd_resample_q_max: float = field(default=10.0, metadata={"help": "svgd: |q|_inf (rad) above which a particle counts as runaway and is redrawn from the arm's native start at the next outer check (counted as n_resampled)"})
     svgd_recheck_topk: int = field(default=10, metadata={"help": "svgd: how many particles feasible on the batched rows, in objective order, get the exact Drake `EvalBinding` re-check; the first passer is returned"})

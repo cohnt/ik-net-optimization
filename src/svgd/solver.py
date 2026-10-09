@@ -13,7 +13,8 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
 
  1. Merit, per particle: `L_rho(x; lam, mu) = f + lam.h~ + (rho/2)|h~|^2
     + (1/(2 rho)) sum [max(0, mu + rho g~)^2 - mu^2]`; target density `exp(-L_rho / T)`,
-    `T = svgd_temperature`, FIXED.
+    `T = svgd_temperature` and `rho = svgd_rho` FIXED and shared by every particle. The
+    augmented Lagrangian is the FORMULATION and SVGD the optimizer: one dynamics.
  2. Rows: every equality `h` and inequality `g` of the batched program divided by
     `tol = acceptable_constr_viol_tol`, so `v = ||[h~ ; max(g~, 0)]||_inf <= 1` is "feasible at
     the harness gate" (the c box and the latent ball are inequality ROWS; the true variable
@@ -23,13 +24,14 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
  4. Step (Tabor-Hermans "Q method", `kernels.stein_direction`, `fused.update_step`):
     `phi_i = (1/N) sum_j [K(q_j, q_i)(-grad_y f_j / T) + grad_{y_j} K(q_j, q_i)]
              - (1/T) grad_y (L - f)_i`,
-    `y_i <- clamp_B(y_i + (svgd_lr / rho_i) phi_i)`. RBF kernel on q, median bandwidth; the
+    `y_i <- clamp_B(y_i + (svgd_lr / rho) phi_i)`. RBF kernel on q, median bandwidth; the
     repulsion pulled back to y through the flow's VJP. `svgd_kernel = none` drops both kernel
     terms; `svgd_constraint_inside_kernel` puts the whole `-grad L / T` under the average.
- 5. Every `svgd_inner_iters` steps an OUTER CHECK, per particle (`al.update`): multipliers
-    and tolerance on `v_i <= eta_i`, the penalty on Powell's test `v_i > gamma v_i(prev)`.
+ 5. Every K = `svgd_inner_iters` steps a CHECK: the dual-ascent step on every particle,
+    unconditionally (`al.dual_update`: `lam_i += rho h~_i`, `mu_i = max(0, mu_i + rho g~_i)`,
+    clipped to `+-svgd_multiplier_max`).
  6. At every check, particles with `|q|_inf > svgd_resample_q_max` or a non-finite row are
-    redrawn from the arm's NATIVE start distribution with fresh AL state (`n_resampled`).
+    redrawn from the arm's NATIVE start distribution with zero multipliers (`n_resampled`).
  7. Stop: the clock (`max_wall_time` less `svgd_time_reserve`), the outer-step cap
     (`svgd_outer_iters`, or `max_iter`), or -- once a particle is feasible at the gate --
     `svgd_stop_patience` consecutive checks at which the best feasible particle's objective
@@ -506,19 +508,18 @@ class _Target:
                 + (J_g.transpose(1, 2) @ cg.unsqueeze(2)).squeeze(2))
 
     ## -- the per-outer-check trace -------------------------------------------------------
-    TRACE_COLUMNS = ("min_infeas", "med_infeas", "n_feasible", "med_rho", "max_rho", "med_eta",
-                     "min_F_feasible", "med_h_pos", "med_h_rot", "med_g_plus",
-                     "n_multiplier_updates", "n_multiplier_clipped", "n_resampled",
-                     "bound_clip")
+    TRACE_COLUMNS = ("min_infeas", "med_infeas", "n_feasible", "med_lam_inf", "max_lam_inf",
+                     "med_mu_inf", "max_mu_inf", "min_F_feasible", "med_h_pos", "med_h_rot",
+                     "med_g_plus", "n_multiplier_clipped", "n_resampled", "bound_clip")
 
-    def trace_row(self, ev, S, updated, n_clipped, n_resampled, bound_clip):
-        """One `[len(TRACE_COLUMNS)]` tensor of swarm statistics at an outer check, on the
-        device (stacked and moved to the host ONCE at the end): the best and median scaled
-        violation, the feasible count, the median and largest penalty and the median
-        tolerance, the best objective among feasible particles, the median over particles
-        of the worst position / rotation equality and of the worst violated inequality, how
-        many particles took a multiplier step and how many multiplier entries were clipped,
-        the particles redrawn, and the clamp distance onto the bounds since the last check."""
+    def trace_row(self, ev, S, n_clipped, n_resampled, bound_clip):
+        """One `[len(TRACE_COLUMNS)]` tensor of swarm statistics at a check, on the device
+        (stacked and moved to the host ONCE at the end): the best and median scaled
+        violation, the feasible count, the median and largest `|lam_i|_inf` and `|mu_i|_inf`
+        after the dual step, the best objective among feasible particles, the median over
+        particles of the worst position / rotation equality and of the worst violated
+        inequality, how many multiplier entries the dual step clipped, the particles
+        redrawn, and the clamp distance onto the bounds since the last check."""
         kw = dict(dtype=self.dtype, device=self.device)
         nan = torch.full((), float("nan"), **kw)
         v = torch.nan_to_num(ev.infeas, nan=float("inf"))
@@ -531,13 +532,18 @@ class _Target:
         F = torch.nan_to_num(ev.F.detach(), nan=float("inf"))
         minF = torch.where(feas, F, torch.full_like(F, float("inf"))).min()
         minF = torch.where(torch.isfinite(minF), minF, nan)
+        ## A particle with a non-finite row has NaN multipliers until it is redrawn at this
+        ## same check: the multiplier columns ignore it.
+        lam = S.lam.abs().amax(dim=1) if S.lam.shape[1] else torch.zeros_like(v)
+        mu = S.mu.abs().amax(dim=1) if S.mu.shape[1] else torch.zeros_like(v)
+        nanmax = lambda t: torch.nan_to_num(t, nan=float("-inf")).max()
         return torch.stack([
-            v.min(), v.median(), feas.sum().to(self.dtype), S.rho.median(), S.rho.max(),
-            S.eta.median(), minF, med_group(~self.h_is_rot, self.m_e - self._n_rot),
+            v.min(), v.median(), feas.sum().to(self.dtype), torch.nanmedian(lam), nanmax(lam),
+            torch.nanmedian(mu), nanmax(mu), minF, med_group(~self.h_is_rot, self.m_e - self._n_rot),
             med_group(self.h_is_rot, self._n_rot),
             gpos.amax(dim=1).median() if gpos.shape[1] else nan,
-            updated.sum().to(self.dtype), n_clipped.to(self.dtype),
-            torch.full((), float(n_resampled), **kw), bound_clip.to(self.dtype)])
+            n_clipped.to(self.dtype), torch.full((), float(n_resampled), **kw),
+            bound_clip.to(self.dtype)])
 
     def _count(self, bucket):
         counts = getattr(self.bp.program, "eval_counts", None)
@@ -583,8 +589,7 @@ class SvgdSolver:
         self._override = None if particles_override is None else np.asarray(particles_override, dtype=float)
         self._tg = None
         self._pool = None
-        self._rho0 = float(opts.svgd_rho0)
-        self._eta0 = 1.0 / self._rho0 ** 0.1
+        self._rho = float(opts.svgd_rho)
 
     ## ----------------------------------- setup ----------------------------------------
     def _build(self):
@@ -665,13 +670,9 @@ class SvgdSolver:
         return X, clip, stats
 
     def _init_state(self, X):
-        """The AL state at the start: zero multipliers, `rho0`, `eta0 = rho0^-0.1`, and the
-        initial swarm's violation as the first Powell reference."""
+        """The AL state at the start: zero multipliers on every particle."""
         tg = self._tg
-        with torch.no_grad():
-            ev = tg.evaluate(X, need_grad=False)
-        return ALState.init(X.shape[0], tg.m_e, tg.m_i, self._rho0, self._eta0, self.dtype,
-                            self.device, v0=torch.nan_to_num(ev.infeas, nan=float("inf")))
+        return ALState.init(X.shape[0], tg.m_e, tg.m_i, self.dtype, self.device)
 
     ## ------------------------------- the step -----------------------------------------
     def _step_mode(self):
@@ -722,13 +723,13 @@ class SvgdSolver:
         """The same step through autograd (a robot behind its own pose provider)."""
         tg = self._tg
         ev = tg.evaluate(X)
-        ch, cg = al.al_constraint_grad_coefficients(ev.h, ev.g, S)
+        ch, cg = al.al_constraint_grad_coefficients(ev.h, ev.g, S, self._rho)
         K, R, kernel_on = fused.kernel_terms(self._sc, ev.cfg, ev.finite, X)
         gF, gC, R_x = tg.al_gradients(ev, ch, cg, R if kernel_on else None)
         if R_x is None:
             R_x = torch.zeros_like(X)
         return fused.update_step(tg, self._sc, X, gF.detach(), gC.detach(), K, R_x.detach(),
-                                 ev.finite, S.rho)
+                                 ev.finite)
 
     ## ---------------------------------- swarm -----------------------------------------
     def _swarm(self, X, S, deadline, outer_iters, inner_iters, record):
@@ -737,7 +738,7 @@ class SvgdSolver:
         tg = self._tg
         N = X.shape[0]
         step_fn = self._step_split if self._runner is not None else self._step_eager
-        stats = dict(outer=0, inner=0, n_resampled=0, n_multiplier_updates=0,
+        stats = dict(outer=0, inner=0, n_resampled=0, n_dual_updates=0,
                      n_multiplier_clipped=0, bound_clip=0.0, bound_clip_count=0,
                      best_history=[], trace=[], stop_reason="step_cap")
         clip_tot = torch.zeros((), dtype=self.dtype, device=self.device)
@@ -753,12 +754,11 @@ class SvgdSolver:
                 nclip_tot = nclip_tot + n_clip.sum()
                 stats["inner"] += 1
             clip_tot = clip_tot + clip_check
-            ## -- the outer check, at the current swarm --
+            ## -- the check, at the current swarm: the dual step, unconditionally --
             with torch.no_grad():
                 ev = tg.evaluate(X, need_grad=False)
-            S, updated, n_clipped = al.update(
-                ev.h, ev.g, S, float(opts.svgd_rho_growth), float(opts.svgd_rho_gamma),
-                float(opts.svgd_rho_max), float(opts.svgd_multiplier_max))
+            S, n_clipped = al.dual_update(ev.h, ev.g, S, self._rho, float(opts.svgd_multiplier_max))
+            stats["n_dual_updates"] += 1
             mask = al.resample_mask(ev.cfg, ev.finite, float(opts.svgd_resample_q_max))
             n_re = int(mask.sum().item())
             v = torch.nan_to_num(ev.infeas, nan=float("inf"))
@@ -767,14 +767,13 @@ class SvgdSolver:
                             torch.full_like(ev.F, float("inf")))
             i_best = int(torch.argmin(F).item()) if bool(feas.any()) else int(torch.argmin(v).item())
             record(X[i_best])
-            stats["trace"].append(tg.trace_row(ev, S, updated, n_clipped, n_re, clip_check))
-            stats["n_multiplier_updates"] += int(updated.sum().item())
+            stats["trace"].append(tg.trace_row(ev, S, n_clipped, n_re, clip_check))
             stats["n_multiplier_clipped"] += int(n_clipped.item())
             if n_re:
                 fresh, _ = self._draw_native(N, self._gen)
                 fresh, _ = tg.project(fresh)
                 X = torch.where(mask.unsqueeze(1), fresh, X)
-                S = al.reset(S, mask, self._rho0, self._eta0)
+                S = al.reset(S, mask)
                 stats["n_resampled"] += n_re
             stats["outer"] = t_outer + 1
             ## -- the stop rule: the best feasible particle's objective --
@@ -852,7 +851,7 @@ class SvgdSolver:
         if opts.svgd_warmup == "cem" and N > 1:
             from src.svgd.warmup import cem_warmup
             t = time.perf_counter()
-            X, wstats = cem_warmup(tg, X, self._rho0, int(opts.svgd_warmup_iters),
+            X, wstats = cem_warmup(tg, X, self._rho, int(opts.svgd_warmup_iters),
                                    float(opts.svgd_warmup_elite), self._gen,
                                    deadline=swarm_deadline)
             warmup_steps = wstats.get("iters", 0)
@@ -925,7 +924,11 @@ class SvgdSolver:
             trace = {name: [float(x) for x in T_np[:, j]] for j, name in enumerate(_Target.TRACE_COLUMNS)}
         else:
             trace = {name: [] for name in _Target.TRACE_COLUMNS}
-        rho = S.rho.detach().cpu().double().numpy()
+        def inf_norms(M):
+            if M.shape[1] == 0:
+                return np.zeros(M.shape[0])
+            return M.detach().abs().amax(dim=1).cpu().double().numpy()
+        lam_inf, mu_inf = inf_norms(S.lam), inf_norms(S.mu)
         extras.update(dict(
             trace=trace, derivative_mode="analytic" if tg.analytic else "autograd",
             violation_at_stop=[float(x) for x in v],
@@ -935,8 +938,7 @@ class SvgdSolver:
                 key: int(counts.get(key, 0) - counts0.get(key, 0)) for key in counts},
             pool_calls=int(self._pool.calls), pool_configs=int(self._pool.configs),
             pool_span_seconds=float(self._pool.span_seconds),
-            rho_at_stop=[float(x) for x in rho], candidates=cands,
-            n_multiplier_updates=int(sstats.get("n_multiplier_updates", 0)),
+            candidates=cands,
             bound_clip_count=int(sstats.get("bound_clip_count", 0)),
             warmup_steps=int(warmup_steps)))
         details = SvgdSolverDetails(
@@ -949,7 +951,9 @@ class SvgdSolver:
             solver_feasible=bool(solver_ok), drake_feasible=bool(drake_ok),
             solve_seconds=total, collision_seconds=float(self._pool.seconds),
             stop_reason=str(sstats.get("stop_reason", "")),
-            rho_median=float(np.median(rho)), rho_max=float(np.max(rho)),
+            n_dual_updates=int(sstats.get("n_dual_updates", 0)),
+            lam_inf_median=float(np.median(lam_inf)), lam_inf_max=float(np.max(lam_inf)),
+            mu_inf_median=float(np.median(mu_inf)), mu_inf_max=float(np.max(mu_inf)),
             bound_clip=float(sstats.get("bound_clip", 0.0)),
             n_multiplier_clipped=int(sstats.get("n_multiplier_clipped", 0)),
             feasible_q_spread=spread, extras=extras)

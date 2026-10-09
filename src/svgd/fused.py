@@ -82,15 +82,17 @@ class StepConfig:
     kernel: str                 # svgd_kernel: "q" | "none"
     bandwidth_floor: float      # svgd_bandwidth_floor
     inside: bool                # svgd_constraint_inside_kernel
-    lr: float                   # svgd_lr (the step is svgd_lr / rho_i)
+    lr: float                   # svgd_lr (the step is svgd_lr / rho)
     T: float                    # svgd_temperature
+    rho: float                  # svgd_rho, the penalty: fixed, shared by every particle
 
     @staticmethod
     def from_options(opts):
         return StepConfig(kernel=str(opts.svgd_kernel),
                           bandwidth_floor=float(opts.svgd_bandwidth_floor),
                           inside=bool(opts.svgd_constraint_inside_kernel),
-                          lr=float(opts.svgd_lr), T=float(opts.svgd_temperature))
+                          lr=float(opts.svgd_lr), T=float(opts.svgd_temperature),
+                          rho=float(opts.svgd_rho))
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -227,11 +229,11 @@ def kernel_terms(sc, cfg, finite, X):
     return K, R, True
 
 
-def update_step(tg, sc, X, gF, gC, K, R_x, finite, rho):
+def update_step(tg, sc, X, gF, gC, K, R_x, finite):
     """The update every mode shares (the split step's stage 3 and the autograd path):
 
         y = X / s,   phi = kernels.stein_direction(K, s R_x, s gF, s gC, T, inside, kernel),
-        y <- y + (svgd_lr / rho_i) phi_i,   then the clamp onto the true bounds B.
+        y <- y + (svgd_lr / rho) phi,   then the clamp onto the true bounds B.
 
     `gF = dF/dX`, `gC = d(L - f)/dX` and the pulled-back repulsion `R_x = J_q^T R` are in the
     decision variables; multiplying by `s = tg.s` (the region half-widths) is the chain rule
@@ -245,8 +247,7 @@ def update_step(tg, sc, X, gF, gC, K, R_x, finite, rho):
     R_y = torch.where(fin, s * R_x, zero)
     phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside,
                                   kernel=sc.kernel != "none")
-    eps = (sc.lr / rho).unsqueeze(1)
-    Xn = X + s * (eps * phi)
+    Xn = X + s * ((sc.lr / sc.rho) * phi)
     Xp, _ = tg.bp.project(Xn)
     moved = (Xp != Xn) & torch.isfinite(Xn)
     clip = torch.where(moved, (Xp - Xn) / s, zero).norm(dim=1)
@@ -302,13 +303,13 @@ def stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S):
     S = ALState(**S)
     out = bp.assemble(X, cfg, cfg, kin, col_row, col_grad)
     h, g, finite, infeas = _scale(tg, out)
-    ch, cg = al.al_constraint_grad_coefficients(h, g, S)
+    ch, cg = al.al_constraint_grad_coefficients(h, g, S, sc.rho)
     dFc, dFx = bp.cost_gradient_parts(X, cfg)
     gF = _bmv(J_q.transpose(1, 2), dFc) + dFx
     gC = tg.constraint_gradient(out, X, J_q, ch, cg)
     K, R, kernel_on = kernel_terms(sc, cfg, finite, X)
     R_x = _bmv(J_q.transpose(1, 2), R) if kernel_on else torch.zeros_like(X)
-    Xn, clip, n_clip = update_step(tg, sc, X, gF, gC, K, R_x, finite, S.rho)
+    Xn, clip, n_clip = update_step(tg, sc, X, gF, gC, K, R_x, finite)
     return dict(X=Xn, h=h.detach(), g=g.detach(), F=out.F.detach(), infeas=infeas,
                 finite=finite, clip=clip, n_clip=n_clip)
 
