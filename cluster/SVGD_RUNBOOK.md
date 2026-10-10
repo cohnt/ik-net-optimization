@@ -215,6 +215,57 @@ ssh tcohn@txe1-login.mit.edu 'scontrol release <PAPER job ids>'
 The tags pair cell for cell with `sc_REMEASURE_*`: same grid, scene, args and code (svgd contains
 main). Use the record for verdicts and `sc_PAPER_*` for paper-condition seconds.
 
+## Weekend rounds R3-R5
+
+These are three single-factor rounds, each on R1's four Panda rows (`mugshelf` and `posetip`, paired
+and native).
+
+**Shared settings.** All items use the record flags and PROCS=2 with no MPS. They are graphed and
+carry the lifted step cap.
+
+**Pinned values.** Each item carries `svgd_rho=1000 svgd_gn_lm=10 svgd_lr=0.3` (`SVGD_PINNED`), plus
+**one** `--set` per variant. An override of a pinned name **replaces** that value in place, so every
+item names each option exactly once. The selftest holds this, along with:
+
+- the counts;
+- each item's method settings being exactly the pinned values plus its one override;
+- every item being its IPOPT row with only the documented swap;
+- the allowed `--set` list, extended by `svgd_n` and `svgd_temperature`.
+
+The tags are `sc_SVGD_R<k>_panda_n6_svgd_<row>_480_180_<start>_<variant>`.
+
+| manifest | variant | the one change against R1's `kq` | shards | runs | items | node-h (assumed) | max item h |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `manifest_stageSVGD_R3.txt` | `n1` / `n256` | `svgd_n=1` / `svgd_n=256` | 8 / 24 | 8 | 128 | 37.9 | 1.13 |
+| `manifest_stageSVGD_R4.txt` | `rho1e4` / `lr1` | `svgd_rho=10000` / `svgd_lr=1.0` (replacing 1000 / 0.3) | 24 / 24 | 8 | 192 | 39.5 | 0.41 |
+| `manifest_stageSVGD_R5.txt` | `n16` / `T10` | `svgd_n=16` / `svgd_temperature=10` | 16 / 24 | 8 | 160 | 38.7 | 0.59 |
+
+That totals about 116 node-hours, or about 29 h on 4 idle nodes, after R1 and R1K.
+
+**The cost estimate is an assumption, not a measurement.** It charges 5 s for the learned arm plus
+60 s for joint space per cell. The cluster smoke only covered pose paired, on 4 cells at 60 s, where
+learned took 4-7 s and joint space 9-42 s. Grasp rows, `n256` and `T10` may cost more per cell.
+`python cluster/gen_manifest.py --stage SVGD_R3 --allotment` prints this together with the other
+svgd manifests.
+
+**Item length.** Every item fits inside the 8 h `ITEM_TIMEOUT` even with every cell at the clock.
+The worst is `n1` at 8 shards: 60 cells x 2 arms x 180 s = 6 h.
+
+**Maintenance.** At this estimate the rounds will not all finish before the Monday-evening window.
+The queue is FIFO, so R3 is the most likely to land. After the window, run `--reclaim` and resubmit.
+
+Submit with no dependency flags. The rounds queue FIFO behind R1K:
+
+```bash
+cd $STAGE
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R3.txt 4
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R4.txt 4
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R5.txt 4
+```
+
+`submit_bench.sh` refuses any manifest that is not staged on the cluster. These three are new, so the
+staged tree must hold them first.
+
 ## Collect
 
 Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs and `results/`, and
@@ -223,7 +274,7 @@ Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs
 ```bash
 bash $WT/cluster/collect_results.sh --status
 bash $WT/cluster/collect_results.sh                  # rsync + merge shards, incremental
-bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER) only once the queue is idle
+bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R5) only once the queue is idle
 ```
 
 Tags: `sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq`,
