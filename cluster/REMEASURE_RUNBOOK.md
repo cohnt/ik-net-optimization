@@ -13,12 +13,12 @@ the record's own rows, generated FROM the status-quo builders -- STATUSQUO (Pand
 `n4`), SOFT12, SCREW (`screw7_p050` `n6`), GVS (`o1` `n6`, IPOPT and SNOPT only) -- so rungs,
 checkpoints, seed 1, 60 x 8 contained cells and the 180 s clock are the record's by construction.
 Every item adds `--set flow_cuda_graph=True` and the lifted iteration budgets (IPOPT `max_iter`
-1e6; SNOPT 1e5 majors, 1e8 minors). The clock is never raised. **NLopt is not re-measured**
-(Thomas, 2026-10-08: *"Skip remeasuring NLopt, it's way too slow"*): its rows run to the 180 s clock
-on both arms and were ~85 of the primary's node-hours. The record's NLopt columns stand as
-measured on the old scene and are reported with that caveat.
+1e6; SNOPT 1e5 majors, 1e8 minors). The clock is never raised. **NLopt was split out** (Thomas,
+2026-10-08: *"Skip remeasuring NLopt, it's way too slow"*, then: queue it at the very end, to run
+only if the nodes would otherwise idle): its rows run to the 180 s clock on both arms and were ~85
+of the primary's node-hours, so they are their own manifest, `REMEASURE_NLOPT`, queued last.
 
-## Three manifests, in this order
+## Four manifests, in this order
 
 | manifest | what | logical runs | items | est. node-h |
 | --- | --- | --- | --- | --- |
@@ -90,3 +90,15 @@ target-level bootstraps.
    learned cells (+0-11 per IPOPT row in stage CUDAGRAPH) and never removed one.
 4. **The cap check on every row**: `timed_out` and `hit_iteration_cap` both printed; >= 24 of 480
    at an iteration budget on either arm voids the verdict until re-measured.
+
+## Status
+
+All four manifests are collected, merged and promoted to `results/<robot>/benchmark/`.
+**REMEASURE_NLOPT** (jobs 5868202/03/04/07, manifest 9b78144, code staged at 93120c6, PROCS=8
+under `MPS=1`) was **collected 2026-10-10 01:14 EDT and promoted**: 16 runs x 480 cells x 2 arms,
+`sc_REMEASURE_<robot>_<rung>_nlopt_<row>_480_180_<start>`. Every run shares its scene's
+fingerprint with the IPOPT/SNOPT runs; `hit_eval_cap` and `hit_iteration_cap` are 0 everywhere.
+`scripts/report_statusquo.py` reads them as the record's NLopt rows (no old-record fallback);
+`scripts/report_remeasure.py nlopt` prints their before/after: learned 9 / tie 7 / joint space 0
+-> 11 / 3 / 2, eight verdicts flipped: the three wsg grasp native rows and iiwa grasp paired to
+learned, soft PCS and screw grasp paired to joint space, Panda and screw pose paired to ties.

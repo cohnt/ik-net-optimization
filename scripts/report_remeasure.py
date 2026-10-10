@@ -86,13 +86,19 @@ def expected_rows(variant):
 
 
 def load_remeasure():
-    """{variant: {key: summary}} for every merged 480-cell REMEASURE run, staged or promoted."""
+    """{variant: {key: summary}} for every merged 480-cell REMEASURE run, staged or promoted.
+
+    REMEASURE_NLOPT shares the primary's tag family (they ARE its NLopt rows), so it is told
+    apart by solver, not by prefix."""
     out = {v: {} for v in REMEASURE_VARIANTS}
     for tag, s in load("sc_REMEASURE_", cells=CELLS).items():
         for v in ("REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE"):   # longest prefix first
             prefix = f"sc_{REMEASURE_VARIANTS[v][0]}_"
             if tag.startswith(prefix):
-                out[v][key_of(tag, prefix)] = s
+                k = key_of(tag, prefix)
+                if v == "REMEASURE" and k[4] == "nlopt":
+                    v = "REMEASURE_NLOPT"
+                out[v][k] = s
                 break
     return out
 
@@ -206,7 +212,7 @@ def section_record(before, after, want):
           " before, target-level")
     print("  success rate in points with an UNPAIRED target bootstrap 95% CI. CIs on a rate are the")
     print("  run's own target-level bootstrap (summary success_ci).")
-    expected = expected_rows("REMEASURE")
+    expected = {**expected_rows("REMEASURE"), **expected_rows("REMEASURE_NLOPT")}
     tally = {s: {"before": {}, "after": {}, "flips": 0, "rows": 0} for s in SOLVERS}
     for solver in want:
         keys = sorted((k for k in expected if k[4] == solver), key=order)
@@ -432,7 +438,7 @@ def main(argv):
     print("  The record ran at PROCS=8 without MPS and stage GVS at PROCS=2, so wall clock moves for")
     print("  reasons other than the scene; read iterations for the formulation.")
     check_fingerprints(rm)
-    section_record(before, rm["REMEASURE"], want)
+    section_record(before, {**rm["REMEASURE"], **rm["REMEASURE_NLOPT"]}, want)
     section_attribution(before, rm)
     section_rule(rm)
     section_acceptance(before, rm)
