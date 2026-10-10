@@ -1,27 +1,23 @@
-"""Time one svgd step: method x N x dtype x step mode, with the collision pool's share.
+"""Time one svgd step: method x N x dtype x step mode, with the collision row's share.
 
     .venv/bin/python scripts/svgd/profile_step.py                       # the full table
-    .venv/bin/python scripts/svgd/profile_step.py --Ns 64 --modes eager,graphed --overlap both
+    .venv/bin/python scripts/svgd/profile_step.py --Ns 64 --modes eager,graphed
 
 For every (arm, method, N, dtype, mode) the solver is built on a Panda program of the task
 asked for (hardened scene, the benchmark's option shape; the pose target at the scene frame of
 a collision-free configuration, the grasp target a mug welded at one), WARMED UP outside the
-timing (`SvgdSolver.warm_up`: the pool's worker scenes, and under `compiled` / `graphed` the
+timing (`SvgdSolver.warm_up`: the first evaluations, and under `compiled` / `graphed` the
 compile and the capture, whose seconds are recorded as `warmup_seconds`), and then `--steps`
 steps of the method are timed between two CUDA synchronisations, on a swarm drawn by the
 solver's own paired init around a collision-free start. The step is the method's real step:
 the split step of `src/svgd/fused.py` (`_step_split`) of `al_svgd`, the only method.
 
-Columns: `ms_per_step`; `pool_ms_per_step`, the host time BLOCKED in the pool per step;
-`pool_span_ms_per_step`, the pool's latency (submit to collect; equal to the blocked time
-without the overlap); `pool_us_per_config` (blocked time over configurations sent) and
-`pool_share` (blocked / total). `--overlap both` runs every row with the pool dispatched
-before stage 2 and collected after (`svgd_pool_overlap=True`) and with it collected at once,
-which is the overlap's measurement. `graphed` needs CUDA. Every pool has `--workers` processes
-(default 4: each is a whole Drake scene in memory).
+Columns: `ms_per_step`; `collision_ms_per_step`, the host time in the in-process collision row
+per step; `collision_us_per_config` (that time over configurations) and `collision_share`
+(collision / total). `graphed` needs CUDA.
 
 Output: `results/profiling/svgd_step_<host>_<UTC time>.json`, host-tagged because timing is
-never compared across machines. Spawns pool workers, so it needs the `__main__` guard.
+never compared across machines.
 """
 
 import argparse
@@ -42,7 +38,7 @@ from src.flow_loading import LoadFlowSolver                                   # 
 from src.generic_program import ProgramOptions                                # noqa: E402
 from src.panda_program import (PandaIKProgram, PandaIKProgramNumerical,       # noqa: E402
                                PandaMugProgram, PandaMugProgramNumerical)
-from src.svgd.solver import SvgdSolver, close_shared_pools                    # noqa: E402
+from src.svgd.solver import SvgdSolver                                        # noqa: E402
 from src.target_screening import SceneFile                                    # noqa: E402
 from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints, RepoDir  # noqa: E402
 
@@ -59,9 +55,7 @@ def parse_args():
     p.add_argument("--Ns", default="1,16,64,256,1024")
     p.add_argument("--dtypes", default="float32,float64")
     p.add_argument("--modes", default="eager,compiled,graphed")
-    p.add_argument("--overlap", choices=("on", "off", "both"), default="on")
     p.add_argument("--steps", type=int, default=20, help="timed steps (ADMM: rounds) per row")
-    p.add_argument("--workers", type=int, default=4, help="svgd_collision_workers (default 4)")
     p.add_argument("--seed", type=int, default=3)
     p.add_argument("--out", default=None)
     return p.parse_args()
@@ -113,38 +107,35 @@ def build_programs(task, arms, seed):
     return out
 
 
-def time_row(p, method, N, dtype, mode, overlap, steps, workers):
+def time_row(p, method, N, dtype, mode, steps):
     p.options = replace(p.options, svgd_method=method, svgd_n=N, svgd_dtype=dtype, svgd_kernel="q",
                         svgd_compile=(mode != "eager"), svgd_cuda_graph=(mode == "graphed"),
-                        svgd_pool_overlap=overlap, svgd_collision_workers=workers,
                         svgd_stop_patience=10 ** 6)
     s = SvgdSolver(p)
     warm = s.warm_up()
     x0 = np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float)
     X, _, _ = s._init_particles(x0)
     S = s._init_state(X)
-    s._pool.drain()
     s._make_runner()
     sync = (lambda: torch.cuda.synchronize(s.device)) if s.device.type == "cuda" else (lambda: None)
     inner = 1
     for _ in range(2):                                                   # untimed
         X, _, _ = s._step_split(X, S)
-    s._pool.reset()
+    s._col.reset()
     sync()
     t0 = time.perf_counter()
     for _ in range(steps):
         X, _, _ = s._step_split(X, S)
     sync()
     dt = time.perf_counter() - t0
-    pool = s._pool
+    col = s._col
     return dict(
-        method=method, N=N, dtype=dtype, mode=mode,
-        overlap=bool(overlap), steps=steps, inner_per_step=inner, workers=s.workers,
+        method=method, N=N, dtype=dtype, mode=mode, steps=steps, inner_per_step=inner,
         ms_per_step=1e3 * dt / steps, ms_per_inner=1e3 * dt / (steps * inner),
-        pool_ms_per_step=1e3 * pool.seconds / steps, pool_span_ms_per_step=1e3 * pool.span_seconds / steps,
-        pool_calls=int(pool.calls), pool_configs=int(pool.configs),
-        pool_us_per_config=1e6 * pool.seconds / max(1, pool.configs),
-        pool_share=pool.seconds / dt if dt > 0 else float("nan"),
+        collision_ms_per_step=1e3 * col.seconds / steps,
+        collision_calls=int(col.calls), collision_configs=int(col.configs),
+        collision_us_per_config=1e6 * col.seconds / max(1, col.configs),
+        collision_share=col.seconds / dt if dt > 0 else float("nan"),
         warmup_seconds=warm, step_reused_template=bool(s.warmup_info.get("reused_template")),
         graphs_captured=int(s.warmup_info.get("graphs_captured", 0)))
 
@@ -158,7 +149,6 @@ def main():
     modes = args.modes.split(",")
     if not torch.cuda.is_available():
         modes = [m for m in modes if m != "graphed"]
-    overlaps = {"on": (True,), "off": (False,), "both": (True, False)}[args.overlap]
     host = socket.gethostname()
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = args.out or os.path.join(RepoDir(), "results", "profiling", f"svgd_step_{host}_{stamp}.json")
@@ -168,36 +158,30 @@ def main():
                 checkpoint=CHECKPOINT, utc=stamp, argv=sys.argv[1:])
     programs = build_programs(args.task, arms, args.seed)
     rows = []
-    try:
-        for arm in arms:
-            for method in methods:
-                for dtype in dtypes:
-                    for N in Ns:
-                        for mode in modes:
-                            for ov in overlaps:
-                                try:
-                                    r = time_row(programs[arm], method, N, dtype, mode, ov,
-                                                 args.steps, args.workers)
-                                except Exception as e:                     # recorded, not fatal
-                                    r = dict(method=method, N=N, dtype=dtype, mode=mode, overlap=ov,
-                                             error=f"{type(e).__name__}: {e}"[:400])
-                                r["arm"] = arm
-                                rows.append(r)
-                                if "error" in r:
-                                    print(f"{arm:9s} {method:9s} N={N:5d} {dtype:7s} {mode:8s} "
-                                          f"overlap={ov!s:5s}  ERROR {r['error'][:120]}", flush=True)
-                                else:
-                                    print(f"{arm:9s} {method:9s} N={N:5d} {dtype:7s} {r['mode']:8s} "
-                                          f"overlap={ov!s:5s} {r['ms_per_step']:8.2f} ms/step "
-                                          f"(pool blocked {r['pool_ms_per_step']:6.2f}, span "
-                                          f"{r['pool_span_ms_per_step']:6.2f} ms; "
-                                          f"{r['pool_us_per_config']:6.1f} us/config; share "
-                                          f"{r['pool_share']:.2f}; warm-up {r['warmup_seconds']:.1f} s)",
-                                          flush=True)
-                                with open(out, "w") as f:
-                                    json.dump(dict(metadata=meta, rows=rows), f, indent=1)
-    finally:
-        close_shared_pools()
+    for arm in arms:
+        for method in methods:
+            for dtype in dtypes:
+                for N in Ns:
+                    for mode in modes:
+                        try:
+                            r = time_row(programs[arm], method, N, dtype, mode, args.steps)
+                        except Exception as e:                     # recorded, not fatal
+                            r = dict(method=method, N=N, dtype=dtype, mode=mode,
+                                     error=f"{type(e).__name__}: {e}"[:400])
+                        r["arm"] = arm
+                        rows.append(r)
+                        if "error" in r:
+                            print(f"{arm:9s} {method:9s} N={N:5d} {dtype:7s} {mode:8s} "
+                                  f"ERROR {r['error'][:120]}", flush=True)
+                        else:
+                            print(f"{arm:9s} {method:9s} N={N:5d} {dtype:7s} {r['mode']:8s} "
+                                  f"{r['ms_per_step']:8.2f} ms/step (collision "
+                                  f"{r['collision_ms_per_step']:6.2f} ms; "
+                                  f"{r['collision_us_per_config']:6.1f} us/config; share "
+                                  f"{r['collision_share']:.2f}; warm-up {r['warmup_seconds']:.1f} s)",
+                                  flush=True)
+                        with open(out, "w") as f:
+                            json.dump(dict(metadata=meta, rows=rows), f, indent=1)
     print(f"wrote {out}")
 
 

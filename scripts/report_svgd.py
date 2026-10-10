@@ -30,7 +30,7 @@ wall clock") and the pre-registration's (`docs/svgd-solver.md`):
   - from `record["svgd"]`: the two POPULATION metrics -- feasible particles at stop and the
     median pairwise distance in q among them (`feasible_q_spread`) -- resampled particles (as a
     fraction of N), `selected_index`, the dual updates and the multiplier magnitudes at stop
-    (median and max |lam_i|_inf, |mu_i|_inf) with the clip count, the collision pool's share of the wall, `stop_reason` counts, warm-up and compile seconds --
+    (median and max |lam_i|_inf, |mu_i|_inf) with the clip count, the collision row's share of the wall, `stop_reason` counts, warm-up and compile seconds --
     and `solver_feasible` vs `drake_feasible`, and `drake_feasible` vs `verify()`'s verdict.
     Any disagreement is a BUG and prints as one.
 
@@ -415,7 +415,7 @@ def profile_ms(profile, arm, method, n, dtype, mode):
         return None
     for r in profile.get("rows", []):
         if (r.get("arm") == arm and r.get("method") == method and r.get("N") == n
-                and r.get("dtype") == dtype and r.get("overlap", True)
+                and r.get("dtype") == dtype
                 and r.get("mode") == mode and "ms_per_step" in r):
             ## Per INNER step: the profiler's own `ms_per_inner`, else its per-step figure
             ## over the inner steps each of its steps held (`inner_per_step`).

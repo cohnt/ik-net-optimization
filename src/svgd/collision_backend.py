@@ -9,129 +9,44 @@ a particle optimizer sees is the one `IKFlowProgram.CreateCollisionFreeConstrain
 
 with upper bound `collision_row_scale`, so `verify()` and the optimizer see the same functional
 and there is no proxy-versus-Drake disagreement to adjudicate. `tests/test_collision_backend.py`
-pins the pooled value AND gradient bitwise against the program's own binding.
+pins the batched value AND gradient bitwise against the program's own binding.
 
-**Parallelism is by processes, because pydrake holds the GIL.** Measured 2026-10-08 on this
-laptop (20 threads): a ThreadPool over `MinimumDistanceLowerBoundConstraint.Eval` is flat at
-~3k evals/s from 1 to 16 threads; a 16-process pool does Panda N = 256 / 1024 / 4096 in
-~15-20 / 51 / 183 ms. Per configuration the pool AMORTISES with batch size (78 -> 50 -> 45 us),
-because what shrinks is the per-task IPC overhead -- so a batch is sent as ONE chunk per worker
-(`np.array_split`), never as per-configuration tasks. Workers are `spawn`ed, never forked: the
-parent has usually initialised CUDA by the time a pool exists, and a forked CUDA context is
-undefined behaviour. Workers build their scene lazily on first use, so constructing a pool is
-cheap and the scene cost is paid once per worker.
+**In process, no process pool (Thomas, 2026-10-09).** `CollisionEvaluator` is a Python loop
+over the N particles calling the PROGRAM'S OWN constraint
+(`program.collision_free_constraint_eval`, on the program's own plant context) on AutoDiffXd --
+`Eval(InitializeAutoDiff(q))`, exactly what the program's binding does -- and returns the value
+`[N]` and gradient `[N, nq]`. It holds the GIL for the whole batch (pydrake does not release it in
+`Eval`), so it is serial and costs roughly N x the per-configuration Eval. A batched C++
+clearance-with-Jacobians call that releases the GIL is a Drake-side item for Thomas, not patched
+here. (`from_spec` builds the same constraint on a rebuilt scene, for callers holding no program.)
 
 **A non-finite configuration must never reach Drake.** `MultibodyPlant::SetPositions` has a
 `DRAKE_DEMAND(AllFinite(q))`; in pydrake that failure surfaces as `SystemExit` (a BaseException,
-not an Exception), so an unguarded worker would simply die. Rows are screened for finiteness
-before any Drake call and come back as NaN value and NaN gradient; the per-row `except
-BaseException` behind that screen is belt-and-braces for anything else Drake aborts on.
+not an Exception). Rows are screened for finiteness before any Drake call and come back as NaN
+value and NaN gradient; the per-row `except BaseException` behind that screen is belt-and-braces
+for anything else Drake aborts on.
 
-**The scene is rebuilt from a picklable description, not shipped.** `SceneSpec` carries the
-directives YAML and, for the grasp task, the welded target mug. `GenerateDiagramWithMug` welds
-the mug through `pydrake.common.schema.Transform(RigidTransform)`, which stores the rotation as
-RPY in degrees; a quaternion round-trip of that pose is NOT bit-exact (measured 1.1e-16 off, and
-the schema RPY differs), while `RigidTransform(RotationMatrix(R), p)` reproduces the original
-exactly. The spec therefore carries the 3x3 rotation for reconstruction and the quaternion only
-for a human reader.
+**`SceneSpec`** is a picklable description of the scene (directives YAML plus, for the grasp
+task, the welded target mug). `GenerateDiagramWithMug` welds the mug through
+`pydrake.common.schema.Transform(RigidTransform)`, which stores the rotation as RPY in degrees; a
+quaternion round-trip of that pose is NOT bit-exact, while `RigidTransform(RotationMatrix(R), p)`
+reproduces the original exactly. The spec therefore carries the 3x3 rotation for reconstruction
+and the quaternion only for a human reader.
 
-**`ParallelCollisionChecker` is the boolean, C++-parallel path** for where a boolean suffices
-(collision-free draws, a feasibility mask): `SceneGraphCollisionChecker.CheckConfigsCollisionFree`
-does 1024 configurations in ~16-22 ms. Its padding defaults to `collision_bound`, so "in
-collision" means the same thing as the row's `> scale`: Drake's penalty exceeds 1 iff some
-candidate pair is closer than `bound` (0 disagreements in 1500 random Panda draws), and with
-padding 0 the checker would pass the 0 <= d < bound sliver the row rejects (7 of 1500).
-
-Upstream item for Thomas, not patched here: releasing the GIL in the `Eval` /
-`CalcRobotClearance` bindings would turn this pool into a thread pool with no IPC.
-
-**THE MEMORY GUARD (2026-10-09).** A worker holds a whole Drake scene, ~0.53-0.64 GB resident
-(the kernel OOM table of the 2026-10-09 laptop incident: 81 workers, 44.8 GB, from 4-worker test
-pools cached per program and 20-worker benchmark pools cached two per process, on a 62 GB host
-with no swap). So a pool is ADMITTED, before anything is spawned, against two limits, and
-refused with `PoolRefused` otherwise: (1) `workers * WORKER_GB` must not exceed `MEM_FRACTION`
-of the host's `MemAvailable` (`/proc/meminfo`, which excludes swap; swap is never counted); (2) this process's live workers (the
-module-level registry, `live_workers()`) plus the new ones must not exceed
-`SVGD_MAX_LIVE_WORKERS` (environment; default `os.cpu_count()`). The refusal names how many
-workers are live and which pools own them. `close()` deregisters.
+**`ParallelCollisionChecker` is the boolean, C++-parallel path** (in-process Drake threads) for
+where a boolean suffices (collision-free draws, redraws): `SceneGraphCollisionChecker
+.CheckConfigsCollisionFree` does 1024 configurations in ~16-33 ms. Its padding defaults to
+`collision_bound`, so "in collision" means the same thing as the row's `> scale`.
 """
 
-import atexit
-import multiprocessing as mp
 import os
 import time
-import traceback
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 
 from src.utils import BuildEnv, HiddenPrints, RepoDir
-
-## ------------------------------------------------------------------------------------ ##
-##                      the memory guard: admission and the live registry                 ##
-## ------------------------------------------------------------------------------------ ##
-
-WORKER_GB = 0.75          # budget per worker process (measured 0.53-0.64 GB resident)
-MEM_FRACTION = 0.5        # a pool may take at most this fraction of MemAvailable
-_LIVE = {}                # id(pool) -> (workers, owner) for every open pool in this process
-_PEAK = [0]               # the most workers live at once in this process
-
-
-class PoolRefused(RuntimeError):
-    """A pool the memory guard would not spawn (nothing was started)."""
-
-
-def mem_available_gb():
-    """`MemAvailable` from `/proc/meminfo`, GB; None where it cannot be read (no check). ONLY
-    `MemAvailable`, which excludes swap: swap is an emergency buffer, never memory the guard
-    may count."""
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    return float(line.split()[1]) / (1024.0 ** 2)
-    except OSError:
-        pass
-    return None
-
-
-def max_live_workers():
-    """`SVGD_MAX_LIVE_WORKERS` from the environment, default `os.cpu_count()`."""
-    raw = os.environ.get("SVGD_MAX_LIVE_WORKERS")
-    return int(raw) if raw else int(os.cpu_count() or 1)
-
-
-def live_workers():
-    """Worker processes of every open pool in this process."""
-    return sum(w for w, _ in _LIVE.values())
-
-
-def peak_live_workers():
-    """The most worker processes live at once in this process so far."""
-    return _PEAK[0]
-
-
-def live_pools():
-    """`[(workers, owner)]` of every open pool in this process."""
-    return list(_LIVE.values())
-
-
-def admit(workers, owner):
-    """Raise `PoolRefused` unless a pool of `workers` may be spawned now (module docstring)."""
-    live = live_workers()
-    cap = max_live_workers()
-    holders = "; ".join(f"{w} x {o}" for w, o in live_pools()) or "none"
-    if live + workers > cap:
-        raise PoolRefused(
-            f"collision pool of {workers} workers for {owner} refused: {live} workers are "
-            f"already live in pid {os.getpid()} ({holders}) and SVGD_MAX_LIVE_WORKERS is {cap}")
-    avail = mem_available_gb()
-    if avail is not None and workers * WORKER_GB > MEM_FRACTION * avail:
-        raise PoolRefused(
-            f"collision pool of {workers} workers for {owner} refused: {workers} x "
-            f"{WORKER_GB} GB > {MEM_FRACTION} x MemAvailable {avail:.1f} GB "
-            f"({live} workers already live in pid {os.getpid()}: {holders})")
-
 
 MUG_URDF = "package://combining_kinematics/models/mug/mug_simple_red.urdf"
 MUG_MODEL_NAME = "target_mug"
@@ -262,35 +177,53 @@ class SceneSpec:
 
 
 ## ------------------------------------------------------------------------------------ ##
-##                                  The worker (spawned)                                 ##
+##                         CollisionEvaluator (in process, exact)                        ##
 ## ------------------------------------------------------------------------------------ ##
 
-class _WorkerScene:
-    """One worker's diagram, context and constraint. Built on the first batch."""
+class CollisionEvaluator:
+    """The scaled collision row and its gradient for a batch, by a per-particle loop over a
+    `MinimumDistanceLowerBoundConstraint` in THIS process (module docstring).
 
-    def __init__(self, spec):
+    `eval(Q)` returns `scale * y` and `scale * dy/dq` for every row of `Q` (`[N, nq]`, the FULL
+    plant vector); rows that are non-finite, or on which Drake aborts, come back NaN.
+    """
+
+    def __init__(self, constraint, nq, scale):
+        self.constraint = constraint
+        self.nq = int(nq)
+        self.scale = float(scale)
+
+    @staticmethod
+    def from_program(program):
+        """The program's OWN constraint (`collision_free_constraint_eval`, its plant context)
+        and row scale."""
+        return CollisionEvaluator(program.collision_free_constraint_eval,
+                                  program.plant.num_positions(),
+                                  program.options.collision_row_scale)
+
+    @staticmethod
+    def from_spec(spec):
+        """The same constraint on a scene rebuilt from `spec` (a caller with no program)."""
         from pydrake.multibody.inverse_kinematics import MinimumDistanceLowerBoundConstraint
-        self.spec = spec
-        self.diagram = spec.build_diagram()
-        self.plant = self.diagram.GetSubsystemByName("plant")
-        self.context = self.diagram.CreateDefaultContext()
-        self.plant_context = self.plant.GetMyContextFromRoot(self.context)
-        self.nq = self.plant.num_positions()
-        self.constraint = MinimumDistanceLowerBoundConstraint(
-            plant=self.plant,
-            bound=spec.collision_bound,
+        diagram = spec.build_diagram()
+        plant = diagram.GetSubsystemByName("plant")
+        context = diagram.CreateDefaultContext()
+        constraint = MinimumDistanceLowerBoundConstraint(
+            plant=plant, bound=spec.collision_bound,
             influence_distance_offset=spec.influence_distance_offset,
-            plant_context=self.plant_context,
-        )
+            plant_context=plant.GetMyContextFromRoot(context))
+        ev = CollisionEvaluator(constraint, plant.num_positions(), spec.row_scale)
+        ev._keepalive = (diagram, context)          # the constraint holds raw pointers into these
+        return ev
 
-    def eval(self, Q, need_grad):
+    def eval(self, Q, need_grad=True):
         from pydrake.autodiffutils import ExtractGradient, ExtractValue, InitializeAutoDiff
         Q = np.asarray(Q, dtype=np.float64)
         n = Q.shape[0]
-        if Q.shape[1] != self.nq:
-            raise ValueError("collision pool: got %d plant positions, scene has %d"
-                             % (Q.shape[1], self.nq))
-        scale = self.spec.row_scale
+        if Q.ndim != 2 or Q.shape[1] != self.nq:
+            raise ValueError("collision row: got shape %r, the scene has %d plant positions"
+                             % (Q.shape, self.nq))
+        scale = self.scale
         values = np.full(n, np.nan)
         grads = np.full((n, self.nq), np.nan) if need_grad else None
         for i in range(n):
@@ -322,245 +255,29 @@ class _WorkerScene:
         return values, grads
 
 
-def _worker_main(spec, conn):
-    scene = None
-    try:
-        while True:
-            msg = conn.recv()
-            if msg is None:
-                break
-            Q, need_grad = msg
-            try:
-                if scene is None:
-                    scene = _WorkerScene(spec)
-                values, grads = scene.eval(Q, need_grad)
-                conn.send(("ok", values, grads))
-            except BaseException:
-                conn.send(("error", traceback.format_exc()))
-    except (EOFError, KeyboardInterrupt, BrokenPipeError):
-        pass
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+class CollisionRow(torch.autograd.Function):
+    """`forward(q_plant [N, nq], evaluator) -> value [N]`, same dtype and device as the input.
+
+    Drake runs in float64 on the CPU whatever the input is; the value comes back in the input's
+    dtype and device and the stored `[N, nq]` gradient drives `backward`
+    (`grad_output[:, None] * grad`). NaN rows propagate as NaN."""
+
+    @staticmethod
+    def forward(ctx, q_plant, evaluator):
+        Q = q_plant.detach().to("cpu", torch.float64).numpy()
+        value, grad = evaluator.eval(Q, need_grad=True)
+        ctx.save_for_backward(torch.as_tensor(grad).to(device=q_plant.device, dtype=q_plant.dtype))
+        return torch.as_tensor(value).to(device=q_plant.device, dtype=q_plant.dtype)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (grad,) = ctx.saved_tensors
+        return grad_output.unsqueeze(1) * grad, None
 
 
-## ------------------------------------------------------------------------------------ ##
-##                                   DrakeCollisionPool                                  ##
-## ------------------------------------------------------------------------------------ ##
-
-class DrakeCollisionPool:
-    """`workers` spawned processes, each owning one copy of the scene described by `spec`.
-
-    `eval(Q)` returns the SCALED row value `scale * y` and its gradient `scale * dy/dq` for
-    every row of `Q` (shape `[N, num_positions]` -- the FULL plant vector, which on the soft PCS
-    arm is 231 floating-body coordinates, never assumed to be 7). One chunk per worker; rows
-    that are non-finite, or on which Drake aborts, come back NaN. Use as a context manager or
-    call `close()`; an `atexit` hook closes anything left open.
-    """
-
-    def __init__(self, spec, workers=None, ctx="spawn", eval_timeout=600.0):
-        if workers is None:
-            workers = max(1, (os.cpu_count() or 2) // 2)
-        if workers < 1:
-            raise ValueError("workers must be >= 1")
-        self.spec = spec
-        self.workers = int(workers)
-        self.eval_timeout = float(eval_timeout)
-        self._ctx = mp.get_context(ctx)
-        self._procs = []
-        self._conns = []
-        self._closed = False
-        self._broken = None
-        mug = "" if getattr(spec, "mug_xyz", None) is None else " + mug"
-        self.owner = f"{os.path.basename(str(getattr(spec, 'yaml_path', spec)))}{mug}"
-        admit(self.workers, self.owner)             # raises before anything is spawned
-        _LIVE[id(self)] = (self.workers, self.owner)
-        _PEAK[0] = max(_PEAK[0], live_workers())
-        try:
-            for _ in range(self.workers):
-                parent_conn, child_conn = self._ctx.Pipe(duplex=True)
-                proc = self._ctx.Process(target=_worker_main, args=(spec, child_conn), daemon=True)
-                proc.start()
-                child_conn.close()
-                self._procs.append(proc)
-                self._conns.append(parent_conn)
-        except BaseException:
-            self.close()
-            raise
-        atexit.register(self.close)
-
-    # -- lifecycle ------------------------------------------------------------------- #
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
-
-    def close(self, join_timeout=5.0):
-        """Ask every worker to exit, then terminate whatever is still alive. Idempotent."""
-        if self._closed:
-            return
-        self._closed = True
-        _LIVE.pop(id(self), None)
-        try:
-            atexit.unregister(self.close)
-        except Exception:
-            pass
-        for conn in self._conns:
-            try:
-                conn.send(None)
-            except Exception:
-                pass
-        for proc in self._procs:
-            proc.join(join_timeout)
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(1.0)
-            if proc.is_alive():
-                proc.kill()
-                proc.join(1.0)
-        for conn in self._conns:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-    @property
-    def closed(self):
-        return self._closed
-
-    def alive(self):
-        return [p.is_alive() for p in self._procs]
-
-    # -- evaluation ------------------------------------------------------------------ #
-    def eval(self, q_plant, need_grad=True):
-        """(value[N], grad[N, nq]) of the scaled row at every configuration; grad None if
-        `need_grad=False` (a plain `Eval`, a little cheaper when only values are wanted).
-        Exactly `collect(submit(q_plant, need_grad))`."""
-        return self.collect(self.submit(q_plant, need_grad))
-
-    def submit(self, q_plant, need_grad=True):
-        """Send one chunk of `q_plant` to every worker and return at once with a ticket for
-        `collect`. Between the two the workers run Drake while the caller does other work
-        (the solver's split step launches the flow Jacobian on the GPU here). At most one
-        ticket may be outstanding: the pipes are request/reply, so a second `submit` before
-        the first `collect` would interleave replies -- it raises instead."""
-        if self._closed:
-            raise RuntimeError("DrakeCollisionPool is closed")
-        if self._broken is not None:
-            raise RuntimeError("DrakeCollisionPool is broken: %s" % self._broken)
-        if getattr(self, "_outstanding", None) is not None:
-            raise RuntimeError("DrakeCollisionPool.submit: a ticket is already outstanding")
-        Q = np.ascontiguousarray(np.asarray(q_plant, dtype=np.float64))
-        if Q.ndim != 2:
-            raise ValueError("q_plant must be [N, num_positions], got shape %r" % (Q.shape,))
-        N, nq = Q.shape
-        chunks = np.array_split(Q, self.workers) if N else []
-        sent = []
-        for k, chunk in enumerate(chunks):
-            if chunk.shape[0] == 0:
-                continue
-            try:
-                self._conns[k].send((chunk, need_grad))
-            except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                self._broken = "worker %d is gone (%s)" % (k, type(e).__name__)
-                raise RuntimeError(self._broken) from e
-            sent.append(k)
-        offsets = np.cumsum([0] + [c.shape[0] for c in chunks])
-        ticket = (N, nq, bool(need_grad), sent, offsets)
-        self._outstanding = ticket
-        return ticket
-
-    def drain(self):
-        """Collect and discard an outstanding ticket, if any: a caller that raised between
-        `submit` and `collect` must not leave stale replies in the pipes for the next one."""
-        ticket = getattr(self, "_outstanding", None)
-        if ticket is not None:
-            self.collect(ticket)
-
-    def collect(self, ticket):
-        """Wait for the workers' replies to `ticket` and assemble `(value, grad)`."""
-        if ticket is not getattr(self, "_outstanding", None):
-            raise RuntimeError("DrakeCollisionPool.collect: not the outstanding ticket")
-        self._outstanding = None
-        N, nq, need_grad, sent, offsets = ticket
-        values = np.full(N, np.nan)
-        grads = np.full((N, nq), np.nan) if need_grad else None
-        for k in sent:
-            conn = self._conns[k]
-            if not conn.poll(self.eval_timeout):
-                self._broken = "worker %d did not answer within %.0f s" % (k, self.eval_timeout)
-                raise RuntimeError(self._broken)
-            try:
-                reply = conn.recv()
-            except (EOFError, ConnectionResetError, OSError) as e:
-                self._broken = ("worker %d died (%s) -- a Drake abort escaped the per-row "
-                                "guard, or the scene failed to build" % (k, type(e).__name__))
-                raise RuntimeError(self._broken) from e
-            if reply[0] != "ok":
-                self._broken = "worker %d raised:\n%s" % (k, reply[1])
-                raise RuntimeError(self._broken)
-            _, v, g = reply
-            lo, hi = offsets[k], offsets[k + 1]
-            values[lo:hi] = v
-            if need_grad:
-                grads[lo:hi] = g
-        return values, grads
-
-
-## ------------------------------------------------------------------------------------ ##
-##                      The autograd Function (torch imported lazily)                    ##
-## ------------------------------------------------------------------------------------ ##
-## `torch` is deliberately not imported at module level: a spawned worker re-imports this
-## module to find `_worker_main`, and sixteen workers each importing torch is a second and
-## a few hundred MB apiece for nothing. `CollisionRow` is built on first access through the
-## module-level `__getattr__` (PEP 562), so `from ... import CollisionRow` still works.
-
-_COLLISION_ROW_CLASS = None
-
-
-def _collision_row_class():
-    global _COLLISION_ROW_CLASS
-    if _COLLISION_ROW_CLASS is not None:
-        return _COLLISION_ROW_CLASS
-    import torch
-
-    class CollisionRow(torch.autograd.Function):
-        """`forward(q_plant [N, nq], pool) -> value [N]`, same dtype and device as the input.
-
-        Drake runs in float64 on the CPU whatever the input is; the value comes back in the
-        input's dtype and device and the stored `[N, nq]` gradient drives `backward`
-        (`grad_output[:, None] * grad`). NaN rows propagate as NaN."""
-
-        @staticmethod
-        def forward(ctx, q_plant, pool):
-            Q = q_plant.detach().to("cpu", torch.float64).numpy()
-            value, grad = pool.eval(Q, need_grad=True)
-            ctx.save_for_backward(
-                torch.as_tensor(grad).to(device=q_plant.device, dtype=q_plant.dtype))
-            return torch.as_tensor(value).to(device=q_plant.device, dtype=q_plant.dtype)
-
-        @staticmethod
-        def backward(ctx, grad_output):
-            (grad,) = ctx.saved_tensors
-            return grad_output.unsqueeze(1) * grad, None
-
-    _COLLISION_ROW_CLASS = CollisionRow
-    return CollisionRow
-
-
-def __getattr__(name):
-    if name == "CollisionRow":
-        return _collision_row_class()
-    raise AttributeError("module %r has no attribute %r" % (__name__, name))
-
-
-def collision_row(q_plant, pool):
+def collision_row(q_plant, evaluator):
     """The scaled collision row for a batch of plant vectors, differentiable in torch."""
-    return _collision_row_class().apply(q_plant, pool)
+    return CollisionRow.apply(q_plant, evaluator)
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -638,38 +355,32 @@ class ParallelCollisionChecker:
 ##                                        Timing                                         ##
 ## ------------------------------------------------------------------------------------ ##
 
-def measure_pool(spec, Ns=(64, 256, 1024, 4096), workers=(8, 16), repeats=3, seed=0,
-                 lower=None, upper=None, checker=True, out=print):
-    """Print ms per batch and us per configuration of the pool (and the boolean checker).
-
-    Configurations are uniform in `[lower, upper]` (defaults: the scene plant's position
-    limits, which are finite on the rigid arms; pass them explicitly for a floating-body
-    robot). Each cell is the median of `repeats` after one warm-up batch, so the lazy scene
-    build is not in the number. Returns the rows as a list of dicts.
-    """
+def measure_collision(spec, Ns=(64, 256, 1024), repeats=3, seed=0, lower=None, upper=None,
+                      checker=True, out=print):
+    """Print ms per batch and us per configuration of the in-process row (and the boolean
+    checker). Configurations are uniform in `[lower, upper]` (defaults: the scene plant's
+    position limits). Each cell is the median of `repeats` after one warm-up batch."""
     rng = np.random.default_rng(seed)
+    ev = CollisionEvaluator.from_spec(spec)
     if lower is None or upper is None:
-        diagram = spec.build_diagram()
-        plant = diagram.GetSubsystemByName("plant")
+        plant = ev._keepalive[0].GetSubsystemByName("plant")
         lower, upper = plant.GetPositionLowerLimits(), plant.GetPositionUpperLimits()
         if not (np.all(np.isfinite(lower)) and np.all(np.isfinite(upper))):
-            raise ValueError("measure_pool: plant limits are not finite; pass lower/upper")
+            raise ValueError("measure_collision: plant limits are not finite; pass lower/upper")
     lower, upper = np.asarray(lower, float), np.asarray(upper, float)
     rows = []
     out("%-10s %8s %12s %12s" % ("backend", "N", "ms/batch", "us/config"))
-    for K in workers:
-        with DrakeCollisionPool(spec, workers=K) as pool:
-            pool.eval(rng.uniform(lower, upper, size=(max(K, 8), lower.size)))
-            for N in Ns:
-                Q = rng.uniform(lower, upper, size=(N, lower.size))
-                times = []
-                for _ in range(repeats):
-                    t0 = time.perf_counter()
-                    pool.eval(Q)
-                    times.append(time.perf_counter() - t0)
-                ms = 1e3 * float(np.median(times))
-                rows.append(dict(backend="pool", workers=K, N=N, ms=ms, us_per_config=1e3 * ms / N))
-                out("%-10s %8d %12.1f %12.1f" % ("pool K=%d" % K, N, ms, 1e3 * ms / N))
+    ev.eval(rng.uniform(lower, upper, size=(8, lower.size)))
+    for N in Ns:
+        Q = rng.uniform(lower, upper, size=(N, lower.size))
+        times = []
+        for _ in range(repeats):
+            t0 = time.perf_counter()
+            ev.eval(Q)
+            times.append(time.perf_counter() - t0)
+        ms = 1e3 * float(np.median(times))
+        rows.append(dict(backend="row", N=N, ms=ms, us_per_config=1e3 * ms / N))
+        out("%-10s %8d %12.1f %12.1f" % ("row (AD)", N, ms, 1e3 * ms / N))
     if checker:
         cc = ParallelCollisionChecker(spec)
         cc.collision_free(rng.uniform(lower, upper, size=(64, lower.size)))
@@ -681,6 +392,6 @@ def measure_pool(spec, Ns=(64, 256, 1024, 4096), workers=(8, 16), repeats=3, see
                 cc.collision_free(Q)
                 times.append(time.perf_counter() - t0)
             ms = 1e3 * float(np.median(times))
-            rows.append(dict(backend="bool", workers=None, N=N, ms=ms, us_per_config=1e3 * ms / N))
+            rows.append(dict(backend="bool", N=N, ms=ms, us_per_config=1e3 * ms / N))
             out("%-10s %8d %12.1f %12.1f" % ("bool C++", N, ms, 1e3 * ms / N))
     return rows

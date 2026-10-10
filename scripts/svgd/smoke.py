@@ -44,15 +44,12 @@ paired protocol, so one variant has one token on both protocols. Columns that fi
 
 **Memory.** Every child is launched under `systemd-run --user --scope -p MemoryMax=<cap>
 -p MemorySwapMax=0` where `systemd-run` exists (`--memory-max`, default 24G; `--no-memory-cap`
-disables), so a runaway kills the run and not the user's session, and every svgd child gets
-`--set svgd_collision_workers=<--collision-workers, default 4>` (each worker is a whole Drake
-scene in memory; the 2026-10-09 laptop OOM). Neither is part of the tag: they are execution
-settings, recorded in the run's metadata through `--set`.
+disables), so a runaway kills the run and not the user's session. Not part of the tag: an
+execution setting.
 
 Writes only under `results/` (gitignored): each run's `summary.json` from the benchmark script,
 and its stdout beside it as `driver.log`. Touches no tracked file. Runs sequentially by default
-because the GPU is shared; `--jobs K` runs K at once with `PROCS=K` in each child's environment,
-so the svgd collision pool sizes itself to `cpu_count // K` (`src/svgd/solver.py`).
+because the GPU is shared; `--jobs K` runs K at once with `PROCS=K` in each child's environment.
 """
 import argparse
 import os
@@ -222,7 +219,7 @@ def memory_wrapper(memory_max):
 
 
 def command(robot, row, start, column, cells, cap, paired_init, dtype, mode, prefix=PREFIX,
-            collision_workers=4, memory_max="24G"):
+            memory_max="24G"):
     spec = ROBOTS[robot]
     task, placement = TASK_ROWS[row]
     n_cells = len(cells.split(","))
@@ -237,7 +234,7 @@ def command(robot, row, start, column, cells, cap, paired_init, dtype, mode, pre
     else:
         args += ["--solver", "svgd"]
         settings = dict(column_settings(column, paired_init), svgd_dtype=dtype,
-                        svgd_collision_workers=collision_workers, **MODES[mode])
+                        **MODES[mode])
         for k, v in settings.items():
             args += ["--set", f"{k}={v}"]
     return tag, args
@@ -265,8 +262,6 @@ def parse_args(argv=None):
                    help="svgd step mode: eager, compiled (svgd_compile) or graphed "
                         "(svgd_compile + svgd_cuda_graph); named in the tag")
     p.add_argument("--prefix", default=PREFIX)
-    p.add_argument("--collision-workers", type=int, default=4,
-                   help="svgd_collision_workers for every svgd child (default 4: memory)")
     p.add_argument("--memory-max", default="24G",
                    help="systemd-run MemoryMax per child (MemorySwapMax=0); default 24G")
     p.add_argument("--no-memory-cap", action="store_true", help="launch children uncapped")
@@ -291,7 +286,6 @@ def main(argv=None):
         for column in columns:
             tag, cmd = command(robot, row, start, column, args.cells, args.wall_time,
                                args.paired_init, args.dtype, args.mode, args.prefix,
-                               args.collision_workers,
                                None if args.no_memory_cap else args.memory_max)
             plan.append((robot, tag, cmd))
     skipped = [t for r, t, _ in plan if args.only_missing and os.path.exists(summary_path(r, t))]
@@ -304,8 +298,8 @@ def main(argv=None):
           f"{len(todo)} to run; worst case {len(todo) * n_cells * 2 * args.wall_time / 3600:.1f} h "
           f"of solve clock", flush=True)
     wrap = memory_wrapper(None if args.no_memory_cap else args.memory_max)
-    print(f"memory cap per child: {'MemoryMax=' + args.memory_max + ', MemorySwapMax=0 (systemd-run)' if wrap else 'NONE'}; "
-          f"svgd_collision_workers={args.collision_workers}", flush=True)
+    print(f"memory cap per child: {'MemoryMax=' + args.memory_max + ', MemorySwapMax=0 (systemd-run)' if wrap else 'NONE'}",
+          flush=True)
     if args.dry_run:
         for _, tag, cmd in todo:
             print(shlex.join(cmd))

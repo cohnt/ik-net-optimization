@@ -1,13 +1,13 @@
 """`src/svgd/collision_backend.py` against the program's own collision binding.
 
-THE PROGRAM IS THE ORACLE. Every number the pool returns is compared with
-`program.collision_free_constraint_eval.Eval(InitializeAutoDiff(q))` scaled by
+THE PROGRAM IS THE ORACLE. Every number the in-process `CollisionEvaluator` returns is compared
+with `program.collision_free_constraint_eval.Eval(InitializeAutoDiff(q))` scaled by
 `collision_row_scale`, on the very scene the solver would run on -- the hardened pose scene and
 a grasp scene with the target mug welded exactly as `GenerateDiagramWithMug` welds it. The
-comparison is BITWISE (`np.array_equal`), not approximate: the pool runs the same Drake code on
-a scene rebuilt from a picklable description, so any difference at all would mean the rebuilt
-scene is not the solve scene. That the mug weld survives this is the point of carrying its
-rotation matrix rather than a quaternion (see the module docstring).
+comparison is BITWISE (`np.array_equal`), not approximate, for the evaluator on the program's
+own constraint (what the solver uses) and for one on a scene rebuilt from a `SceneSpec`, where
+any difference at all would mean the rebuilt scene is not the solve scene. That the mug weld
+survives the rebuild is the point of carrying its rotation matrix rather than a quaternion.
 
 The boolean C++-parallel checker is held to the relation that actually holds. Drake's penalty
 is `SmoothOverMax(...)`, which over-approximates the maximum, so `min distance < bound` implies
@@ -18,7 +18,7 @@ is `SmoothOverMax(...)`, which over-approximates the maximum, so `min distance <
 
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__` driver.
 Needs the Panda and iiwa `n6` charts under `models/` (the joint-space programs still load a
-network, because the base class does), and spawns worker processes, so it runs as a script.
+network, because the base class does).
 """
 
 import os
@@ -36,12 +36,9 @@ from src.flow_loading import LoadFlowSolver                                  # n
 from src.generic_program import ProgramOptions                               # noqa: E402
 from src.iiwa_program import Iiwa14IKProgramNumerical, IiwaMugProgramNumerical  # noqa: E402
 from src.panda_program import PandaIKProgramNumerical, PandaMugProgramNumerical  # noqa: E402
-import multiprocessing as mp                                                  # noqa: E402
-
-import src.svgd.collision_backend as cb                                      # noqa: E402
-from src.svgd.collision_backend import (CollisionRow, DrakeCollisionPool,     # noqa: E402
-                                        ParallelCollisionChecker, PoolRefused, SceneSpec,
-                                        collision_row, measure_pool)
+from src.svgd.collision_backend import (CollisionEvaluator, CollisionRow,   # noqa: E402
+                                        ParallelCollisionChecker, SceneSpec,
+                                        collision_row, measure_collision)
 from src.target_screening import SCENES, SceneFile                           # noqa: E402
 from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints, RepoDir  # noqa: E402
 
@@ -160,7 +157,7 @@ def test_scene_spec_round_trips_the_mug_exactly():
         assert np.array_equal(X.GetAsMatrix4(), mug.target_mug.middle.GetAsMatrix4()), (
             "the mug weld must be rebuilt bit-for-bit")
         back = pickle.loads(pickle.dumps(spec))
-        assert back == spec, "SceneSpec must survive pickling unchanged (it is what a worker gets)"
+        assert back == spec, "SceneSpec must survive pickling unchanged"
         assert mug.plant.HasModelInstanceNamed(spec.mug_model_name)
         # The weld-readback fallback (no `target_mug` attribute) is exact to rounding, not
         # bitwise; say how far, so the docstring's claim is a measurement.
@@ -192,7 +189,7 @@ def test_scene_spec_round_trips_the_mug_exactly():
     print("PASS SceneSpec round-trips the mug exactly and refuses an unknown scene")
 
 
-def test_pool_matches_the_program_bitwise():
+def test_evaluator_matches_the_program_bitwise():
     rng = np.random.default_rng(2026)
     for robot in ("panda", "iiwa"):
         for task in ("pose", "mug"):
@@ -204,83 +201,86 @@ def test_pool_matches_the_program_bitwise():
             finite = np.isfinite(ref_v)
             assert (ref_v[finite] > scale).any() and (ref_v[finite] <= scale).any(), (
                 "the draw must contain both penetrating and clear configurations")
-            for workers in (1, 4):
-                with DrakeCollisionPool(spec, workers=workers) as pool:
-                    v, g = pool.eval(Q)
-                    v2, _ = pool.eval(Q, need_grad=False)
+            for label, ev in (("program's own", CollisionEvaluator.from_program(program)),
+                              ("rebuilt scene", CollisionEvaluator.from_spec(spec))):
+                t0 = time.perf_counter()
+                v, g = ev.eval(Q)
+                ms = 1e3 * (time.perf_counter() - t0)
+                v2, _ = ev.eval(Q, need_grad=False)
                 assert v.shape == (Q.shape[0],) and g.shape == Q.shape
                 dv = np.nanmax(np.abs(v - ref_v)) if finite.any() else 0.0
                 dg = np.nanmax(np.abs(g - ref_g)) if finite.any() else 0.0
-                assert np.array_equal(v, ref_v, equal_nan=True), (robot, task, workers, dv)
-                assert np.array_equal(g, ref_g, equal_nan=True), (robot, task, workers, dg)
-                assert np.array_equal(v2, ref_v, equal_nan=True), (robot, task, workers)
+                assert np.array_equal(v, ref_v, equal_nan=True), (robot, task, label, dv)
+                assert np.array_equal(g, ref_g, equal_nan=True), (robot, task, label, dg)
+                assert np.array_equal(v2, ref_v, equal_nan=True), (robot, task, label)
                 assert np.all(np.isnan(v[~finite])) and np.all(np.isnan(g[~finite]))
-                print(f"     {robot} {task:4s} K={workers}: {Q.shape[0]} rows, nq={Q.shape[1]}, "
+                print(f"     {robot} {task:4s} {label}: {Q.shape[0]} rows, nq={Q.shape[1]}, "
                       f"max |dvalue| {dv:.1e}, max |dgrad| {dg:.1e}, "
                       f"{int((ref_v[finite] > scale).sum())} of {int(finite.sum())} penetrating, "
-                      f"{int((~finite).sum())} NaN rows returned NaN")
-    print("PASS pool value and gradient equal the program's binding bitwise, for K in {1, 4}")
+                      f"{int((~finite).sum())} NaN rows returned NaN, {1e3 * ms / Q.shape[0]:.0f} "
+                      f"us/config")
+    print("PASS the in-process row (value and gradient) equals the program's binding bitwise, "
+          "on its own constraint and on a rebuilt scene")
 
 
 def test_collision_row_autograd():
     import torch
     program = _program("panda", "pose")
-    spec = _spec(program)
     rng = np.random.default_rng(7)
     Q = _draw(program, 12, rng)
     ref_v, ref_g = _reference(program, Q)
-    with DrakeCollisionPool(spec, workers=4) as pool:
-        for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
-            # float64: value and VJP exact.
-            q = torch.tensor(Q, dtype=torch.float64, device=device, requires_grad=True)
-            w = torch.arange(1, Q.shape[0] + 1, dtype=torch.float64, device=device)
-            y = collision_row(q, pool)
-            assert y.dtype == torch.float64 and y.device.type == device and y.shape == (Q.shape[0],)
-            assert np.array_equal(y.detach().cpu().numpy(), ref_v)
-            (y * w).sum().backward()
-            expected = w.cpu().numpy()[:, None] * ref_g
-            assert np.array_equal(q.grad.cpu().numpy(), expected), (
-                "backward must be exactly grad_output[:, None] * stored gradient")
-            # float32 in -> float32 out, on the input's device; Drake still ran in float64 AT
-            # THE ROUNDED CONFIGURATION, so the reference is the pool at float32(Q), and the
-            # only difference left is the cast of the result back to float32.
-            Q32 = Q.astype(np.float32).astype(np.float64)
-            ref32_v, ref32_g = pool.eval(Q32)
-            q32 = torch.tensor(Q32, dtype=torch.float32, device=device, requires_grad=True)
-            y32 = CollisionRow.apply(q32, pool)
-            assert y32.dtype == torch.float32 and y32.device.type == device
-            assert np.array_equal(y32.detach().cpu().numpy(), ref32_v.astype(np.float32))
-            y32.sum().backward()
-            assert q32.grad.dtype == torch.float32
-            assert np.array_equal(q32.grad.cpu().numpy(), ref32_g.astype(np.float32))
-            # A NaN particle propagates as NaN and never raises.
-            qn = torch.tensor(Q[:2], dtype=torch.float64, device=device, requires_grad=True)
-            with torch.no_grad():
-                qn[1] = float("nan")
-            yn = collision_row(qn, pool)
-            yn.sum().backward()
-            assert torch.isfinite(yn[0]) and torch.isnan(yn[1]) and torch.isnan(qn.grad[1]).all()
-            print(f"     {device}: value exact, VJP exact, float32 preserved, NaN row propagates")
-        # Finite differences: the autodiff gradient is Drake's own, so this is a sanity check
-        # on the plumbing rather than on Drake. Mesh-pair distances are only piecewise smooth,
-        # so the median is asserted and the max reported.
-        h = 1e-6
-        rel = []
-        for i in range(Q.shape[0]):
-            if not np.any(ref_g[i]):
-                continue
-            fd = np.zeros(Q.shape[1])
-            for j in range(Q.shape[1]):
-                e = np.zeros(Q.shape[1]); e[j] = h
-                vp, _ = pool.eval(np.vstack([Q[i] + e, Q[i] - e]), need_grad=False)
-                fd[j] = (vp[0] - vp[1]) / (2 * h)
-            rel.append(np.linalg.norm(fd - ref_g[i]) / max(np.linalg.norm(ref_g[i]), 1e-12))
-        rel = np.array(rel)
-        assert rel.size >= 4, "need rows with a nonzero gradient"
-        assert np.median(rel) < 1e-5, rel
-        print(f"     central differences: median rel. error {np.median(rel):.1e}, "
-              f"max {rel.max():.1e} over {rel.size} rows")
-    print("PASS collision_row is an exact autograd wrapper of the pool")
+    ev = CollisionEvaluator.from_program(program)
+    for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+        # float64: value and VJP exact.
+        q = torch.tensor(Q, dtype=torch.float64, device=device, requires_grad=True)
+        w = torch.arange(1, Q.shape[0] + 1, dtype=torch.float64, device=device)
+        y = collision_row(q, ev)
+        assert y.dtype == torch.float64 and y.device.type == device and y.shape == (Q.shape[0],)
+        assert np.array_equal(y.detach().cpu().numpy(), ref_v)
+        (y * w).sum().backward()
+        expected = w.cpu().numpy()[:, None] * ref_g
+        assert np.array_equal(q.grad.cpu().numpy(), expected), (
+            "backward must be exactly grad_output[:, None] * stored gradient")
+        # float32 in -> float32 out, on the input's device; Drake still ran in float64 AT
+        # THE ROUNDED CONFIGURATION, so the reference is the row at float32(Q), and the
+        # only difference left is the cast of the result back to float32.
+        Q32 = Q.astype(np.float32).astype(np.float64)
+        ref32_v, ref32_g = ev.eval(Q32)
+        q32 = torch.tensor(Q32, dtype=torch.float32, device=device, requires_grad=True)
+        y32 = CollisionRow.apply(q32, ev)
+        assert y32.dtype == torch.float32 and y32.device.type == device
+        assert np.array_equal(y32.detach().cpu().numpy(), ref32_v.astype(np.float32))
+        y32.sum().backward()
+        assert q32.grad.dtype == torch.float32
+        assert np.array_equal(q32.grad.cpu().numpy(), ref32_g.astype(np.float32))
+        # A NaN particle propagates as NaN and never raises.
+        qn = torch.tensor(Q[:2], dtype=torch.float64, device=device, requires_grad=True)
+        with torch.no_grad():
+            qn[1] = float("nan")
+        yn = collision_row(qn, ev)
+        yn.sum().backward()
+        assert torch.isfinite(yn[0]) and torch.isnan(yn[1]) and torch.isnan(qn.grad[1]).all()
+        print(f"     {device}: value exact, VJP exact, float32 preserved, NaN row propagates")
+    # Finite differences: the autodiff gradient is Drake's own, so this is a sanity check
+    # on the plumbing rather than on Drake. Mesh-pair distances are only piecewise smooth,
+    # so the median is asserted and the max reported.
+    h = 1e-6
+    rel = []
+    for i in range(Q.shape[0]):
+        if not np.any(ref_g[i]):
+            continue
+        fd = np.zeros(Q.shape[1])
+        for j in range(Q.shape[1]):
+            e = np.zeros(Q.shape[1]); e[j] = h
+            vp, _ = ev.eval(np.vstack([Q[i] + e, Q[i] - e]), need_grad=False)
+            fd[j] = (vp[0] - vp[1]) / (2 * h)
+        rel.append(np.linalg.norm(fd - ref_g[i]) / max(np.linalg.norm(ref_g[i]), 1e-12))
+    rel = np.array(rel)
+    assert rel.size >= 4, "need rows with a nonzero gradient"
+    assert np.median(rel) < 1e-5, rel
+    print(f"     central differences: median rel. error {np.median(rel):.1e}, "
+          f"max {rel.max():.1e} over {rel.size} rows")
+    print("PASS collision_row is an exact autograd wrapper of the in-process row")
 
 
 def test_boolean_checker_agrees_with_the_row_outside_the_band():
@@ -341,10 +341,8 @@ def test_boolean_checker_agrees_with_the_row_outside_the_band():
         Q = np.vstack([q_star[None, :]] + [
             q_star + rng.normal(0.0, sigma, size=(128, q_star.size))
             for sigma in (0.02, 0.05, 0.1, 0.2)] + [_draw(pose, 256, rng)])
-        with DrakeCollisionPool(spec_pose, workers=4) as pp, \
-             DrakeCollisionPool(spec_mug, workers=4) as pm:
-            v_pose, _ = pp.eval(Q, need_grad=False)
-            v_mug, _ = pm.eval(Q, need_grad=False)
+        v_pose, _ = CollisionEvaluator.from_program(pose).eval(Q, need_grad=False)
+        v_mug, _ = CollisionEvaluator.from_program(mug).eval(Q, need_grad=False)
         only_mug = (v_mug > spec_mug.row_scale) & (v_pose <= spec_pose.row_scale)
         assert only_mug.any(), "no draw hits only the mug; the mug scene has no visible mug?"
         cp = ParallelCollisionChecker(spec_pose).collision_free(Q[only_mug])
@@ -359,113 +357,16 @@ def test_boolean_checker_agrees_with_the_row_outside_the_band():
 def test_timing_table():
     spec = _spec(_program("panda", "pose"))
     t0 = time.perf_counter()
-    rows = measure_pool(spec, Ns=(64, 256, 1024), workers=(4,), repeats=3,
-                        out=lambda s: print("     " + s))
+    rows = measure_collision(spec, Ns=(64, 256, 1024), repeats=3, out=lambda s: print("     " + s))
     assert len(rows) == 6
     print(f"PASS timing table completed in {time.perf_counter() - t0:.1f} s "
           f"({os.cpu_count()} CPUs on this machine; seconds are never compared across machines)")
 
 
-def test_pool_lifecycle():
-    spec = _spec(_program("panda", "pose"))
-    Q = _draw(_program("panda", "pose"), 8, np.random.default_rng(3))
-    pool = DrakeCollisionPool(spec, workers=2)
-    assert pool._ctx.get_start_method() == "spawn"
-    assert all(pool.alive())
-    v, g = pool.eval(Q)
-    assert np.all(np.isfinite(v))
-    pool.close()
-    assert pool.closed and not any(pool.alive())
-    pool.close()   # idempotent
-    try:
-        pool.eval(Q)
-    except RuntimeError as e:
-        assert "closed" in str(e)
-    else:
-        raise AssertionError("eval after close must raise")
-    with DrakeCollisionPool(spec, workers=2) as second:
-        v2, g2 = second.eval(Q)
-    assert np.array_equal(v, v2) and np.array_equal(g, g2)
-    assert not any(second.alive())
-    # Fewer rows than workers: the idle workers get nothing and the result is still complete.
-    with DrakeCollisionPool(spec, workers=4) as wide:
-        v3, g3 = wide.eval(Q[:2])
-        assert np.array_equal(v3, v[:2]) and np.array_equal(g3, g[:2])
-        v4, g4 = wide.eval(Q[:0])
-        assert v4.shape == (0,) and g4.shape == (0, Q.shape[1])
-    print("PASS pool lifecycle: spawn context, close terminates, second pool works, small batches")
-
-
-## ------------------------------------------------------------------------------------ ##
-##                                   the memory guard                                    ##
-## ------------------------------------------------------------------------------------ ##
-
-def _bare_spec():
-    """A spec needing no program: workers build their scene lazily, and these tests never
-    evaluate, so no scene is ever built."""
-    return SceneSpec(yaml_path=SceneFile("panda", "pose", "hardened"))
-
-
-def test_live_registry_counts_and_close_deregisters():
-    base = cb.live_workers()
-    n_children = len(mp.active_children())
-    with DrakeCollisionPool(_bare_spec(), workers=2) as pool:
-        assert cb.live_workers() == base + 2, cb.live_pools()
-        assert any(w == 2 and "hardened" in o for w, o in cb.live_pools()), cb.live_pools()
-        assert len(mp.active_children()) == n_children + 2
-    assert cb.live_workers() == base and pool.closed
-    assert len(mp.active_children()) == n_children
-    print("PASS the live-worker registry counts an open pool and close() deregisters it")
-
-
-def test_pool_refusals():
-    """The guard's two refusals, nothing spawned by either: (1) `MemAvailable` (monkeypatched
-    to 1 GB) -- a 2-worker pool needs 1.5 GB > half of it; (2) `SVGD_MAX_LIVE_WORKERS` -- with
-    one 1-worker pool live and the cap at the live count + 1, a second is refused with a
-    message naming the live count and the owner, and closing the first admits it again."""
-    real = cb.mem_available_gb
-    base, n_children = cb.live_workers(), len(mp.active_children())
-    cb.mem_available_gb = lambda: 1.0
-    try:
-        DrakeCollisionPool(_bare_spec(), workers=2)
-        raise AssertionError("a 2-worker pool must be refused at MemAvailable 1 GB")
-    except PoolRefused as exc:
-        assert "MemAvailable 1.0 GB" in str(exc), str(exc)
-    finally:
-        cb.mem_available_gb = real
-    assert cb.live_workers() == base and len(mp.active_children()) == n_children
-    old = os.environ.get("SVGD_MAX_LIVE_WORKERS")
-    os.environ["SVGD_MAX_LIVE_WORKERS"] = str(base + 1)
-    try:
-        first = DrakeCollisionPool(_bare_spec(), workers=1)
-        try:
-            DrakeCollisionPool(_bare_spec(), workers=1)
-            raise AssertionError("a second pool over the live-worker cap must be refused")
-        except PoolRefused as exc:
-            msg = str(exc)
-            assert "already live" in msg and "SVGD_MAX_LIVE_WORKERS" in msg and "hardened" in msg, msg
-        first.close()
-        with DrakeCollisionPool(_bare_spec(), workers=1):
-            pass
-    finally:
-        if old is None:
-            del os.environ["SVGD_MAX_LIVE_WORKERS"]
-        else:
-            os.environ["SVGD_MAX_LIVE_WORKERS"] = old
-    assert cb.live_workers() == base
-    print("PASS the memory guard refuses on MemAvailable and on SVGD_MAX_LIVE_WORKERS, spawning nothing")
-
-
 if __name__ == "__main__":
-    test_live_registry_counts_and_close_deregisters()
-    test_pool_refusals()
     test_scene_spec_round_trips_the_mug_exactly()
-    test_pool_matches_the_program_bitwise()
+    test_evaluator_matches_the_program_bitwise()
     test_collision_row_autograd()
     test_boolean_checker_agrees_with_the_row_outside_the_band()
     test_timing_table()
-    test_pool_lifecycle()
-    print(f"     peak live collision workers in this process: {cb.peak_live_workers()}")
-    assert cb.live_workers() == 0, f"pools left open at the end of the file: {cb.live_pools()}"
-    print("PASS no collision pool is live at the end of the file")
     print("ALL PASS")

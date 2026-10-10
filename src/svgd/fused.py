@@ -1,24 +1,19 @@
-"""The svgd step split at the collision pool: three pure stages, eager / compiled / graphed.
+"""The svgd step split around the collision row: three pure stages, eager / compiled / graphed.
 
 One `al_svgd` step on the fielded robots (`BatchedProgram.has_analytic_row_jacobians`)
-is, with the only host round trip -- Drake's exact collision row, in a process pool -- between
-the stages:
+is, with the only host work -- Drake's exact collision row, in this process -- between the
+stages:
 
     stage 1 (GPU)   X -> cfg = q(X), q_plant                     the flow forward, no graph
-    host            q_plant -> pool.submit                       Drake starts in the workers
-    stage 2 (GPU)   (X, cfg) -> J_q = dq/dX, kinematics + frame Jacobians
-    host            pool.collect -> (row, d row / d q_plant)     waits for the workers
+    host            q_plant -> CPU
+    stage 2 (GPU)   (X, cfg) -> J_q = dq/dX, kinematics + frame Jacobians    (launched, async)
+    host            the collision row (row, d row / d q_plant), a per-particle Drake loop
     stage 3 (GPU)   everything else: rows, scaling, AL coefficients, the objective and
                     constraint gradients, kernel, the Stein direction, the gradient step
                     and the clamp onto the true bounds (`update_step`).
 
-THE OVERLAP (`svgd_pool_overlap`). Stage 2 is the expensive one (the flow Jacobian is ndof
-reverse passes) and does not depend on the collision row, so the pool is dispatched BEFORE
-it is launched and collected after: the workers' IPC and Drake compute run while the host
-dispatches (eager) or the GPU replays (graphed) stage 2. Strictly across steps nothing can
-overlap -- step k+1's configurations are step k's output -- so this is the whole of what
-the dependency allows. `_TimedPool` reports both the pool's latency (`span_seconds`) and
-the host time actually blocked in it (`seconds`); their difference is the time hidden.
+Stage 2 does not depend on the collision row, so it is launched before the Drake loop runs;
+on the GPU it executes while the host is in Drake (asynchronously in graphed mode).
 
 THREE MODES, ONE CODE PATH. The stage functions below are what runs in every mode: called
 directly (`eager`), wrapped in `torch.compile` (`compiled`), or the compiled function
@@ -100,11 +95,11 @@ class StepConfig:
 ## ------------------------------------------------------------------------------------ ##
 
 ## Attributes never walked: the program and its options (read outside the stages), the
-## pool (called by the driver), the networks (shared by identity: recorded as an id), and
+## collision evaluator (called by the driver), the networks (shared by identity: recorded as an id), and
 ## values that are program-specific but never read by a stage (the native conditioning
 ## pose, the decision-variable objects, the calibrated flow-frame transform, RowSpec bounds
 ## -- the bounds the stages read are the `_eq` / `_lo` / `_hi` TENSORS, which are copied).
-_SKIP_ATTRS = {"program", "options", "pool", "model", "shared_model", "_native_c",
+_SKIP_ATTRS = {"program", "options", "collision", "model", "shared_model", "_native_c",
                "lumped_vars", "X_ee_flow", "profile"}
 _SKIP_CLASS_ATTRS = {("RowSpec", "lb"), ("RowSpec", "ub")}
 
@@ -259,7 +254,7 @@ def state_dict(S):
 
 
 def stage1(tg, X):
-    """`(cfg, q_plant)`: the configuration and the plant vector the pool needs."""
+    """`(cfg, q_plant)`: the configuration and the plant vector the collision row needs."""
     bp = tg.bp
     with torch.no_grad():
         cfg = bp._config(X)

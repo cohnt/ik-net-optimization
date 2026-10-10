@@ -98,8 +98,8 @@ def BuildEnv(meshcat, directives_file=None, extra_directives=None):
 
     diagram = builder.Build()
     ## Which directives built this scene. The program never records it, and anything that
-    ## has to REBUILD the solve scene elsewhere -- the svgd solver's collision pool spawns
-    ## workers that each need their own copy -- can read it off the diagram. pydrake's
+    ## has to REBUILD the solve scene elsewhere -- the svgd solver's boolean collision
+    ## checker builds its own copy -- can read it off the diagram. pydrake's
     ## Diagram accepts Python attributes; None for a scene built without a file.
     diagram.scene_yaml = directives_file
     return diagram
