@@ -102,3 +102,12 @@ fingerprint with the IPOPT/SNOPT runs; `hit_eval_cap` and `hit_iteration_cap` ar
 `scripts/report_remeasure.py nlopt` prints their before/after: learned 9 / tie 7 / joint space 0
 -> 11 / 3 / 2, eight verdicts flipped: the three wsg grasp native rows and iiwa grasp paired to
 learned, soft PCS and screw grasp paired to joint space, Panda and screw pose paired to ties.
+
+**Paper conditions.** Stage **PAPER** (28 runs, jobs 5882397-5882400) and stage **SVGD_R2** (the
+four Panda IPOPT runs) re-ran the primary's 32 IPOPT and SNOPT runs on 2026-10-10 at PROCS=2 with
+no MPS (one solve per V100), from the svgd-branch staging commit 42a5893. That commit is main's record
+code plus the svgd branch, and its IPOPT and SNOPT paths are byte-identical to main's. R2 was
+collected at 02:31 EDT and PAPER at 10:07 EDT, and both were promoted as
+`sc_PAPER_<suffix of sc_REMEASURE_>` and `sc_SVGD_R2_panda_n6_ipopt_<row>_480_180_<start>`. Every
+pair shares its REMEASURE twin's scene fingerprint and grid hash. `scripts/report_paper.py` prints
+the pairing, and `scripts/report_statusquo.py --paper` prints the record at those seconds.
