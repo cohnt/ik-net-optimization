@@ -40,7 +40,7 @@ the stage's item set.
 - Every R1 item fits inside run_items.sh's 8 h `ITEM_TIMEOUT` even with every cell at the clock
   (20 cells x 2 arms x 180 s = 2 h). A maintenance kill therefore loses at most 2 h per item.
 
-**What R1 sets beyond the defaults, and why** (the gen_manifest block says it in full):
+**What the svgd items (SMOKE, R1, R1K) set beyond the defaults, and why** (the gen_manifest block says it in full):
 
 - `svgd_compile=True svgd_cuda_graph=True`. This is the `graphed` mode of `scripts/svgd/smoke.py`:
   `WarmUpSvgdStep` compiles and captures before the first timed cell. It is an execution setting,
@@ -49,8 +49,12 @@ the stage's item set.
   svgd step cap. This is the cap rule applied up front: the default of 300 outer checks would stop
   cells before the clock (~0.3 s per check locally), and a row with >= 24 of 480 cells at a budget
   carries no verdict. To field the default cap instead, empty `SVGD_BUDGET` and regenerate.
-- **Nothing else.** `svgd_n`, `svgd_paired_init`, `svgd_lr`, `svgd_rho`, `svgd_gn_lm` and the rest
-  stay at their defaults. The selftest reads `svgd_n = 64` and `svgd_paired_init = "jitter"` out of
+- `svgd_rho=1000 svgd_gn_lm=10 svgd_lr=1.0`, pinned explicitly on every svgd item (SMOKE, R1,
+  R1K). These are the values the local probe chose. The code staged on the cluster (42a5893)
+  predates them: its `svgd_gn_lm` default is 1e-2. The tree cannot be restaged while PAPER runs, so
+  the manifests carry them (`SVGD_PINNED`), and the selftest fails if any svgd item lacks them.
+- **Nothing else.** `svgd_n`, `svgd_paired_init` and every other svgd option stay at their defaults.
+  The selftest reads `svgd_n = 64` and `svgd_paired_init = "jitter"` out of
   `src/generic_program.py`'s text, and fails if either default moves.
 
 **Maintenance: compute is down Mon 2026-10-12 evening to Wed 10-14 morning.** Running jobs are
