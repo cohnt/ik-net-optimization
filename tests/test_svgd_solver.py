@@ -46,7 +46,7 @@ from pydrake.common.eigen_geometry import Quaternion                    # noqa: 
 from src import benchmark as bm                                         # noqa: E402
 from src.generic_program import ProgramOptions, orientation_error_rpy   # noqa: E402
 from src.panda_program import PandaIKProgram, PandaIKProgramNumerical  # noqa: E402
-from src.svgd import al                                                 # noqa: E402
+from src.svgd import al, fused                                          # noqa: E402
 from src.svgd.result import SvgdResult                                  # noqa: E402
 from src.svgd.solver import SvgdSolver, _Target                         # noqa: E402
 from src.target_screening import SceneFile                              # noqa: E402
@@ -424,6 +424,27 @@ def test_scaled_rows_map_back_to_drake_rows():
                         drake_viol.append(abs(ref) if r.kind == "eq" else max(ref, 0.0))
                 worst_inf = max(worst_inf, abs(float(ev.infeas[i]) * tol - max(drake_viol))
                                 / max(1e-12, max(drake_viol)))
+            ## The AL's row units: natural by default (1, or svgd_row_length_scale on the
+            ## orientation-type rows), and the tolerance control bit-identical to the old path
+            ## (every row times 1/tol); the feasibility verdict the same under both.
+            from src.svgd.solver import radian_rows
+            rad_h = radian_rows(bp, bp.h_spec)
+            tg_n = _Target(bp, tol, units="natural", length_scale=2.5)
+            tg_t = _Target(bp, tol, units="tolerance")
+            with torch.no_grad():
+                ev_n, ev_t = tg_n.evaluate(X, need_grad=False), tg_t.evaluate(X, need_grad=False)
+            exp_sh = torch.tensor([2.5 if r else 1.0 for r in rad_h], dtype=X.dtype, device=X.device)
+            check(f"panda/{task}/{arm}: natural units -- 1 per row, the length scale on the "
+                  f"{sum(rad_h)} orientation-type rows, never on the joint limits",
+                  torch.equal(tg_n.sh, exp_sh)
+                  and not any(r and spec.group == "joint_limit" for r, spec in zip(rad_h, bp.h_spec))
+                  and (task != "pose" or sum(rad_h) >= 3), f"{tg_n.sh}")
+            old_h = ev_t.out.h * torch.full((len(bp.h_spec),), 1.0 / tol, dtype=X.dtype, device=X.device)
+            old_g = ev_t.out.g * torch.full((len(bp.g_spec),), 1.0 / tol, dtype=X.dtype, device=X.device)
+            check(f"panda/{task}/{arm}: the tolerance control is bit-identical to the old path, "
+                  f"and the feasibility verdict is the same in both units",
+                  torch.equal(ev_t.h, old_h) and torch.equal(ev_t.g, old_g)
+                  and torch.equal(ev_n.infeas, ev_t.infeas))
             print(f"    panda/{task}/{arm}: max |unscaled - Drake| (rel) {worst_map:.2e}; "
                   f"|infeas * tol - Drake max violation| (rel) {worst_inf:.2e}")
             check(f"panda/{task}/{arm}: unscaled rows equal the Drake rows' signed violations",
@@ -443,8 +464,11 @@ def test_stop_reasons_and_log():
     multiplier magnitudes at stop."""
     print("\n--- stop reasons ---")
     p = pose_program("numerical")
+    ## A tiny identity-metric step keeps particle 0 at the target: this isolates the stop
+    ## RULE from the dynamics (which are not under test here).
     _, d, _ = run_cell(p, "pose", "patience=2", dict(svgd_n=32, svgd_kernel="q", svgd_stop_patience=2,
-                                                     svgd_outer_iters=300),
+                                                     svgd_outer_iters=300, svgd_metric="identity",
+                                                     svgd_lr=1e-6),
                        wall=20.0, quiet=True, q_init=_POSE["q_target"])
     check("stop: a feasible swarm that stalls stops with stop_reason 'converged'",
           d.stop_reason == "converged" and d.status_name == "converged",
@@ -470,46 +494,53 @@ def test_stop_reasons_and_log():
 
 
 def test_step_with_kernel_off_is_pgd_on_the_programs_L():
-    """On the real learned pose program (float64 swarm, collision row included), one step
-    with `svgd_kernel = none` is projected gradient descent on the program's own L_rho / T in
-    the normalised coordinates, `x <- clamp_B(x - (svgd_lr / rho) s^2 grad_x L_i / T)`, with
-    the reference gradient from FULL AUTOGRAD through the batched program (flow, kinematics
-    and the collision row's autograd node) -- not from the closed forms the step uses. Each
-    particle carries its own random multipliers; rho (here 37) is the one shared scalar."""
+    """On the real pose programs (float64 swarm, collision row included), one step with
+    `svgd_kernel = none` and `svgd_metric = identity` is projected gradient descent on the
+    program's own L_rho / T in the normalised coordinates,
+    `x <- clamp_B(x - (svgd_lr / ||H_i||_F) s^2 grad_x L_i / T)`, with the reference gradient
+    from FULL AUTOGRAD through the batched program (flow, kinematics and the collision row's
+    autograd node) -- not from the closed forms the step uses -- on the rows in NATURAL units.
+    Each particle carries its own random multipliers; rho (here 37) is the one shared scalar."""
     print("\n--- one step with the kernel off == PGD on L_rho / T (full autograd reference) ---")
     from dataclasses import replace as dc_replace
     for arm in ("learned", "numerical"):
         p = pose_program(arm)
         p.options = replace(p.options, which_solver="svgd", svgd_n=8, svgd_kernel="none",
-                                     svgd_dtype="float64", svgd_compile=False, svgd_cuda_graph=False,
-                            svgd_lr=1e-9, svgd_temperature=0.5, svgd_rho=37.0,
-                            acceptable_constr_viol_tol=1e-4)
+                            svgd_dtype="float64", svgd_compile=False, svgd_cuda_graph=False,
+                            svgd_lr=0.7, svgd_temperature=0.5, svgd_rho=37.0,
+                            svgd_metric="identity", acceptable_constr_viol_tol=1e-4)
         rng = np.random.default_rng(4)
         with HiddenPrints():
             p.SetStartFromQ(T.collision_free_q(p, rng, 1)[0])
         s = SvgdSolver(p)
         s._build()
-        s._make_runner()
+        r = s._make_runner()
         X, _, _ = s._init_particles(np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float))
         S = s._init_state(X)
         g = torch.Generator(device=s.device).manual_seed(0)
         kw = dict(dtype=s.dtype, device=s.device)
         S = dc_replace(S, lam=torch.randn(S.lam.shape, generator=g, **kw),
                        mu=torch.randn(S.mu.shape, generator=g, **kw).abs())
-        Xn, _, _ = s._step_split(X, S)
         tg, bp = s._tg, s._tg.bp
+        cfg, qp = r.s1(X)
+        J_q, kin = r.s2(X, cfg)
+        v, gr = s._col.eval(qp.to("cpu", torch.float64).numpy())
+        o = r.s3(X, cfg, J_q, kin, torch.as_tensor(v).to(X), torch.as_tensor(gr).to(X),
+                 fused.state_dict(S))
         Xg = X.clone().requires_grad_(True)
         out = bp.evaluate(Xg)
         L = al.al_value(out.F, out.h * tg.sh, out.g * tg.sg, S, 37.0)
         (gx,) = torch.autograd.grad(L.sum(), Xg)
-        ref, _ = bp.project(X - tg.s ** 2 * (p.options.svgd_lr / 37.0) * gx
+        fro = o["H"].flatten(1).norm(dim=1).unsqueeze(1)
+        ref, _ = bp.project(X - tg.s ** 2 * (p.options.svgd_lr / fro) * gx
                             / p.options.svgd_temperature)
-        rel = float((Xn - ref).abs().max() / max(1e-30, float((ref - X).abs().max())))
+        rel = float((o["X"] - ref).abs().max() / max(1e-30, float((ref - X).abs().max())))
         print(f"    {arm}: |x_step - x_PGD|_inf / |x_PGD - x|_inf = {rel:.2e}")
-        check(f"pgd/{arm}: the kernel-off step is PGD on the program's L_rho / T", rel < 1e-8, f"{rel}")
+        check(f"pgd/{arm}: the kernel-off identity step is PGD on the program's L_rho / T",
+              rel < 1e-8, f"{rel}")
         p.options = replace(p.options, svgd_kernel="q", svgd_dtype="float32", svgd_n=64,
                             svgd_lr=ProgramOptions().svgd_lr, svgd_temperature=1.0,
-                            svgd_rho=ProgramOptions().svgd_rho)
+                            svgd_rho=ProgramOptions().svgd_rho, svgd_metric=ProgramOptions().svgd_metric)
 
 
 def test_graph_replay_is_bitwise():
@@ -558,11 +589,17 @@ def test_graph_replay_is_bitwise():
         bit12 = torch.equal(cfg, cfg_c) and torch.equal(J_q, J_c)
         with torch.no_grad():
             out_e = fused.stage3(tg, s._sc, *args3)
+        ## Eager vs compiled is compared on the quantities BEFORE the metric solve (the rows,
+        ## the objective, the GN Hessian): the Newton solve amplifies float32 reordering by the
+        ## Hessian's conditioning, so the stepped X is not a rounding-level check.
+        rel = lambda a, b: float((a - b).abs().max() / max(1.0, float(b.abs().max())))
+        dpre = max(rel(out_e[k], out_g[k]) for k in ("h", "g", "F", "H"))
         dX = float((out_e["X"] - out_g["X"]).abs().max())
         print(f"    {arm}: replay == compiled bitwise: stages 1-2 {bit12}, stage 3 {bit}; "
-              f"|X_eager - X_graph| = {dX:.2e}")
+              f"eager vs compiled (rows, F, H, relative) {dpre:.2e}; |X_eager - X_graph| = {dX:.2e}")
         check(f"graph/{arm}: replay is bit-identical to the compiled stages", bit and bit12)
-        check(f"graph/{arm}: compiled agrees with eager to float32 rounding", dX < 1e-3, f"{dX}")
+        check(f"graph/{arm}: compiled agrees with eager to float32 rounding before the solve",
+              dpre < 1e-3, f"{dpre}")
         ## a second program of the same structure reuses the graphs
         p2 = TS_second_pose_program(arm)
         p2.options = p.options

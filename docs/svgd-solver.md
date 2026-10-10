@@ -29,11 +29,20 @@ program's own rows, replayed for N particles by `BatchedProgram` -- and its TRUE
 (learned: the correction box `+-correction_bound`; joint space: the joint limits). The c box and the
 latent ball are inequality ROWS, never bounds.
 
-1. **Rows** are divided by `tol = acceptable_constr_viol_tol`, so `v_i = |(h~_i, max(0, g~_i))|_inf
-   <= 1` is "feasible at the harness gate". Equalities stay equalities; the tolerance ladder is
-   untouched.
+1. **Rows in natural units** (Thomas, 2026-10-09). The augmented Lagrangian, its multipliers
+   and its dual step use the rows exactly as the program's bindings evaluate them: metres,
+   radians, Drake's collision penalty with the program's `collision_row_scale`, joint-limit rows
+   in rad, the trust and c-box rows as Drake has them. One length scale relates the row groups:
+   orientation-type rows (the rpy residual rows and the c box's rpy rows -- any row in radians
+   EXCEPT the joint limits) are multiplied by `svgd_row_length_scale` (default 1.0 m: literally
+   the raw rows). The tolerance survives ONLY in the feasibility test: particle i is feasible
+   iff `|h_ij| <= tol` for every equality row and `g_ij <= tol` for every inequality row, `tol =
+   acceptable_constr_viol_tol` (the old `v_i <= 1`, unchanged; the tolerance ladder is
+   untouched). `svgd_row_units = tolerance` is the control: every AL row divided by `tol`, the
+   earlier path bit for bit -- equivalent to penalising the natural rows with `rho / tol^2 =
+   1e9`, the ill-conditioning this change removes.
 2. **Merit**, per particle: the PHR augmented Lagrangian
-   `L_i = f + lam_i.h~ + (rho/2)|h~|^2 + (1/(2 rho)) sum_j [max(0, mu_ij + rho g~_j)^2 - mu_ij^2]`;
+   `L_i = f + lam_i.h + (rho/2)|h|^2 + (1/(2 rho)) sum_j [max(0, mu_ij + rho g_j)^2 - mu_ij^2]`;
    target density `exp(-L / T)`, `T = svgd_temperature` and `rho = svgd_rho` both fixed for the
    whole solve, `rho` ONE scalar shared by every particle. **The augmented Lagrangian is the
    FORMULATION and SVGD the optimizer running on it** (Thomas, 2026-10-09): one dynamics, no
@@ -42,19 +51,36 @@ latent ball are inequality ROWS, never bounds.
    `c_position_slack` on the conditioning position, pi on its orientation, the latent trust radius --
    the +-5 box where none is set -- and `correction_bound`; joint space: half of each joint's range),
    read from the program's own options and bounds and recorded as `extras["region_scale"]`.
-4. **Step**, the Tabor-Hermans form (arXiv 2506.00589, the "Q method"):
+4. **Direction**, the Tabor-Hermans form (arXiv 2506.00589, the "Q method"):
    `phi_i = (1/N) sum_j [K(q_j, q_i)(-grad_y f_j / T) + grad_{y_j} K(q_j, q_i)] - (1/T) grad_y (L - f)_i`
    -- only the objective's gradient and the repulsion are averaged over the kernel, each particle's
-   OWN constraint gradient is added outside the average -- then the plain gradient step
-   `y_i <- clamp_B(y_i + (svgd_lr / rho) phi_i)`: no momentum, no adaptation. The clamp's
-   distance in y is recorded (`bound_clip`).
+   OWN constraint gradient is added outside the average. **Metric** (`svgd_metric`):
+   - `gn` (the fielded configuration): **Stein variational Newton**, block-diagonal (Detommaso,
+     Cui, Marzouk, Spantini & Scheichl, "A Stein variational Newton method", NeurIPS 2018):
+     `dy_i = svgd_lr (H_i + delta I)^-1 phi_i`, the metric applied to the whole direction,
+     repulsion included (SVN's definition), `delta = svgd_gn_lm` (Levenberg damping),
+     `svgd_lr = 1`. `H_i` is the Gauss-Newton Hessian of the AL at particle i in y:
+     `S (w J_q^T J_q + H_fx + rho J_h^T J_h + rho J_g,act^T J_g,act) S` -- the joint-centering
+     cost through dq/dx, the constant Hessian of the costs quadratic in x (the correction
+     penalty), and the rows with the PHR active set `mu_ij + rho g_ij > 0`. Solved per particle
+     by a batched `solve_ex` (graph-capturable under the cuSOLVER pin).
+   - `identity`: the plain direction with a per-particle step `dy_i = (svgd_lr / ||H_i||_F)
+     phi_i`. The Frobenius norm is a safe upper bound on `lambda_max(H_i)` (at most
+     sqrt(rank) above it) and a pure reduction, so the step stays graph-capturable; the exact
+     `lambda_max` (eager `eigvalsh`, which a CUDA graph cannot capture) is recorded as a
+     diagnostic only, at the dual-update checks under both metrics, with the median ratio
+     `||H||_F / lambda_max`.
+
+   Then `y_i <- clamp_B(y_i + dy_i)`; the clamp's distance in y is recorded (`bound_clip`). No
+   momentum, no adaptation. The median ratio `|repulsion| / |drive|` within phi is recorded
+   per solve (`repulsion_ratio_median`): the kernel's actual share of the step.
 5. **Kernel**: RBF on the configuration q (flow output + correction on the learned arm, q itself on
    joint space), median bandwidth `h = med^2 / log N` floored at `svgd_bandwidth_floor`; the
    repulsion is pulled back to y through the flow's VJP. `svgd_kernel = none` drops both kernel
    terms (`phi_i = -(1/T) grad_y L_i`, N independent projected gradient descents, batched).
 6. **Dual ascent with step `svgd_dual_lr`, on a fixed cadence, rho fixed.** Every K =
    `svgd_inner_iters` steps, on EVERY particle and unconditionally (no feasibility gate of any
-   kind): `lam_i <- lam_i + alpha h~_i`, `mu_i <- max(0, mu_i + alpha g~_i)`, `alpha =
+   kind): `lam_i <- lam_i + alpha h_i`, `mu_i <- max(0, mu_i + alpha g_i)`, `alpha =
    svgd_dual_lr`, at the swarm's current rows; clipped to `+-svgd_multiplier_max`, the clipped
    entries counted. The textbook step `alpha = rho` is exact only when the primal is minimised
    between updates, which it is not here (gradient descent-ascent), so the dual rate is a separate
@@ -108,7 +134,11 @@ reported as the collision row's share of the wall.
 | `svgd_paired_init` | `jitter` | 11: `jitter` or `native` |
 | `svgd_jitter` | 0.1 | 11: jitter sigma in the normalised coordinates |
 | `svgd_temperature` | 1.0 | 2: T, fixed |
-| `svgd_lr` | 1e-10 | 4: the step is `svgd_lr / rho` (see "The step size") |
+| `svgd_lr` | 1.0 | 4: a fraction of the metric's step: `svgd_lr (H + delta I)^-1 phi` (gn) or `svgd_lr / \|\|H\|\|_F` (identity) |
+| `svgd_metric` | `gn` | 4: `gn` (Stein variational Newton) or `identity` |
+| `svgd_gn_lm` | 1e-2 (pending the delta probe) | 4: delta, the Levenberg damping of the GN metric |
+| `svgd_row_units` | `natural` | 1: `natural` or `tolerance` (the control) |
+| `svgd_row_length_scale` | 1.0 | 1: metres per radian on the orientation-type rows |
 | `svgd_kernel` | `q` | 5: `q` or `none` |
 | `svgd_bandwidth_floor` | 0.05 | 5: floor on the median bandwidth |
 | `svgd_constraint_inside_kernel` | False | 12: the literal form, an A/B |
@@ -125,16 +155,12 @@ reported as the collision row's share of the wall.
 | `svgd_warmup`, `svgd_warmup_iters`, `svgd_warmup_elite` | `none`, 10, 0.1 | 11: the CEM phase |
 | `svgd_compile`, `svgd_cuda_graph` | False, False | execution: the split step eager / compiled / graphed |
 
-**The step size.** `svgd_lr` is the one number the method has no textbook value for. With the rows
-scaled by `1/tol`, the penalty's curvature in y is `rho * lambda`, `lambda` the largest eigenvalue
-of `J~ J~^T` over the active rows, so `eps = svgd_lr / rho` makes the stability limit
-`svgd_lr < 2 / lambda`, independent of rho. Measured at tol 1e-4 on 64 random particles of each of
-the four Panda programs (2026-10-09): median lambda 8e7-3.3e9, 90th percentile 1.1e10 on joint space
-and 3.8e10-5.5e10 on the learned arm, where the latent ball's row is active and dominates; it scales
-as `1/tol^2`. The default 1e-10 is `1/lambda` at the rigid rows' 90th percentile. On one learned pose
-cell (a test cell, not the smoke grid) 1e-9 diverged within the first check, 1e-10 lost the jittered
-initial swarm to resampling once and then descended, and 1e-11 was stable and slower; that probe
-informed the choice and is not a tuning result.
+**The step size.** Under `gn` the metric carries the scale, so `svgd_lr = 1` is the Newton step
+on the GN model of the AL. Under `identity`, `svgd_lr / ||H_i||_F <= svgd_lr / lambda_max(H_i)`
+is a per-particle Lipschitz step. (The earlier fixed step, `1e-10 / rho` on rows divided by tol,
+was forced by the `rho / tol^2` curvature: pose-row curvature ~1e10 against objective curvature
+1e-4..10, which froze the self-motion and left the order-1 repulsion numerically dead. Its
+measurements are in git, a9758e1.)
 
 **Memory.** No worker processes: the collision row runs in the solver's own process on the
 program's own scene. Local runs still go under `systemd-run --user --scope -p MemoryMax=...
@@ -145,7 +171,9 @@ program's own scene. Local runs still go under `systemd-run --user --scope -p Me
 - **Annealed repulsion temperature** (`svgd_repulsion_T0`, `svgd_anneal_frac`) and the
   **driving-force ramp** (`svgd_gamma_t`): T is fixed.
 - **Gauss-Newton equality correction** (`svgd_gn_every`, `svgd_gn_delta`) with its
-  **Levenberg-Marquardt damping, gain ratio** (`svgd_gn_lm*`) and the cost-weighted metric.
+  **Levenberg-Marquardt damping, gain ratio** (the old `svgd_gn_lm*` family) and the
+  cost-weighted metric. (The name `svgd_gn_lm` returned later the same day with a different
+  meaning: the fixed Levenberg damping of the Stein variational Newton metric, item 4.)
 - **q-step clamp** (`svgd_q_step_max`).
 - **float64 polish** (`svgd_polish_iters`, `svgd_polish_tol`, `svgd_polish_topk`): the re-check is
   on the swarm's own point.

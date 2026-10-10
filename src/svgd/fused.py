@@ -1,19 +1,22 @@
 """The svgd step split around the collision row: three pure stages, eager / compiled / graphed.
 
-One `al_svgd` step on the fielded robots (`BatchedProgram.has_analytic_row_jacobians`)
-is, with the only host work -- Drake's exact collision row, in this process -- between the
-stages:
+One `al_svgd` step on the fielded robots (`BatchedProgram.has_analytic_row_jacobians`) is, with
+the only host work -- Drake's exact collision row, in this process -- between the stages:
 
     stage 1 (GPU)   X -> cfg = q(X), q_plant                     the flow forward, no graph
     host            q_plant -> CPU
     stage 2 (GPU)   (X, cfg) -> J_q = dq/dX, kinematics + frame Jacobians    (launched, async)
     host            the collision row (row, d row / d q_plant), a per-particle Drake loop
-    stage 3 (GPU)   everything else: rows, scaling, AL coefficients, the objective and
-                    constraint gradients, kernel, the Stein direction, the gradient step
-                    and the clamp onto the true bounds (`update_step`).
+    stage 3 (GPU)   rows, scaling, the objective and constraint gradients, the kernel, the SVGD
+                    direction phi and the GN Hessian H (`direction_and_hessian`), the step --
+                    the GN solve `solve_ex` (capturable under the cuSOLVER pin) or
+                    svgd_lr / ||H||_F -- and the clamp onto the true bounds (`step_from`)
 
 Stage 2 does not depend on the collision row, so it is launched before the Drake loop runs;
-on the GPU it executes while the host is in Drake (asynchronously in graphed mode).
+on the GPU it executes while the host is in Drake (asynchronously in graphed mode). Nothing
+eigen-related is in the step: the exact lambda_max(H) is a diagnostic the solver takes eagerly
+at the dual-update checks (`eigvalsh` synchronises with the host to check for failure, which a
+CUDA graph cannot capture -- probed 2026-10-09 at every batch size, with either linalg backend).
 
 THREE MODES, ONE CODE PATH. The stage functions below are what runs in every mode: called
 directly (`eager`), wrapped in `torch.compile` (`compiled`), or the compiled function
@@ -77,9 +80,11 @@ class StepConfig:
     kernel: str                 # svgd_kernel: "q" | "none"
     bandwidth_floor: float      # svgd_bandwidth_floor
     inside: bool                # svgd_constraint_inside_kernel
-    lr: float                   # svgd_lr (the step is svgd_lr / rho)
+    lr: float                   # svgd_lr (a fraction of the Newton / Lipschitz step)
     T: float                    # svgd_temperature
     rho: float                  # svgd_rho, the penalty: fixed, shared by every particle
+    metric: str = "gn"          # svgd_metric: "gn" (Stein variational Newton) | "identity"
+    gn_lm: float = 0.0          # svgd_gn_lm, the Levenberg damping delta of the GN metric
 
     @staticmethod
     def from_options(opts):
@@ -87,7 +92,8 @@ class StepConfig:
                           bandwidth_floor=float(opts.svgd_bandwidth_floor),
                           inside=bool(opts.svgd_constraint_inside_kernel),
                           lr=float(opts.svgd_lr), T=float(opts.svgd_temperature),
-                          rho=float(opts.svgd_rho))
+                          rho=float(opts.svgd_rho), metric=str(opts.svgd_metric),
+                          gn_lm=float(opts.svgd_gn_lm))
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -111,7 +117,7 @@ _SKIP_CLASS_ATTRS = {("RowSpec", "lb"), ("RowSpec", "ub")}
 ## form is what the stages read and what `copy_constants` rebinds; recording those values
 ## made every mug target a new structure. Ints, bools, strings and None (sizes, slots,
 ## kinds, flags) are always recorded. Adding a float read to a stage means adding its name.
-_READ_FLOATS = {"_w_centering", "collision_scale", "c", "correction_bound", "mug_height"}
+_READ_FLOATS = {"_w_centering", "w_cfg", "collision_scale", "c", "correction_bound", "mug_height"}
 
 
 def _walk(obj, path, tensors, scalars, seen):
@@ -224,29 +230,85 @@ def kernel_terms(sc, cfg, finite, X):
     return K, R, True
 
 
-def update_step(tg, sc, X, gF, gC, K, R_x, finite):
-    """The update every mode shares (the split step's stage 3 and the autograd path):
+def gn_hessian(s, w_cfg, H_fx, J_q, J_h, J_g, g, mu, rho):
+    """`H_y [N, n, n]`, the Gauss-Newton Hessian of the augmented Lagrangian in the
+    normalised coordinates `y = X / s`:
 
-        y = X / s,   phi = kernels.stein_direction(K, s R_x, s gF, s gC, T, inside, kernel),
-        y <- y + (svgd_lr / rho) phi,   then the clamp onto the true bounds B.
+        H_x = w_cfg J_q^T J_q + H_fx + rho J_h^T J_h + rho J_g,act^T J_g,act,   H_y = S H_x S,
 
-    `gF = dF/dX`, `gC = d(L - f)/dX` and the pulled-back repulsion `R_x = J_q^T R` are in the
-    decision variables; multiplying by `s = tg.s` (the region half-widths) is the chain rule
-    into `y = X / s`. Returns `(X_new, clip [N], n_clip [N])`: the clamp's distance per
-    particle in the normalised coordinates and how many coordinates it moved."""
-    s = tg.s.unsqueeze(0)
+    `w_cfg J_q^T J_q` the joint-centering cost through dq/dx, `H_fx` the constant Hessian of
+    the costs quadratic in x (the correction penalty, ...), and the active set the standard PHR
+    one, `mu + rho g > 0`. `J_*` are the rows' Jacobians in the AL's units w.r.t. X."""
+    sv = s.view(1, 1, -1)
+    Jq, Jh, Jg = J_q * sv, J_h * sv, J_g * sv
+    act = ((mu + rho * g) > 0).to(Jg.dtype).unsqueeze(2)
+    H = (w_cfg * (Jq.transpose(1, 2) @ Jq) + (s.view(-1, 1) * H_fx * s.view(1, -1)).unsqueeze(0)
+         + rho * (Jh.transpose(1, 2) @ Jh) + rho * (Jg.transpose(1, 2) @ (act * Jg)))
+    return 0.5 * (H + H.transpose(1, 2))
+
+
+def direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kernel_on, S):
+    """The SVGD direction `phi` in `y = X / s` (`kernels.stein_direction`, the Tabor-Hermans
+    form) and the GN Hessian `H_y` (`gn_hessian`) at every particle, and the median over
+    particles of `|repulsion| / |drive|` (the kernel's actual share of phi). Non-finite
+    particles get `phi = 0`, `H = I`."""
+    N, n = X.shape
+    ch, cg = al.al_constraint_grad_coefficients(h, g, S, sc.rho)
+    gC = _bmv(J_h.transpose(1, 2), ch) + _bmv(J_g.transpose(1, 2), cg)
+    R_x = _bmv(J_q.transpose(1, 2), R) if kernel_on else torch.zeros_like(X)
+    sv = tg.s.unsqueeze(0)
     fin = finite.unsqueeze(1)
     zero = torch.zeros_like(X)
-    gF_y = torch.where(fin, s * gF, zero)
-    gC_y = torch.where(fin, s * gC, zero)
-    R_y = torch.where(fin, s * R_x, zero)
-    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside,
-                                  kernel=sc.kernel != "none")
-    Xn = X + s * ((sc.lr / sc.rho) * phi)
+    gF_y = torch.where(fin, sv * gF, zero)
+    gC_y = torch.where(fin, sv * gC, zero)
+    R_y = torch.where(fin, sv * R_x, zero)
+    use_kernel = sc.kernel != "none"
+    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside, kernel=use_kernel)
+    rep = R_y / N if use_kernel else zero
+    ratio = rep.norm(dim=1) / torch.clamp((phi - rep).norm(dim=1), min=torch.finfo(X.dtype).tiny)
+    ratio = torch.nanmedian(torch.where(finite, ratio, torch.full_like(ratio, float("nan"))))
+    H = gn_hessian(tg.s, tg.w_cfg, tg.H_fx, J_q, J_h, J_g, g, S.mu, sc.rho)
+    eye = torch.eye(n, dtype=X.dtype, device=X.device).unsqueeze(0).expand(N, -1, -1)
+    ok = finite & torch.isfinite(H).flatten(1).all(dim=1)
+    H = torch.where(ok.view(-1, 1, 1), H, eye)
+    return phi, H, ratio
+
+
+def step_from(tg, sc, X, phi, H):
+    """The update in `y = X / s`, then the clamp onto the true bounds B:
+
+        svgd_metric = "gn":       dy_i = svgd_lr (H_i + delta I)^-1 phi_i     (Stein variational
+                                  Newton, block-diagonal; delta = svgd_gn_lm)
+        svgd_metric = "identity": dy_i = (svgd_lr / ||H_i||_F) phi_i         (the per-particle
+                                  step; ||H||_F >= lambda_max(H), a safe Lipschitz bound and a
+                                  pure reduction, so the step stays graph-capturable)
+
+    Returns `(X_new, clip [N], n_clip [N])`: the clamp's distance per particle in y and how
+    many coordinates it moved. A failed solve (or a non-finite step) is a zero step."""
+    n = X.shape[1]
+    if sc.metric == "gn":
+        eye = torch.eye(n, dtype=X.dtype, device=X.device).unsqueeze(0)
+        Y, info = torch.linalg.solve_ex(H + sc.gn_lm * eye, phi.unsqueeze(2), check_errors=False)
+        dy = sc.lr * Y.squeeze(2)
+        good = (info == 0) & torch.isfinite(dy).all(dim=1)
+    else:
+        fro = torch.clamp(H.flatten(1).norm(dim=1), min=torch.finfo(X.dtype).tiny)
+        dy = (sc.lr / fro).unsqueeze(1) * phi
+        good = torch.isfinite(dy).all(dim=1)
+    dy = torch.where(good.unsqueeze(1), dy, torch.zeros_like(dy))
+    sv = tg.s.unsqueeze(0)
+    Xn = X + sv * dy
     Xp, _ = tg.bp.project(Xn)
     moved = (Xp != Xn) & torch.isfinite(Xn)
-    clip = torch.where(moved, (Xp - Xn) / s, zero).norm(dim=1)
+    clip = torch.where(moved, (Xp - Xn) / sv, torch.zeros_like(X)).norm(dim=1)
     return Xp.detach(), clip, moved.sum(dim=1)
+
+
+def lambda_max(H):
+    """`lambda_max(H_i)` exactly (`eigvalsh`, batched): a DIAGNOSTIC, never in the step.
+    EAGER ONLY: eigvalsh synchronises with the host to check for failure, which a CUDA graph
+    cannot capture."""
+    return torch.linalg.eigvalsh(H)[:, -1]
 
 
 def state_dict(S):
@@ -291,22 +353,23 @@ def _scale(tg, out):
 
 
 def stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S):
-    """The rest of one step: the rows and costs, their scaling, the AL coefficients, the
-    gradients `dF/dX` and `d(L - f)/dX` (closed form downstream of the configuration, the
-    flow's `J_q` from stage 2), the kernel, and `update_step`."""
+    """The rest of one step: the rows and costs, their scaling, the gradients (closed form
+    downstream of the configuration, the flow's `J_q` from stage 2), the kernel, the SVGD
+    direction and the GN Hessian (`direction_and_hessian`), and the step (`step_from`). `H`
+    is returned for the solver's eager lambda_max diagnostic at the checks."""
     bp = tg.bp
     S = ALState(**S)
     out = bp.assemble(X, cfg, cfg, kin, col_row, col_grad)
     h, g, finite, infeas = _scale(tg, out)
-    ch, cg = al.al_constraint_grad_coefficients(h, g, S, sc.rho)
     dFc, dFx = bp.cost_gradient_parts(X, cfg)
     gF = _bmv(J_q.transpose(1, 2), dFc) + dFx
-    gC = tg.constraint_gradient(out, X, J_q, ch, cg)
+    J_h, J_g = tg.row_jacobians_out(out, X, J_q)
     K, R, kernel_on = kernel_terms(sc, cfg, finite, X)
-    R_x = _bmv(J_q.transpose(1, 2), R) if kernel_on else torch.zeros_like(X)
-    Xn, clip, n_clip = update_step(tg, sc, X, gF, gC, K, R_x, finite)
-    return dict(X=Xn, h=h.detach(), g=g.detach(), F=out.F.detach(), infeas=infeas,
-                finite=finite, clip=clip, n_clip=n_clip)
+    phi, H, ratio = direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R,
+                                          kernel_on, S)
+    Xn, clip, n_clip = step_from(tg, sc, X, phi, H)
+    return dict(X=Xn, clip=clip, n_clip=n_clip, H=H, ratio=ratio, h=h.detach(), g=g.detach(),
+                F=out.F.detach(), infeas=infeas, finite=finite)
 
 
 ## ------------------------------------------------------------------------------------ ##
