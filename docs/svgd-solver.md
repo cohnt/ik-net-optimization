@@ -59,7 +59,7 @@ latent ball are inequality ROWS, never bounds.
      Cui, Marzouk, Spantini & Scheichl, "A Stein variational Newton method", NeurIPS 2018):
      `dy_i = svgd_lr (H_i + delta I)^-1 phi_i`, the metric applied to the whole direction,
      repulsion included (SVN's definition), `delta = svgd_gn_lm` (Levenberg damping),
-     `svgd_lr = 1`. `H_i` is the Gauss-Newton Hessian of the AL at particle i in y:
+     `svgd_lr = 0.3` (a damped fraction of the Newton step; option table). `H_i` is the Gauss-Newton Hessian of the AL at particle i in y:
      `S (w J_q^T J_q + H_fx + rho J_h^T J_h + rho J_g,act^T J_g,act) S` -- the joint-centering
      cost through dq/dx, the constant Hessian of the costs quadratic in x (the correction
      penalty), and the rows with the PHR active set `mu_ij + rho g_ij > 0`. Solved per particle
@@ -136,7 +136,7 @@ reported as the collision row's share of the wall.
 | `svgd_temperature` | 1.0 | 2: T, fixed |
 | `svgd_lr` | 0.3 | 4: a fraction of the metric's step: `svgd_lr (H + delta I)^-1 phi` (gn) or `svgd_lr / \|\|H\|\|_F` (identity). Chosen 2026-10-10 by the screen at rho 1e3, delta 10 on 6 grasp + 6 pose Panda cells, most feasible cells with ties to the larger lr: lr 0.3 solved 24/24 (learned 12/12, joint space 12/12) resampling 0.07 of N per check, lr 1.0 solved 22/24 resampling 0.12 |
 | `svgd_metric` | `gn` | 4: `gn` (Stein variational Newton) or `identity` |
-| `svgd_gn_lm` | 10 | 4: delta, the Levenberg damping of the GN metric. Chosen 2026-10-10 by the most feasible cells (learned + joint space) on 6 grasp + 6 pose Panda cells, ties to the larger: delta 1e-2 / 1 / 10 gave 2 / 3 / 6 (1e-4 diverged); then svgd_lr 1.0 / 0.3 / 0.1 at delta 10 gave 6 / 0 / 0, so `svgd_lr` stays 1.0 |
+| `svgd_gn_lm` | 10 | 4: delta, the Levenberg damping of the GN metric. Chosen 2026-10-10 by the most feasible cells (learned + joint space) on 6 grasp + 6 pose Panda cells, ties to the larger: delta 1e-2 / 1 / 10 gave 2 / 3 / 6 (1e-4 diverged); then svgd_lr 1.0 / 0.3 / 0.1 at delta 10 gave 6 / 0 / 0 -- all at rho 10, and the 0.3 / 0.1 cells were mostly `error` records from the since-fixed eigvalsh crash, so that lr reading is void; `svgd_lr` was chosen later by the screen at rho 1e3 (its row) |
 | `svgd_row_units` | `natural` | 1: `natural` or `tolerance` (the control) |
 | `svgd_row_length_scale` | 1.0 | 1: metres per radian on the orientation-type rows |
 | `svgd_kernel` | `q` | 5: `q` or `none` |
@@ -188,8 +188,10 @@ program's own scene. Local runs still go under `systemd-run --user --scope -p Me
 - **Orientation-row scale** (`svgd_row_scale_rot`), **per-block jitter sigmas** (`svgd_jitter_z`,
   `_c_pos`, `_c_rot`, `_qc`, `_q`; one `svgd_jitter`), **resample period** (`svgd_resample_every`;
   every check).
-- **The cuSOLVER pin** (`preferred_linalg_library`): no batched linear solve remains. The
+- **The cuSOLVER pin** (`preferred_linalg_library`): no batched linear solve remained. The
   recompile-limit raise and the inductor options stay (the profiler's many structures need them).
+  (The pin RETURNED later the same day with the Stein variational Newton solve, item 4: a batched
+  `solve_ex` is graph-capturable only under it.)
 - **The per-particle penalty and every gate on the multipliers** (later the same day): the
   per-particle `rho_i` with Powell's growth test (`svgd_rho0`, `svgd_rho_growth`, `svgd_rho_gamma`,
   `svgd_rho_max`), the feasibility tolerance `eta_i` and its `rho0^-0.1` start, `v_prev`, and the
@@ -314,6 +316,248 @@ record's 180 s:
   feasibility-agreement check, which must read zero.
 
 ## Smoke results
+
+### The re-registered method, measured 2026-10-10
+
+Measured 2026-10-10 00:50-04:39 EDT on the laptop (RTX 3080 Ti, 20 cores), in five steps:
+the delta and lr probes, then a rho screen, then the attribution, then a one-setting-at-a-time
+screen, and finally the re-smoke. Each step chose a default, and the next step ran at it. The
+first four steps run on a **development grid**, not the smoke matrix:
+
+- the Panda `n6`, both tasks (`mugshelf` grasp, `posetip` pose), `paired` start;
+- `--targets 3 --guesses 2 --seed 1`, which gives 6 cells per task, 12 per arm and 24 per setting;
+- a 20 s cap, N = 64, `svgd_kernel=q`, a float32 swarm, compiled and graphed;
+- `--set correction_cost_weight=10.0 --config latent --scene hardened --shelf-inset 0.1
+  --target-placement shelf`, with arms `learned,numerical`.
+
+Every run went alone, in the foreground, under `systemd-run --user --scope -p MemoryMax=20G -p
+MemorySwapMax=0`, with loadavg logged at both ends. No run in these tables exceeded 2.8, so none
+is contaminated.
+
+**Every table prints its `error` cells.** The `lambda_max` diagnostic (an eager `eigvalsh` at the
+checks) raised `LinAlgError` on an ill-conditioned float32 H. The benchmark records such a cell as
+`fail_reason = error`, so the cell is not counted as a solver failure.
+
+- The fix: the diagnostic now runs in float64, with NaN on failure (7dec630).
+- Affected: the delta and lr probes and the first (rho 10) attribution, which carry error cells.
+- Clean: every run from the rho screen on has zero.
+- The affected runs were not re-run, because the rho screen moved the default under them
+  (coordinator's call).
+
+**1. The delta probe** (`svgd_gn_lm`; rho 10, lr 1, alpha = rho, K 10). The rule, fixed before
+the probe: most feasible cells, ties to the larger delta.
+
+| delta | learned errors | learned grasp / pose | joint space grasp / pose | resampled / N per check, learned median (grasp / pose) |
+| --- | --- | --- | --- | --- |
+| 1e-4 | 0 | 0/6 / not run | 0/6 / not run | 1.00 (all 64, every check) / not run: diverges |
+| 1e-2 | 0 | 1/6 / 0/6 | 0/6 / 1/6 | 1.00 / 1.00 |
+| 1 | 4 | 0/6 / 2/6 | 0/6 / 1/6 | 0.06 / 0.02 |
+| 10 | 4 | 0/6 / 5/6 | 0/6 / 1/6 | 0.01 / 0.01 |
+
+delta = 10 was taken. Resampling falls with the damping, from every particle at every check to 1%.
+It was committed as provisional (7dec630). **The lr probe that followed is void**: at delta 10, lr
+0.3 and lr 0.1 each scored 0/12 on both arms, but in each run 9 of the 12 learned cells were `error`
+records.
+
+**2. The rho screen** (delta 10, lr 1, alpha = rho, K 10). At rho 10 nothing worked: learned 5/12
+with 4 error cells, joint space 0/12. Grasp failed everywhere, the repulsion was 0.97 of the step,
+and N = 1 solved grasp 6/6 where N = 64 solved 0/6.
+
+| rho | learned errors | learned grasp / pose | joint space grasp / pose | total / 24 | resampled / N per check (learned, worst task) |
+| --- | --- | --- | --- | --- | --- |
+| 10 | 4 | 0/6 / 5/6 | 0/6 / 0/6 | 5 | 0.01 |
+| 1e3 | 0 | 6/6 / 6/6 | 4/6 / 6/6 | 22 | 0.12 |
+| 1e4 | 0 | 6/6 / 6/6 | 3/6 / 6/6 | 21 | 0.21 |
+| 1e5 | 0 | 6/6 / 6/6 | 5/6 / 6/6 | 23 | 0.21 |
+
+rho = 1e3 was taken (76fb323) because it is the smallest rho that works and it resamples least.
+1e5's one extra cell is a joint-space grasp cell. With the Newton metric a larger rho costs no
+conditioning, only churn. The same settings run twice, the screen's rho 1e3 run and attribution
+(a), **reproduce success cell for cell** (learned 12, joint space 10). The outer-step and
+`lambda_max` medians reproduce too. Only the failing joint-space cells' final violation moves (0.68 against
+0.56); those cells stop on the wall clock.
+
+**3. The attribution** at the fielded configuration of the time (rho 1e3, delta 10, lr 1, alpha =
+rho, K 10). It changes the row units and the metric one at a time:
+
+| config | arm | error cells | grasp | pose | med outer steps | med failing max_viol | med \|lam\|_max | multiplier clips | lambda_max med / max | \|\|H\|\|_F / lambda_max | repulsion / drive | collision share |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| (a) natural + gn (the fielded configuration) | learned | 0 | 6/6 | 6/6 | 10.5 | -- | 1.9e2 | 12276 | 2.6e4 / 3.4e38 | 1.02 | 0.16 | 0.85 |
+| | joint space | 0 | 4/6 | 6/6 | 22 | 0.56 | 1e4 | 24512 | 2.4e4 / 1.2e8 | 1.05 | 1.3e-5 | 0.95 |
+| (b) natural + identity | learned | 0 | 6/6 | 2/6 | 36.5 | 3.4e-4 | 8.2e3 | 13319 | 6.1e4 / 2.9e38 | 1.01 | 0.0029 | 0.85 |
+| | joint space | 0 | 0/6 | 0/6 | 74.5 | 0.13 | 1e4 | 6916 | 1.6e4 / 1.9e8 | 1.12 | 5.9e-5 | 0.94 |
+| (c) tolerance + gn | learned | 0 | 0/6 | 0/6 | 61 | 1.0e-3 | 0 | 932090 | 1 / 2.8e38 | 4.47 | 0 | 0.85 |
+| | joint space | 0 | 3/6 | 6/6 | 12 | 0.15 | 1e4 | 89551 | 1.8e12 / 4.2e14 | 1.12 | 2.7e-13 | 0.96 |
+| (d) tolerance + identity | learned | 0 | 6/6 | 2/6 | 31.5 | 0.059 | 1e4 | 207004 | 2.5e13 / 2.9e38 | 1.00 | 3.7e-11 | 0.86 |
+| | joint space | 0 | 2/6 | 0/6 | 69.5 | 0.0092 | 1e4 | 263916 | 2e12 / 2.4e13 | 1.15 | 1.5e-10 | 0.95 |
+
+(b) and (d) run at `svgd_lr=1.0` under `identity`. A `lambda_max` maximum near 3e38 is float32's
+ceiling: it is a runaway particle's H at the check, before resampling redraws it. Medians are over
+cells.
+
+- **The learned arm needs both changes together.** Natural units with the Newton metric gives
+  12/12. Either alone gives 8/12 (b, d). The Newton metric on tolerance-scaled rows (c) gives
+  **0/12**, and every particle is redrawn at every check: 3,700-4,000 redraws in 58-63 checks per
+  cell. So no multiplier survives (median `|lam|_max` 0). The median particle's H is the identity
+  the solver substitutes when H or the rows are non-finite: `lambda_max` is 1 and
+  `||H||_F / lambda_max` is sqrt(20).
+- **Joint space needs the metric, and the units barely matter.** The Newton metric gives 10 and 9
+  (a, c), against 0 and 2 under identity (b, d).
+- **The kernel acts only where both changes are in.** The repulsion is 0.16 of the learned arm's
+  step under (a) and at most 0.003 anywhere else.
+- **The conditioning change removed the 1e12-1e13 curvature** of the tolerance-scaled rows.
+  Under natural units the median `lambda_max` is 1.6-6.1e4.
+- `||H||_F` stays within 1.0-1.15x of `lambda_max` everywhere except (c)'s learned arm, so the
+  Frobenius step under `identity` is close to the exact Lipschitz step.
+
+The same ladder at rho 10, the earlier default, read (learned / joint space of 12): (a) 5/0 with 4
+error cells, (b) 0/0 with 6 error cells, (c) 3/0, (d) 6/1. A fifth column, (e), was the committed
+a9758e1 (tolerance units, before the metric existed), which read 2/0. Nothing worked at rho 10,
+which is why the rho screen came first.
+
+**4. The screen**: one setting at a time from the fielded configuration (rho 1e3, delta 10, lr 1,
+alpha = rho, K 10, N 64, T 1, kernel `q`, jitter paired init, Tabor-Hermans form). The verdicts
+were fixed before the screen and are mechanical:
+
+- DIVERGES: either arm resamples more than 0.10 of N per check (median, worst task).
+- UNSTABLE: the total is at least 2 below the reference's.
+- SLOW: the total ties the reference's, but the median check at which a first particle is feasible
+  is more than twice the reference's.
+- OK: otherwise.
+
+| setting | errors (L / J) | learned grasp / pose | joint space grasp / pose | total / 24 | med failing viol, J | resampled / N per check (L) | stops, learned | stops, joint space | ms / inner step (L / J) | med check to 1st feasible | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| reference (lr 1) | 0 / 0 | 6/6 / 6/6 | 4/6 / 6/6 | 22 | 0.56 | 0.12 | 12 converged | 10 converged, 2 clock | 28.5 / 25.8 | 3 | (reference) |
+| `svgd_rho=10` | 4 / 0 | 0/6 / 5/6 | 0/6 / 0/6 | 5 | 0.047 | 0.01 | 5 converged, 3 clock, 4 error | 12 clock | 27.7 / 25.6 | 29 | UNSTABLE |
+| `svgd_rho=1e4` | 0 / 0 | 6/6 / 6/6 | 3/6 / 6/6 | 21 | 0.62 | 0.21 | 12 converged | 9 converged, 3 clock | 28.8 / 26.9 | 2 | DIVERGES |
+| `svgd_rho=1e5` | 0 / 0 | 6/6 / 6/6 | 5/6 / 6/6 | 23 | 0.061 | 0.21 | 12 converged | 11 converged, 1 clock | 28.3 / 27.6 | 2 | DIVERGES |
+| `svgd_inner_iters=1` | 0 / 0 | 6/6 / 6/6 | 0/6 / 0/6 | 12 | 0.89 | 0.09 | 12 converged | 10 step cap, 2 clock | 60.1 / 50.7 | 6 | UNSTABLE |
+| `svgd_inner_iters=100` | 0 / 0 | 6/6 / 6/6 | 2/6 / 5/6 | 19 | 4.3e-4 | 0.13 | 5 converged, 7 clock | 3 converged, 9 clock | 26.7 / 25.3 | 2 | DIVERGES |
+| `svgd_n=1` | 0 / 0 | 6/6 / 6/6 | 0/6 / 3/6 | 15 | 1.2 | 0.01 | 10 converged, 2 step cap | 3 converged, 9 step cap | 4.7 / 1.7 | 3 | UNSTABLE |
+| `svgd_n=256` | 0 / 0 | 6/6 / 6/6 | 5/6 / 6/6 | 23 | 0.079 | 0.11 | 12 converged | 6 converged, 6 clock | 103.4 / 106.6 | 1 | DIVERGES |
+| `svgd_n=1024` | 0 / 0 | 6/6 / 6/6 | 6/6 / 6/6 | 24 | -- | 0.20 | 12 clock | 12 clock | 417.4 / 437.1 | 1 | DIVERGES |
+| `svgd_kernel=none` | 0 / 0 | 6/6 / 6/6 | 0/6 / 6/6 | 18 | 0.60 | 0.07 | 6 converged, 6 clock | 6 converged, 6 clock | 28.6 / 26.2 | 2 | UNSTABLE |
+| `svgd_temperature=0.1` | 0 / 0 | 0/6 / 0/6 | 0/6 / 0/6 | 0 | 1.2 | 1.00 | 12 clock | 12 clock | 29.1 / 24.4 | -- | DIVERGES |
+| `svgd_temperature=10` | 0 / 0 | 6/6 / 6/6 | 3/6 / 5/6 | 20 | 1.5e-3 | 0.03 | 12 converged | 8 converged, 4 clock | 30.0 / 26.5 | 18 | UNSTABLE |
+| `svgd_paired_init=native` | 0 / 0 | 6/6 / 6/6 | 4/6 / 6/6 | 22 | 0.67 | 0.05 | 12 converged | 9 converged, 3 clock | 29.4 / 25.7 | 3 | OK |
+| `svgd_constraint_inside_kernel=True` | 0 / 0 | 0/6 / 0/6 | 0/6 / 0/6 | 0 | 0.49 | 0.84 | 12 clock | 12 clock | 34.0 / 28.5 | -- | DIVERGES |
+| **`svgd_lr=0.3`** | 0 / 0 | 6/6 / 6/6 | 6/6 / 6/6 | **24** | -- | 0.07 | 12 converged | 12 converged | 28.0 / 26.1 | 7 | **OK** |
+
+The `svgd_rho=10` row is attribution (a) at rho 10. The `svgd_inner_iters=1` row ran at rho 1e3.
+
+- **The reference sits over its own resampling line** (0.12 of N per check), so DIVERGES at
+  0.11-0.21 marks the reference's churn level or more. It does not mark a swarm that fails: rho
+  1e4, rho 1e5, N 256 and K 100 still solve 19-23 of 24. Only `svgd_temperature=0.1` and the
+  literal form diverge in the plain sense: 0 of 24, with 84-100% of the swarm redrawn at every
+  check.
+- **`svgd_lr=0.3` is the one setting that beats the reference without churning**: 24/24, with
+  resampling 0.07 of N per check. By the rule fixed beforehand (most feasible cells, ties to the
+  larger lr), it is the fielded step (a397b75). The cost is about twice the checks to a first
+  feasible particle (7 against 3). Wall clock per inner step is unchanged.
+- **The kernel is worth 4 cells, all on joint-space grasp.** `svgd_kernel=none` takes joint-space
+  grasp from 4/6 to 0/6, and the learned arm is unaffected.
+- **N = 1 does not beat N = 64** (pre-registered check 7): it is 15 against 22, losing 7 joint-space
+  cells to the step cap. N = 1024 solves 24/24 but never stops on its own (12 + 12 wall clock, 417 ms per inner
+  step).
+- The dual cadence has an interior optimum. K = 1 starves joint space into the step cap (0/12), and
+  K = 100 runs to the clock on 16 of 24 cells.
+- The temperature has one too. T = 0.1 diverges, and T = 10 slows the first feasible particle six
+  times.
+- The native swarm init ties the jitter init exactly (22/24, the same cells on both arms).
+- The collision row is 85-86% of the learned arm's step time and 94-96% of joint space's, in every
+  configuration above (attribution table), so ms per step is the in-process Drake loop's.
+
+**5. The re-smoke** at the new defaults (rho 1e3, delta 10, lr 0.3; a397b75), measured 04:21-04:39
+EDT. This is the pre-registered matrix's Panda rows (`scripts/svgd/smoke.py --rows panda --columns ipopt,al64`):
+the record's 10 cells, both tasks, both starts, the primary `al64` beside the IPOPT twin, at 20 s,
+under the 24G cap per child. All 8 runs wrote a summary, with 0 `error` records, and load stayed
+at 2.1 or below at both ends. Full tables: `python scripts/report_svgd.py --rows panda --columns
+ipopt,al64`.
+
+| row | learned svgd | joint space svgd | McNemar (svgd) | learned IPOPT twin | joint space IPOPT twin | record's IPOPT learned |
+| --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | **10**/10 | 4/10 (6 clock) | 6 / 0, p = 0.031: learned | 10/10 | 9/10 | 9 |
+| grasp native | **10**/10 | 4/10 (6 clock) | 6 / 0, p = 0.031: learned | 9/10 (1 clock) | 9/10 | 10 |
+| pose paired | 10/10 | 10/10 (1 clock) | tie | 9/10 | 6/10 | 6 |
+| pose native | 10/10 | 10/10 (1 clock) | tie | 10/10 | 6/10 | 9 |
+
+Error cells: 0 on every row. Only the learned arm runs the flow, so the record has no joint-space
+column to pair against here.
+
+| row | arm | outer steps (median) | ms / outer step | mean wall, s (IPOPT twin) | median max_viol | cost, both solved | feasible particles at stop | resampled / N, cumulative median / max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | learned | 24 | 309 | 7.55 (5.06) | 2.2e-5 | N/A (4 cells) | 6 | 0.31 / 1.00 |
+| | joint space | 32 | 285 | 14.68 (1.27) | 1.7e-4 | | 0 | 0 / 0 |
+| grasp native | learned | 12 | 304 | 4.00 (4.39) | 2.8e-5 | N/A (4 cells) | 13 | 0 / 0.016 |
+| | joint space | 32 | 283 | 14.64 (1.20) | 2.0e-4 | | 0 | 0 / 0 |
+| pose paired | learned | 12 | 264 | 3.90 (3.00) | 5.6e-5 | 6.74 | 19.5 | 0.45 / 1.00 |
+| | joint space | 18 | 263 | 6.95 (0.13) | 6.4e-5 | **4.56** | 4 | 0 / 0 |
+| pose native | learned | 14 | 251 | 3.95 (1.03) | 1.3e-5 | 7.73 | 39 | 0.016 / 0.125 |
+| | joint space | 18 | 247 | 6.64 (0.13) | 6.4e-5 | **4.86** | 4 | 0 / 0 |
+
+An outer step is K = 10 inner steps, so svgd's step count is NOT comparable to IPOPT's majors. The
+ms per inner step, 25-31, matches the screen's 28.
+
+**The learned arm solves 40 of 40.**
+
+- It matches or beats its IPOPT twin on every row (+0 to +1 cell) and the record on every row
+  (+0 to +4).
+- It stops on its own on all 40 cells (`converged`), in 12-24 outer steps.
+- Its wall clock is 3.9-7.6 s per cell, against the IPOPT twin's 1.0-5.1 s.
+- Solutions sit at `max_violation` 1e-5 to 6e-5: inside the task gate, but four orders above
+  IPOPT's 1e-8. The swarm is float32 and its own test is `|h| <= tol`.
+
+**Joint space under svgd is the weak arm on grasp.**
+
+- It solves 4 of 10 on both grasp rows against the twin's 9. The 6 failures are the same 6 cells
+  under both protocols, every one stopped by the clock.
+- Its multipliers sit at the `svgd_multiplier_max` clip: median `|lam|_inf` 1e4, with 10-11
+  thousand clipped entries per run.
+- Its failing cells end at `max_violation` 1e-4 to 0.4. Three are within 3e-4, so they are still
+  descending.
+- On pose it solves 10 of 10 against the twin's 6. The twin's 4 failures end at `max_violation` 0.04-0.49.
+- **Joint space is identical between protocols on all 20 svgd cells**, as it must be (its
+  native start is its paired start). Outer steps differ by 0-4 on clock-bound cells only.
+
+**The kernel is doing work on the learned arm.**
+
+- Feasible particles at stop: a median of 6-39 of 64.
+- The pairwise q-spread among them is 4.1-5.6 rad, against joint space's 1.5-1.7 among 0-4.
+  This is the solution set, not one point.
+- Cost on cells both arms solved (pose only; grasp has 4 shared cells, so it is N/A): the learned
+  solutions are dearer, 6.74 against 4.56 and 7.73 against 4.86. That is the direction the record
+  shows for IPOPT on grasp. Here it is on pose.
+
+**The pre-registered correction-box flag is CLEARED.** Under the re-registered method the learned
+arm's median `|q_c|_inf` on solved cells is 0.0014-0.0084, with **0 of 40** solutions on the ±0.1
+box. The 2026-10-09 solver read 0.072-0.100 and 20-60% on the box. The IPOPT twin reads ~2e-5,
+so svgd still spends more correction than IPOPT does, by two orders, but nowhere near the box.
+
+**Go / no-go, mechanically** (the reporter's own evaluation):
+
+| check | verdict | detail |
+| --- | --- | --- |
+| (1) | PASS on the summaries | 0 error records, 0 missing runs. The tests are run separately. |
+| (2) | PASS on all 4 rows | |
+| (3) | PASS | 0 disagreements between the solver's verdict, the Drake re-check and `verify()` |
+| (4) | PASS | 0 cells over cap + 1 s. The kill test is still owed. |
+| (5) | not read | no `--profile` given |
+| (6) | **FAIL as written** | see below |
+| (7) | not decidable | the re-smoke ran no `al1` |
+| (8) | manual | |
+
+Check (6) is per cell `n_resampled / svgd_n`, CUMULATIVE over the run:
+
+- The worst learned cell reads 1.00 on grasp paired and pose paired: 64 redraws over 12-24
+  checks, about 0.04-0.08 of N per check.
+- Native starts read 0.016-0.125.
+- The screen's per-check reading at lr 0.3 was 0.07.
+- Redraws happen only on the learned arm, and mostly from the paired start.
+
+The check as pre-registered fails, and reading it per check is a change to a rule above, which is
+Thomas's.
+
+### Superseded: the 2026-10-08 solver, smoked 2026-10-09
 
 **SUPERSEDED (2026-10-09).** Everything in this section and the next was measured on the
 2026-10-08 solver (Adam, the Gauss-Newton correction, the float64 polish, tsvgd / admm_svgd and the
