@@ -2835,8 +2835,8 @@ def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RU
 ##                 knone  (SVGD_R1K) `--set svgd_kernel=none`, the no-interaction control
 ##                        (batched AL), submitted held until released.
 ##               Both carry the sc_SVGD_R1_ tag family; together they are one stage.
-##               Every svgd METHOD option is at its ProgramOptions default in the staged code. The
-##               manifest sets exactly two other things:
+##               Every svgd METHOD option is at its ProgramOptions default in the staged code
+##               EXCEPT the three in (c). The manifest sets exactly three other things:
 ##                 (a) the execution mode scripts/svgd/smoke.py fields as `graphed`
 ##                     (`svgd_compile=True`, `svgd_cuda_graph=True`: compiled and captured by
 ##                     WarmUpSvgdStep before the first timed cell). An execution setting, not part
@@ -2850,6 +2850,8 @@ def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RU
 ##                     300 checks is ~90 s), and a row with >= 24 of 480 cells at a budget
 ##                     carries no verdict (docs/svgd-solver.md, "the cap rule"). Drop it by
 ##                     emptying SVGD_BUDGET if the PI rules otherwise.
+##                 (c) svgd_rho=1000, svgd_gn_lm=10, svgd_lr=1.0: the local probe's choice, pinned
+##                     because the staged cluster code (42a5893) predates it (SVGD_PINNED).
 ##               Within each manifest, grasp before pose.
 ##               Sharded 3x the IPOPT rows (24): the treatment STATUSQUO_SHARD_SCALE gives a
 ##               column that runs to the clock. Worst case, every cell at the clock on both arms,
@@ -2866,6 +2868,11 @@ SVGD_STAGES = ("SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K")
 SVGD_R1_SPLIT = {"SVGD_R1": "kq", "SVGD_R1K": "knone"}
 #: (a): the `graphed` mode of scripts/svgd/smoke.py's MODES, verbatim.
 SVGD_EXEC = ["--set", "svgd_compile=True", "--set", "svgd_cuda_graph=True"]
+#: (c): the probe-chosen method values, pinned EXPLICITLY (the coordinator, 2026-10-10). The local
+#: probe chose svgd_rho = 1000, svgd_gn_lm = 10, svgd_lr = 1.0, but the code staged on the cluster
+#: (42a5893) predates them -- its svgd_gn_lm default is 1e-2 -- and the tree cannot be restaged
+#: while stage PAPER runs. So every svgd item names all three; a later restage changes nothing.
+SVGD_PINNED = ["--set", "svgd_rho=1000", "--set", "svgd_gn_lm=10", "--set", "svgd_lr=1.0"]
 #: (b): the lifted step budget. ONE knob; the IPOPT `max_iter` is removed from svgd items.
 SVGD_STEP_CAP = 1000000
 SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
@@ -2880,11 +2887,11 @@ SVGD_NODES = 4                           # the xeon-g6-volta GrpTRES cap
 SVGD_ALLOWED_SETS = {
     "SVGD_R2": {"correction_cost_weight", "flow_cuda_graph", "max_iter"},
     "SVGD_R1": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
-                "svgd_outer_iters", "svgd_kernel"},
+                "svgd_outer_iters", "svgd_kernel", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
     "SVGD_R1K": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
-                 "svgd_outer_iters", "svgd_kernel"},
+                 "svgd_outer_iters", "svgd_kernel", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
     "SVGD_SMOKE": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile",
-                   "svgd_cuda_graph", "svgd_outer_iters"},
+                   "svgd_cuda_graph", "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
 }
 #: ProgramOptions defaults the manifest RELIES ON rather than sets (checked from source text).
 SVGD_RELIED_DEFAULTS = {"svgd_n": "64", "svgd_paired_init": '"jitter"', "svgd_kernel": '"q"',
@@ -2923,7 +2930,7 @@ def _svgd_as_svgd(it, variant, wall=None, cells_token=None):
     del a[i - 1:i + 1]
     if wall is not None:
         a[a.index("--wall-time") + 1] = str(float(wall))
-    a += SVGD_EXEC + SVGD_BUDGET + list(SVGD_VARIANTS[variant])
+    a += SVGD_EXEC + SVGD_BUDGET + SVGD_PINNED + list(SVGD_VARIANTS[variant])
     old = _svgd_flag(a, "--tag")
     head, tail = old.split("_ipopt_", 1)
     row, cells, cap, start = tail.split("_")
@@ -4976,6 +4983,10 @@ def selftest():
                         sets.get("svgd_outer_iters")) != ("True", "True", str(SVGD_STEP_CAP)) \
                         or "max_iter" in sets:
                     sv_fails.append(f"{stage}: {it['id']} not graphed / budget not svgd's own")
+                pinned = dict(x.split("=", 1) for x in SVGD_PINNED[1::2])
+                if {k: sets.get(k) for k in pinned} != pinned or \
+                        pinned != {"svgd_rho": "1000", "svgd_gn_lm": "10", "svgd_lr": "1.0"}:
+                    sv_fails.append(f"{stage}: {it['id']} lacks the probe-chosen rho/gn_lm/lr")
                 variant = tag.rsplit("_", 1)[1]
                 variants_seen.add(variant)
                 if variant not in SVGD_VARIANTS or \
