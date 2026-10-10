@@ -2,7 +2,7 @@
 """Read the svgd smoke (and later stage SVGD): the fourth method class against the record.
 
     .venv/bin/python scripts/report_svgd.py                                  # the smoke
-    .venv/bin/python scripts/report_svgd.py --prefix sc_SVGD --cells 480 --cap 180
+    .venv/bin/python scripts/report_svgd.py --stage SVGD                     # the cluster stage
     .venv/bin/python scripts/report_svgd.py --rows panda,posetip --profile results/profiling/svgd_step_<host>_<t>.json
 
 The matrix (robots x rows x starts x columns) and the tag scheme are IMPORTED from
@@ -38,8 +38,22 @@ Then an A/B section -- every svgd column against the primary `al64` it differs f
 setting, per arm, exact McNemar on the same cells -- and the go/no-go rules (1)-(8) evaluated
 mechanically where the summaries can decide them. Exit status: 0 clean (missing runs are not
 fatal), 2 if any pairing was refused, 3 if any bug line printed.
+
+`--stage SVGD` reads the cluster family `sc_SVGD_*` instead. Its tag scheme is NOT restated here:
+every logical run is enumerated from `cluster/gen_manifest.py`'s own builder (`stage_SVGD` over
+`SVGD_STAGES`), each tag parsed and the parse checked against the args that builder gave it, and
+each variant's settings read off those args -- so a round added there appears here (MISSING until
+it lands) without an edit. A run is used only if its `metadata["overrides"]`, solver, start, task,
+cap and cell count are what its manifest item ran. The rule is docs/svgd-solver.md's "per-row
+analysis rule": the LEAD of every row is learned under svgd against learned under IPOPT (the
+stage SVGD_R2 twin, same cells, exact McNemar); joint space under svgd is an ABLATION, printed
+beside it with its own McNemar against the joint-space IPOPT twin; learned-vs-joint-space under
+svgd is printed but is no headline and no tally is built on it. Every stage pairing also checks
+`scene_fingerprint` and the chart. Mean wall is over all cells, each clamped at the cap. Then
+every variant against the primary `kq` per arm, and a variant-by-row table across the rounds.
 """
 import argparse
+import ast
 import glob
 import json
 import math
@@ -48,7 +62,8 @@ import sys
 from collections import Counter
 
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-for _p in (REPO, os.path.join(REPO, "scripts"), os.path.join(REPO, "scripts", "svgd")):
+for _p in (REPO, os.path.join(REPO, "scripts"), os.path.join(REPO, "scripts", "svgd"),
+           os.path.join(REPO, "cluster")):
     if _p not in sys.path:
         sys.path.append(_p)
 
@@ -109,7 +124,7 @@ def load_record(root, robot, row, start, stage):
 
 
 ## ------------------------------------------------------------------ pairing --
-def incomparable(a, b):
+def incomparable(a, b, must=MUST_MATCH):
     """Why runs `a` and `b` must not be paired, or None. (A learned pairing ALSO needs the same
     chart -- `same_chart` -- because two charts are two formulations of the arm.)"""
     ma, mb = a.get("metadata", {}), b.get("metadata", {})
@@ -118,7 +133,7 @@ def incomparable(a, b):
         return "no grid_hash on one side -- provenance unknown"
     if ha != hb:
         return f"grid_hash {ha} != {hb}"
-    differs = [k for k in MUST_MATCH if ma.get(k) != mb.get(k)]
+    differs = [k for k in must if ma.get(k) != mb.get(k)]
     if differs:
         return "metadata differs: " + ", ".join(f"{k} {ma.get(k)!r} != {mb.get(k)!r}"
                                                 for k in differs)
@@ -171,7 +186,7 @@ def ms_per_inner(r):
     return 1e3 * swarm / inner
 
 
-def arm_stats(summary, arm, other):
+def arm_stats(summary, arm, other, clamp_wall=False):
     A, B = by_cell(summary, arm), by_cell(summary, other)
     recs = list(A.values())
     ok = [r for r in recs if r.get("feasible")]
@@ -190,7 +205,8 @@ def arm_stats(summary, arm, other):
         steps=median([r.get("iterations") for r in ok]),
         ms_step=median([ms_per_step(r) for r in recs]),
         ms_inner=median([ms_per_inner(r) for r in recs]),
-        wall=mean([r.get("wall_time") for r in recs]),
+        wall=mean([min(r["wall_time"], cap) if clamp_wall and cap is not None
+                   and r.get("wall_time") is not None else r.get("wall_time") for r in recs]),
         wall_max=max([r.get("wall_time") or 0.0 for r in recs], default=None),
         over_cap=(sum(1 for r in recs if (r.get("wall_time") or 0.0) > cap + 1.0)
                   if cap is not None else 0),
@@ -261,6 +277,40 @@ def pair_str(m):
 
 
 ## ------------------------------------------------------------------ the rows --
+def print_svgd_detail(rep, tag, L, J):
+    """Per arm: error / over-cap BUG lines, the svgd population lines, and the feasibility
+    agreement checks (solver vs its Drake re-check vs verify())."""
+    for arm, st in (("learned", L), ("numerical", J)):
+        if st["errors"]:
+            rep.bug(f"{tag} {ARM_NAME[arm]}: {st['errors']} cell(s) with fail_reason 'error'")
+        if st["over_cap"]:
+            rep.bug(f"{tag} {ARM_NAME[arm]}: {st['over_cap']} cell(s) over cap + 1 s "
+                    f"(max {st['wall_max']:.1f} s)")
+        if not st["is_svgd"]:
+            continue
+        print(f"    svgd {ARM_NAME[arm]:<12} N {fmt(st['n_particles'], 0)}  feasible particles "
+              f"(median) {fmt(st['n_feasible'], 0, 1)}  q-spread among them (median) "
+              f"{fmt(st['q_spread'], 0, 3)}  dual updates (median) {fmt(st['n_dual'], 0, 0)}  "
+              f"|lam|_inf at stop median {fmt_e(st['lam_med'], 0)} max {fmt_e(st['lam_max'], 0)}  "
+              f"|mu|_inf median {fmt_e(st['mu_med'], 0)} max {fmt_e(st['mu_max'], 0)}  "
+              f"multiplier clips {st['mclip']}  resampled/N median "
+              f"{fmt(st['resampled_median'], 0, 3)} max {fmt(st['resampled_max'], 0, 3)}  "
+              f"selected idx median {fmt(st['selected_median'], 0, 0)} (none: {st['selected_none']})  "
+              f"collision share of wall {fmt(st['coll_share'], 0, 2)}")
+        print(f"    {'':<17} stop {dict(st['stop'])}  warm-up {fmt(st['warmup'], 0, 1)} s  "
+              f"compile (per record) {fmt(st['compile_record'], 0, 1)} s  "
+              f"recovered_* on {st['recovered']} cell(s)")
+    for arm, st in (("learned", L), ("numerical", J)):
+        ## Any disagreement between the solver's own verdict, its exact Drake re-check and
+        ## the harness's verify() is a bug in the solver or the harness, never a result.
+        if st.get("solver_vs_drake"):
+            rep.bug(f"{tag} {ARM_NAME[arm]}: solver_feasible != drake_feasible on "
+                    f"{len(st['solver_vs_drake'])} cell(s) {st['solver_vs_drake']}")
+        if st.get("drake_vs_verify"):
+            rep.bug(f"{tag} {ARM_NAME[arm]}: drake_feasible != verify() verdict on "
+                    f"{len(st['drake_vs_verify'])} cell(s) {st['drake_vs_verify']}")
+
+
 def print_row(rep, root, robot, row, start, columns, n_cells, cap, prefix, variant_kw, stage,
               use_void_record=False):
     title = f"{robot} {M.ROW_NAME[row]}, {start}"
@@ -333,35 +383,7 @@ def print_row(rep, root, robot, row, start, columns, n_cells, cap, prefix, varia
                   f"{fmt_e(st['viol'], 10, mk['viol'])}{fmt(st['cost'], 9, 3, mk['cost']) if st['n_both'] >= MIN_COST_CELLS else f"{'N/A':>9}"}"
                   f"{st['n_both']:>4}{fmt(st['steps'], 8, 0, mk['steps'])}{fmt(st['ms_step'], 9, 1)}"
                   f"{fmt(st['wall'], 8, 2, mk['wall'])}{fmt(st['wall_max'], 7, 1)}{st['to']:>6}{st['icap']:>6}")
-        for arm, st in (("learned", L), ("numerical", J)):
-            if st["errors"]:
-                rep.bug(f"{tag} {ARM_NAME[arm]}: {st['errors']} cell(s) with fail_reason 'error'")
-            if st["over_cap"]:
-                rep.bug(f"{tag} {ARM_NAME[arm]}: {st['over_cap']} cell(s) over cap + 1 s "
-                        f"(max {st['wall_max']:.1f} s)")
-            if not st["is_svgd"]:
-                continue
-            print(f"    svgd {ARM_NAME[arm]:<12} N {fmt(st['n_particles'], 0)}  feasible particles "
-                  f"(median) {fmt(st['n_feasible'], 0, 1)}  q-spread among them (median) "
-                  f"{fmt(st['q_spread'], 0, 3)}  dual updates (median) {fmt(st['n_dual'], 0, 0)}  "
-                  f"|lam|_inf at stop median {fmt_e(st['lam_med'], 0)} max {fmt_e(st['lam_max'], 0)}  "
-                  f"|mu|_inf median {fmt_e(st['mu_med'], 0)} max {fmt_e(st['mu_max'], 0)}  "
-                  f"multiplier clips {st['mclip']}  resampled/N median "
-                  f"{fmt(st['resampled_median'], 0, 3)} max {fmt(st['resampled_max'], 0, 3)}  "
-                  f"selected idx median {fmt(st['selected_median'], 0, 0)} (none: {st['selected_none']})  "
-                  f"collision share of wall {fmt(st['coll_share'], 0, 2)}")
-            print(f"    {'':<17} stop {dict(st['stop'])}  warm-up {fmt(st['warmup'], 0, 1)} s  "
-                  f"compile (per record) {fmt(st['compile_record'], 0, 1)} s  "
-                  f"recovered_* on {st['recovered']} cell(s)")
-        for arm, st in (("learned", L), ("numerical", J)):
-            ## Any disagreement between the solver's own verdict, its exact Drake re-check and
-            ## the harness's verify() is a bug in the solver or the harness, never a result.
-            if st.get("solver_vs_drake"):
-                rep.bug(f"{tag} {ARM_NAME[arm]}: solver_feasible != drake_feasible on "
-                        f"{len(st['solver_vs_drake'])} cell(s) {st['solver_vs_drake']}")
-            if st.get("drake_vs_verify"):
-                rep.bug(f"{tag} {ARM_NAME[arm]}: drake_feasible != verify() verdict on "
-                        f"{len(st['drake_vs_verify'])} cell(s) {st['drake_vs_verify']}")
+        print_svgd_detail(rep, tag, L, J)
         meta = s.get("metadata", {})
         if meta.get("compile_seconds") is not None and column == M.IPOPT:
             print(f"    flow compile (script) {meta['compile_seconds']:.1f} s")
@@ -370,26 +392,28 @@ def print_row(rep, root, robot, row, start, columns, n_cells, cap, prefix, varia
 
 
 ## ------------------------------------------------------------- A/B vs primary --
-def ab_vs_primary(rep, matrix, columns):
-    print(f"\n{'=' * 100}\nA/B against the primary {M.PRIMARY} ({M.variant_token(M.PRIMARY)}): each "
+def ab_vs_primary(rep, matrix, columns, primary=M.PRIMARY, twin=M.IPOPT, legend=None,
+                  must=MUST_MATCH):
+    legend = M.variant_token(M.PRIMARY) if legend is None else legend
+    print(f"\n{'=' * 100}\nA/B against the primary {primary} ({legend}): each "
           f"column differs from it in ONE setting; exact McNemar per arm on the same cells "
           f"(col+ = cells only that column solved)")
-    print(f"  {'row':<34}{'column':<12}{'arm':<13}{M.PRIMARY:>6}{'col':>6}{'col+':>6}{'prim+':>6}"
+    print(f"  {'row':<34}{'column':<12}{'arm':<13}{primary:>6}{'col':>6}{'col+':>6}{'prim+':>6}"
           f"{'p':>9}{'steps prim':>11}{'steps col':>10}{'wall prim':>10}{'wall col':>9}"
           f"{'feas prim':>10}{'feas col':>9}{'spread prim':>12}{'spread col':>11}")
     for column in columns:
-        if column in (M.IPOPT, M.PRIMARY):
+        if column in (twin, primary):
             continue
         for robot, row, start in matrix:
             label = f"{robot} {M.ROW_NAME[row]} {start}"
-            a = rep.blocks.get((robot, row, start, M.PRIMARY))
+            a = rep.blocks.get((robot, row, start, primary))
             b = rep.blocks.get((robot, row, start, column))
             for arm, key in (("learned", "L"), ("numerical", "J")):
                 if a is None or b is None:
                     print(f"  {label:<34}{column:<12}{ARM_NAME[arm]:<13}  missing "
                           f"({'primary' if a is None else column})")
                     continue
-                why = incomparable(a["run"], b["run"])
+                why = incomparable(a["run"], b["run"], must)
                 if why:
                     rep.refuse(f"A/B {label} {column}: {why}")
                     continue
@@ -495,6 +519,397 @@ def go_no_go(rep, matrix, columns, variant_kw, profile):
           "manifest is generated -- a manual step")
 
 
+## ================================================================== stage mode --
+## `--stage SVGD`: the cluster family `sc_SVGD_*`. Nothing about its tags is restated here: the
+## runs are enumerated from cluster/gen_manifest.py's own builder, each tag parsed and the parse
+## checked against the args the builder gave that item, and a variant's settings are read off
+## those args. A round added to gen_manifest's SVGD_ROUNDS therefore shows up here -- MISSING
+## until it lands -- with no edit.
+STAGE_FAMILIES = {"SVGD": "sc_SVGD"}
+STAGE_TWIN = M.IPOPT              # the IPOPT twin's variant name; its tags carry no variant token
+STAGE_TWIN_STAGE = "SVGD_R2"      # the gen_manifest stage that builds the twin
+STAGE_SKIP = ("SVGD_SMOKE",)      # a 4-cell grid at 60 s: it pairs with nothing
+STAGE_SOLVERS = ("ipopt", "svgd")
+## A matching grid_hash covers none of these, nor a scene edit: never pair across a scene change.
+STAGE_MUST_MATCH = MUST_MATCH + ("scene_fingerprint",)
+STAGE_VERDICT_MARK = {"svgd": "W", "tie": "T", "IPOPT": "L"}
+
+
+def _gen_manifest():
+    import gen_manifest                                    # cluster/, torch-free and fast
+    return gen_manifest
+
+
+def _flag(args, flag):
+    return args[args.index(flag) + 1]
+
+
+def manifest_sets(args):
+    """An item's `--set NAME=VALUE`s, typed as the benchmark scripts' `apply_overrides` types
+    them (`literal_eval`, else the string) -- exactly what lands in `metadata["overrides"]`."""
+    out = {}
+    for i, a in enumerate(args):
+        if a == "--set":
+            name, _, value = args[i + 1].partition("=")
+            try:
+                out[name.strip()] = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                out[name.strip()] = value
+    return out
+
+
+def parse_stage_tag(tag):
+    """`sc_SVGD_<round>_<robot>_<rung>_<solver>_<row>_<cells>_<cap>_<start>[_<variant>]` -> its
+    fields. The IPOPT twin carries no variant token (variant `ipopt`); every svgd run ends in
+    one. Parsed from the right, as report_statusquo.parse_tag is, so a robot name containing
+    underscores cannot shift the fields. Raises ValueError on anything else."""
+    p = tag.split("_")
+    if len(p) < 10 or p[:2] != ["sc", "SVGD"]:
+        raise ValueError(f"not an sc_SVGD stage tag: {tag}")
+    variant = None
+    if p[-1] not in M.STARTS:
+        variant, p = p[-1], p[:-1]
+    rung, solver, row, cells, cap, start = p[-6:]
+    robot = "_".join(p[3:-6])
+    if (not robot or solver not in STAGE_SOLVERS or row not in M.TASK_ROWS
+            or (solver == "ipopt") != (variant is None) or not cells.isdigit()):
+        raise ValueError(f"not an sc_SVGD stage tag: {tag}")
+    return dict(round=p[2], robot=robot, rung=rung, solver=solver, row=row, cells=int(cells),
+                cap=float(cap), start=start, variant=variant or STAGE_TWIN)
+
+
+def stage_catalogue(family="SVGD"):
+    """Every logical run of the family as gen_manifest builds it.
+
+    Returns (runs, variants): `runs` maps tag -> its parsed fields plus `manifest` (the
+    gen_manifest stage that builds it) and `sets` (its --set overrides); `variants` maps each
+    variant, in manifest order (the twin, then the primary, then the rounds), to its round,
+    manifest and sets. Asserts that every tag parses to what its item actually runs, and that a
+    variant runs the same settings on every row -- a broken scheme fails here, not in a table."""
+    assert family in STAGE_FAMILIES, family
+    G = _gen_manifest()
+    runs, variants = {}, {}
+    for stage in G.SVGD_STAGES:
+        if stage in STAGE_SKIP:
+            continue
+        for it in G.stage_SVGD(stage):
+            a = it["args"]
+            tag = _flag(a, "--tag")
+            t = parse_stage_tag(tag)
+            ran = dict(solver=_flag(a, "--solver"), start=_flag(a, "--start"),
+                       cap=float(_flag(a, "--wall-time")),
+                       cells=int(_flag(a, "--targets")) * int(_flag(a, "--guesses")))
+            parsed = {k: t[k] for k in ran}
+            assert parsed == ran, f"{tag} parses to {parsed}; its {stage} item runs {ran}"
+            assert M.TASK_ROWS[t["row"]][0] == _flag(a, "--task"), f"{tag}: task {_flag(a, '--task')}"
+            if stage == STAGE_TWIN_STAGE:
+                assert t["variant"] == STAGE_TWIN, f"{tag}: {stage} must be the IPOPT twin"
+            elif stage in G.SVGD_R1_SPLIT:
+                assert t["variant"] == G.SVGD_R1_SPLIT[stage], f"{tag}: {stage} carries {G.SVGD_R1_SPLIT[stage]}"
+            elif stage in G.SVGD_ROUNDS:
+                assert t["variant"] in G.SVGD_ROUNDS[stage], f"{tag}: not a variant of {stage}"
+            sets = manifest_sets(a)
+            info = dict(t, manifest=stage, sets=sets)
+            prev = runs.get(tag)                  # shards of one run share its base tag
+            assert prev is None or prev == info, f"{tag}: two items disagree about the run"
+            runs[tag] = info
+            v = variants.setdefault(t["variant"], dict(round=t["round"], manifest=stage, sets=sets))
+            assert (v["manifest"], v["sets"]) == (stage, sets), \
+                f"variant {t['variant']} runs different settings in {v['manifest']} and {stage}"
+    return runs, variants
+
+
+def stage_primary():
+    """The primary svgd variant: gen_manifest's SVGD_VARIANTS is in claim order, primary first."""
+    return next(iter(_gen_manifest().SVGD_VARIANTS))
+
+
+def setting_diff(variants, variant, primary):
+    """What `variant` sets differently from `primary`, named in full."""
+    if variant == primary:
+        return "the primary"
+    p, s = variants[primary]["sets"], variants[variant]["sets"]
+    out = [f"{k}={s[k]!r}" + (f" (primary {p[k]!r})" if k in p else "")
+           for k in s if k not in p or p[k] != s[k]]
+    out += [f"{k} unset (primary {p[k]!r})" for k in p if k not in s]
+    return ", ".join(out) or "nothing (identical to the primary)"
+
+
+def stage_run_problems(info, s):
+    """Why the run on disk is not the run its tag names, or []: its overrides, solver, start,
+    task, cap and cell count must be exactly what its manifest item ran."""
+    m = s.get("metadata", {})
+    want = dict(overrides=info["sets"], solver=info["solver"], start=info["start"],
+                task=M.TASK_ROWS[info["row"]][0], wall_time=info["cap"])
+    bad = [f"{k} {m.get(k)!r} != the manifest's {v!r}" for k, v in want.items() if m.get(k) != v]
+    for arm in ARMS:
+        n = len(s.get("records", {}).get(arm, []))
+        if n != info["cells"]:
+            bad.append(f"{ARM_NAME[arm]} has {n} of {info['cells']} cells (an incomplete merge?)")
+    return bad
+
+
+def solver_verdict(m):
+    """svgd vs IPOPT on the same cells: `a_only` is svgd's, `b_only` IPOPT's."""
+    if m["p"] >= 0.05:
+        return "tie"
+    return "svgd" if m["a_only"] > m["b_only"] else "IPOPT"
+
+
+def stage_rows(runs, robots=None, rows=None, starts=None):
+    """(robot, row, start) in report order -- every row the manifests build, after the filter."""
+    keys = {(t["robot"], t["row"], t["start"]) for t in runs.values()}
+    order = lambda k: (k[0], list(M.TASK_ROWS).index(k[1]), M.STARTS.index(k[2]))
+    return [k for k in sorted(keys, key=order)
+            if (not robots or k[0] in robots) and (not rows or k[1] in rows)
+            and (not starts or k[2] in starts)]
+
+
+def stage_print_row(rep, root, key, tags, runs, order, primary):
+    robot, row, start = key
+    infos = [runs[t] for t in tags.values()]
+    cells, cap = infos[0]["cells"], infos[0]["cap"]
+    assert all((i["cells"], i["cap"]) == (cells, cap) for i in infos), key
+    thr = budget_threshold(cells)
+    print(f"\n{'=' * 100}\n{robot} {M.ROW_NAME[row]}, {start}   ({cells} cells, cap {cap:g} s, "
+          f"rung {infos[0]['rung']})")
+    twin_tag = tags.get(STAGE_TWIN)
+    print(f"  IPOPT twin ({STAGE_TWIN_STAGE}): {twin_tag}")
+    print(f"  cap rule: >= {thr} of {cells} cells at the ITERATION budget (svgd: the step cap) -> "
+          f"no verdict; >= {thr} at the clock -> a result at the fielded clock, flagged")
+    ## Load, and use a run only if it is the run its tag names.
+    loaded, status = {}, {}
+    for v in order:
+        tag = tags.get(v)
+        if tag is None:
+            continue
+        s = load(root, tag)
+        if s is None:
+            rep.missing.append(tag)
+            loaded[v], status[v] = None, "MISSING"
+            continue
+        bad = stage_run_problems(runs[tag], s)
+        if bad:
+            rep.refuse(f"{tag} is not the run its tag names: " + "; ".join(bad))
+            loaded[v], status[v] = None, "REFUSED"
+            continue
+        loaded[v], status[v] = s, "ok"
+    twin = loaded.get(STAGE_TWIN)
+    stats = {v: (arm_stats(s, "learned", "numerical", clamp_wall=True),
+                 arm_stats(s, "numerical", "learned", clamp_wall=True))
+             for v, s in loaded.items() if s is not None}
+    vs_twin = {}
+    for v, s in loaded.items():
+        if v == STAGE_TWIN or s is None or twin is None:
+            continue
+        why = incomparable(s, twin, STAGE_MUST_MATCH)
+        if why is None and not same_chart(s, twin):
+            why = "checkpoint differs -- two charts are two formulations"
+        if why:
+            rep.refuse(f"{tags[v]} vs IPOPT twin {twin_tag}: {why}")
+            continue
+        vs_twin[v] = {arm: mcnemar_pair(s, arm, twin, arm) for arm in ARMS}
+    ## The LEAD (learned) and the ABLATION (joint space): each arm under svgd against the same
+    ## arm under IPOPT, on the same cells.
+    for arm, k, title in (
+            ("learned", 0, "LEAD -- learned under svgd vs learned under IPOPT"),
+            ("numerical", 1, "ABLATION -- joint space under svgd vs joint space under IPOPT "
+                             "(the swarm without the network; not a baseline)")):
+        print(f"\n  {title}, same cells, exact McNemar (svgd+ / IPOPT+ = cells only that solver solved):")
+        print(f"    {'variant':<10}{'round':<7}{'svgd':>6}{'IPOPT':>7}{'svgd+':>7}{'IPOPT+':>8}"
+              f"{'p':>10}  verdict")
+        for v in order:
+            if v == STAGE_TWIN or v not in tags:
+                continue
+            head = f"    {v:<10}{runs[tags[v]]['round']:<7}"
+            if status[v] != "ok":
+                print(f"{head}{status[v]}: {tags[v]}")
+                continue
+            m = vs_twin.get(v, {}).get(arm)
+            if m is None:
+                why = "the twin is MISSING" if twin is None else "refused, see above"
+                print(f"{head}{stats[v][k]['succ']:>6}{'--':>7}   not paired: {why}")
+                continue
+            sv, tw = stats[v][k], stats[STAGE_TWIN][k]
+            if max(sv["icap"], tw["icap"]) >= thr:
+                verdict_s = "NO VERDICT (iteration-budget-bound)"
+            else:
+                verdict_s = solver_verdict(m)
+                rep.verdicts[(key, v, arm)] = verdict_s
+            if max(sv["to"], tw["to"]) >= thr:
+                verdict_s += "   [clock-bound: a result at the fielded clock]"
+            print(f"{head}{m['a_succ']:>6}{m['b_succ']:>7}{m['a_only']:>7}{m['b_only']:>8}"
+                  f"{m['p']:>10.3g}  {verdict_s}")
+    ## Per variant: the reporting quartet, learned and joint space adjacent, and record["svgd"].
+    hdr = (f"    {'arm':<12}{'succ':>8}{'vs IPOPT twin':>20}{'viol':>10}{'cost':>9}{'n':>4}"
+           f"{'steps':>8}{'ms/step':>9}{'wall':>8}{'max':>7}{'t/out':>6}{'i/cap':>6}")
+    for v in order:
+        if v not in tags:
+            continue
+        tag, info = tags[v], runs[tags[v]]
+        print(f"\n  [{v}] round {info['round']} (manifest {info['manifest']}): {tag}")
+        if status[v] != "ok":
+            print(f"    {status[v]}: {tag}")
+            continue
+        s = loaded[v]
+        L, J = stats[v]
+        lj = mcnemar_pair(s, "learned", s, "numerical")
+        budget_bound = max(L["icap"], J["icap"]) >= thr
+        clock_bound = max(L["to"], J["to"]) >= thr
+        vj = "NO VERDICT (iteration-budget-bound)" if budget_bound else verdict(L["succ"], J["succ"], lj["p"])
+        print(f"    learned vs joint space under {info['solver']} (printed, NOT a headline): "
+              f"{L['succ']} v {J['succ']} of {L['n']}, L-only {lj['a_only']} / JS-only "
+              f"{lj['b_only']}, p = {lj['p']:.3g} -> {vj}"
+              + ("   [clock-bound: a result at the fielded clock]" if clock_bound else ""))
+        steps_label = ("steps = svgd OUTER steps, NOT comparable to IPOPT majors"
+                       if L["is_svgd"] or J["is_svgd"] else "steps = IPOPT majors")
+        print(f"    ({steps_label}; viol = median max_violation over all cells; cost = median "
+              f"reported cost on the n cells both arms solved; wall = mean over all cells, each "
+              f"clamped at the {cap:g} s cap)")
+        print(hdr)
+        tie = lj["p"] >= 0.05
+        ms = dict(succ=star((L["succ"], J["succ"]), lower_better=False, tie=tie),
+                  viol=star((L["viol"], J["viol"])), cost=star((L["cost"], J["cost"])),
+                  steps=star((L["steps"], J["steps"])), wall=star((L["wall"], J["wall"])))
+        for i, (arm, st) in enumerate((("learned", L), ("numerical", J))):
+            mk = {k: (m[i] if isinstance(m[0], str) else "") for k, m in ms.items()}
+            succ = f"{mk['succ']}{st['succ']}{mk['succ']}/{st['n']}"
+            cost = (fmt(st["cost"], 9, 3, mk["cost"]) if st["n_both"] >= MIN_COST_CELLS
+                    else f"{'N/A':>9}")
+            print(f"    {ARM_NAME[arm]:<12}{succ:>8}{pair_str(vs_twin.get(v, {}).get(arm)):>20}"
+                  f"{fmt_e(st['viol'], 10, mk['viol'])}{cost}{st['n_both']:>4}"
+                  f"{fmt(st['steps'], 8, 0, mk['steps'])}{fmt(st['ms_step'], 9, 1)}"
+                  f"{fmt(st['wall'], 8, 2, mk['wall'])}{fmt(st['wall_max'], 7, 1)}{st['to']:>6}{st['icap']:>6}")
+        print_svgd_detail(rep, tag, L, J)
+        rep.blocks[key + (v,)] = dict(L=L, J=J, lj=lj, run=s, vs_twin=vs_twin.get(v, {}), twin=twin)
+
+
+def stage_overview(rep, matrix, order, runs_by_row):
+    """Every variant across the rounds, one table per arm: successes per row and the verdict
+    against the IPOPT twin on the same cells. The learned table's W/T/L is the LEAD tally; the
+    joint-space table is the ablation's and carries no headline."""
+    print(f"\n{'=' * 100}\nVARIANTS ACROSS ROUNDS -- successes per row; the letter is the verdict "
+          f"against the IPOPT twin on the same cells\n  (W svgd wins, T tie, L IPOPT wins, NV no "
+          f"verdict: iteration-budget-bound; '-' not paired)")
+    cols = [f"{M.ROW_NAME[r].split(' ')[0]} {s}" for _, r, s in matrix]
+    for arm, k, title in (("learned", "L", "learned under svgd -- the question"),
+                          ("numerical", "J", "joint space under svgd -- the ablation")):
+        print(f"\n  {title}")
+        print(f"    {'variant':<10}{'round':<7}" + "".join(f"{c:>16}" for c in cols)
+              + ("     W/T/L vs IPOPT" if arm == "learned" else ""))
+        for v in order:
+            cells, tally, rnd = [], Counter(), None
+            for key in matrix:
+                tag = runs_by_row[key].get(v)
+                if tag is None:
+                    cells.append("")
+                    continue
+                rnd = rnd or tag.split("_")[2]
+                b = rep.blocks.get(key + (v,))
+                if b is None:
+                    cells.append("MISSING" if tag in rep.missing else "REFUSED")
+                    continue
+                if v == STAGE_TWIN:
+                    cells.append(str(b[k]["succ"]))
+                    continue
+                vd = rep.verdicts.get((key, v, arm))
+                mark = (STAGE_VERDICT_MARK[vd] if vd else
+                        "NV" if arm in b["vs_twin"] else "-")
+                if vd:
+                    tally[mark] += 1
+                cells.append(f"{b[k]['succ']} {mark}")
+            line = f"    {v:<10}{rnd or '':<7}" + "".join(f"{c:>16}" for c in cells)
+            if arm == "learned" and v != STAGE_TWIN:
+                line += f"     {tally['W']}/{tally['T']}/{tally['L']}"
+            print(line)
+
+
+def stage_pairwise(rep, matrix, order):
+    """Variant against variant, every pair that has landed, per arm and row: exact McNemar on the
+    same cells. Cell (row variant A, column variant B) reads `+a/-b p`, a = cells only A solved."""
+    print(f"\n{'=' * 100}\nVARIANT vs VARIANT -- every pair of landed svgd variants, exact McNemar on "
+          f"the same cells; row variant A against column variant B, +A-only/-B-only p")
+    for arm, title in (("learned", "learned under svgd"), ("numerical", "joint space under svgd (ablation)")):
+        for key in matrix:
+            landed = [v for v in order if v != STAGE_TWIN and key + (v,) in rep.blocks]
+            label = f"{key[0]} {M.ROW_NAME[key[1]]} {key[2]}"
+            if len(landed) < 2:
+                print(f"\n  {title}, {label}: {len(landed)} variant(s) landed -- nothing to pair")
+                continue
+            print(f"\n  {title}, {label}")
+            print(f"    {'A vs B':<10}" + "".join(f"{v:>18}" for v in landed[1:]))
+            for i, a in enumerate(landed[:-1]):
+                ra = rep.blocks[key + (a,)]["run"]
+                cells = []
+                for j, b in enumerate(landed[1:], start=1):
+                    if j <= i:
+                        cells.append("")
+                        continue
+                    rb = rep.blocks[key + (b,)]["run"]
+                    why = incomparable(ra, rb, STAGE_MUST_MATCH)
+                    if why:
+                        rep.refuse(f"{label} {a} vs {b}: {why}")
+                        cells.append("REFUSED")
+                        continue
+                    m = mcnemar_pair(ra, arm, rb, arm)
+                    cells.append(f"+{m['a_only']}/-{m['b_only']} p={m['p']:.2g}")
+                print(f"    {a:<10}" + "".join(f"{c:>18}" for c in cells))
+
+
+def stage_main(args):
+    prefix = STAGE_FAMILIES[args.stage]
+    runs, variants = stage_catalogue(args.stage)
+    primary = stage_primary()
+    order = list(variants)
+    if args.variants:
+        want = [t.strip() for t in args.variants.split(",") if t.strip()]
+        unknown = [t for t in want if t not in variants]
+        if unknown:
+            raise SystemExit(f"--variants: {unknown} not built by gen_manifest; it builds {order}")
+        order = [v for v in order if v in want or v in (STAGE_TWIN, primary)]
+    robots, rows, starts = M.parse_row_filter(args.rows)
+    matrix = stage_rows(runs, robots, rows, starts)
+    runs_by_row = {key: {} for key in matrix}
+    for tag, t in runs.items():
+        key = (t["robot"], t["row"], t["start"])
+        if key in runs_by_row and t["variant"] in order:
+            runs_by_row[key][t["variant"]] = tag
+    rep = Report()
+    rep.verdicts = {}
+    print(f"svgd report, stage {args.stage}: the {prefix}_* family from cluster/gen_manifest.py, "
+          f"{len(matrix)} rows x {len(order)} variants, root {args.root}")
+    print("  LEAD per row: learned under svgd vs learned under IPOPT (the twin) on the same cells; "
+          "joint space under svgd is an ABLATION (docs/svgd-solver.md, the per-row analysis rule).")
+    print(f"  variants (manifest order), each with every --set it runs, then what it changes from "
+          f"the primary {primary}:")
+    for v in order:
+        info = variants[v]
+        sets = " ".join(f"{k}={val!r}" for k, val in info["sets"].items())
+        what = "the IPOPT twin" if v == STAGE_TWIN else setting_diff(variants, v, primary)
+        print(f"    {v:<10}{info['round']:<4}{info['manifest']:<10}  {what}\n"
+              f"    {'':<24}--set {sets}")
+    for key in matrix:
+        stage_print_row(rep, args.root, key, runs_by_row[key], runs, order, primary)
+    ab_vs_primary(rep, matrix, order, primary=primary, twin=STAGE_TWIN,
+                  legend=f"round {variants[primary]['round']}, manifest {variants[primary]['manifest']}",
+                  must=STAGE_MUST_MATCH)
+    stage_overview(rep, matrix, order, runs_by_row)
+    stage_pairwise(rep, matrix, order)
+    print(f"\n{'=' * 100}\nmissing runs: {len(rep.missing)}")
+    for t in rep.missing:
+        print(f"  {t}")
+    if rep.refused:
+        print(f"\nREFUSED pairings: {len(rep.refused)}")
+        for t in rep.refused:
+            print(f"  {t}")
+    if rep.bugs:
+        print(f"\n!!!!!! {len(rep.bugs)} BUG line(s):")
+        for t in rep.bugs:
+            print(f"  {t}")
+    rep.status = 3 if rep.bugs else 2 if rep.refused else 0
+    return rep
+
+
 ## ---------------------------------------------------------------------- main --
 def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__,
@@ -514,11 +929,19 @@ def parse_args(argv):
                    help="pair wsg-gripper grasp rows against the record anyway (it predates the "
                         "mug-handle fix 452d784; valid only while both runs share that scene)")
     p.add_argument("--profile", default=None, help="a profile_step JSON, for go/no-go rule (5)")
+    p.add_argument("--stage", default=None, choices=sorted(STAGE_FAMILIES),
+                   help="read the cluster stage family instead of the smoke (SVGD: sc_SVGD_*, "
+                        "its runs enumerated from cluster/gen_manifest.py); --rows filters it, "
+                        "--root and --variants apply, the smoke's tag options do not")
+    p.add_argument("--variants", default=None,
+                   help="stage mode: only these variants (the twin and the primary always print)")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
+    if args.stage:
+        return stage_main(args)
     robots, rows, starts = M.parse_row_filter(args.rows)
     columns = M.parse_columns(args.columns)
     if M.IPOPT not in columns:

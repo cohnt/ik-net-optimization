@@ -13,6 +13,16 @@ not a copy of it. What is pinned:
   - the two population metrics (feasible particles, their q-spread) are medians over cells;
   - the A/B section pairs a column against the primary al64 per arm;
   - a missing tag is reported and not fatal.
+
+And the stage mode (`--stage SVGD`, the cluster's `sc_SVGD_*` family):
+
+  - every tag cluster/gen_manifest.py builds parses back to its item, for every variant it names;
+  - the LEAD pairing is learned-under-svgd against learned-under-IPOPT (the R2 twin), the joint-space
+    ablation its own pairing, and the A/B and variant-vs-variant tables pair against `kq`;
+  - a missing run prints as MISSING with its tag and is not fatal;
+  - a grid_hash mismatch, and a run whose overrides are not its manifest item's, REFUSE (exit 2).
+The stage fixtures keep gen_manifest's real tags but are 16-cell runs: the catalogue's cell count
+is patched to the fixture's, which is the one thing the 480-cell tag cannot carry.
 """
 import contextlib
 import io
@@ -22,10 +32,12 @@ import sys
 import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-for _p in (REPO, os.path.join(REPO, "scripts"), os.path.join(REPO, "scripts", "svgd")):
+for _p in (REPO, os.path.join(REPO, "scripts"), os.path.join(REPO, "scripts", "svgd"),
+           os.path.join(REPO, "cluster")):
     if _p not in sys.path:
         sys.path.append(_p)
 
+import gen_manifest as GM                                          # noqa: E402
 import report_svgd as R                                             # noqa: E402
 import smoke as M                                                   # noqa: E402
 from src import benchmark as bm                                     # noqa: E402
@@ -172,6 +184,179 @@ def test_everything_missing_is_not_fatal():
         assert len(rep.missing) == len(M.ALL_COLUMNS), rep.missing
         assert "missing runs: %d" % len(M.ALL_COLUMNS) in text
         assert rep.status == 0
+
+
+## ------------------------------------------------------------------ stage mode --
+STAGE_ROW = ("panda", "mugshelf", "paired")
+STAGE_FP = "64dbd94dc2c2f4007d89fc3bfe3f8777e0be272f"
+
+
+def _stage_tags():
+    runs, variants = R.stage_catalogue()
+    by = {(t["robot"], t["row"], t["start"], t["variant"]): tag for tag, t in runs.items()}
+    return runs, variants, by
+
+
+def _stage_meta(info, grid=GRID, overrides=None):
+    return dict(task=M.TASK_ROWS[info["row"]][0], solver=info["solver"], config="latent",
+                wall_time=info["cap"], seed=1, grid_hash=grid, robot=info["robot"],
+                scene="panda_finray_collision_hardened.yaml", scene_mode="hardened",
+                scene_fingerprint=STAGE_FP, target_placement="shelf", shelf_inset=0.1,
+                start=info["start"], checkpoint=CKPT, n_targets=T, n_guesses=G,
+                overrides=info["sets"] if overrides is None else overrides)
+
+
+def _stage_write(root, variant, learned, numerical, grid=GRID, overrides=None):
+    runs, _, by = _stage_tags()
+    tag = by[STAGE_ROW + (variant,)]
+    d = os.path.join(root, "panda", "benchmark", tag)
+    os.makedirs(d, exist_ok=True)
+    records = {"learned": learned, "numerical": numerical}
+    arms = [bm.Arm("learned", None), bm.Arm("numerical", None)]
+    payload = dict(metadata=_stage_meta(runs[tag], grid, overrides), n_targets=T, n_guesses=G,
+                   summary=bm.summarise(records, arms, T, G), records=records)
+    with open(os.path.join(d, "summary.json"), "w") as f:
+        json.dump(payload, f, default=bm._json_default)
+    return tag
+
+
+def _stage_run(root, extra=()):
+    real = R.stage_catalogue
+
+    def small(family="SVGD"):
+        runs, variants = real(family)
+        return {k: dict(v, cells=N_CELLS) for k, v in runs.items()}, variants
+
+    out = io.StringIO()
+    R.stage_catalogue = small
+    try:
+        with contextlib.redirect_stdout(out):
+            rep = R.main(["--stage", "SVGD", "--root", root, "--rows", ",".join(STAGE_ROW)]
+                         + list(extra))
+    finally:
+        R.stage_catalogue = real
+    return rep, out.getvalue()
+
+
+def _stage_twin(root, grid=GRID):
+    ## IPOPT twin: learned solves 0..9, joint space 0..9.
+    return _stage_write(root, R.STAGE_TWIN, [_rec(i, i < 10, 1.5, svgd=False) for i in range(N_CELLS)],
+                        [_rec(i, i < 10, 2.5, svgd=False) for i in range(N_CELLS)], grid)
+
+
+def test_stage_tag_parsing_every_variant():
+    runs, variants, _ = _stage_tags()
+    named = ({R.STAGE_TWIN} | set(GM.SVGD_VARIANTS)
+             | {v for rnd in GM.SVGD_ROUNDS.values() for v in rnd})
+    assert set(variants) == named, (sorted(variants), sorted(named))
+    assert next(iter(variants)) == R.STAGE_TWIN and list(variants)[1] == R.stage_primary() == "kq"
+    seen = set()
+    for stage in GM.SVGD_STAGES:
+        if stage in R.STAGE_SKIP:
+            continue
+        for it in GM.stage_SVGD(stage):
+            a = it["args"]
+            tag = a[a.index("--tag") + 1]
+            t = R.parse_stage_tag(tag)
+            assert t["solver"] == a[a.index("--solver") + 1] and t["start"] == a[a.index("--start") + 1]
+            assert M.TASK_ROWS[t["row"]][0] == a[a.index("--task") + 1]
+            ## Round trip: the fields rebuild the tag exactly.
+            rebuilt = "_".join(["sc", "SVGD", t["round"], t["robot"], t["rung"], t["solver"], t["row"],
+                                str(t["cells"]), f"{t['cap']:g}", t["start"]]
+                               + ([] if t["variant"] == R.STAGE_TWIN else [t["variant"]]))
+            assert rebuilt == tag, (rebuilt, tag)
+            assert runs[tag]["manifest"] == stage
+            seen.add((t["variant"], t["row"], t["start"]))
+    ## Every variant on all four Panda rows, and a variant's settings are its manifest's.
+    assert seen == {(v, r, s) for v in named for r in M.TASK_ROWS for s in M.STARTS}
+    assert variants["knone"]["sets"]["svgd_kernel"] == "none"
+    assert variants["rho1e4"]["sets"]["svgd_rho"] == 10000 and variants["kq"]["sets"]["svgd_rho"] == 1000
+    assert "max_iter" in variants[R.STAGE_TWIN]["sets"] and "max_iter" not in variants["kq"]["sets"]
+    ## Not stage tags: the smoke's, the cluster smoke's, the record's, a twin with a variant token.
+    for bad in (M.make_tag("panda", "mugshelf", "paired", "al64", 10, 20),
+                "sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq",
+                "sc_REMEASURE_panda_n6_ipopt_mugshelf_480_180_paired",
+                "sc_SVGD_R2_panda_n6_ipopt_mugshelf_480_180_paired_kq",
+                "sc_SVGD_R1_panda_n6_svgd_mugshelf_480_180_paired"):
+        try:
+            R.parse_stage_tag(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"parsed a non-stage tag: {bad}")
+
+
+def test_stage_lead_pairing_ab_and_missing():
+    with tempfile.TemporaryDirectory() as root:
+        _stage_twin(root)
+        ## kq: learned solves 0..13 (svgd-only 10..13), joint space 0..4 and 15 (svgd-only 15,
+        ## IPOPT-only 5..9).
+        _stage_write(root, "kq", [_rec(i, i < 14, 1.0) for i in range(N_CELLS)],
+                     [_rec(i, i < 5 or i == 15, 2.0) for i in range(N_CELLS)])
+        ## n1: learned solves 0..7 only -> 6 cells only kq solved.
+        _stage_write(root, "n1", [_rec(i, i < 8, 1.0) for i in range(N_CELLS)],
+                     [_rec(i, i < 5, 2.0) for i in range(N_CELLS)])
+        rep, text = _stage_run(root)
+        key = STAGE_ROW
+        b = rep.blocks[key + ("kq",)]
+        ## The LEAD: learned under svgd against learned under IPOPT, (svgd-only, IPOPT-only).
+        assert (b["vs_twin"]["learned"]["a_only"], b["vs_twin"]["learned"]["b_only"]) == (4, 0)
+        assert (b["vs_twin"]["numerical"]["a_only"], b["vs_twin"]["numerical"]["b_only"]) == (1, 5)
+        lead = text[text.index("LEAD -- learned under svgd"):text.index("ABLATION -- joint space")]
+        kq = next(l for l in lead.splitlines() if l.strip().startswith("kq"))
+        assert kq.split()[2:7] == ["14", "10", "4", "0", "0.125"], kq
+        assert rep.verdicts[(key, "kq", "learned")] == "tie"
+        abl = text[text.index("ABLATION -- joint space"):]
+        kqa = next(l for l in abl.splitlines() if l.strip().startswith("kq"))
+        assert kqa.split()[2:6] == ["6", "10", "1", "5"], kqa
+        ## learned-vs-joint-space under svgd is printed and labelled as no headline.
+        assert "learned vs joint space under svgd (printed, NOT a headline): 14 v 6" in text
+        assert "steps = svgd OUTER steps, NOT comparable to IPOPT majors" in text
+        ## Missing runs print with their tags and are not fatal.
+        _, _, by = _stage_tags()
+        knone = by[key + ("knone",)]
+        assert knone in rep.missing and f"MISSING: {knone}" in text
+        assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+        ## A/B against the primary kq: n1 has 0 cells only it solved, 6 only kq solved.
+        ab = text[text.index("A/B against the primary kq"):text.index("VARIANTS ACROSS ROUNDS")]
+        line = next(l for l in ab.splitlines() if " n1 " in l and "learned" in l)
+        f = line.split()
+        assert f[f.index("learned") + 1:f.index("learned") + 5] == ["14", "8", "0", "6"], line
+        ## The overview: the twin's count, then kq's with its verdict letter and W/T/L tally.
+        ov = text[text.index("VARIANTS ACROSS ROUNDS"):text.index("VARIANT vs VARIANT")]
+        row = next(l for l in ov.splitlines() if l.strip().startswith("kq"))
+        assert "14 T" in row and row.rstrip().endswith("0/1/0"), row
+        ## Variant vs variant: kq against n1 on the learned arm, +6/-0.
+        pw = text[text.index("VARIANT vs VARIANT"):]
+        assert "+6/-0" in pw, pw
+        ## Mean wall is clamped at the cap in stage mode.
+        tw = R.load(root, by[key + (R.STAGE_TWIN,)])
+        tw["records"]["learned"][0]["wall_time"] = 1000.0
+        st = R.arm_stats(tw, "learned", "numerical", clamp_wall=True)
+        assert abs(st["wall"] - (2.0 * 15 + 180.0) / 16) < 1e-12, st["wall"]
+
+
+def test_stage_grid_hash_refusal():
+    with tempfile.TemporaryDirectory() as root:
+        _stage_twin(root)
+        _stage_write(root, "kq", [_rec(i, i < 12, 1.0) for i in range(N_CELLS)],
+                     [_rec(i, i < 12, 2.0) for i in range(N_CELLS)], grid="ffffffffffff")
+        rep, text = _stage_run(root)
+        assert rep.blocks[STAGE_ROW + ("kq",)]["vs_twin"] == {}, "a mismatched grid must not pair"
+        assert any("grid_hash ffffffffffff != " + GRID in m for m in rep.refused), rep.refused
+        assert "REFUSED" in text and rep.status == 2 and not rep.bugs
+
+
+def test_stage_run_not_what_its_tag_names_is_refused():
+    with tempfile.TemporaryDirectory() as root:
+        _stage_twin(root)
+        _, variants, by = _stage_tags()
+        ## The kq tag holding a run made with knone's settings.
+        tag = _stage_write(root, "kq", [_rec(i, True, 1.0) for i in range(N_CELLS)],
+                           [_rec(i, True, 1.0) for i in range(N_CELLS)],
+                           overrides=variants["knone"]["sets"])
+        rep, text = _stage_run(root)
+        assert any(tag in m and "not the run its tag names" in m for m in rep.refused), rep.refused
+        assert STAGE_ROW + ("kq",) not in rep.blocks and rep.status == 2
 
 
 def main():
