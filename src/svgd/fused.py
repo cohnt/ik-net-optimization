@@ -307,8 +307,12 @@ def step_from(tg, sc, X, phi, H):
 def lambda_max(H):
     """`lambda_max(H_i)` exactly (`eigvalsh`, batched): a DIAGNOSTIC, never in the step.
     EAGER ONLY: eigvalsh synchronises with the host to check for failure, which a CUDA graph
-    cannot capture."""
-    return torch.linalg.eigvalsh(H)[:, -1]
+    cannot capture. Taken in float64; a batch the eigensolver fails on (an ill-conditioned or
+    degenerate float32 H, seen 2026-10-10) records NaN rather than ending the solve."""
+    try:
+        return torch.linalg.eigvalsh(H.double())[:, -1].to(H.dtype)
+    except torch.linalg.LinAlgError:
+        return torch.full(H.shape[:1], float("nan"), dtype=H.dtype, device=H.device)
 
 
 def state_dict(S):
