@@ -35,7 +35,7 @@ THE THREE PIECES IT BUILDS ON, each pinned by its own test:
                                         (`frame_pose_from_q` per frame would run the whole
                                         chain twice -- launch-bound on CUDA, ~22 ms);
   `collision_backend.collision_row`     Drake's own `MinimumDistanceLowerBoundConstraint`,
-                                        evaluated exactly by a process pool (no proxy).
+                                        evaluated exactly, in process (no proxy).
 
 ROBOTS WHOSE CONFIGURATION IS NOT THE PLANT'S q (the soft PCS arm) plug in behind two
 hooks on `from_program`: `body_pose_provider` (a `BodyPoseProvider`: `body_names`,
@@ -48,7 +48,7 @@ is refused by name rather than evaluated on the wrong plant vector.
 House rules: explicit `dtype=`/`device=` on every tensor (`jrl.config` mutates torch's
 defaults at import); no Python loop over particles; no in-place ops on autograd tensors;
 `evaluate` never raises on a non-finite particle -- NaN propagates through the flow, the
-kinematics and the pool (which screens non-finite rows before Drake sees them).
+kinematics and the collision evaluator (which screens non-finite rows before Drake sees them).
 """
 
 import os
@@ -67,7 +67,7 @@ from pydrake.solvers import (BoundingBoxConstraint, LinearConstraint, LinearCost
                              QuadraticConstraint, QuadraticCost)
 
 from src.svgd.batched_flow import BatchedFlow
-from src.svgd.collision_backend import DrakeCollisionPool, SceneSpec, collision_row
+from src.svgd.collision_backend import CollisionEvaluator, collision_row
 from src.svgd.kinematics_from_plant import (BatchedFK, BodyPoseProvider, KinematicTree,
                                             canonical_quat, rpy_from_quat, wrap_residual)
 
@@ -198,15 +198,14 @@ class BatchedProgram:
     ## -------------------------------- construction -------------------------------- ##
 
     @staticmethod
-    def from_program(program, dtype=torch.float64, device=None, collision_workers=None,
-                     pool=None, row_scaling=None, body_pose_provider=None,
+    def from_program(program, dtype=torch.float64, device=None,
+                     collision=None, row_scaling=None, body_pose_provider=None,
                      config_to_plant_q=None, regions_as_rows=True, profile=False):
         """Read everything off a constructed program (after `create_prog`).
 
         `device` defaults to wherever the program's network lives (learned arm) or CUDA if
-        available (joint space). `pool` is a `DrakeCollisionPool` to share; otherwise one is
-        built from `SceneSpec.from_program(program)` with `collision_workers` processes
-        (default `os.cpu_count() // 2`) and owned (closed by `close()`).
+        available (joint space). `collision` is a `CollisionEvaluator` to share; otherwise the
+        program's own (`CollisionEvaluator.from_program`: its constraint, in this process).
 
         `body_pose_provider` / `config_to_plant_q` are the hooks for a robot whose
         configuration is not the plant's position vector (module docstring).
@@ -335,14 +334,11 @@ class BatchedProgram:
                         torch.tensor(rhi, dtype=dtype, device=self.device))
         self.correction_bound = float(self.options.correction_bound)
 
-        ## -- the collision pool ----------------------------------------------------------
-        self._owns_pool = pool is None
+        ## -- the collision row: the program's own constraint, in this process --------------
         self._has_collision = any(b.kind == "collision" for b in self._blocks)
-        if pool is None and self._has_collision:
-            if collision_workers is None:
-                collision_workers = max(1, (os.cpu_count() or 2) // 2)
-            pool = DrakeCollisionPool(SceneSpec.from_program(program), workers=int(collision_workers))
-        self.pool = pool
+        if collision is None and self._has_collision:
+            collision = CollisionEvaluator.from_program(program)
+        self.collision = collision
         self._native_c = self._compute_native_c()
         return self
 
@@ -682,9 +678,9 @@ class BatchedProgram:
 
     def evaluate(self, X, need_collision=True, detach_kinematics=False,
                  row_jacobians=False, collision=None) -> Evaluation:
-        """All rows and costs at every particle; one flow pass, one FK pass, one pool call.
+        """All rows and costs at every particle; one flow pass, one FK pass, one collision call.
 
-        `need_collision=False` skips the pool: the collision entries of `drake_rows` and
+        `need_collision=False` skips the collision row: the collision entries of `drake_rows` and
         `g` are then NaN and `collision_y` is None -- a diagnostic/timing mode, never a
         solver step's target. Counted once into `program.eval_counts["map_forward"]`.
 
@@ -697,19 +693,19 @@ class BatchedProgram:
         rows by autograd, use neither.
 
         THE COLLISION GRADIENT. Where the plant vector carries an autograd graph the row
-        goes through `collision_row` (its backward is the pool's stored gradient, which is
+        goes through `collision_row` (its backward is the evaluator's stored gradient, which is
         also exposed as `extras["collision_grad"]`). Where it does NOT -- the joint-space
-        arm, and every detached-kinematics evaluation -- the pool is called directly, with
+        arm, and every detached-kinematics evaluation -- the evaluator is called directly, with
         the gradient requested iff `row_jacobians`. (Until 2026-10-08 the gradient was read
         off the autograd node only, so in exactly those two cases `collision_grad` was None
         and the solver's collision-row Jacobian was silently ZERO on both arms.)
 
-        `collision=(row [N], grad [N, nq] or None)`, scaled as the pool returns them,
-        supplies the collision row precomputed (the solver's split step: the pool runs
-        while the GPU does the Jacobians); the pool is then not called.
+        `collision=(row [N], grad [N, nq] or None)`, scaled as the evaluator returns them,
+        supplies the collision row precomputed (the solver's split step: Drake runs on the
+        CPU while the GPU does the Jacobians); the evaluator is then not called.
 
         The pieces -- `kinematics`, `collision_eval`, `assemble` -- are public so a fused
-        step can run them in stages with the pool call between; `evaluate` is exactly
+        step can run them in stages with the collision call between; `evaluate` is exactly
         their composition.
         """
         X = self._as_X(X)
@@ -734,10 +730,10 @@ class BatchedProgram:
             if collision is not None:
                 col_row, col_grad = collision
             elif kin[0].requires_grad:
-                col_row = collision_row(kin[0], self.pool)
-                ## The pool's own `d row / d q_plant` [N, nq] rides on the autograd node
+                col_row = collision_row(kin[0], self.collision)
+                ## The evaluator's own `d row / d q_plant` [N, nq] rides on the autograd node
                 ## (`CollisionRow.save_for_backward`); exposed so a solver assembling a
-                ## row Jacobian reuses it instead of re-evaluating the pool.
+                ## row Jacobian reuses it instead of re-evaluating the row.
                 col_grad = col_row.grad_fn.saved_tensors[0]
             else:
                 col_row, col_grad = self.collision_eval(kin[0], need_grad=row_jacobians)
@@ -752,18 +748,18 @@ class BatchedProgram:
     def kinematics(self, cfg_k, row_jacobians=False):
         """`(q_plant, pose_frame, pose_flow, frame_jac)` at configurations `cfg_k`: the
         plant vector, the two frames' poses and (with `row_jacobians`) the program frame's
-        geometric Jacobians `(Jp, Jw)`, else None. No pool, no rows."""
+        geometric Jacobians `(Jp, Jw)`, else None. No collision, no rows."""
         q_plant = self.config_to_plant_q(cfg_k)
         frames = self._frame_poses(q_plant, jacobians=row_jacobians)
         frame_jac = (frames[0][2], frames[0][3]) if row_jacobians else None
         return q_plant, frames[0][:2], frames[1][:2], frame_jac
 
     def collision_eval(self, q_plant, need_grad=True):
-        """`(row [N], grad [N, nq] or None)`: the pool's SCALED collision row (and its
+        """`(row [N], grad [N, nq] or None)`: the SCALED collision row (and its
         gradient) at `q_plant`, as tensors on `q_plant`'s device and dtype. No autograd
         node. A host round trip (Drake runs on the CPU in float64)."""
         Q = q_plant.detach().to("cpu", torch.float64).numpy()
-        value, grad = self.pool.eval(Q, need_grad=need_grad)
+        value, grad = self.collision.eval(Q, need_grad=need_grad)
         row = torch.as_tensor(value).to(device=q_plant.device, dtype=q_plant.dtype)
         g = None if grad is None else torch.as_tensor(grad).to(device=q_plant.device, dtype=q_plant.dtype)
         return row, g
@@ -773,7 +769,7 @@ class BatchedProgram:
         configuration `cfg` (with its graph, if any) and its kinematics copy `cfg_k`, the
         `kinematics(cfg_k)` tuple, and the collision row and gradient (`None` row: the
         collision entries are NaN). Pure tensor arithmetic over a fixed block inventory --
-        no pool, no host sync -- so a fused step can compile and capture it."""
+        no Drake call, no host sync -- so a fused step can compile and capture it."""
         N = X.shape[0]
         q_plant, pose_frame, pose_flow, frame_jac = kin
 
@@ -1020,7 +1016,7 @@ class BatchedProgram:
                                                  R = Rz(y) Ry(p) Rx(r); singular at |p| = pi/2
                                                  exactly where the row's own derivative is)
           mug          Minv[:3, :3] Jp          (the homogeneous row minus its constant)
-          collision    the pool's d row / d q   (`extras["collision_grad"]`)
+          collision    the evaluator's d row / d q   (`extras["collision_grad"]`)
           joint_limit  I
 
         The `wrap_residual` shift and the target are constants. Plant columns beyond the
@@ -1085,7 +1081,7 @@ class BatchedProgram:
         """`[(kind, start, size), ...]` of the `drake_rows` blocks, in Drake order; `kind`
         is one of pose_pos / pose_rpy / mug / collision / joint_limit. What a solver routes
         on when it assembles the generic rows' derivative w.r.t. the configuration: the
-        joint-limit rows ARE the configuration, the collision row's gradient is the pool's
+        joint-limit rows ARE the configuration, the collision row's gradient is the evaluator's
         (`Evaluation.extras["collision_grad"]`), and only the task rows need autograd."""
         return [(b.kind, b.start, b.size) for b in self._blocks if b.binding == GENERIC_BINDING]
 
@@ -1201,9 +1197,8 @@ class BatchedProgram:
         return g
 
     def close(self):
-        """Close the collision pool this object owns (a shared pool is left alone)."""
-        if self._owns_pool and self.pool is not None:
-            self.pool.close()
+        """Nothing to release: the collision row runs in this process on the program's own
+        constraint. Kept so `with BatchedProgram...` and existing callers still work."""
 
     def __enter__(self):
         return self

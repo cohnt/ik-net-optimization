@@ -23,14 +23,7 @@ replay, and one cell of `panda_benchmark.py --solver svgd` in a subprocess. The 
 the pose configurations (`CONFIGS` x arms) is `... sweep`, run separately because it is
 20 s cells on the GPU. `... profile` times one step at N in {64, 256}.
 
-Spawns collision workers, so it needs the `__main__` guard. Models: `panda__n6__step620000`.
-
-MEMORY: every pool this file opens has `WORKERS` = 4 processes (the PI's rule after a laptop
-OOM on 2026-10-09: 84 pool processes, 48 GB, from 20-worker pools cached across tests and a
-benchmark subprocess). The shared pools and the test programs' own pools are CLOSED after
-every test (`release`), so no pool outlives the test that opened it; the most alive at once
-is the closed-form / row-scaling tests' four BatchedProgram pools (16 workers) plus the
-solver's shared pool for one scene (4).
+Models: `panda__n6__step620000`. The collision row runs in this process (no worker processes).
 """
 
 import json
@@ -62,7 +55,6 @@ import test_batched_program as T                                        # noqa: 
 
 WALL = 20.0
 N_SWEEP = 64
-WORKERS = 4                   # collision workers per pool, everywhere in this file
 CONFIGS = [
     ("al_svgd N=1 kernel=q", dict(svgd_n=1, svgd_kernel="q")),
     ("al_svgd N=64 kernel=none", dict(svgd_n=64, svgd_kernel="none")),
@@ -139,7 +131,6 @@ def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet
     `q_init` overrides the drawn collision-free start."""
     arm = "learned" if hasattr(p, "z") else "numerical"
     opts = replace(p.options, which_solver="svgd", max_wall_time=wall, acceptable_constr_viol_tol=1e-4,
-                   svgd_collision_workers=WORKERS,
                    file_print_name=os.path.join(RepoDir(), "results", f"_test_svgd_{task}_{arm}.log"),
                    **overrides)
     os.makedirs(os.path.dirname(opts.file_print_name), exist_ok=True)
@@ -152,7 +143,7 @@ def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet
             p.SetStartFromQ(q_init)
         else:
             p.SetNativeStart(q_init, rng)
-    p.PrepareSvgdSolve()          # the pool and its workers' scenes, outside the clock (as run_grid)
+    p.PrepareSvgdSolve()          # the batched program and a first collision row, outside the clock
     p.ResetEvalCounts()
     t0 = time.time()
     with HiddenPrints():
@@ -169,7 +160,7 @@ def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet
               f"outer={d.iterations} steps={d.inner_steps} map_evals={d.map_evals} "
               f"n_feasible={d.n_feasible} resampled={d.n_resampled} status={d.status_name!r} "
               f"wall={wall_time:.1f}s collision={d.collision_seconds:.1f}s "
-              f"({1e3 * d.collision_seconds / max(1, d.extras.get('pool_calls', 1)):.1f} ms/call) "
+              f"({1e3 * d.collision_seconds / max(1, d.extras.get('collision_calls', 1)):.1f} ms/call) "
               f"phases={ {k: round(v, 2) for k, v in d.phase_times.items()} }")
         if d.inner_steps:
             print(f"      ms/step = {1e3 * d.phase_times.get('swarm', 0.0) / d.inner_steps:.1f}; "
@@ -201,7 +192,7 @@ def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet
 
 def test_closed_form_derivatives_match_autograd():
     """The solver's derivative path on the fielded robots is CLOSED FORM downstream of the
-    configuration (`FrameChain` geometric Jacobians, the pool's collision gradient, identity
+    configuration (`FrameChain` geometric Jacobians, the in-process row's collision gradient, identity
     joint limits, closed-form region rows and costs). Pin each piece against autograd of the
     very same batched rows, in float64, on all four Panda programs."""
     print("\n--- closed-form row / cost Jacobians and the FrameChain vs autograd (float64) ---")
@@ -283,7 +274,7 @@ def _run_fixed_steps(p, N, outer, seed=11, **ov):
 def test_determinism():
     """Same program, same start, N=16, 50 steps (5 outer x 10 inner), kernel q: two solves
     must agree. The swarm is float32 on the GPU; every op in the step is deterministic
-    (`index_add_` on disjoint indices, no atomics in the reductions used), the pool is Drake
+    (`index_add_` on disjoint indices, no atomics in the reductions used), the collision row is Drake
     in float64, and the seed is derived from the start -- so the contract is BITWISE."""
     print("\n--- determinism: N=16, 50 steps, kernel q, two solves ---")
     p = pose_program("learned")
@@ -301,13 +292,12 @@ def test_determinism():
 
 
 def test_wall_clock_stop():
-    """`max_wall_time = 3` at N=64 stops at the clock with the iterate kept. The pool for
-    this scene is spawned and warmed first (`warm_up`), as the benchmark's `WarmUpSvgdStep`
-    guarantees before any timed cell."""
+    """`max_wall_time = 3` at N=64 stops at the clock with the iterate kept. The solver is
+    warmed first (`warm_up`), as the benchmark's `WarmUpSvgdStep` guarantees before any timed
+    cell."""
     print("\n--- wall-clock stop: max_wall_time=3, N=64 ---")
     p = pose_program("learned")
-    p.options = replace(p.options, which_solver="svgd", svgd_n=64, svgd_kernel="q",
-                        svgd_collision_workers=WORKERS)
+    p.options = replace(p.options, which_solver="svgd", svgd_n=64, svgd_kernel="q")
     SvgdSolver(p).warm_up()
     t0 = time.time()
     ## Both budgets lifted explicitly: `run_cell` builds on `p.options`, which an earlier
@@ -331,7 +321,7 @@ def test_nan_injection():
     print("\n--- NaN injection via particles_override ---")
     p = pose_program("learned")
     p.options = replace(p.options, which_solver="svgd", svgd_n=16, svgd_kernel="q",
-                        svgd_collision_workers=WORKERS, svgd_outer_iters=3, max_wall_time=20.0, acceptable_constr_viol_tol=1e-4,
+                        svgd_outer_iters=3, max_wall_time=20.0, acceptable_constr_viol_tol=1e-4,
                         file_print_name="")
     rng = np.random.default_rng(3)
     with HiddenPrints():
@@ -373,8 +363,7 @@ def test_benchmark_subprocess():
     shutil.rmtree(out_dir, ignore_errors=True)
     cmd = [sys.executable, os.path.join(RepoDir(), "scripts", "panda", "panda_benchmark.py"),
            "--task", "pose", "--targets", "1", "--guesses", "1", "--wall-time", "20",
-           "--solver", "svgd", "--arms", "learned,numerical", "--config", "latent", "--tag", tag,
-           "--set", f"svgd_collision_workers={WORKERS}"]
+           "--solver", "svgd", "--arms", "learned,numerical", "--config", "latent", "--tag", tag]
     t0 = time.time()
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     print(f"    exit {proc.returncode} in {time.time() - t0:.0f} s")
@@ -492,8 +481,7 @@ def test_step_with_kernel_off_is_pgd_on_the_programs_L():
     for arm in ("learned", "numerical"):
         p = pose_program(arm)
         p.options = replace(p.options, which_solver="svgd", svgd_n=8, svgd_kernel="none",
-                            svgd_collision_workers=WORKERS,
-                            svgd_dtype="float64", svgd_compile=False, svgd_cuda_graph=False,
+                                     svgd_dtype="float64", svgd_compile=False, svgd_cuda_graph=False,
                             svgd_lr=1e-9, svgd_temperature=0.5, svgd_rho=37.0,
                             acceptable_constr_viol_tol=1e-4)
         rng = np.random.default_rng(4)
@@ -538,8 +526,7 @@ def test_graph_replay_is_bitwise():
     for arm in ("learned", "numerical"):
         p = pose_program(arm)
         p.options = replace(p.options, which_solver="svgd", svgd_n=16, svgd_kernel="q",
-                            svgd_compile=True, svgd_cuda_graph=True, acceptable_constr_viol_tol=1e-4,
-                            svgd_collision_workers=WORKERS)
+                            svgd_compile=True, svgd_cuda_graph=True, acceptable_constr_viol_tol=1e-4)
         rng = np.random.default_rng(9)
         with HiddenPrints():
             p.SetStartFromQ(T.collision_free_q(p, rng, 1)[0])
@@ -554,7 +541,7 @@ def test_graph_replay_is_bitwise():
         g1, g2, g3 = r.fns["s1"], r.fns["s2"], r.fns["s3"]
         cfg, qp = g1(X)
         J_q, kin = g2(X, cfg)
-        v, gr = s._pool.eval(qp.to("cpu", torch.float64).numpy())
+        v, gr = s._col.eval(qp.to("cpu", torch.float64).numpy())
         col = torch.as_tensor(v).to(X), torch.as_tensor(gr).to(X)
         args3 = (X, cfg, J_q, kin, col[0], col[1], fused.state_dict(S))
         out_g = g3(*args3)
@@ -646,8 +633,7 @@ def profile(Ns=(64, 256)):
     p = pose_program("learned")
     for N in Ns:
         p.options = replace(p.options, which_solver="svgd", svgd_n=N, svgd_kernel="q",
-                            max_wall_time=60.0, acceptable_constr_viol_tol=1e-4, file_print_name="",
-                            svgd_collision_workers=WORKERS)
+                            max_wall_time=60.0, acceptable_constr_viol_tol=1e-4, file_print_name="")
         rng = np.random.default_rng(7)
         with HiddenPrints():
             p.SetStartFromQ(T.collision_free_q(p, rng, 1)[0])
@@ -662,7 +648,7 @@ def profile(Ns=(64, 256)):
                 torch.cuda.synchronize(s.device)
         for _ in range(3):
             X, _, _ = s._step_split(X, S)
-        s._pool.seconds, s._pool.calls = 0.0, 0
+        s._col.reset()
         sync()
         t0 = time.perf_counter()
         for _ in range(20):
@@ -670,15 +656,12 @@ def profile(Ns=(64, 256)):
         sync()
         dt = (time.perf_counter() - t0) / 20
         print(f"    N={N:4d}: {1e3 * dt:6.1f} ms/step  "
-              f"(pool {1e3 * s._pool.seconds / max(1, s._pool.calls):.1f} ms/call, {s.workers} workers)")
+              f"(collision row {1e3 * s._col.seconds / max(1, s._col.calls):.1f} ms/call, in process)")
 
 
 def release():
-    """Close every collision pool this process holds -- the solver's shared ones and the test
-    programs' own BatchedProgram pools -- so none outlives the test that opened it. A later
-    `T.batched` rebuilds its program's batched replay (and pool) on demand."""
-    from src.svgd.solver import close_shared_pools
-    close_shared_pools()
+    """Forget the test programs' cached batched replays between tests (a later `T.batched`
+    rebuilds one on demand)."""
     T.close_all()
 
 
@@ -700,10 +683,6 @@ def main():
             t()
         finally:
             release()
-    from src.svgd.collision_backend import live_pools, live_workers
-    from src.svgd.collision_backend import peak_live_workers
-    print(f"    peak live collision workers in this process: {peak_live_workers()}")
-    check("no collision pool is live at the end of the file", live_workers() == 0, str(live_pools()))
     print(f"\n{len(FAILURES)} failed")
     for f in FAILURES:
         print("  FAILED:", f)

@@ -3,8 +3,8 @@
 The modules are pure tensor math on per-particle quantities and know nothing about any
 formulation, so they are tested on problems whose answers are known in closed form: the PHR
 augmented Lagrangian (one fixed, shared penalty rho) against autograd and against the
-quadratic penalty it reduces to; the dual-ascent step -- unconditional, per particle, step
-rho, clipped and counted, zeroed on resample; AL rounds converging to the KKT point of an
+quadratic penalty it reduces to; the dual-ascent step -- unconditional, per particle, its own
+step alpha (alpha = 0 leaves the multipliers at zero), clipped and counted, zeroed on resample; AL rounds converging to the KKT point of an
 equality-constrained quadratic, one per particle; the RBF repulsion against autograd and, the check that pins its SIGN, plain
 SVGD on a 2-D standard Gaussian matching the target's mean and covariance; the Tabor-Hermans
 direction with the kernel off being exactly projected gradient descent on L / T; and the
@@ -118,8 +118,10 @@ def test_al_with_zero_multipliers_is_the_quadratic_penalty():
 
 def test_dual_update_is_unconditional_and_per_particle():
     """The dual step on EVERY particle, whatever its violation (no feasibility gate): each
-    particle's multipliers move by its OWN rows times the one shared rho; clipped to the box
-    with the clipped entries counted; zeroed on the masked (resampled) particles only."""
+    particle's multipliers move by its OWN rows times the dual step alpha (its own parameter,
+    not rho); clipped to the box with the clipped entries counted; zeroed on the masked
+    (resampled) particles only. alpha = 0 is a no-op that leaves zero multipliers at zero."""
+    ALPHA = 0.7
     for dtype, device, tol in _targets():
         gen = _gen(3, device)
         N, m_e, m_i = 20, 2, 3
@@ -130,8 +132,8 @@ def test_dual_update_is_unconditional_and_per_particle():
         h[::2] *= 1e-3                                  # even: near-feasible; odd: far off
         h[1::2] += 50.0
         mult_max = 20.0
-        S2, n_clipped = al.dual_update(h, g, S, RHO, mult_max)
-        lam_raw, mu_raw = lam + RHO * h, torch.clamp(mu + RHO * g, min=0.0)
+        S2, n_clipped = al.dual_update(h, g, S, ALPHA, mult_max)
+        lam_raw, mu_raw = lam + ALPHA * h, torch.clamp(mu + ALPHA * g, min=0.0)
         assert _maxabs(S2.lam, torch.clamp(lam_raw, -mult_max, mult_max)) <= tol * 10
         assert _maxabs(S2.mu, torch.clamp(mu_raw, max=mult_max)) <= tol * 10
         assert bool((S2.lam != lam).any(dim=1).all()), "every particle's lam moves, feasible or not"
@@ -141,8 +143,8 @@ def test_dual_update_is_unconditional_and_per_particle():
         ## per particle: particle j's step depends on particle j's rows only
         h_alt = h.clone()
         h_alt[5] += 1.0
-        S3, _ = al.dual_update(h_alt, g, S, RHO, 1e9)
-        S4, _ = al.dual_update(h, g, S, RHO, 1e9)
+        S3, _ = al.dual_update(h_alt, g, S, ALPHA, 1e9)
+        S4, _ = al.dual_update(h, g, S, ALPHA, 1e9)
         diff = (S3.lam - S4.lam).abs().amax(dim=1)
         assert float(diff[5]) > 0 and float(torch.cat([diff[:5], diff[6:]]).max()) == 0.0
         ## reset: a redrawn particle gets zero multipliers, the others are untouched
@@ -151,7 +153,12 @@ def test_dual_update_is_unconditional_and_per_particle():
         S5 = al.reset(S2, mask)
         assert bool((S5.lam[mask] == 0).all()) and bool((S5.mu[mask] == 0).all())
         assert bool((S5.lam[~mask] == S2.lam[~mask]).all()) and bool((S5.mu[~mask] == S2.mu[~mask]).all())
-    print("PASS dual update: unconditional, per particle, step rho, clipped and counted, zeroed on resample")
+        ## alpha = 0: a pure quadratic penalty -- zero multipliers stay exactly zero, nothing clips
+        Z = ALState.init(N, m_e, m_i, dtype=dtype, device=device)
+        Z2, nz = al.dual_update(h, g, Z, 0.0, mult_max)
+        assert bool((Z2.lam == 0).all()) and bool((Z2.mu == 0).all()) and int(nz) == 0
+    print("PASS dual update: unconditional, per particle, step alpha (0 = no-op), clipped and counted, "
+          "zeroed on resample")
 
 
 def _toy_equality_qp(N, n, m, dtype, device, gen):

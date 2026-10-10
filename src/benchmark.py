@@ -759,8 +759,8 @@ class Arm:
 
 def _warm_up_svgd_arms(arms, targets, guesses, cells, metadata):
     """Before the first timed cell: for every arm whose program runs the svgd solver, build
-    the program of the grid's FIRST cell and run `WarmUpSvgdStep` on it -- the pool, the
-    first evaluations and, under `svgd_compile` / `svgd_cuda_graph`, the compile of every
+    the program of the grid's FIRST cell and run `WarmUpSvgdStep` on it -- the first
+    evaluations and, under `svgd_compile` / `svgd_cuda_graph`, the compile of every
     stage and the capture of every CUDA graph that arm's (N, dtype, method, program
     structure) uses -- then FREEZE the step cache (`fused.FreezeSvgdSteps`), so a compile
     or a capture inside a timed cell raises instead of eating its clock. The script-level
@@ -873,8 +873,8 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                         continue
                     program.options.file_print_name = log_path
                     if getattr(program.options, "which_solver", None) == "svgd":
-                        ## The batched program and the scene's collision pool, in SETUP:
-                        ## a grasp grid has a new scene per target, and the pool's spawn
+                        ## The batched program and a first collision-row evaluation, in
+                        ## SETUP: a grasp grid has a new scene per target, and that setup
                         ## must not land in whichever arm's clock happens to run first.
                         record["svgd_prepare_time"] = program.PrepareSvgdSolve()
                     start = time.time()

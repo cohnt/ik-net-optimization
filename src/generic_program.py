@@ -249,6 +249,8 @@ def CheckSvgdOptions(options):
     for name in ("svgd_temperature", "svgd_lr", "svgd_rho"):
         if not float(getattr(options, name)) > 0.0:
             raise ValueError(f"{name} must be > 0, got {getattr(options, name)!r}")
+    if options.svgd_dual_lr is not None and not float(options.svgd_dual_lr) >= 0.0:
+        raise ValueError(f"svgd_dual_lr must be >= 0 (or None for svgd_rho), got {options.svgd_dual_lr!r}")
     if options.svgd_cuda_graph and not options.svgd_compile:
         raise ValueError("svgd_cuda_graph=True requires svgd_compile=True (the graphs replay "
                          "the compiled stages)")
@@ -680,7 +682,8 @@ class ProgramOptions:
     svgd_kernel: str = field(default="q", metadata={"help": "svgd: 'q' (RBF kernel on the configuration, median bandwidth) or 'none' (no interaction: both kernel terms dropped, the batched-AL control)"})
     svgd_bandwidth_floor: float = field(default=0.05, metadata={"help": "svgd: floor on the median-heuristic kernel bandwidth"})
     svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho / T), the whole AL gradient inside it -- an A/B"})
-    svgd_rho: float = field(default=10.0, metadata={"help": "svgd: the penalty rho of the augmented Lagrangian -- ONE scalar, fixed for the whole solve, shared by every particle; also the dual-ascent step"})
+    svgd_rho: float = field(default=10.0, metadata={"help": "svgd: the penalty rho of the augmented Lagrangian -- ONE scalar, fixed for the whole solve, shared by every particle"})
+    svgd_dual_lr: float = field(default=None, metadata={"help": "svgd: alpha, the dual-ascent step taken every svgd_inner_iters steps on every particle (lam += alpha h~, mu = max(0, mu + alpha g~)); None = svgd_rho, the textbook step; 0 = a pure quadratic penalty (multipliers stay zero)"})
     svgd_multiplier_max: float = field(default=1e4, metadata={"help": "svgd: box on the magnitude of every multiplier; the clipped entries are counted"})
     svgd_inner_iters: int = field(default=10, metadata={"help": "svgd: K -- every K steps the unconditional dual-ascent step on every particle, runaway resampling, the stop rule and the wall clock"})
     svgd_outer_iters: int = field(default=300, metadata={"help": "svgd: cap on outer checks (the 'iterations' column); `max_iter`, when set, also binds"})
@@ -692,10 +695,8 @@ class ProgramOptions:
     svgd_warmup: str = field(default="none", metadata={"help": "svgd: 'none' or 'cem' -- a forward-only Cross-Entropy phase on the penalised merit before the gradient phase; a phase of the population method, named in full in every table and A/B tested"})
     svgd_warmup_iters: int = field(default=10, metadata={"help": "svgd: CEM warm-up iterations"})
     svgd_warmup_elite: float = field(default=0.1, metadata={"help": "svgd: CEM elite fraction"})
-    svgd_collision_workers: int = field(default=None, metadata={"help": "svgd: processes in the exact-collision pool; None resolves inside the solver to os.cpu_count() // PROCS in a Slurm job (SLURM_JOB_ID set) and to min(os.cpu_count() // PROCS, 8) elsewhere. Every pool is admitted by the memory guard (src/svgd/collision_backend.py: workers x 0.75 GB <= half of MemAvailable, live workers <= SVGD_MAX_LIVE_WORKERS)"})
     svgd_compile: bool = field(default=False, metadata={"help": "svgd: torch.compile the split step's three stages (src/svgd/fused.py; compiled by WarmUpSvgdStep, outside any timed cell)"})
     svgd_cuda_graph: bool = field(default=False, metadata={"help": "svgd: replay the compiled stages as CUDA graphs, captured by WarmUpSvgdStep before the first timed cell (requires svgd_compile and CUDA)"})
-    svgd_pool_overlap: bool = field(default=True, metadata={"help": "svgd: dispatch the collision batch to the pool BEFORE the flow Jacobian and the kinematics are launched, collecting it after, so Drake's IPC and compute run behind the GPU work; False collects at once (the measurement's control)"})
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
     visualize: bool = field(default=False, metadata={"help": "If true, visualizes the IK solving process in Meshcat"})
@@ -1289,10 +1290,10 @@ class IKFlowProgram:
         return SvgdSolver(self).warm_up()
 
     def PrepareSvgdSolve(self):
-        """The svgd solver's per-cell infrastructure -- the batched program and this scene's
-        collision pool with its workers' scenes built -- paid in a cell's SETUP, before its
-        clock starts (`run_grid` calls it), as a Drake arm's scene is built in setup. No
-        solver state survives into the solve except the pool. Returns the seconds spent."""
+        """The svgd solver's per-cell infrastructure -- the batched program and a first
+        collision-row evaluation -- paid in a cell's SETUP, before its clock starts
+        (`run_grid` calls it), as a Drake arm's scene is built in setup. No solver state
+        survives into the solve. Returns the seconds spent."""
         from src.svgd.solver import SvgdSolver
         return SvgdSolver(self).prepare()
 

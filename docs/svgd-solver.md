@@ -52,12 +52,16 @@ latent ball are inequality ROWS, never bounds.
    joint space), median bandwidth `h = med^2 / log N` floored at `svgd_bandwidth_floor`; the
    repulsion is pulled back to y through the flow's VJP. `svgd_kernel = none` drops both kernel
    terms (`phi_i = -(1/T) grad_y L_i`, N independent projected gradient descents, batched).
-6. **Dual ascent on a fixed cadence, rho fixed.** Every K = `svgd_inner_iters` steps, on EVERY
-   particle and unconditionally (no feasibility gate of any kind), the textbook dual-ascent step
-   with step rho: `lam_i <- lam_i + rho h~_i`, `mu_i <- max(0, mu_i + rho g~_i)`, at the swarm's
-   current rows; clipped to `+-svgd_multiplier_max`, the clipped entries counted. The multipliers
-   are per particle, the penalty is not. Recorded per cell: the dual updates taken, the median and
-   largest `|lam_i|_inf` and `|mu_i|_inf` at stop, and the clip count.
+6. **Dual ascent with step `svgd_dual_lr`, on a fixed cadence, rho fixed.** Every K =
+   `svgd_inner_iters` steps, on EVERY particle and unconditionally (no feasibility gate of any
+   kind): `lam_i <- lam_i + alpha h~_i`, `mu_i <- max(0, mu_i + alpha g~_i)`, `alpha =
+   svgd_dual_lr`, at the swarm's current rows; clipped to `+-svgd_multiplier_max`, the clipped
+   entries counted. The textbook step `alpha = rho` is exact only when the primal is minimised
+   between updates, which it is not here (gradient descent-ascent), so the dual rate is a separate
+   parameter (Thomas, 2026-10-09). `alpha = 0` is a pure quadratic penalty: the update is still
+   taken and recorded, and leaves the multipliers at zero. The multipliers are per particle, the
+   penalty is not. Recorded per cell: the dual updates taken, the median and largest
+   `|lam_i|_inf` and `|mu_i|_inf` at stop, and the clip count.
 7. **Resampling** at every check: a particle with `|q|_inf > svgd_resample_q_max` or a non-finite row
    is redrawn from the arm's NATIVE start distribution with zero multipliers (`n_resampled`).
 8. **Stop**: the wall clock (`max_wall_time`, less `svgd_time_reserve` for the re-check), the
@@ -86,7 +90,12 @@ formulation-specific information** (no latent prior, no assumption that the corr
 zero-centred, no arm-specific kernel; the only structure used is that every arm has a q and that
 every variable block has a region). Recorded future work, not current scope: using
 formulation-specific information rigorously with SVGD. **Exact Drake collision, no proxy**: the
-collision row is Drake's `MinimumDistanceLowerBoundConstraint`, batched through a process pool.
+collision row is the program's own Drake `MinimumDistanceLowerBoundConstraint`, evaluated IN
+PROCESS (Thomas, 2026-10-09: no process pool): a Python loop over the N particles calling it on
+AutoDiffXd (`Eval(InitializeAutoDiff(q))`, exactly the program's binding), returning value and
+gradient. It is serial and GIL-bound (pydrake holds the GIL in `Eval`); a batched C++
+clearance-with-Jacobians call that releases it is a Drake-side item for Thomas. Its seconds are
+reported as the collision row's share of the wall.
 
 ### The options, one table
 
@@ -103,7 +112,8 @@ collision row is Drake's `MinimumDistanceLowerBoundConstraint`, batched through 
 | `svgd_kernel` | `q` | 5: `q` or `none` |
 | `svgd_bandwidth_floor` | 0.05 | 5: floor on the median bandwidth |
 | `svgd_constraint_inside_kernel` | False | 12: the literal form, an A/B |
-| `svgd_rho` | 10 | 2, 4, 6: the penalty -- one scalar, fixed, shared; the dual step |
+| `svgd_rho` | 10 | 2, 4: the penalty -- one scalar, fixed, shared |
+| `svgd_dual_lr` | None (= `svgd_rho`) | 6: alpha, the dual-ascent step; 0 = pure quadratic penalty. The default is pending the alpha ladder |
 | `svgd_multiplier_max` | 1e4 | 6: multiplier clip |
 | `svgd_inner_iters` | 10 | 6, 7, 8: K, the cadence of the dual step, resampling and the stop rule |
 | `svgd_outer_iters` | 300 | 8: the step cap (`max_iter`, when set, also binds) |
@@ -113,8 +123,7 @@ collision row is Drake's `MinimumDistanceLowerBoundConstraint`, batched through 
 | `svgd_recheck_topk` | 10 | 9 |
 | `svgd_time_reserve` | 0.1 | 8: fraction of the cap kept for selection and re-check |
 | `svgd_warmup`, `svgd_warmup_iters`, `svgd_warmup_elite` | `none`, 10, 0.1 | 11: the CEM phase |
-| `svgd_collision_workers` | None | execution: pool size (`cpu_count // PROCS` in a Slurm job, `min(that, 8)` elsewhere) |
-| `svgd_compile`, `svgd_cuda_graph`, `svgd_pool_overlap` | False, False, True | execution: the split step eager / compiled / graphed, pool overlapped |
+| `svgd_compile`, `svgd_cuda_graph` | False, False | execution: the split step eager / compiled / graphed |
 
 **The step size.** `svgd_lr` is the one number the method has no textbook value for. With the rows
 scaled by `1/tol`, the penalty's curvature in y is `rho * lambda`, `lambda` the largest eigenvalue
@@ -127,11 +136,9 @@ cell (a test cell, not the smoke grid) 1e-9 diverged within the first check, 1e-
 initial swarm to resampling once and then descended, and 1e-11 was stable and slower; that probe
 informed the choice and is not a tuning result.
 
-**Memory.** Every collision pool is admitted by a guard (`src/svgd/collision_backend.py`): refused
-if `workers x 0.75 GB > 0.5 x MemAvailable` (from `/proc/meminfo`; swap is never counted) or if the
-process's live workers would exceed `SVGD_MAX_LIVE_WORKERS` (default `os.cpu_count()`). The solver
-keeps ONE pool per process. Local runs set `svgd_collision_workers=4` and run under `systemd-run
---user --scope -p MemoryMax=... -p MemorySwapMax=0` (the smoke driver does both by default).
+**Memory.** No worker processes: the collision row runs in the solver's own process on the
+program's own scene. Local runs still go under `systemd-run --user --scope -p MemoryMax=...
+-p MemorySwapMax=0` (the smoke driver does this by default).
 
 ### Removed, 2026-10-09
 
@@ -163,6 +170,12 @@ keeps ONE pool per process. Local runs set `svgd_collision_workers=4` and run un
   multipliers. `rho` is now one fixed scalar (`svgd_rho`) and the dual step is unconditional on a
   fixed cadence. (Its first 6-cell check, 9756ff4: every particle's rho reached the 1e6 cap within
   six checks and no multiplier ever updated -- learned 2/6 grasp, 0/6 pose.)
+- **The process pool for the collision row** (`DrakeCollisionPool`, its worker processes and
+  `_worker_main`, the live-worker registry and memory guard `admit` / `PoolRefused` /
+  `mem_available_gb` / `SVGD_MAX_LIVE_WORKERS`, `resolve_workers`, `POOL_CACHE_SIZE`, and the
+  options `svgd_collision_workers` and `svgd_pool_overlap`). Thomas: no process pool; the row
+  runs in process on the program's own constraint. The pool's processes, each a whole Drake scene,
+  OOM-killed the laptop on 2026-10-09.
 
 ## The variants, every option named in full
 
@@ -182,7 +195,7 @@ reporter reads each as an A/B against it.
 | `al64cem` | 64 | `q` | False | jitter | cem | the CEM warm-up A/B |
 
 On every svgd column also `svgd_dtype=float32`, `svgd_compile=True`, `svgd_cuda_graph=True` (mode
-`graphed`) and `svgd_collision_workers=4` (an execution setting, not in the tag). The IPOPT twin
+`graphed`). The IPOPT twin
 (`ipopt`) is `--solver ipopt --set flow_cuda_graph=True` with everything else as the record's IPOPT
 column.
 
@@ -230,7 +243,7 @@ learned successes on the same 10 cells where the record's chart is the smoke's (
 and on any row whose record is void, it is the IPOPT twin's learned count on those cells. In (3),
 "agrees" is checked twice per cell: `solver_feasible == drake_feasible` and
 `drake_feasible == feasible`. In (5), `profile_step` means the same arm, method, N, dtype and mode on
-the same task, overlap on, Panda (the profiler builds Panda programs only); smoke ms/step is the swarm
+the same task, Panda (the profiler builds Panda programs only); smoke ms/step is the swarm
 phase over outer steps. In (6), per cell `n_resampled / svgd_n`, the worst cell. In (7), success
 counts of `al1` against `al64`, per arm, per row. Beside every success count the reporter prints
 the two population metrics: feasible particles at stop and the median pairwise q-distance among
@@ -269,7 +282,7 @@ record's 180 s:
   and ms/step. Tables put learned and joint space adjacent, mark the better, print every row including
   zeros, and name every setting in full.
 - Beside them, from `record["svgd"]`: feasible particles, resampled fraction, `selected_index`, the
-  collision pool's share of the wall, `stop_reason` counts, warm-up/compile seconds, and the
+  collision row's share of the wall, `stop_reason` counts, warm-up/compile seconds, and the
   feasibility-agreement check, which must read zero.
 
 ## Smoke results

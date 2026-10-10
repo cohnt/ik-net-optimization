@@ -12,14 +12,14 @@ benchmark builds them (hardened scenes, a grasp scene with the target mug welded
      regularizers, and `h` / `g` against a recomputation from the rows and the bounds;
   2. the autograd Jacobian of the rows against the program's own AutoDiffXd chain
      (`EvalAllConstraints(InitializeAutoDiff(x))`), the collision row's gradient bitwise
-     against the pool's stored Drake gradient on the joint-space arm (and one ulp from the
+     against the in-process row's stored Drake gradient on the joint-space arm (and one ulp from the
      program's chain, which scales through pydrake's `float * AutoDiffXd`), and
      `jacobian_q` / `vjp_q` against autograd of `evaluate().q`;
   3. `init_from_q` against `SetStartFromQ` (c and z UNCLIPPED, q_c the clipped residual)
      and the round trip `evaluate(init_from_q(q)).q == q` to the flow's inverse floor;
   4. `to_drake_x` / `from_drake_x`, including through `benchmark.verify`;
   5. `project` returns the exact clip distance, and `regions=True` clips the c and z boxes;
-  6. a timing table (printed only): evaluate with and without the collision pool, N in
+  6. a timing table (printed only): evaluate with and without the collision row, N in
      {64, 256, 1024}, float32 and float64, with the flow / FK / collision split.
 
 The flow's runaway population (CLAUDE.md, the gain ceiling) amplifies last-ulp differences
@@ -74,7 +74,6 @@ MUG_SEEDS = {"panda": 101, "iiwa": 202}
 POSE_SEEDS = {"panda": 11, "iiwa": 22}
 CUDA = torch.cuda.is_available()
 DEVICE = "cuda" if CUDA else "cpu"
-WORKERS = 4
 
 _SOLVERS, _SCENES, _PROGRAMS, _BATCHED = {}, {}, {}, {}
 
@@ -154,31 +153,21 @@ def program(robot, task, arm):
 
 
 def batched(robot, task, arm, device=DEVICE, dtype=torch.float64):
-    """The program's batched replay, with its own `WORKERS`-process collision pool. ONE is
-    alive at a time: asking for another closes the previous one's pool first (every use in
-    these tests is sequential), so a section's pool ends with the section -- eight programs'
-    pools held to the end of the file were part of the 2026-10-09 laptop OOM."""
+    """The program's batched replay (its collision row runs in process, on the program's own
+    constraint). One is cached at a time: every use in these tests is sequential."""
     key = (robot, task, arm, str(device), dtype)
     if key not in _BATCHED:
         close_all()
         _BATCHED[key] = BatchedProgram.from_program(program(robot, task, arm), dtype=dtype,
-                                                    device=device, collision_workers=WORKERS)
+                                                    device=device)
     return _BATCHED[key]
 
 
 def close_all():
-    """Close every cached BatchedProgram's pool and forget it (a later `batched` rebuilds)."""
+    """Close every cached BatchedProgram and forget it (a later `batched` rebuilds)."""
     for bp in _BATCHED.values():
         bp.close()
     _BATCHED.clear()
-
-
-def assert_no_live_pools():
-    from src.svgd.collision_backend import live_pools, live_workers
-    from src.svgd.collision_backend import peak_live_workers
-    print(f"  peak live collision workers in this process: {peak_live_workers()}")
-    assert live_workers() == 0, f"collision pools left open: {live_pools()}"
-    print("PASS no collision pool is live at the end of the file")
 
 
 def lumped_batch(bp, rng, B):
@@ -405,7 +394,7 @@ def test_row_parity_all_programs():
     assert torch.equal(ev2.drake_rows[:, keep], ev_ok.drake_rows[:, keep])
     ## RowScaling multiplies h / g only.
     bp_s = BatchedProgram.from_program(bp.program, dtype=torch.float64, device=bp.device,
-                                       pool=bp.pool, row_scaling=RowScaling(position=10.0, collision=3.0))
+                                       collision=bp.collision, row_scaling=RowScaling(position=10.0, collision=3.0))
     ev_s = bp_s.evaluate(torch.tensor(X_np, dtype=torch.float64, device=bp.device))
     assert torch.equal(ev_s.drake_rows, ev_ok.drake_rows)
     for j, spec in enumerate(bp_s.h_spec):
@@ -443,12 +432,12 @@ def test_gradients_match_autodiff():
             dc = np.abs(J[coll_row] - J_ref[coll_row]).max() / max(1.0, np.abs(J_ref[coll_row]).max())
             worst_coll = max(worst_coll, float(dc))
             if not bp.is_learned:
-                ## Bitwise against the pool's stored gradient, which is Drake's own
+                ## Bitwise against the in-process row's stored gradient, which is Drake's own
                 ## `ExtractGradient` scaled in numpy. The program's chain scales through
                 ## pydrake's `float * AutoDiffXd` operator instead, and THAT product is one
                 ## ulp off `scale * g` (measured 8.7e-19 on a 7.5e-3 entry), so against the
                 ## AutoDiffXd chain the claim is 1e-15 relative, not bitwise.
-                _, g_pool = bp.pool.eval(p.ConfigToPlantQ(x_np)[None])
+                _, g_pool = bp.collision.eval(p.ConfigToPlantQ(x_np)[None])
                 assert np.array_equal(J[coll_row], g_pool[0]), (robot, task, arm)
                 assert dc <= 1e-15, (robot, task, arm, dc)
             ## jacobian_q / vjp_q against autograd of evaluate().q (the same graph).
@@ -462,7 +451,7 @@ def test_gradients_match_autodiff():
         assert n_used == 4, (robot, task, arm, n_used)
         tol = 1e-8 if bp.is_learned else 1e-12
         print(f"    {robot}/{task}/{arm:9s}: non-collision rows {worst:.2e}, collision row "
-              f"{worst_coll:.2e}{' (bitwise vs the pool)' if not bp.is_learned else ''}, "
+              f"{worst_coll:.2e}{' (bitwise vs the in-process row)' if not bp.is_learned else ''}, "
               f"jacobian_q vs autograd {worst_jq:.1e}")
         assert worst <= tol, (robot, task, arm, worst)
         assert worst_coll <= max(tol, 1e-15), (robot, task, arm, worst_coll)
@@ -586,7 +575,7 @@ def test_robot_hooks():
     saved = p.ConfigToPlantQ
     p.ConfigToPlantQ = lambda cfg: saved(cfg) + 1.0     # not the pad any more
     try:
-        BatchedProgram.from_program(p, dtype=torch.float64, device=bp.device, pool=bp.pool)
+        BatchedProgram.from_program(p, dtype=torch.float64, device=bp.device, collision=bp.collision)
     except NotImplementedError as e:
         assert type(p).__name__ in str(e) and "config_to_plant_q" in str(e)
     else:
@@ -598,7 +587,7 @@ def test_robot_hooks():
         extra = p.num_pos - p.num_arm_dof
         return torch.cat([cfg, torch.full((cfg.shape[0], extra), 0.04, dtype=cfg.dtype,
                                           device=cfg.device)], dim=1) if extra else cfg
-    hooked = BatchedProgram.from_program(p, dtype=torch.float64, device=bp.device, pool=bp.pool,
+    hooked = BatchedProgram.from_program(p, dtype=torch.float64, device=bp.device, collision=bp.collision,
                                          body_pose_provider=bp.fk, config_to_plant_q=my_map)
     X = torch.tensor(lumped_batch(bp, np.random.default_rng(6), 8), dtype=torch.float64,
                      device=bp.device)
@@ -614,12 +603,12 @@ def test_timing():
         return
     rng = np.random.default_rng(5)
     p = program("panda", "pose", "learned")
-    print(f"  evaluate timing, Panda learned pose, ms (median of 10; {WORKERS} collision workers, "
+    print(f"  evaluate timing, Panda learned pose, ms (median of 10; collision row in process, "
           f"{os.cpu_count()} CPUs): total [flow / fk / collision / rows+costs]")
     print(f"    {'N':>6} {'dtype':>8} {'with collision':>36} {'without':>30}")
-    pool = batched("panda", "pose", "learned").pool
+    col = batched("panda", "pose", "learned").collision
     for dtype in (torch.float64, torch.float32):
-        bp = BatchedProgram.from_program(p, dtype=dtype, device="cuda", pool=pool, profile=True)
+        bp = BatchedProgram.from_program(p, dtype=dtype, device="cuda", collision=col, profile=True)
         for N in (64, 256, 1024):
             X = torch.tensor(lumped_batch(bp, rng, N), dtype=dtype, device="cuda")
             cells = []
@@ -653,5 +642,4 @@ if __name__ == "__main__":
         test_timing()
     finally:
         close_all()
-    assert_no_live_pools()
     print("ALL PASS")

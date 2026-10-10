@@ -1891,18 +1891,21 @@ hold `systemd-inhibit --what=sleep:idle`; that guarded nothing. Long benchmarks 
 anyway, where a laptop's state is irrelevant.
 
 **Local compute must never take the laptop down (Thomas, 2026-10-09: *"If a pytest sweep crashes my
-machine, that is unacceptable"*).** On 2026-10-09 at 16:02 the svgd solver's Drake collision pools --
-one 4-worker pool per cached BatchedProgram in a test file, plus 20-worker pools sized at
-`cpu_count // PROCS` in benchmark subprocesses, run concurrently by a subagent -- reached 81 worker
-processes and 44.8 GB on a 62 GB machine with no swap, and the kernel OOM killer took his Slack. Rules,
-all enforced in code, not by instruction: a `DrakeCollisionPool` REFUSES to spawn when its workers
-would need more than half of `MemAvailable` (from `/proc/meminfo`; **swap is never counted** -- the 8 GB
-of swap is his emergency buffer, and the capped runs carry `MemorySwapMax=0`) or when live workers
-process-wide would exceed the core count (a registry counts them; tests assert zero live at file end); one pool per process; off the
-cluster the default is at most 8 workers; and every local test file, smoke or end-to-end run that can
-build a program runs ONE AT A TIME, in the foreground, under
-`systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0`, so a runaway kills the run and not
-the user's applications. Subagent briefs state this.
+machine, that is unacceptable"*).** On 2026-10-09 at 16:02 the svgd solver's Drake collision PROCESS
+pools -- one per cached BatchedProgram in a test file plus 20-worker pools in benchmark subprocesses,
+run concurrently by a subagent -- reached 81 worker processes and 44.8 GB on a 62 GB machine with no
+swap, and the kernel OOM killer took his Slack. **The pool is deleted outright** (Thomas, the same
+evening: the only parallelism is the GPU over particles and, behind it, Drake's own C++ threads). The
+collision row is evaluated IN PROCESS on the program's own `MinimumDistanceLowerBoundConstraint`
+(`src/svgd/collision_backend.py`, `CollisionEvaluator`), serially, ~0.3 ms per particle -- 92-96% of a
+step at N = 64-256 -- until Drake gains a batched, GIL-releasing
+`CollisionChecker::CalcRobotClearances` (brief: `~/Downloads/drake-CalcRobotClearances-plan.md`;
+locally pydrake comes from his own build at `~/opt/rlg/drake-build`, so it lands here before any
+nightly). Rules that survive, in practice and in briefs: no process pools in this project; every local
+test file, smoke or end-to-end run that can build a program runs ONE AT A TIME, in the foreground,
+under `systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0` (the 8 GB of swap is his
+emergency buffer and is never counted or used), so a runaway kills the run and not his applications;
+and loadavg is logged before and after every timed run, any run at load above 24 re-run.
 
 Two details of that paragraph survive it, being about process handling rather than power: detach a
 long local process with **`setsid`, not `nohup`** -- `nohup` only ignores SIGHUP, so a teardown group

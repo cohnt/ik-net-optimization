@@ -67,7 +67,7 @@ def test_svgd_result_duck_type():
     os.makedirs(os.path.dirname(log), exist_ok=True)
     target, sampler = a_reachable_target()
     opts = ProgramOptions(which_solver="svgd", max_wall_time=5.0, file_print_name=log,
-                          collision_avoidance=True, svgd_collision_workers=4)
+                          collision_avoidance=True)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
         p = PandaIKProgramNumerical(diagram, options=opts)
@@ -227,6 +227,8 @@ def test_option_guard():
              (dict(svgd_temperature=0.0), True),
              (dict(svgd_lr=-1.0), True),
              (dict(svgd_rho=0.0), True),
+             (dict(svgd_dual_lr=0.0), False),
+             (dict(svgd_dual_lr=-1.0), True),
              (dict(svgd_constraint_inside_kernel=True), False),
              (dict(svgd_cuda_graph=True), True),
              (dict(svgd_compile=True, svgd_cuda_graph=True), False)]
@@ -238,7 +240,7 @@ def test_option_guard():
             raised, msg = True, str(exc)
         check(f"ProgramOptions({kw}) {'raises' if should_raise else 'is accepted'}",
               raised == should_raise, msg or "no raise")
-    removed = ("svgd_polish_iters", "svgd_gn_every", "svgd_gn_lm", "svgd_eta_rel", "svgd_q_step_max",
+    removed = ("svgd_collision_workers", "svgd_pool_overlap", "svgd_polish_iters", "svgd_gn_every", "svgd_gn_lm", "svgd_eta_rel", "svgd_q_step_max",
                "svgd_repulsion_T0", "svgd_anneal_frac", "svgd_gamma_t", "svgd_admm_rho",
                "svgd_tsvgd_switch_infeas", "svgd_lr_decay_t", "svgd_bandwidth",
                "svgd_row_scale_rot", "svgd_resample_every", "svgd_jitter_z", "svgd_rho0",
@@ -248,15 +250,7 @@ def test_option_guard():
 
 
 def main():
-    from src.svgd.solver import close_shared_pools
-    try:
-        test_svgd_result_duck_type()
-    finally:
-        close_shared_pools()          # the one 4-worker pool this file opens
-    from src.svgd.collision_backend import live_pools, live_workers
-    from src.svgd.collision_backend import peak_live_workers
-    print(f"    peak live collision workers in this process: {peak_live_workers()}")
-    check("no collision pool is live at the end of the file", live_workers() == 0, str(live_pools()))
+    test_svgd_result_duck_type()
     test_bad_svgd_set_is_refused_at_options()
     test_option_guard()
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")

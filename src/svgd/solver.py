@@ -28,7 +28,8 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
     repulsion pulled back to y through the flow's VJP. `svgd_kernel = none` drops both kernel
     terms; `svgd_constraint_inside_kernel` puts the whole `-grad L / T` under the average.
  5. Every K = `svgd_inner_iters` steps a CHECK: the dual-ascent step on every particle,
-    unconditionally (`al.dual_update`: `lam_i += rho h~_i`, `mu_i = max(0, mu_i + rho g~_i)`,
+    unconditionally (`al.dual_update`: `lam_i += alpha h~_i`, `mu_i = max(0, mu_i + alpha g~_i)`,
+    `alpha = svgd_dual_lr`, default `svgd_rho`),
     clipped to `+-svgd_multiplier_max`).
  6. At every check, particles with `|q|_inf > svgd_resample_q_max` or a non-finite row are
     redrawn from the arm's NATIVE start distribution with zero multipliers (`n_resampled`).
@@ -44,7 +45,7 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
 DERIVATIVES: THE ONLY BACKWARD IS THROUGH THE FLOW. On the fielded robots
 (`BatchedProgram.has_analytic_row_jacobians`) every derivative downstream of the
 configuration is closed form -- the task rows from the frame's geometric Jacobian, the
-collision row from the pool's own stored gradient, the joint-limit rows the identity, the
+collision row from the evaluator's own stored gradient, the joint-limit rows the identity, the
 region rows and the costs in `x` directly -- and the flow's `J_q` is one vmapped `jacrev`.
 A robot behind its own `BodyPoseProvider` falls back to autograd through its kinematics
 (`_Target.analytic = False`, `_step_eager`).
@@ -58,25 +59,20 @@ space uniform in `ConfigLimits`, kept collision-free by `ParallelCollisionChecke
 bounded redraws and a documented fallback), then clamped onto the true bounds with the clip
 distance recorded. The seed is `svgd_seed` mixed with a CRC of the initial guess.
 
-THE COLLISION POOL is cached per `(SceneSpec, workers)` in this process (`_POOLS`, ONE pool:
-`POOL_CACHE_SIZE = 1`, the old one closed before a new scene's is spawned): the benchmark builds
-a new program per cell and spawning workers costs seconds, while the scene is the same for every
-cell of a pose grid and for both arms of a grasp cell. `svgd_collision_workers = None` resolves
-to `cpu_count // PROCS` in a Slurm job and `min(cpu_count // PROCS, 8)` elsewhere
-(`resolve_workers`); every pool is admitted by the memory guard in `collision_backend`.
+THE COLLISION ROW runs IN THIS PROCESS (no process pool, Thomas 2026-10-09): the program's own
+`MinimumDistanceLowerBoundConstraint` on AutoDiffXd, one particle at a time
+(`collision_backend.CollisionEvaluator`), serial and GIL-bound. Its seconds are accumulated per
+solve (`collision_seconds`, the collision share of the step).
 
-THE STEP IS SPLIT AT THE POOL (`src/svgd/fused.py`, `_step_split`) on the fielded robots:
-stage 1 (the configuration) -> the pool dispatched -> stage 2 (the flow Jacobian, the
-kinematics) while Drake runs -> the pool collected -> stage 3 (the rest). `svgd_compile`
-compiles the three stages and `svgd_cuda_graph` replays them as CUDA graphs, captured by
-`warm_up` (`WarmUpSvgdStep`) before any timed cell and frozen by `run_grid`;
-`svgd_pool_overlap=False` collects the pool before stage 2. `extras["step_mode"]` records
+THE STEP IS SPLIT AROUND THE COLLISION ROW (`src/svgd/fused.py`, `_step_split`) on the fielded
+robots: stage 1 (the configuration) -> stage 2 (the flow Jacobian, the kinematics) launched on
+the GPU -> the collision row on the CPU -> stage 3 (the rest). `svgd_compile` compiles the three
+stages and `svgd_cuda_graph` replays them as CUDA graphs, captured by `warm_up`
+(`WarmUpSvgdStep`) before any timed cell and frozen by `run_grid`. `extras["step_mode"]` records
 which mode ran.
 """
 
-import atexit
 import math
-import os
 import time
 import warnings
 import zlib
@@ -89,82 +85,21 @@ import torch
 from src.svgd import al, fused
 from src.svgd.al import ALState
 from src.svgd.batched_program import EXTRA_ROW_KEYS, GENERIC_BINDING, BatchedProgram
-from src.svgd.collision_backend import DrakeCollisionPool, ParallelCollisionChecker, SceneSpec
+from src.svgd.collision_backend import ParallelCollisionChecker, SceneSpec
 from src.svgd.result import (STATUS_CONVERGED, STATUS_INFEASIBLE, STATUS_NAN, STATUS_STEP_CAP,
                              STATUS_WALL_CLOCK, SvgdResult, SvgdSolverDetails, status_name,
                              write_log)
 
-POOL_CACHE_SIZE = 1           # ONE pool per process: a new scene closes the old pool first
-LOCAL_WORKERS_MAX = 8         # the default worker count's cap off a Slurm allocation
+CHECKER_CACHE_SIZE = 1        # boolean checkers (one Drake scene each) kept per process
 NATIVE_DRAW_ROUNDS = 20       # bounded rejection sampling for the joint-space native start
 LATENT_BOX = 5.0              # the latent's +-5 box (`LatentBoxConstraint`), where no trust radius
 
 
 ## ------------------------------------------------------------------------------------ ##
-##                         shared collision pools and checkers                          ##
+##                  the boolean checker (native draws) and the timed row                 ##
 ## ------------------------------------------------------------------------------------ ##
 
-_POOLS = OrderedDict()        # (SceneSpec, workers) -> DrakeCollisionPool
 _CHECKERS = OrderedDict()     # SceneSpec -> ParallelCollisionChecker
-
-
-def resolve_workers(option):
-    """`svgd_collision_workers`, or, when None, `max(1, cpu_count // PROCS)` inside a Slurm
-    job (`SLURM_JOB_ID` set: a dedicated node) and `min(that, LOCAL_WORKERS_MAX)` anywhere
-    else (a shared workstation, where each worker is a whole Drake scene in memory)."""
-    if option is not None:
-        return max(1, int(option))
-    try:
-        procs = max(1, int(os.environ.get("PROCS", "1") or 1))
-    except ValueError:
-        procs = 1
-    n = max(1, (os.cpu_count() or 2) // procs)
-    return n if os.environ.get("SLURM_JOB_ID") else min(n, LOCAL_WORKERS_MAX)
-
-
-def _spawn_pool(spec, workers):
-    """Spawn the pool with the GPU HIDDEN from its workers.
-
-    Under the `spawn` start method every worker re-imports the main script as
-    `__mp_main__`, and a benchmark script's (or a test's) module-level imports pull in
-    `src.generic_program` -> ikflow -> `jrl.config`, whose import initialises CUDA. So
-    twenty workers that only ever run Drake on the CPU each took a ~0.5 GB CUDA context,
-    and in a parent already holding the GPU they died at import with `CUDA error: out of
-    memory` -- surfacing as "worker k died (ConnectionResetError)" with the worker's own
-    traceback lost to `HiddenPrints` (the plumbing test, 2026-10-08). The environment is
-    what the child receives at exec, so it is masked for the spawn and restored after;
-    the parent's own CUDA state is untouched (the variable is read at CUDA init only).
-    """
-    old = os.environ.get("CUDA_VISIBLE_DEVICES")
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    try:
-        return DrakeCollisionPool(spec, workers=int(workers))
-    finally:
-        if old is None:
-            del os.environ["CUDA_VISIBLE_DEVICES"]
-        else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = old
-
-
-def shared_pool(spec, workers):
-    """The process's pool for `(spec, workers)`, spawned on first use. At most
-    `POOL_CACHE_SIZE` pools are alive: the least recently used are CLOSED BEFORE a new one is
-    spawned, so two scenes' workers never coexist (the memory guard's registry would refuse
-    the second anyway on a tight host)."""
-    key = (spec, int(workers))
-    pool = _POOLS.get(key)
-    if pool is not None and not pool.closed and all(pool.alive()):
-        _POOLS.move_to_end(key)
-        return pool
-    if pool is not None:
-        pool.close()
-        del _POOLS[key]
-    while len(_POOLS) >= POOL_CACHE_SIZE:
-        _, old = _POOLS.popitem(last=False)
-        old.close()
-    pool = _spawn_pool(spec, workers)
-    _POOLS[key] = pool
-    return pool
 
 
 def shared_checker(spec):
@@ -172,85 +107,31 @@ def shared_checker(spec):
     if checker is None:
         checker = ParallelCollisionChecker(spec)
         _CHECKERS[spec] = checker
-        while len(_CHECKERS) > POOL_CACHE_SIZE:
+        while len(_CHECKERS) > CHECKER_CACHE_SIZE:
             _CHECKERS.popitem(last=False)
     return checker
 
 
-def close_shared_pools():
-    for pool in list(_POOLS.values()):
-        try:
-            pool.close()
-        except Exception:
-            pass
-    _POOLS.clear()
-    _CHECKERS.clear()
+class _TimedCollision:
+    """The program's in-process collision row, with the host seconds spent in it, the calls and
+    the configurations accumulated per solve."""
 
-
-atexit.register(close_shared_pools)
-
-
-class _TimedPool:
-    """A shared pool, with the seconds spent inside it accumulated per solve. `close()` is a
-    no-op: the pool belongs to the module cache, not to any BatchedProgram.
-
-    `seconds` is HOST time blocked in pool calls (an `eval`, or a `submit` plus its
-    `collect`); `span_seconds` is the pool's latency, submit to collect. On the split step
-    the two differ by exactly the IPC and Drake time hidden behind GPU work (`seconds <=
-    span_seconds`); on a plain `eval` they are equal. `configs` counts configurations."""
-
-    def __init__(self, pool):
-        self.pool = pool
+    def __init__(self, evaluator):
+        self.evaluator = evaluator
         self.reset()
 
     def reset(self):
         self.seconds = 0.0
-        self.span_seconds = 0.0
         self.calls = 0
         self.configs = 0
-        self._t_submit = None
 
     def eval(self, Q, need_grad=True):
         t = time.perf_counter()
-        out = self.pool.eval(Q, need_grad=need_grad)
-        dt = time.perf_counter() - t
-        self.seconds += dt
-        self.span_seconds += dt
-        self.calls += 1
-        self.configs += int(np.shape(Q)[0])
-        return out
-
-    def submit(self, Q, need_grad=True):
-        t = time.perf_counter()
-        ticket = self.pool.submit(Q, need_grad=need_grad)
-        self._t_submit = t
+        out = self.evaluator.eval(Q, need_grad=need_grad)
         self.seconds += time.perf_counter() - t
-        self.configs += int(np.shape(Q)[0])
-        return ticket
-
-    def collect(self, ticket):
-        t = time.perf_counter()
-        out = self.pool.collect(ticket)
-        t1 = time.perf_counter()
-        self.seconds += t1 - t
-        if self._t_submit is not None:
-            self.span_seconds += t1 - self._t_submit
-        self._t_submit = None
         self.calls += 1
+        self.configs += int(np.shape(Q)[0])
         return out
-
-    def drain(self):
-        self.pool.drain()
-
-    @property
-    def closed(self):
-        return self.pool.closed
-
-    def alive(self):
-        return self.pool.alive()
-
-    def close(self):
-        pass
 
 
 def _scene_spec(program):
@@ -337,7 +218,7 @@ class _Target:
 
         ## Routing of the GENERIC rows' derivative w.r.t. the configuration (`generic_blocks`),
         ## for the autograd path: task rows by a vmapped backward through the frame chain,
-        ## the collision row from the pool's stored gradient, the joint-limit rows the identity.
+        ## the collision row from the evaluator's stored gradient, the joint-limit rows the identity.
         task, jl, col = [], [], []
         for kind, start, size in bp.generic_blocks:
             rows = list(range(start, start + size))
@@ -471,7 +352,7 @@ class _Target:
     def generic_jacobian_cfg(self, ev):
         """`d drake_rows / d cfg`, `[N, nr, ndof]`. Analytic mode: the batched program's
         closed form. Autograd mode: routed by row kind -- the task rows by one vmapped
-        backward through the kinematics, the collision row from the pool's stored
+        backward through the kinematics, the collision row from the evaluator's stored
         `d row / d q_plant` through `config_to_plant_q`, the joint-limit rows the identity."""
         out = ev.out
         if self.analytic:
@@ -580,26 +461,25 @@ class SvgdSolver:
         opts = self.options
         self.method = opts.svgd_method
         self._sc = fused.StepConfig.from_options(opts)
-        self._overlap = bool(opts.svgd_pool_overlap)
         self._runner = None
         self.N = int(opts.svgd_n)
         self.dtype = torch.float64 if opts.svgd_dtype == "float64" else torch.float32
-        self.workers = resolve_workers(opts.svgd_collision_workers)
         self.tol = float(opts.acceptable_constr_viol_tol)
         self._override = None if particles_override is None else np.asarray(particles_override, dtype=float)
         self._tg = None
-        self._pool = None
+        self._col = None
+        self._spec = None
         self._rho = float(opts.svgd_rho)
+        self._alpha = self._rho if opts.svgd_dual_lr is None else float(opts.svgd_dual_lr)
 
     ## ----------------------------------- setup ----------------------------------------
     def _build(self):
         if self._tg is not None:
             return
-        program = self.program
-        spec = _scene_spec(program)
-        self._spec = spec
-        self._pool = _TimedPool(shared_pool(spec, self.workers))
-        bp = BatchedProgram.from_program(program, dtype=self.dtype, pool=self._pool)
+        bp = BatchedProgram.from_program(self.program, dtype=self.dtype)
+        self._col = _TimedCollision(bp.collision)
+        if bp.collision is not None:
+            bp.collision = self._col
         self._tg = _Target(bp, self.tol)
         self.device = bp.device
         self.n = bp.nvars
@@ -625,6 +505,8 @@ class SvgdSolver:
         lower, upper = bp.program.ConfigLimits()
         lo = torch.tensor(np.asarray(lower, dtype=float)[:bp.ndof], dtype=self.dtype, device=self.device)
         hi = torch.tensor(np.asarray(upper, dtype=float)[:bp.ndof], dtype=self.dtype, device=self.device)
+        if self._spec is None:
+            self._spec = _scene_spec(self.program)
         checker = shared_checker(self._spec)
         out = torch.empty(0, self.n, dtype=self.dtype, device=self.device)
         rounds = 0
@@ -694,23 +576,18 @@ class SvgdSolver:
         return self._runner
 
     def _step_split(self, X, S):
-        """One step as `fused`'s three stages with the collision pool between them; returns
-        `(X_new, clip [N], n_clip [N])`."""
+        """One step as `fused`'s three stages with the collision row between them: stage 1,
+        the plant vector copied to the host, stage 2 launched on the GPU, the collision row on
+        the CPU (in this process), stage 3. Returns `(X_new, clip [N], n_clip [N])`."""
         r = self._runner
         bp = self._tg.bp
         cfg, q_plant = r.s1(X)
         self._tg._count("map_forward")
-        ticket, col = None, (None, None)
-        if bp._has_collision:
-            qp = q_plant.to("cpu", torch.float64).numpy()
-            ticket = self._pool.submit(qp, need_grad=True)
-            if not self._overlap:
-                col, ticket = self._pool.collect(ticket), None
-        try:
-            J_q, kin = r.s2(X, cfg)
-        finally:
-            if ticket is not None:
-                col = self._pool.collect(ticket)
+        col = (None, None)
+        qp = q_plant.to("cpu", torch.float64).numpy() if bp._has_collision else None
+        J_q, kin = r.s2(X, cfg)
+        if qp is not None:
+            col = self._col.eval(qp, need_grad=True)
         if bp.is_learned:
             self._tg._count("map_jacobian")
         kw = dict(device=self.device, dtype=self.dtype)
@@ -757,7 +634,7 @@ class SvgdSolver:
             ## -- the check, at the current swarm: the dual step, unconditionally --
             with torch.no_grad():
                 ev = tg.evaluate(X, need_grad=False)
-            S, n_clipped = al.dual_update(ev.h, ev.g, S, self._rho, float(opts.svgd_multiplier_max))
+            S, n_clipped = al.dual_update(ev.h, ev.g, S, self._alpha, float(opts.svgd_multiplier_max))
             stats["n_dual_updates"] += 1
             mask = al.resample_mask(ev.cfg, ev.finite, float(opts.svgd_resample_q_max))
             n_re = int(mask.sum().item())
@@ -830,8 +707,7 @@ class SvgdSolver:
         self._build()
         tg = self._tg
         bp = tg.bp
-        self._pool.drain()
-        self._pool.reset()
+        self._col.reset()
         self._make_runner()
         counts0 = dict(getattr(program, "eval_counts", {}) or {})
 
@@ -840,11 +716,11 @@ class SvgdSolver:
         N = X.shape[0]
         extras = dict(init_protocol=opts.svgd_paired_init,
                       clip_distance=clip.detach().cpu().numpy().tolist(),
-                      init_stats=init_stats, workers=self.workers,
+                      init_stats=init_stats,
                       region_scale=tg.s.detach().cpu().double().numpy().tolist(),
                       step_mode=(self._runner.mode if self._runner is not None else "eager (autograd path)"),
                       step_reused_template=bool(self._runner is not None and self._runner.reused),
-                      pool_overlap=self._overlap)
+)
 
         ## -- optional CEM warm-up --
         warmup_steps = 0
@@ -936,8 +812,7 @@ class SvgdSolver:
             best_history=sstats.get("best_history", []), stop_status=status_name(stop),
             total_steps=int(sstats.get("inner", 0)), eval_counts_delta={
                 key: int(counts.get(key, 0) - counts0.get(key, 0)) for key in counts},
-            pool_calls=int(self._pool.calls), pool_configs=int(self._pool.configs),
-            pool_span_seconds=float(self._pool.span_seconds),
+            collision_calls=int(self._col.calls), collision_configs=int(self._col.configs),
             candidates=cands,
             bound_clip_count=int(sstats.get("bound_clip_count", 0)),
             warmup_steps=int(warmup_steps)))
@@ -949,7 +824,7 @@ class SvgdSolver:
             selected_index=int(selected), phase_times=phase,
             timed_out=(stop == STATUS_WALL_CLOCK), hit_iteration_cap=(stop == STATUS_STEP_CAP),
             solver_feasible=bool(solver_ok), drake_feasible=bool(drake_ok),
-            solve_seconds=total, collision_seconds=float(self._pool.seconds),
+            solve_seconds=total, collision_seconds=float(self._col.seconds),
             stop_reason=str(sstats.get("stop_reason", "")),
             n_dual_updates=int(sstats.get("n_dual_updates", 0)),
             lam_inf_median=float(np.median(lam_inf)), lam_inf_max=float(np.max(lam_inf)),
@@ -963,11 +838,8 @@ class SvgdSolver:
     ## ---------------------------------- prepare ---------------------------------------
     def prepare(self):
         """Infrastructure only, for a harness to call BEFORE it starts a cell's clock: build
-        the batched program and make sure this scene's collision pool exists with every
-        worker's scene built (one configuration per worker). A grasp grid welds a new mug
-        per target, so without this the first arm solved on each target paid the pool spawn
-        and the workers' scene builds (seconds) inside its own wall-clock cap, and the
-        second arm did not. Returns the seconds spent."""
+        the batched program and evaluate the collision row once (Drake's first query on a
+        scene builds its geometry caches). Returns the seconds spent."""
         t0 = time.perf_counter()
         self._build()
         bp = self._tg.bp
@@ -977,13 +849,12 @@ class SvgdSolver:
             with torch.no_grad():
                 X = torch.tensor(x0, dtype=self.dtype, device=self.device).unsqueeze(0)
                 qp = bp.config_to_plant_q(bp._config(X)).to("cpu", torch.float64).numpy()
-            self._pool.drain()
-            self._pool.eval(np.repeat(np.nan_to_num(qp), self.workers, axis=0), need_grad=True)
+            self._col.eval(np.nan_to_num(qp), need_grad=True)
         return time.perf_counter() - t0
 
     ## ---------------------------------- warm-up ---------------------------------------
     def warm_up(self):
-        """Pay the pool spawn, the first flow / FK calls and -- under `svgd_compile` /
+        """Pay the first flow / FK / collision calls and -- under `svgd_compile` /
         `svgd_cuda_graph` -- the compile of every stage and the capture of every graph this
         solver's (N, dtype, structure, step options) uses, outside any timed cell: a few
         steps on particles drawn around the program's current guess. Returns the seconds
@@ -994,7 +865,6 @@ class SvgdSolver:
                                       dtype=float))
         X, _, _ = self._init_particles(x0)
         S = self._init_state(X)
-        self._pool.drain()
         self._make_runner()
         step_fn = self._step_split if self._runner is not None else self._step_eager
         for _ in range(3):
