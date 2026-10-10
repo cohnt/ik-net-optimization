@@ -49,7 +49,7 @@ the stage's item set.
   svgd step cap. This is the cap rule applied up front: the default of 300 outer checks would stop
   cells before the clock (~0.3 s per check locally), and a row with >= 24 of 480 cells at a budget
   carries no verdict. To field the default cap instead, empty `SVGD_BUDGET` and regenerate.
-- `svgd_rho=1000 svgd_gn_lm=10 svgd_lr=1.0`, pinned explicitly on every svgd item (SMOKE, R1,
+- `svgd_rho=1000 svgd_gn_lm=10 svgd_lr=0.3`, pinned explicitly on every svgd item (SMOKE, R1,
   R1K). These are the values the local probe chose. The code staged on the cluster (42a5893)
   predates them: its `svgd_gn_lm` default is 1e-2. The tree cannot be restaged while PAPER runs, so
   the manifests carry them (`SVGD_PINNED`), and the selftest fails if any svgd item lacks them.
