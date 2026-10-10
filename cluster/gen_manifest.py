@@ -2803,6 +2803,326 @@ def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RU
     print("submitted by Sat 10-10 it should finish first; anything later straddles the window.")
 
 
+## -------------------------------------------------------------------------------- SVGD --
+##
+## The fourth method class (branch `svgd`, docs/svgd-solver.md): batch-parallel augmented-
+## Lagrangian SVGD in torch on the GPU. A SEPARATE FAMILY, deliberately NOT an entry in
+## SOLVER_CLASSES: the three Drake classes are the closed, accepted solver axis, and a fourth
+## entry there would silently change what every status-quo builder and its selftest mean.
+## Panda only, on the record's `n6` chart, at the record's Panda conditions exactly: hardened
+## scene, shelf-contained targets at the fingertips, 480 cells = 60 x 8, seed 1, 180 s,
+## `--compile --set flow_cuda_graph=True`, `correction_cost_weight=10.0`, arms
+## learned,numerical, both start protocols, both experiments (mugshelf, posetip). Every item is
+## built FROM stage_STATUSQUO plus stage REMEASURE's additions, so the rows are the record's by
+## construction rather than by copy.
+##
+## ALL THREE MANIFESTS ARE SUBMITTED AT PROCS=2, NO MPS: one solve per V100, the paper's
+## condition (CLAUDE.md, "Profiling, and CUDA graphs"). PROCS is a submit-time setting and the
+## tags carry no token for it; cluster/SVGD_RUNBOOK.md does.
+##
+##   SVGD_SMOKE  one item: Panda posetip paired, R1's `kq` args on a 2 x 2 grid (4 cells) at
+##               60 s. Proves the svgd path -- WarmUpSvgdStep's compile and CUDA-graph capture,
+##               the in-process Drake collision row, the flow's graphs -- on the V100 / cu126
+##               build before R1 holds nodes. A different grid, so it pairs with nothing.
+##   SVGD_R2     the IPOPT twin: stage REMEASURE's four Panda IPOPT rows VERBATIM (args identical,
+##               the lifted max_iter included; the selftest holds it), re-tagged sc_SVGD_R2_.
+##               The record ran them at PROCS=8 under MPS; R2 is the same cells at one solve per
+##               GPU, so learned-under-svgd has same-machine, same-condition seconds beside it.
+##               4 logical runs x 8 shards, the record's Panda IPOPT convention.
+##   SVGD_R1     the same four rows under `--solver svgd`, two variants, 8 logical runs, in TWO
+##   SVGD_R1K    manifests so the weekend can be ordered (the coordinator, 2026-10-10):
+##                 kq     (SVGD_R1)  the defaults (kernel on q, N = 64, paired init `jitter`);
+##                 knone  (SVGD_R1K) `--set svgd_kernel=none`, the no-interaction control
+##                        (batched AL), submitted held until released.
+##               Both carry the sc_SVGD_R1_ tag family; together they are one stage.
+##               Every svgd METHOD option is at its ProgramOptions default in the staged code. The
+##               manifest sets exactly two other things:
+##                 (a) the execution mode scripts/svgd/smoke.py fields as `graphed`
+##                     (`svgd_compile=True`, `svgd_cuda_graph=True`: compiled and captured by
+##                     WarmUpSvgdStep before the first timed cell). An execution setting, not part
+##                     of the method; the defaults (False, False) would run the step eager.
+##                 (b) the step budget lifted, `svgd_outer_iters=1000000`, in place of the
+##                     record's `max_iter` -- which, when set, IS the svgd step cap
+##                     (src/svgd/solver.py), so it is dropped to leave one name for one budget.
+##                     This is the cap rule applied up front, as stage REMEASURE applied it:
+##                     the default 300 outer checks would stop cells before the 180 s clock (the
+##                     laptop's latest e2e run at the staged defaults did ~0.3 s per check, so
+##                     300 checks is ~90 s), and a row with >= 24 of 480 cells at a budget
+##                     carries no verdict (docs/svgd-solver.md, "the cap rule"). Drop it by
+##                     emptying SVGD_BUDGET if the PI rules otherwise.
+##               Within each manifest, grasp before pose.
+##               Sharded 3x the IPOPT rows (24): the treatment STATUSQUO_SHARD_SCALE gives a
+##               column that runs to the clock. Worst case, every cell at the clock on both arms,
+##               is 20 cells x 2 x 180 s = 2 h per item, far inside run_items.sh's 8 h
+##               ITEM_TIMEOUT, and a maintenance kill loses at most that.
+## `svgd_n` is NOT set: it defaults to 64, and the selftest reads that default out of
+## src/generic_program.py's TEXT (torch-free) and fails if it moves, so a changed default
+## cannot silently change N. `svgd_paired_init` is not set either (default `jitter`, held the
+## same way).
+
+SVGD_ROBOT, SVGD_RUNG = "panda", "n6"
+SVGD_STAGES = ("SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K")
+#: R1 is split by variant into two manifests: stage name -> the variant it carries.
+SVGD_R1_SPLIT = {"SVGD_R1": "kq", "SVGD_R1K": "knone"}
+#: (a): the `graphed` mode of scripts/svgd/smoke.py's MODES, verbatim.
+SVGD_EXEC = ["--set", "svgd_compile=True", "--set", "svgd_cuda_graph=True"]
+#: (b): the lifted step budget. ONE knob; the IPOPT `max_iter` is removed from svgd items.
+SVGD_STEP_CAP = 1000000
+SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
+#: R1's variants, in claim order (the primary first). Each differs from `kq` in one setting.
+SVGD_VARIANTS = {"kq": [], "knone": ["--set", "svgd_kernel=none"]}
+SVGD_R2_SHARDS = 8
+SVGD_R1_SHARD_SCALE = 3
+SVGD_SMOKE_SHAPE = (2, 2, 60.0)          # targets, guesses, cap -- 4 cells
+SVGD_PROCS = 2                           # solves in flight per node: one per V100, no MPS
+SVGD_NODES = 4                           # the xeon-g6-volta GrpTRES cap
+#: The only `--set` names an item of each manifest may carry.
+SVGD_ALLOWED_SETS = {
+    "SVGD_R2": {"correction_cost_weight", "flow_cuda_graph", "max_iter"},
+    "SVGD_R1": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                "svgd_outer_iters", "svgd_kernel"},
+    "SVGD_R1K": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                 "svgd_outer_iters", "svgd_kernel"},
+    "SVGD_SMOKE": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile",
+                   "svgd_cuda_graph", "svgd_outer_iters"},
+}
+#: ProgramOptions defaults the manifest RELIES ON rather than sets (checked from source text).
+SVGD_RELIED_DEFAULTS = {"svgd_n": "64", "svgd_paired_init": '"jitter"', "svgd_kernel": '"q"',
+                        "svgd_compile": "False", "svgd_cuda_graph": "False"}
+#: Allotment bases. R2: the record's Panda IPOPT mean wall per cell over ALL cells, learned /
+#: joint space (docs/status-quo-tables.md Table 3, stage REMEASURE at PROCS=8 under MPS; at
+#: PROCS=2 the learned arm should be ~1.12-1.19x faster, so this is slightly pessimistic).
+SVGD_R2_MEAN_WALL = {("mug", "native"): (3.52, 6.24), ("mug", "paired"): (5.86, 6.27),
+                     ("pose", "native"): (0.93, 0.54), ("pose", "paired"): (2.37, 0.55)}
+#: R1: an ASSUMPTION, not a measurement -- 40 s mean per cell PER ARM (both arms run svgd).
+#: The worst case, every cell at the clock on both arms, is printed beside it.
+SVGD_R1_ASSUMED_ARM_CELL_S = 40.0
+SVGD_ITEM_OVERHEAD_S = REMEASURE_ITEM_OVERHEAD_S
+
+
+def _svgd_rows(targets, guesses, shards, tag, starts="paired,native"):
+    """The record's Panda IPOPT rows: stage_STATUSQUO's items plus stage REMEASURE's additions
+    (the graph switch and the lifted IPOPT budget), at any grid shape and shard count."""
+    return [dict(it, args=list(it["args"]) + REMEASURE_GRAPH + _itcap_extra("ipopt")[1])
+            for it in stage_STATUSQUO(STATUSQUO_WALL, targets, guesses, shards,
+                                      only=f"{SVGD_ROBOT}:{SVGD_RUNG}", solvers="ipopt",
+                                      starts=starts, tag=tag)]
+
+
+def _svgd_flag(args, flag):
+    return args[args.index(flag) + 1]
+
+
+def _svgd_as_svgd(it, variant, wall=None, cells_token=None):
+    """An IPOPT row item turned into the svgd item: solver, budget, execution mode, variant,
+    and the tag `..._svgd_<row>_<cells>_<cap>_<start>_<variant>`."""
+    a = list(it["args"])
+    a[a.index("--solver") + 1] = "svgd"
+    i = a.index(f"max_iter={ITCAP_IPOPT_MAX_ITER}")
+    assert a[i - 1] == "--set"
+    del a[i - 1:i + 1]
+    if wall is not None:
+        a[a.index("--wall-time") + 1] = str(float(wall))
+    a += SVGD_EXEC + SVGD_BUDGET + list(SVGD_VARIANTS[variant])
+    old = _svgd_flag(a, "--tag")
+    head, tail = old.split("_ipopt_", 1)
+    row, cells, cap, start = tail.split("_")
+    new = (f"{head}_svgd_{row}_{cells_token or cells}_{int(float(_svgd_flag(a, '--wall-time')))}"
+           f"_{start}_{variant}")
+    a[a.index("--tag") + 1] = new
+    return dict(it, args=a, id=it["id"].replace(old, new, 1))
+
+
+def _svgd_seconds(stage, args):
+    """The allotment estimate for ONE ITEM (so --summary and LPT read real numbers)."""
+    task, start = _svgd_flag(args, "--task"), _svgd_flag(args, "--start")
+    shards = int(_svgd_flag(args, "--shard").split("/")[1]) if "--shard" in args else 1
+    cells = int(_svgd_flag(args, "--targets")) * int(_svgd_flag(args, "--guesses")) / shards
+    if stage == "SVGD_R2":
+        per_cell = sum(SVGD_R2_MEAN_WALL[(task, start)])
+    elif stage in SVGD_R1_SPLIT:
+        per_cell = 2 * SVGD_R1_ASSUMED_ARM_CELL_S
+    else:                                         # the smoke: charged at the clock
+        per_cell = 2 * float(_svgd_flag(args, "--wall-time"))
+    return cells * per_cell + SVGD_ITEM_OVERHEAD_S
+
+
+def _svgd_r1_items(variants=tuple(SVGD_VARIANTS)):
+    """Stage R1 whole: the record's Panda rows under svgd, one logical run per row x variant.
+    Grasp before pose (`order`); the manifests split it by variant (SVGD_R1_SPLIT)."""
+    items = []
+    for variant in variants:
+        for it in _svgd_rows(60, 8, SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE, "SVGD_R1"):
+            task = _svgd_flag(it["args"], "--task")
+            items.append(dict(_svgd_as_svgd(it, variant), order=0 if task == "mug" else 1))
+    return items
+
+
+def stage_SVGD(which):
+    """The svgd branch's cluster stages: SVGD_SMOKE, SVGD_R2 (IPOPT twin), SVGD_R1 / SVGD_R1K
+    (svgd, the `kq` and `knone` halves of one stage)."""
+    if which == "SVGD_R2":
+        items = _svgd_rows(60, 8, SVGD_R2_SHARDS, "SVGD_R2")
+    elif which in SVGD_R1_SPLIT:
+        items = _svgd_r1_items((SVGD_R1_SPLIT[which],))
+    elif which == "SVGD_SMOKE":
+        t, g, wall = SVGD_SMOKE_SHAPE
+        items = [_svgd_as_svgd(it, "kq", wall=wall)
+                 for it in _svgd_rows(t, g, 1, "SVGDSMOKE", starts="paired")
+                 if _svgd_flag(it["args"], "--task") == "pose"]
+    else:
+        raise ValueError(f"unknown svgd stage {which!r}; one of {SVGD_STAGES}")
+    return [dict(it, seconds=_svgd_seconds(which, it["args"])) for it in items]
+
+
+def svgd_allotment():
+    """Print the node-hour arithmetic for the three svgd manifests, at PROCS=2 on 4 nodes."""
+    print(f"SVGD ALLOTMENT -- PROCS={SVGD_PROCS} (one solve per V100, no MPS), {SVGD_NODES} nodes; "
+          f"+{SVGD_ITEM_OVERHEAD_S:g} s per item (startup, flow compile + graphs, svgd warm-up).")
+    print("  R2 base: the record's Panda IPOPT mean wall per cell, both arms (Table 3, stage")
+    print("  REMEASURE at PROCS=8 MPS=1 -- slightly pessimistic at PROCS=2).")
+    print(f"  R1 base: ASSUMED {SVGD_R1_ASSUMED_ARM_CELL_S:g} s per cell per arm (both arms run "
+          f"svgd); worst case every cell at the {STATUSQUO_WALL:g} s clock on both arms.")
+    print(f"  smoke: charged at the clock.")
+    print(f"\n  {'manifest':<12}{'runs':>6}{'cells':>7}{'items':>7}{'solve-h':>9}{'node-h':>8}"
+          f"{'h@' + str(SVGD_NODES):>7}{'max item h':>12}")
+    tot = [0.0, 0.0]
+    for stage in SVGD_STAGES:
+        items = stage_SVGD(stage)
+        runs = {i["id"].rsplit("_shard", 1)[0] for i in items}
+        a = items[0]["args"]
+        cells = int(_svgd_flag(a, "--targets")) * int(_svgd_flag(a, "--guesses")) * len(runs)
+        secs = sum(i["seconds"] for i in items)
+        node_h = secs / 3600 / SVGD_PROCS
+        tot = [tot[0] + secs, tot[1] + node_h]
+        print(f"  {stage:<12}{len(runs):>6}{cells:>7}{len(items):>7}{secs / 3600:>9.1f}"
+              f"{node_h:>8.1f}{node_h / SVGD_NODES:>7.1f}"
+              f"{max(i['seconds'] for i in items) / 3600:>12.2f}")
+    print(f"  {'TOTAL':<12}{'':>6}{'':>7}{'':>7}{tot[0] / 3600:>9.1f}{tot[1]:>8.1f}"
+          f"{tot[1] / SVGD_NODES:>7.1f}")
+    for stage in SVGD_R1_SPLIT:
+        worst = [480 / int(_svgd_flag(i["args"], "--shard").split("/")[1]) * 2 * STATUSQUO_WALL
+                 + SVGD_ITEM_OVERHEAD_S for i in stage_SVGD(stage)]
+        print(f"\n  {stage} WORST CASE (every cell at the clock, both arms): "
+              f"{sum(worst) / 3600:.1f} solve-h, {sum(worst) / 3600 / SVGD_PROCS:.1f} node-h, "
+              f"{sum(worst) / 3600 / SVGD_PROCS / SVGD_NODES:.1f} h on {SVGD_NODES} idle nodes; "
+              f"longest item {max(worst) / 3600:.2f} h.")
+    print("  Read the smoke's mean wall per cell against its 60 s clock before trusting the R1 lines.")
+    print("\nMAINTENANCE: SuperCloud compute is down Mon 2026-10-12 evening to Wed 10-14 morning;")
+    print("running jobs are killed and queued jobs do not survive. --reclaim and resubmit after.")
+
+
+## ------------------------------------------------------------------------------- PAPER --
+##
+## WEEKEND FILLER: the record's rows again at the PAPER's condition, one solve per GPU
+## (CLAUDE.md, "Profiling, and CUDA graphs": *"those are the conditions in which the final
+## paper results will be drawn"*). Stage REMEASURE ran PROCS=8 under MPS=1, a development
+## condition whose learned wall times carry a 1.12-1.19x premium; this stage re-runs its PRIMARY
+## items verbatim -- identical args, lifted budgets, record flags -- re-tagged sc_PAPER_ in place
+## of sc_REMEASURE_ (same suffix), to be submitted at PROCS=2 with NO MPS.
+##   The record's 32 logical runs: Panda n6, iiwa n4, soft12 n6, screw7_p050 n6 x mugshelf /
+##   posetip x paired / native x IPOPT / SNOPT. GVS is outside the record and is not here;
+##   neither are the LEGACY / RULE controls nor NLopt. MINUS the 4 Panda IPOPT runs, which stage
+##   SVGD_R2 already measures at this condition (its items are those runs, re-tagged sc_SVGD_R2_):
+##   28 logical runs, sharded as REMEASURE did (8 per run).
+## Claim order (the coordinator, 2026-10-10): Panda SNOPT, iiwa IPOPT, iiwa SNOPT, screw IPOPT,
+## screw SNOPT, soft PCS IPOPT, soft PCS SNOPT; grasp before pose within each.
+
+PAPER_SCHEDULE = (("panda", "snopt"), ("iiwa", "ipopt"), ("iiwa", "snopt"),
+                  (SCREW_PRIMARY, "ipopt"), (SCREW_PRIMARY, "snopt"),
+                  ("soft12", "ipopt"), ("soft12", "snopt"))
+PAPER_PROCS = 2
+#: Stage REMEASURE's own mean wall per cell, learned / joint space, UNCLAMPED (an allotment is
+#: node time, and SNOPT at the lifted budget overruns its clock on cycling cells -- soft PCS grasp
+#: paired has one 2.2 h cell). Computed 2026-10-10 from the stage's merged summaries; the clamped
+#: values agree with docs/status-quo-tables.md Table 3 to the printed digit. Measured at
+#: PROCS=8 under MPS=1.
+PAPER_REMEASURE_WALL = {
+    ("iiwa", "mug", "native"): {"ipopt": (3.01, 1.09), "snopt": (3.45, 15.84)},
+    ("iiwa", "mug", "paired"): {"ipopt": (7.10, 1.10), "snopt": (28.22, 15.95)},
+    ("iiwa", "pose", "native"): {"ipopt": (0.75, 0.10), "snopt": (1.49, 1.69)},
+    ("iiwa", "pose", "paired"): {"ipopt": (1.82, 0.10), "snopt": (32.41, 1.71)},
+    ("panda", "mug", "native"): {"ipopt": (3.52, 6.24), "snopt": (4.18, 14.78)},
+    ("panda", "mug", "paired"): {"ipopt": (5.86, 6.27), "snopt": (29.27, 14.79)},
+    ("panda", "pose", "native"): {"ipopt": (0.93, 0.54), "snopt": (1.91, 1.56)},
+    ("panda", "pose", "paired"): {"ipopt": (2.37, 0.55), "snopt": (9.11, 1.58)},
+    ("screw7_p050", "mug", "native"): {"ipopt": (7.81, 1.12), "snopt": (17.52, 9.34)},
+    ("screw7_p050", "mug", "paired"): {"ipopt": (12.18, 1.12), "snopt": (27.22, 9.43)},
+    ("screw7_p050", "pose", "native"): {"ipopt": (1.23, 0.13), "snopt": (2.86, 1.81)},
+    ("screw7_p050", "pose", "paired"): {"ipopt": (2.28, 0.13), "snopt": (7.25, 1.80)},
+    ("soft12", "mug", "native"): {"ipopt": (2.37, 3.44), "snopt": (7.73, 20.45)},
+    ("soft12", "mug", "paired"): {"ipopt": (6.62, 3.39), "snopt": (50.89, 20.38)},
+    ("soft12", "pose", "native"): {"ipopt": (0.78, 0.37), "snopt": (4.74, 2.49)},
+    ("soft12", "pose", "paired"): {"ipopt": (9.27, 0.37), "snopt": (24.97, 2.51)},
+}
+
+
+def _paper_mean_wall(robot, task, start, solver):
+    """(learned, joint space) expected mean wall per cell at ONE SOLVE PER GPU.
+
+    The learned arm's FLOW share (REMEASURE_FLOW_SHARE) sheds the MPS premium, / 1.155 (the
+    middle of the measured 1.12-1.19x, stage CUDAGRAPHMPS). The rest of a learned iteration and
+    the whole joint-space arm are CPU-bound and are left as measured: 8 workers on 40 cores
+    cost them little, so this is slightly pessimistic for them."""
+    L, J = PAPER_REMEASURE_WALL[(robot, task, start)][solver]
+    f = REMEASURE_FLOW_SHARE[robot]
+    return L * ((1 - f) + f / REMEASURE_MPS_PREMIUM), J
+
+
+def _paper_seconds(it):
+    a = it["args"]
+    task, start, solver = (a[a.index(k) + 1] for k in ("--task", "--start", "--solver"))
+    shards = int(a[a.index("--shard") + 1].split("/")[1]) if "--shard" in a else 1
+    L, J = _paper_mean_wall(it["robot"], task, start, solver)
+    return 480 * (L + J) / shards + REMEASURE_ITEM_OVERHEAD_S
+
+
+def stage_PAPER():
+    """Stage REMEASURE's primary items minus GVS and minus Panda IPOPT, re-tagged sc_PAPER_."""
+    items = []
+    for it in stage_REMEASURE("REMEASURE"):
+        a = list(it["args"])
+        solver, task = a[a.index("--solver") + 1], a[a.index("--task") + 1]
+        if (it["robot"], solver) not in PAPER_SCHEDULE:
+            continue                       # GVS (outside the record); Panda IPOPT (= SVGD_R2)
+        i = a.index("--tag")
+        old = a[i + 1]
+        new = old.replace("sc_REMEASURE_", "sc_PAPER_", 1)
+        a[i + 1] = new
+        o = dict(it, args=a, id=it["id"].replace(old, new, 1),
+                 order=2 * PAPER_SCHEDULE.index((it["robot"], solver))
+                 + (0 if task == "mug" else 1))
+        o["seconds"] = _paper_seconds(o)
+        items.append(o)
+    return items
+
+
+def paper_allotment():
+    """Print the node-hour arithmetic for stage PAPER at PROCS=2, no MPS."""
+    items = stage_PAPER()
+    print(f"PAPER ALLOTMENT -- PROCS={PAPER_PROCS} (one solve per V100, no MPS), {SVGD_NODES} nodes; "
+          f"+{REMEASURE_ITEM_OVERHEAD_S:g} s per item.")
+    print("  Base: stage REMEASURE's own UNCLAMPED mean wall per cell (PROCS=8 MPS=1). The learned")
+    print(f"  arm's flow share sheds the MPS premium (/ {REMEASURE_MPS_PREMIUM:g}); the rest of it and joint")
+    print("  space are left as measured. Node throughput is 2 solves in flight, not 8: 4x fewer.")
+    print(f"\n  {'robot / solver':<22}{'runs':>6}{'items':>7}{'solve-h':>9}{'node-h':>8}{'max item h':>12}")
+    tot = 0.0
+    for robot, solver in PAPER_SCHEDULE:
+        its = [i for i in items if i["robot"] == robot and
+               i["args"][i["args"].index("--solver") + 1] == solver]
+        runs = {i["id"].rsplit("_shard", 1)[0] for i in its}
+        secs = sum(i["seconds"] for i in its)
+        tot += secs
+        print(f"  {robot + ' ' + solver:<22}{len(runs):>6}{len(its):>7}{secs / 3600:>9.1f}"
+              f"{secs / 3600 / PAPER_PROCS:>8.1f}{max(i['seconds'] for i in its) / 3600:>12.2f}")
+    runs = {i["id"].rsplit("_shard", 1)[0] for i in items}
+    print(f"  {'TOTAL':<22}{len(runs):>6}{len(items):>7}{tot / 3600:>9.1f}"
+          f"{tot / 3600 / PAPER_PROCS:>8.1f}   = {tot / 3600 / PAPER_PROCS / SVGD_NODES:.1f} h on "
+          f"{SVGD_NODES} idle nodes")
+    print("  Mean-based: a shard holding several cycling SNOPT cells runs longer than its mean share")
+    print("  (REMEASURE ran these exact shards inside ITEM_TIMEOUT).")
+
+
 def stage_SCREWCHART(wall, targets, guesses, shards, only=None, tag="SCREWCHART", seed=1,
                      starts="paired,native"):
     """The chart ladder on the primary rung: nb_nodes 4 / 6 / 8, IPOPT only.
@@ -4580,6 +4900,198 @@ def selftest():
         print("ok   stages REMEASURE/LEGACY/RULE/NLOPT: 40/20/8/16 logical runs, the record's rows "
               "re-tagged + graphs + lifted budgets, wsg grasp first, NLopt split out and last")
 
+    ## The svgd branch's stages. What must hold: svgd is NOT a fourth SOLVER_CLASSES entry; R2 is
+    ## stage REMEASURE's Panda IPOPT items verbatim but for the tag; R1 is R2's rows with exactly
+    ## the solver swapped, the IPOPT budget swapped for the svgd step budget, the graphed
+    ## execution mode and the variant's one setting -- no svgd METHOD option set anywhere; the
+    ## defaults it relies on (svgd_n = 64, ...) still are the defaults; counts 1 / 4 / 8 runs;
+    ## every item inside ITEM_TIMEOUT even with every cell at the clock; manifests not stale.
+    sv_fails = []
+    if "svgd" in SOLVER_CLASSES:
+        sv_fails.append("svgd is in SOLVER_CLASSES; it is a separate family")
+    gp_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "src", "generic_program.py")).read()
+    for name, want in SVGD_RELIED_DEFAULTS.items():
+        m = re.search(rf"^\s+{name}: \w+ = field\(default=([^,]+),", gp_src, re.M)
+        if not m or m.group(1) != want:
+            sv_fails.append(f"ProgramOptions.{name} default is {m.group(1) if m else '?'}, the "
+                            f"manifests rely on {want}: set it explicitly in SVGD_VARIANTS")
+    sv_expected = {"SVGD_SMOKE": (1, 1), "SVGD_R2": (4, 4 * SVGD_R2_SHARDS),
+                   "SVGD_R1": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE),
+                   "SVGD_R1K": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE)}
+    rm_panda = {it["id"].replace("sc_REMEASURE_", "", 1): it for it in stage_REMEASURE("REMEASURE")
+                if it["robot"] == "panda" and _svgd_flag(it["args"], "--solver") == "ipopt"}
+    for stage, (want_runs, want_items) in sv_expected.items():
+        items = stage_SVGD(stage)
+        ids = [it["id"] for it in items]
+        runs = {i.rsplit("_shard", 1)[0] for i in ids}
+        if len(set(ids)) != len(ids):
+            sv_fails.append(f"{stage}: duplicate item ids")
+        if (len(runs), len(items)) != (want_runs, want_items):
+            sv_fails.append(f"{stage}: {len(runs)} runs / {len(items)} items, expected "
+                            f"{want_runs} / {want_items}")
+        prefix = {"SVGD_SMOKE": "sc_SVGDSMOKE_", "SVGD_R2": "sc_SVGD_R2_",
+                  "SVGD_R1": "sc_SVGD_R1_", "SVGD_R1K": "sc_SVGD_R1_"}[stage]
+        variants_seen, rows_seen = set(), set()
+        for it in items:
+            a = it["args"]
+            tag = _svgd_flag(a, "--tag")
+            if not tag.startswith(prefix) or it["id"].rsplit("_shard", 1)[0] != tag:
+                sv_fails.append(f"{stage}: {it['id']} is not tagged {prefix}...")
+            if it["robot"] != "panda" or _svgd_flag(a, "--checkpoint") != \
+                    "models/panda/panda__n6__step620000.pkl" or it["env"] != "-":
+                sv_fails.append(f"{stage}: {it['id']} is not the plain Panda n6 chart")
+            solver = _svgd_flag(a, "--solver")
+            if solver != ("ipopt" if stage == "SVGD_R2" else "svgd"):
+                sv_fails.append(f"{stage}: {it['id']} runs {solver}")
+            t, g, wall = (SVGD_SMOKE_SHAPE if stage == "SVGD_SMOKE" else (60, 8, 180.0))
+            for flag, want in (("--wall-time", str(float(wall))), ("--seed", "1"),
+                               ("--scene", "hardened"), ("--shelf-inset", str(HARD_SHELF_INSET)),
+                               ("--target-placement", "shelf"), ("--arms", "learned,numerical"),
+                               ("--targets", str(t)), ("--guesses", str(g)),
+                               ("--config", "latent")):
+                if _svgd_flag(a, flag) != want:
+                    sv_fails.append(f"{stage}: {it['id']} has {flag} {_svgd_flag(a, flag)}")
+            if "--compile" not in a:
+                sv_fails.append(f"{stage}: {it['id']} is not compiled")
+            task, start = _svgd_flag(a, "--task"), _svgd_flag(a, "--start")
+            if (task == "pose") != ("--placement-point" in a) or \
+                    (task == "pose" and _svgd_flag(a, "--placement-point") != "fingertips"):
+                sv_fails.append(f"{stage}: {it['id']} placement point wrong for {task}")
+            sets = {}
+            for i, tok in enumerate(a):
+                if tok == "--set":
+                    k, v = a[i + 1].split("=", 1)
+                    if k in sets:
+                        sv_fails.append(f"{stage}: {it['id']} sets {k} twice")
+                    sets[k] = v
+            if set(sets) - SVGD_ALLOWED_SETS[stage]:
+                sv_fails.append(f"{stage}: {it['id']} sets "
+                                f"{sorted(set(sets) - SVGD_ALLOWED_SETS[stage])}")
+            if sets.get("flow_cuda_graph") != "True" or \
+                    sets.get("correction_cost_weight") != str(CORR_COST):
+                sv_fails.append(f"{stage}: {it['id']} lacks the record's graph/penalty flags")
+            if solver == "svgd":
+                if (sets.get("svgd_compile"), sets.get("svgd_cuda_graph"),
+                        sets.get("svgd_outer_iters")) != ("True", "True", str(SVGD_STEP_CAP)) \
+                        or "max_iter" in sets:
+                    sv_fails.append(f"{stage}: {it['id']} not graphed / budget not svgd's own")
+                variant = tag.rsplit("_", 1)[1]
+                variants_seen.add(variant)
+                if variant not in SVGD_VARIANTS or \
+                        {k: v for k, v in sets.items() if k == "svgd_kernel"} != \
+                        {a2.split("=")[0]: a2.split("=")[1]
+                         for a2 in SVGD_VARIANTS[variant][1::2]}:
+                    sv_fails.append(f"{stage}: {it['id']} variant {variant} mis-set")
+                ## R1 vs the IPOPT row it came from: identical but for the documented swap.
+                ipopt_tag = tag.rsplit("_", 1)[0].replace("_svgd_", "_ipopt_", 1)
+                if stage in SVGD_R1_SPLIT:
+                    base = [o for o in _svgd_rows(60, 8, 24, "SVGD_R1")
+                            if o["id"] == it["id"].replace(tag, ipopt_tag, 1)]
+                    if len(base) != 1 or _svgd_as_svgd(base[0], variant)["args"] != a:
+                        sv_fails.append(f"{stage}: {it['id']} is not its IPOPT row + the swap")
+            else:
+                if sets.get("max_iter") != str(ITCAP_IPOPT_MAX_ITER):
+                    sv_fails.append(f"{stage}: {it['id']} IPOPT budget not lifted")
+                twin = rm_panda.get(it["id"].replace(prefix, "", 1))
+                strip = lambda x: x[:x.index("--tag")] + x[x.index("--tag") + 2:]
+                if twin is None or strip(twin["args"]) != strip(a) or twin["script"] != it["script"]:
+                    sv_fails.append(f"{stage}: {it['id']} is not stage REMEASURE's Panda IPOPT item")
+            rows_seen.add((task, start))
+            shards = int(_svgd_flag(a, "--shard").split("/")[1]) if "--shard" in a else 1
+            want_sh = {"SVGD_SMOKE": 1, "SVGD_R2": SVGD_R2_SHARDS,
+                       "SVGD_R1": SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE,
+                       "SVGD_R1K": SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE}[stage]
+            if shards != want_sh:
+                sv_fails.append(f"{stage}: {it['id']} sharded {shards}-way, not {want_sh}")
+            if t * g / shards * 2 * wall + SVGD_ITEM_OVERHEAD_S > 28800:
+                sv_fails.append(f"{stage}: {it['id']} can exceed ITEM_TIMEOUT at the clock")
+        want_rows = ({("pose", "paired")} if stage == "SVGD_SMOKE" else
+                     {(tk, st) for tk in ("mug", "pose") for st in ("paired", "native")})
+        if rows_seen != want_rows:
+            sv_fails.append(f"{stage}: rows {sorted(rows_seen)}, expected {sorted(want_rows)}")
+        if stage in SVGD_R1_SPLIT and variants_seen != {SVGD_R1_SPLIT[stage]}:
+            sv_fails.append(f"{stage}: variants {sorted(variants_seen)}, expected "
+                            f"{SVGD_R1_SPLIT[stage]} only")
+        if stage == "SVGD_SMOKE" and variants_seen != {"kq"}:
+            sv_fails.append(f"{stage}: the smoke must run the defaults (kq)")
+        if stage in SVGD_R1_SPLIT:
+            first, last = render(items)[0].split("|", 1)[0], render(items)[-1].split("|", 1)[0]
+            if not ("_mugshelf_" in first and "_posetip_" in last):
+                sv_fails.append(f"{stage}: claim order is not grasp first, pose last")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            f"manifest_stage{stage}.txt")
+        if os.path.exists(path):
+            with open(path) as fh:
+                disk = [l.rstrip("\n") for l in fh if l.strip() and not l.startswith("#")]
+            if disk != render(items):
+                sv_fails.append(f"{stage}: cluster/manifest_stage{stage}.txt is stale; "
+                                f"regenerate it (cluster/SVGD_RUNBOOK.md)")
+    ## The split must partition stage R1 exactly: R1 + R1K == every row x variant, no overlap.
+    r1_ids = [it["id"] for it in stage_SVGD("SVGD_R1")]
+    r1k_ids = [it["id"] for it in stage_SVGD("SVGD_R1K")]
+    whole = {it["id"]: it["args"] for it in _svgd_r1_items()}
+    if set(r1_ids) & set(r1k_ids) or sorted(r1_ids + r1k_ids) != sorted(whole) or \
+            len(whole) != 8 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE or \
+            any(it["args"] != whole[it["id"]] for st in SVGD_R1_SPLIT for it in stage_SVGD(st)):
+        sv_fails.append("SVGD_R1 + SVGD_R1K is not exactly stage R1's item set")
+    for msg in sv_fails[:12]:
+        print(f"FAIL svgd stages: {msg}")
+    fails += len(sv_fails)
+    if not sv_fails:
+        print("ok   stages SVGD_SMOKE/R2/R1/R1K: 1/4/4/4 logical runs, R2 = REMEASURE's Panda IPOPT "
+              "items, R1 (kq) + R1K (knone) = those rows under svgd + graphed mode + lifted step "
+              "budget, and together exactly stage R1")
+
+    ## Stage PAPER: stage REMEASURE's primary items, identical args modulo the tag, minus GVS and
+    ## minus Panda IPOPT (SVGD_R2 has those); 28 logical runs; no control, no NLopt; schedule.
+    pp_fails = []
+    pp = stage_PAPER()
+    rm_by_id = {it["id"]: it for it in stage_REMEASURE("REMEASURE")}
+    pp_runs = {it["id"].rsplit("_shard", 1)[0] for it in pp}
+    if len(pp_runs) != 28 or len(pp) != 28 * 8 or len({it["id"] for it in pp}) != len(pp):
+        pp_fails.append(f"{len(pp_runs)} runs / {len(pp)} items, expected 28 / 224, unique ids")
+    seen = set()
+    for it in pp:
+        a = it["args"]
+        tag = a[a.index("--tag") + 1]
+        solver = a[a.index("--solver") + 1]
+        twin = rm_by_id.get(it["id"].replace("sc_PAPER_", "sc_REMEASURE_", 1))
+        strip = lambda x: x[:x.index("--tag")] + x[x.index("--tag") + 2:]
+        if not tag.startswith("sc_PAPER_") or twin is None or strip(twin["args"]) != strip(a) \
+                or twin["script"] != it["script"] or twin["env"] != it["env"] or \
+                tag.replace("sc_PAPER_", "sc_REMEASURE_", 1) != twin["args"][twin["args"].index("--tag") + 1]:
+            pp_fails.append(f"{it['id']} is not its REMEASURE item modulo the tag")
+        if it["robot"] == GVS_PRIMARY or solver not in ("ipopt", "snopt") or \
+                (it["robot"] == "panda" and solver == "ipopt") or \
+                any("legacy_robot_settings" in x for x in a) or a[a.index("--config") + 1] != "latent":
+            pp_fails.append(f"{it['id']} is outside the stage (GVS, NLopt, Panda IPOPT or a control)")
+        seen.add((it["robot"], solver))
+    if seen != set(PAPER_SCHEDULE):
+        pp_fails.append(f"robot x solver {sorted(seen)}, expected {sorted(PAPER_SCHEDULE)}")
+    pp_render = render(pp)
+    pp_by = {it["id"]: it for it in pp}
+    keys = []
+    for line in pp_render:
+        it = pp_by[line.split("|", 1)[0]]
+        a = it["args"]
+        keys.append((PAPER_SCHEDULE.index((it["robot"], a[a.index("--solver") + 1])),
+                     0 if a[a.index("--task") + 1] == "mug" else 1))
+    if keys != sorted(keys):
+        pp_fails.append("rendered order is not the schedule (robot x solver, grasp before pose)")
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manifest_stagePAPER.txt")
+    if os.path.exists(path):
+        with open(path) as fh:
+            disk = [l.rstrip("\n") for l in fh if l.strip() and not l.startswith("#")]
+        if disk != pp_render:
+            pp_fails.append("cluster/manifest_stagePAPER.txt is stale; regenerate it")
+    for msg in pp_fails[:12]:
+        print(f"FAIL stage PAPER: {msg}")
+    fails += len(pp_fails)
+    if not pp_fails:
+        print("ok   stage PAPER: 28 logical runs / 224 items, REMEASURE's primary items re-tagged "
+              "sc_PAPER_, no GVS / NLopt / controls / Panda IPOPT, Panda SNOPT first")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -4598,6 +5110,7 @@ def main():
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
     p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
+                                 "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -4653,13 +5166,20 @@ def main():
     p.add_argument("--summary", action="store_true")
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--allotment", action="store_true",
-                   help="REMEASURE stages only: print the node-hour arithmetic (cells x arms x "
+                   help="REMEASURE stages: print the node-hour arithmetic (cells x arms x "
                         "expected mean wall from the record's Table 3, learned arm / 2.5 under "
-                        "CUDA graphs) for all three sub-stages, and exit")
+                        "CUDA graphs) for all three sub-stages, and exit. With --stage SVGD_*: "
+                        "the same for the three svgd manifests at PROCS=2")
     args = p.parse_args()
 
     if args.selftest:
         raise SystemExit(selftest())
+    if args.allotment and args.stage == "PAPER":
+        paper_allotment()
+        raise SystemExit(0)
+    if args.allotment and args.stage in SVGD_STAGES:
+        svgd_allotment()
+        raise SystemExit(0)
     if args.allotment:
         remeasure_allotment()
         raise SystemExit(0)
@@ -4733,6 +5253,13 @@ def main():
              "REMEASURE_LEGACY": lambda: stage_REMEASURE("REMEASURE_LEGACY"),
              "REMEASURE_RULE": lambda: stage_REMEASURE("REMEASURE_RULE"),
              "REMEASURE_NLOPT": lambda: stage_REMEASURE("REMEASURE_NLOPT"),
+             ## The svgd branch's stages take no grid arguments either: R1/R2 are the record's
+             ## Panda rows, and the smoke's shape is SVGD_SMOKE_SHAPE.
+             "SVGD_SMOKE": lambda: stage_SVGD("SVGD_SMOKE"),
+             "SVGD_R2": lambda: stage_SVGD("SVGD_R2"),
+             "SVGD_R1": lambda: stage_SVGD("SVGD_R1"),
+             "SVGD_R1K": lambda: stage_SVGD("SVGD_R1K"),
+             "PAPER": lambda: stage_PAPER(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
