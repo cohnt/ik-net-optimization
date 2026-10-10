@@ -142,7 +142,7 @@ reported as the collision row's share of the wall.
 | `svgd_kernel` | `q` | 5: `q` or `none` |
 | `svgd_bandwidth_floor` | 0.05 | 5: floor on the median bandwidth |
 | `svgd_constraint_inside_kernel` | False | 12: the literal form, an A/B |
-| `svgd_rho` | 10 | 2, 4: the penalty -- one scalar, fixed, shared |
+| `svgd_rho` | 1000 | 2, 4: the penalty -- one scalar, fixed, shared. Chosen 2026-10-10 on 6 grasp + 6 pose Panda cells at delta 10, lr 1: rho 10 / 1e3 / 1e4 / 1e5 solved 5 / 12 / 12 / 12 learned and 0 / 10 / 9 / 11 joint space; 1e3 is the smallest that works and resamples least (0.08-0.12 of N per check against 0.17-0.21 at 1e5). With the Newton metric a large rho no longer costs conditioning. At rho = 10 the repulsion was 0.97 of the step and swamped the drive (N = 1 solved grasp 6/6 where N = 64 solved 0/6) |
 | `svgd_dual_lr` | None (= `svgd_rho`) | 6: alpha, the dual-ascent step; 0 = pure quadratic penalty. The default is pending the alpha ladder |
 | `svgd_multiplier_max` | 1e4 | 6: multiplier clip |
 | `svgd_inner_iters` | 10 | 6, 7, 8: K, the cadence of the dual step, resampling and the stop rule |
