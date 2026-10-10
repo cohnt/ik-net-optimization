@@ -295,12 +295,19 @@ change.
 For each row (robot x experiment x start protocol), per selected variant, on 480 cells at the
 record's 180 s:
 
-- **Learned vs joint space under svgd**: exact two-sided McNemar on the paired cells; a verdict is a
-  win, a tie (p >= 0.05) or a loss, and ties are stated as ties.
-- **Learned under svgd vs learned under IPOPT**, on the same cells, exact McNemar -- the record's IPOPT
-  column where its chart and scene are the run's, else an IPOPT column measured beside it.
-- **Verdict flips against the record**: the svgd learned-vs-joint-space verdict beside the record's
-  IPOPT verdict for the same row; every flip is listed.
+**The question is the LEARNED arm's performance under svgd** (Thomas, 2026-10-10: *"the goal is
+performance on the learned arm. joint space SVGD is an ablation, not a baseline"*). The joint-space
+svgd column is an ablation -- the swarm without the network -- never the comparison target the record's
+Drake columns have.
+
+- **Learned under svgd vs learned under IPOPT**, on the same cells, exact two-sided McNemar -- the
+  record's IPOPT column where its chart and scene are the run's, else an IPOPT column measured beside
+  it. A verdict is a win, a tie (p >= 0.05) or a loss, and ties are stated as ties. This is the lead
+  result of every row.
+- **Joint space under svgd, as an ablation**: printed beside the learned column with its own McNemar
+  against the record's joint-space IPOPT column, so the solver's effect on each formulation is visible;
+  the learned-vs-joint-space McNemar under svgd is printed but is NOT a headline and no verdict-flip
+  tally is built on it.
 - **The cap rule**: read both `timed_out` and `hit_iteration_cap` (the svgd step cap counts as the
   iteration budget). A row with >= 24 of 480 cells at the iteration budget carries no verdict until
   re-measured with the budget lifted; the clock is never raised, so clock-bound rows are results at the
