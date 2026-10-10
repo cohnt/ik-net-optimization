@@ -134,7 +134,7 @@ reported as the collision row's share of the wall.
 | `svgd_paired_init` | `jitter` | 11: `jitter` or `native` |
 | `svgd_jitter` | 0.1 | 11: jitter sigma in the normalised coordinates |
 | `svgd_temperature` | 1.0 | 2: T, fixed |
-| `svgd_lr` | 1.0 | 4: a fraction of the metric's step: `svgd_lr (H + delta I)^-1 phi` (gn) or `svgd_lr / \|\|H\|\|_F` (identity) |
+| `svgd_lr` | 0.3 | 4: a fraction of the metric's step: `svgd_lr (H + delta I)^-1 phi` (gn) or `svgd_lr / \|\|H\|\|_F` (identity). Chosen 2026-10-10 by the screen at rho 1e3, delta 10 on 6 grasp + 6 pose Panda cells, most feasible cells with ties to the larger lr: lr 0.3 solved 24/24 (learned 12/12, joint space 12/12) resampling 0.07 of N per check, lr 1.0 solved 22/24 resampling 0.12 |
 | `svgd_metric` | `gn` | 4: `gn` (Stein variational Newton) or `identity` |
 | `svgd_gn_lm` | 10 | 4: delta, the Levenberg damping of the GN metric. Chosen 2026-10-10 by the most feasible cells (learned + joint space) on 6 grasp + 6 pose Panda cells, ties to the larger: delta 1e-2 / 1 / 10 gave 2 / 3 / 6 (1e-4 diverged); then svgd_lr 1.0 / 0.3 / 0.1 at delta 10 gave 6 / 0 / 0, so `svgd_lr` stays 1.0 |
 | `svgd_row_units` | `natural` | 1: `natural` or `tolerance` (the control) |
@@ -155,8 +155,8 @@ reported as the collision row's share of the wall.
 | `svgd_warmup`, `svgd_warmup_iters`, `svgd_warmup_elite` | `none`, 10, 0.1 | 11: the CEM phase |
 | `svgd_compile`, `svgd_cuda_graph` | False, False | execution: the split step eager / compiled / graphed |
 
-**The step size.** Under `gn` the metric carries the scale, so `svgd_lr = 1` is the Newton step
-on the GN model of the AL. Under `identity`, `svgd_lr / ||H_i||_F <= svgd_lr / lambda_max(H_i)`
+**The step size.** Under `gn` the metric carries the scale, so `svgd_lr = 1` would be the full Newton step
+on the GN model of the AL; the fielded 0.3 is a damped fraction of it (screen, option table). Under `identity`, `svgd_lr / ||H_i||_F <= svgd_lr / lambda_max(H_i)`
 is a per-particle Lipschitz step. (The earlier fixed step, `1e-10 / rho` on rows divided by tol,
 was forced by the `rho / tol^2` curvature: pose-row curvature ~1e10 against objective curvature
 1e-4..10, which froze the self-motion and left the order-1 repulsion numerically dead. Its
