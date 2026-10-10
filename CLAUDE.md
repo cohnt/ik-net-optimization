@@ -732,7 +732,7 @@ speedup and is **not** returning sloppy points (disabling it drives the violatio
 success *down*, because IPOPT then polishes a solution it already has until the clock kills it).
 Naming NLopt's inner optimizer is worth nothing; truncating its inner tolerances is worth a great
 deal, as a trade whose sign flips by row. **Three things no NLopt setting changes**: the iiwa grasp
-rows are 0-3 of 60 under every setting and at 180 s; the joint-space arm moves with these settings
+rows are 0-3 of 60 under every setting and at 180 s (on the defective wsg scene; fixed, native is 313 of 480); the joint-space arm moves with these settings
 too; the ordering is untouched.
 
 **Exactly two settings are fielded**, both adopted 2026-09-19.
@@ -865,13 +865,13 @@ development-throughput condition, not the paper's one solve per GPU, so the wall
 development-grade.
 
 **THE RECORD IS 48 LOGICAL RUNS: four robots x TWO experiments (grasp, pose) x two protocols x three
-solvers**, the 32 IPOPT and SNOPT runs from stage REMEASURE. **The GVS arm is OUTSIDE the record**:
+solvers**: the 32 IPOPT and SNOPT runs from stage REMEASURE, the 16 NLopt runs from stage
+**REMEASURE_NLOPT** (same conditions and tag family, queued last; jobs 5868202/03/04/07, collected
+2026-10-10). **The GVS arm is OUTSIDE the record**:
 stage REMEASURE measured it under identical conditions and the reporter prints its eight rows as a
 separate block with their own tally (IPOPT 3 learned / 1 tie, SNOPT 2 / 2), but it is merged as a
-measured robot outside the record and does not replace the soft PCS arm (its section). The NLopt
-rows are being re-measured as stage REMEASURE_NLOPT (queued last); until they land the reporter reads the old
-record's 16 NLopt runs row by row and **says so on every NLopt line: old scene, old settings,
-re-measurement pending.** `--target-placement free` is a retired setting, not a third experiment
+measured robot outside the record and does not replace the soft PCS arm (its section). The old
+record's NLopt runs stay on disk, read only by `--legacy`. `--target-placement free` is a retired setting, not a third experiment
 (Thomas: *"preserving old settings and old experimental setups is contrary to that mission"*), and is
 not reported. `legacy_robot_settings=True` (stage REMEASURE_LEGACY) and `latent_trust_region_rule`
 (stage REMEASURE_RULE) are controls, never record rows. Earlier campaigns are superseded and their
@@ -886,8 +886,9 @@ included**.
 
 ### What the tables say
 
-**Success: interior point 15 learned / 1 tie / 0 joint space, SQP 10 / 1 / 5**, against 12/4/0 and
-7/4/5 on the old record over the same sixteen rows; five verdicts flipped under each solver. Verdicts
+**Success: interior point 15 learned / 1 tie / 0 joint space, SQP 10 / 1 / 5, augmented Lagrangian
+11 / 3 / 2**, against 12/4/0, 7/4/5 and 9/7/0 on the old record over the same sixteen rows; five
+verdicts flipped under IPOPT and SNOPT each, eight under NLopt. Verdicts
 are exact McNemar within each run; the reporter prints the tally beside the table so text and table
 cannot drift.
 
@@ -942,6 +943,9 @@ joint-space figure is a lower bound.
 | SNOPT grasp native | 90.8-99.6% (screw 83.3) | 69.1-70.7% (screw 83.5) | **survives** on three, screw level |
 | SNOPT pose native: Panda, iiwa, soft PCS / screw | 91.5-99.8 / 87.3% | >= 77.6-91.2 (starved 35-48%) / 92.4% | unestablished, screw to joint space |
 | SNOPT grasp paired, SNOPT pose paired | 48.5-81.9% | 78.2-96.1% | **joint space wins** every row |
+| **NLopt native**, all eight rows | 62.3-75.0% | 0-11.3% (starved <= 1%) | **survives** |
+| NLopt pose paired | soft PCS / iiwa 67.7 / 23.3%, screw / Panda 19.4 / 27.1% | 1.9 / 5.4%, 12.8 / 20.6% | survives soft PCS and iiwa; learned ahead on screw and Panda, single-start ties |
+| NLopt grasp paired | 0.6-2.3% | iiwa / Panda 0%, screw / soft PCS 9.9 / 7.7% | floor on iiwa and Panda, **joint space wins** screw and soft PCS |
 | *GVS, outside the record* | IPOPT grasp 100 / 97.9%, pose native 100% | 55.2 / 80.8%, 29.8% | survives; pose paired (79.8 v 83.4%) and every SNOPT paired row go to joint space |
 
 **This reverses the old caveat on interior-point grasp**: on the old record only Panda contained grasp
@@ -950,23 +954,38 @@ survives on three of the four record robots (all but screw), and on native pose 
 a restarting joint space. Wall clock here is PROCS=8 under MPS, which charges the learned arm
 1.12-1.19x over one solve per GPU and joint space little, so paper conditions should be no less kind
 to the learned arm. **State single-start wins as single-start, and rest a time-matched claim on the
-"survives" rows above.** The augmented Lagrangian's time-matched verdict (old record: survives on
-every row with a comparison) is pending REMEASURE_NLOPT.
+"survives" rows above.** Under NLopt a joint-space solve itself runs to the clock, so restarts buy it
+almost nothing (starved <= 3% on every row).
 
-**NLopt rows (old scene, old settings; re-measurement pending).** On the old record all six rigid pose
-rows were decisive learned wins with joint space never above 31 of 480, Panda contained grasp was
-**327 of 480 against ZERO** (p = 7.3e-99) -- a property of NLopt on this program, joint space being the
-easier problem -- the iiwa and screw grasp rows were 0-3 of 480 on BOTH arms and carry no verdict, and
-the augmented Lagrangian is extraordinarily start-sensitive (Panda grasp 327 native against zero
-paired), so that column is read per protocol and never pooled.
+**The augmented Lagrangian, read per protocol and never pooled** (it is extraordinarily
+start-sensitive on the learned arm).
+- **Native: learned wins all eight rows** -- grasp 313-360 of 480 against 0-48 (iiwa 313 v 0, Panda
+  322 v 0, screw 323 v 48, soft PCS 360 v 37), pose 299-358 against 41-141.
+- **Paired: the learned arm's grasp collapses to 3-11 of 480**: iiwa 11 v 0 a learned win at the
+  floor, Panda 3 v 0 a tie, and **screw 4 v 48 and soft PCS 4 v 37 the column's two joint-space
+  wins**. Pose paired: iiwa 112 v 41 and soft PCS 325 v 51 learned wins, Panda 130 v 141 and screw
+  93 v 84 ties. Learned pose falls 299-304 -> 93-130 on the rigid arms; soft PCS barely moves.
+- **Joint space solves nothing on iiwa and Panda grasp** (all 480 cells time out) -- a property of
+  NLopt on this program, joint space being the easier problem.
+- **What moved.** The old record's wsg grasp rows were 0-3 of 480 on BOTH arms; native they are now
+  learned wins (and joint space 0 -> 37-48 on screw and soft PCS), so that floor was the mug-handle
+  scene or the settings -- under IPOPT the settings were null on every wsg row, but no NLopt control
+  separates them. Panda pose joint space 12 -> 141 (its scene did not change, so most plausibly the settings) and
+  screw pose 30 -> 84 make both pose paired rows ties.
+- **Cost** (shared cells, 12-101 per row) is dearer for the learned arm on every comparable row but
+  soft PCS pose paired. **Runtime**: learned means 50-79 s native against joint space's 143-180 s.
 
 **Cap check on the record: no row is budget-bound.** IPOPT has 0 cells at an iteration budget on
-every row; SNOPT at most 10. Learned timeouts are at most 18 under IPOPT and 17 under SNOPT (both
-soft PCS), joint space's at most 8 and 34 -- results at the fielded clock.
+every row; SNOPT at most 10; NLopt 0 at `hit_eval_cap` and `hit_iteration_cap` on all 16 rows, both
+arms. Learned timeouts are at most 18 under IPOPT and 17 under SNOPT (both soft PCS), joint space's at
+most 8 and 34. **NLopt is clock-bound everywhere** -- learned 123-194 timeouts native and 161-477
+paired, joint space 356-480 -- which is the fielded clock, never lifted, so these are results at it.
+SOFTCAP's "quadrupling the clock moves nothing" was measured on the defective scene and is void.
 
 **Acceptance checks all pass.** Every run on one robot x task scene carries the same
-`scene_fingerprint`; joint space is bit-identical between protocols on 34 of 34 protocol pairs
-across every sub-stage and the GVS arm (cap-bound cells excluded); and the Panda, whose scene did not change, **reproduces the old record
+`scene_fingerprint`, NLopt's included; joint space is bit-identical between protocols on 42 of 42
+protocol pairs across every sub-stage and the GVS arm (cap-bound cells excluded, which leaves the
+eight NLopt pairs only 0-124 cells each); and the Panda, whose scene did not change, **reproduces the old record
 under the legacy settings** with every discordant cell cap-bound.
 
 ### The honest caveats, and what is closed
@@ -1405,7 +1424,8 @@ joint space gains 27-28 cells and both its grasp rows become ties (476 v 476, 47
 zero cells; paired runs 90/180 s at 2/480 against 0/480. `hit_eval_cap` is 0 throughout, confirming
 that `nlopt_max_eval` defaults to 0 and `max_time` is what binds. So these rows are a property of the
 augmented Lagrangian on this program, not of the clock -- and they still carry **no verdict**, both
-arms being at the floor. The 180 s rung doubles as a same-configuration reproducibility control and
+arms being at the floor. **Void with the scene**: on the fixed one soft PCS NLopt grasp native is
+360 v 37, paired 4 v 37 (stage REMEASURE_NLOPT). The 180 s rung doubles as a same-configuration reproducibility control and
 reproduces SOFT12 **cell for cell**. The 360 s paired rung was **retired unmeasured** to give nodes
 back to a sibling campaign; it is absent, not null.
 
@@ -1576,7 +1596,7 @@ pipeline can be smoked without training, and was: both tasks, both arms, end to 
 **MERGED TO MAIN 2026-10-02 from branch `non-analytic-arm` (closed). All five charts trained, stages
 SCREW / SCREWCHART / SCREWPITCH / SCREWCAP measured**; results below.
 `cluster/SCREW_ARM_RUNBOOK.md` holds the operations and the screens. **The record's screw rows are
-stage REMEASURE's** (IPOPT and SNOPT; stage SCREW's NLopt rows stand in until REMEASURE_NLOPT lands).
+stage REMEASURE's** (IPOPT and SNOPT) and REMEASURE_NLOPT's (NLopt).
 Stage SCREW's grasp numbers below ran on the defective wsg scene and are void; its pose numbers stand.
 
 **The identifiers say `screw` everywhere, as the prose does** -- robot `screw7_p*`, `src/screw_arm/`,
@@ -1775,7 +1795,7 @@ learned win (400 v 346) and the paired one stands (259 v 346): **the SQP contain
 survive only from the paired start**, on the iiwa and the soft PCS arm too. The learned arm takes every pose row except SQP paired (a clean tie): IPOPT 457 and 421
 against 313, NLopt **303 against 30**. It rescues 84-93% of joint space's IPOPT failures. Cost splits
 by task again, ~2.2x dearer on grasp (7.8 against 3.5) and cheaper on pose; the per-iteration
-premium is ~14x (48 against 3.3 ms). NLopt grasp is 0-3 of 480 on both arms and carries no verdict.
+premium is ~14x (48 against 3.3 ms). NLopt grasp was 0-3 of 480 on both arms (defective scene; fixed: 323 v 48 native, 4 v 48 paired).
 
 **Stage SCREWCAP re-measured every budget-bound row with the iteration budgets lifted**
 (2026-10-02): the 17 rows where either arm had >= 24 of 480 cells at a budget, each regenerated from

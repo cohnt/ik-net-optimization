@@ -3,8 +3,9 @@
 
 The record's IPOPT and SNOPT rows are stage REMEASURE's -- the fixed wsg scene, the five unified
 robot settings, CUDA graphs, lifted iteration budgets -- on the record's FOUR robots (Panda, iiwa,
-soft PCS, screw). Its NLopt rows are stage REMEASURE_NLOPT's where those have landed, else the old
-record's, with a printed caveat. Stage REMEASURE also measured the GVS arm under identical
+soft PCS, screw). Its NLopt rows are stage REMEASURE_NLOPT's (same conditions, same `sc_REMEASURE_`
+tag family, queued last and collected 2026-10-10); the old record's NLopt runs stay on disk and are
+read only by `--legacy`. Stage REMEASURE also measured the GVS arm under identical
 conditions; that arm is OUTSIDE the record (Thomas, 2026-10-05: "the GVS arm doesn't help our story
 ... it certainly doesn't replace the other soft arm"), so its rows print as a separate block after
 the record's, with their own tally, and never enter the record's tables, tally or flags. The old
@@ -407,8 +408,6 @@ RECORD_CONTROLS = ("sc_REMEASURE_LEGACY_", "sc_REMEASURE_RULE_")
 #: Robots stage REMEASURE measured that are NOT in the campaign of record (Thomas, 2026-10-05, on
 #: the GVS arm: "it certainly doesn't replace the other soft arm"). Their rows print beside it.
 OUTSIDE_RECORD = ("gvs_pushrod9_o1",)
-NLOPT_PENDING = ("NLopt rows: old scene, old settings, re-measurement pending "
-                 "(stage REMEASURE_NLOPT)")
 
 
 def load_record(cells=CELLS, which="remeasure"):
@@ -416,12 +415,11 @@ def load_record(cells=CELLS, which="remeasure"):
 
     which="remeasure" (the default) is the record since 2026-10-09: stage REMEASURE -- the fixed
     wsg scene, the five unified robot settings, CUDA graphs, lifted iteration budgets -- for every
-    IPOPT and SNOPT row, on the record's four robots (OUTSIDE_RECORD is excluded; see
-    load_beside_record). Its NLopt rows are read from
-    `sc_REMEASURE_*_nlopt_*` where stage REMEASURE_NLOPT has produced them, and otherwise from the
-    OLD record below, row by row; the second return maps every such fallback tag to the run it was
-    read from, so a caller can say so. The REMEASURE_LEGACY and REMEASURE_RULE sub-stages share the
-    tag prefix and are controls, so they are refused here.
+    IPOPT and SNOPT row, and stage REMEASURE_NLOPT (the same tag family, `sc_REMEASURE_*_nlopt_*`)
+    for every NLopt row, on the record's four robots (OUTSIDE_RECORD is excluded; see
+    load_beside_record). There is NO fallback to the old record: a missing row is missing, and
+    main() says how many of the 48 were found. The second return is empty. The REMEASURE_LEGACY
+    and REMEASURE_RULE sub-stages share the tag prefix and are controls, so they are refused here.
 
     which="legacy" is the record as accepted 2026-09-21..10-08 and the "before" column of
     scripts/report_remeasure.py: stages STATUSQUO + SOFT12 + SCREW, every iteration-budget-bound
@@ -430,22 +428,12 @@ def load_record(cells=CELLS, which="remeasure"):
     """
     if which not in ("remeasure", "legacy"):
         raise ValueError(f"which must be 'remeasure' or 'legacy', not {which!r}")
-    old, lifted = _load_legacy_record(cells)
     if which == "legacy":
-        return old, lifted
+        return _load_legacy_record(cells)
     runs = {tag: s for tag, s in load(f"sc_{RECORD_STAGE}_", cells=cells).items()
             if not tag.startswith(RECORD_CONTROLS)
             and parse_tag(tag)["robot"] not in OUTSIDE_RECORD}
-    measured = {(t["robot"], t["rung"], t["row"], t["start"], t["solver"])
-                for t in map(parse_tag, runs)}
-    fallback = {}
-    for tag, s in old.items():
-        t = parse_tag(tag)
-        if t["solver"] != "nlopt" or (t["robot"], t["rung"], t["row"], t["start"], "nlopt") in measured:
-            continue
-        runs[tag] = s
-        fallback[tag] = lifted.get(tag, tag)
-    return runs, fallback
+    return runs, {}
 
 
 def load_beside_record(cells=CELLS):
@@ -534,9 +522,8 @@ def main(argv):
               f"{len(provenance)} of {len(runs)} runs")
         print("  from stages ITCAP (IPOPT max_iter 1e6; SNOPT 1e5 majors, 1e8 minors) and SCREWCAP.")
     else:
-        n_new = sum(1 for t in runs if parse_tag(t)["stage"] == RECORD_STAGE)
-        n_ipsn = sum(1 for t in runs if parse_tag(t)["stage"] == RECORD_STAGE
-                     and parse_tag(t)["solver"] in ("ipopt", "snopt"))
+        n_ipsn = sum(1 for t in runs if parse_tag(t)["solver"] in ("ipopt", "snopt"))
+        n_nl = sum(1 for t in runs if parse_tag(t)["solver"] == "nlopt")
         print(f"THE CAMPAIGN OF RECORD -- stage {RECORD_STAGE} (2026-10-09), {CELLS} cells, 180 s cap, seed 1")
         print("Conditions: the FIXED wsg scene (finray between_fingers yaw 0 -> 1.57, 452d784), the five")
         print("  UNIFIED robot settings (0381807; the Panda's joint-space bound is ConfigLimits(), no longer")
@@ -546,34 +533,28 @@ def main(argv):
         print("Run at PROCS=8 under MPS=1: DEVELOPMENT throughput, NOT the paper's one-solve-per-GPU")
         print("  (PROCS=2) condition, so the wall-clock columns are development-grade.")
         print(f"IPOPT + SNOPT: {n_ipsn} of 32 runs from stage {RECORD_STAGE} (four robots x two experiments")
-        print("  x two protocols x two solvers); 48 logical runs with NLopt.")
+        print("  x two protocols x two solvers).")
+        print(f"NLopt: {n_nl} of 16 runs from stage {RECORD_STAGE}_NLOPT (2026-10-10; same conditions, same")
+        print("  tag family). 48 logical runs in all.")
         print(f"The GVS arm ({', '.join(OUTSIDE_RECORD)}) was measured in the same stage under identical")
         print("  conditions and is OUTSIDE the record: its rows print as a separate block at the end,")
         print("  with their own tally, and enter none of the record's tables, tally or flags.")
-        print(f"NLopt: {n_new - n_ipsn} run(s) from stage {RECORD_STAGE}, {len(provenance)} from the old record.")
-        if provenance:
-            print(f"  {NLOPT_PENDING}.")
-            print("  Those rows carry the defective wsg scene on every grasp row but the Panda's.")
         print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")
 
     metric_tables(runs)
-    if not legacy and provenance:
-        print(f"  ({NLOPT_PENDING}; the AL column and its tally line are the old record's.)")
 
     print("\n=== PER-SOLVER DETAIL (discordant counts, McNemar p, timeouts)")
     all_rows = {}
     for solver in want:
         print(f"\n=== {SOLVER_NAME[solver]}   [{CONFIG[solver]}]")
-        if solver == "nlopt" and not legacy and provenance:
-            print(f"  {NLOPT_PENDING}.")
         sq = row_table(runs, solver, STATUS_QUO_ROWS, "THE STATUS QUO (contained targets)")
         if not sq:
             print("  (no rows found)")
         all_rows[solver] = sq
 
-    flags(all_rows, want, remeasure=not legacy, nlopt_pending=not legacy and bool(provenance))
+    flags(all_rows, want, remeasure=not legacy)
     if not legacy:
         beside_record(want)
     return 0
@@ -600,7 +581,7 @@ def beside_record(want):
             print("  (no rows found)")
 
 
-def flags(all_rows, want, remeasure=False, nlopt_pending=False):
+def flags(all_rows, want, remeasure=False):
     """The three criteria named in CLAUDE.md BEFORE the campaign ran."""
     print("\n\n=== PRE-REGISTERED FLAG CRITERIA")
     print("Named in advance so 'did the story change' is a printed verdict, not a judgement.")
@@ -664,26 +645,33 @@ def flags(all_rows, want, remeasure=False, nlopt_pending=False):
     ## --- 3. NLopt at 180 s under the adopted configuration -- untested before this campaign.
     print("\n--- 3. NLopt at 180 s under the adopted configuration (previously untested)")
     nl = all_rows.get("nlopt", [])
-    if nl and nlopt_pending:
-        print(f"  {NLOPT_PENDING}.")
     if nl:
-        live = [r for r in nl if r["L"]["succ"] > 0]
-        print(f"  {len(live)} of {len(nl)} rows solve anything at all on the learned arm.")
-        print(f"  learned successes: " + ", ".join(
-            f"{r['robot'][:4]} {r['row']} {r['start'][:3]} {r['L']['succ']}" for r in nl))
-        print("  The 180 s arm measured at Drake's NLopt defaults was flat against 45 s on ten")
-        print("  of twelve rows, but that predates the adopted configuration -- so this is the")
-        print("  first measurement of the two changes together.")
-        print("  HOW TO READ THIS COLUMN, and it is a RESULT IN OUR FAVOUR, not a spoiled")
-        print("  comparison: under an augmented Lagrangian the joint-space arm is near-dead on")
-        print("  every row while the learned arm solves a substantial fraction of the pose rows.")
-        print("  That is the strongest form the comparison takes anywhere -- the baseline is at")
-        print("  the floor -- and it is attributable, because only the solver differs and the")
-        print("  joint-space arm is the EASIER problem (7 variables, no network), so its")
-        print("  collapse is a property of NLopt on this program and not of the harness.")
-        print("  Two narrow caveats, neither touching the pose rows: rows where BOTH arms are")
-        print("  near zero (historically the four iiwa grasp rows) carry no comparison, and cost")
-        print("  needs cells both arms solved, of which there are few -- hence the dashes.")
+        ## Printed per row and PER PROTOCOL, never pooled: the augmented Lagrangian is
+        ## extraordinarily start-sensitive on the learned arm, and a sum over protocols would
+        ## average a decisive native row with a near-zero paired one into a number neither is.
+        by = {(r["robot"], r["row"], r["start"]): r for r in nl}
+        print("  Per row, native against paired (successes of 480; joint space's two protocols")
+        print("  coincide, its native start being a random configuration). Verdict by exact McNemar.")
+        print(f"  {'row':<34}{'L nat':>7}{'L pai':>7}{'JS nat':>8}{'JS pai':>8}"
+              f"{'verdict nat':>13}{'verdict pai':>13}")
+        for k in sorted({(r["robot"], r["row"]) for r in nl}, key=lambda k: (k[0], ROW_ORDER[k[1]])):
+            n_, p_ = by.get(k + ("native",)), by.get(k + ("paired",))
+            g = lambda r, a: r[a]["succ"] if r else None  # noqa: E731
+            v = lambda r: verdict(r["L"]["succ"], r["J"]["succ"], r["p"]) if r else "--"  # noqa: E731
+            print(f"  {k[0] + ' ' + ROW_NAME[k[1]]:<34}{num(g(n_, 'L'), 7)}{num(g(p_, 'L'), 7)}"
+                  f"{num(g(n_, 'J'), 8)}{num(g(p_, 'J'), 8)}{v(n_):>13}{v(p_):>13}")
+        zero = [r for r in nl if r["J"]["succ"] == 0]
+        floor = [r for r in nl if max(r["L"]["succ"], r["J"]["succ"]) < CELLS // 20]
+        print(f"  Joint space solves NOTHING on {len(zero)} of {len(nl)} rows: "
+              + (", ".join(f"{r['robot']} {ROW_NAME[r['row']].split(' (')[0]} {r['start']}"
+                           for r in zero) or "none"))
+        print("  -- a property of NLopt on this program, joint space being the EASIER problem (no")
+        print("  network), not of the harness.")
+        print(f"  Both arms under 5% ({CELLS // 20} cells) on {len(floor)} row(s), a verdict there being "
+              "about a floor: "
+              + (", ".join(f"{r['robot']} {ROW_NAME[r['row']].split(' (')[0]} {r['start']}"
+                           for r in floor) or "none"))
+        print("  Cost needs cells both arms solved, of which there are few -- hence the N/A.")
     else:
         print("  (no NLopt rows found)")
 
