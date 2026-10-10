@@ -58,6 +58,14 @@ Usage:
     scripts/report_statusquo.py                      # everything found
     scripts/report_statusquo.py ipopt snopt          # only these solvers
     scripts/report_statusquo.py --legacy             # the record before stage REMEASURE
+    scripts/report_statusquo.py --paper              # IPOPT/SNOPT at paper conditions (PROCS=2, no MPS)
+    scripts/report_statusquo.py --paper --runtime    # ... header and Table 3 only
+
+`--paper` reads the record's 32 IPOPT and SNOPT rows as re-run at the paper's condition, one solve
+per V100 with no MPS (stage PAPER, 28 runs, with stage SVGD_R2's four Panda IPOPT runs, 2026-10-10;
+load_record(which="paper")), and the 16 NLopt rows unchanged from REMEASURE_NLOPT (PROCS=8 under
+MPS=1). Same grids, scenes and args as stage REMEASURE; scripts/report_paper.py pairs them cell for
+cell and shows that only the seconds move.
 """
 import glob
 import json
@@ -281,8 +289,12 @@ def row_table(runs, solver, tokens, title):
 METRIC_BLOCKS = (("ipopt", "IP"), ("nlopt", "AL"), ("snopt", "SQP"))
 
 
-def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, per solver)"):
-    """The four headline tables: success rate, cost, runtime, iterations."""
+def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, per solver)",
+                  runtime_only=False, runtime_note=None):
+    """The four headline tables: success rate, cost, runtime, iterations.
+
+    `runtime_only` prints Table 3 alone (the one table that differs at paper conditions);
+    `runtime_note` adds a line under its title saying where each column's seconds come from."""
     cells, pvals = {}, {}
     for tag, s in runs.items():
         t = parse_tag(tag)
@@ -355,6 +367,10 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
     print("  IP = interior point (IPOPT), AL = augmented Lagrangian (NLOPT),")
     print("  SQP = sequential quadratic programming (SNOPT). *better* of each pair is starred;")
     print("  a trailing * marks the best in the row. Every row prints, zeros included.")
+    if runtime_only:
+        emit_runtime(emit, runtime_note)
+        return
+
     emit("Table 1 -- success rate of 480 cells",
          "higher is better; ties are by exact McNemar (p >= 0.05), not numeric equality",
          lambda L, J: (L["succ"] / L["n"], J["succ"] / J["n"]), f3, lambda a, b: a > b,
@@ -389,16 +405,21 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
          "lower is better; N/A means fewer than %d shared solved cells, so no comparison exists"
          % MIN_COST_CELLS,
          lambda L, J: (L["cost"], J["cost"]), f3, lambda a, b: a < b)
-    emit("Table 3 -- mean runtime, s, over ALL cells, each clamped at the 180 s clock",
-         "lower is better; this machine only, never compared across machines. Clamped because "
-         "SNOPT overruns its clock on cycling cells (none feasible) once the iteration budget "
-         "is lifted",
-         lambda L, J: (L["wall_all_clock"], J["wall_all_clock"]), lambda v: "N/A" if v is None else f"{v:.2f}",
-         lambda a, b: a < b)
+    emit_runtime(emit, runtime_note)
     emit("Table 4 -- median major iterations over solved cells",
          "lower is better; AL is N/A BY CONSTRUCTION -- NloptSolverDetails carries a single status "
          "and NLopt has no major iteration to count",
          lambda L, J: (L["iters"], J["iters"]), fi, lambda a, b: a < b)
+
+
+def emit_runtime(emit, note=None):
+    """Table 3. Its own function because --paper --runtime prints it alone."""
+    emit("Table 3 -- mean runtime, s, over ALL cells, each clamped at the 180 s clock",
+         "lower is better; this machine only, never compared across machines. Clamped because "
+         "SNOPT overruns its clock on cycling cells (none feasible) once the iteration budget "
+         "is lifted" + (f"\n  {note}" if note else ""),
+         lambda L, J: (L["wall_all_clock"], J["wall_all_clock"]), lambda v: "N/A" if v is None else f"{v:.2f}",
+         lambda a, b: a < b)
 
 
 #: The stage the record's IPOPT and SNOPT rows come from since 2026-10-09, and the sub-stage
@@ -421,15 +442,21 @@ def load_record(cells=CELLS, which="remeasure"):
     main() says how many of the 48 were found. The second return is empty. The REMEASURE_LEGACY
     and REMEASURE_RULE sub-stages share the tag prefix and are controls, so they are refused here.
 
+    which="paper" is the same 48 rows with the IPOPT and SNOPT seconds at the paper's condition;
+    see _load_paper_record. The second return maps {tag in runs: the tag it was read from} for
+    every run that is not a stage PAPER run.
+
     which="legacy" is the record as accepted 2026-09-21..10-08 and the "before" column of
     scripts/report_remeasure.py: stages STATUSQUO + SOFT12 + SCREW, every iteration-budget-bound
     run replaced by its lifted re-measurement (ITCAP, SCREWCAP) under the original tag; the second
     return maps {original tag: lifted tag}.
     """
-    if which not in ("remeasure", "legacy"):
-        raise ValueError(f"which must be 'remeasure' or 'legacy', not {which!r}")
+    if which not in ("remeasure", "legacy", "paper"):
+        raise ValueError(f"which must be 'remeasure', 'legacy' or 'paper', not {which!r}")
     if which == "legacy":
         return _load_legacy_record(cells)
+    if which == "paper":
+        return _load_paper_record(cells)
     runs = {tag: s for tag, s in load(f"sc_{RECORD_STAGE}_", cells=cells).items()
             if not tag.startswith(RECORD_CONTROLS)
             and parse_tag(tag)["robot"] not in OUTSIDE_RECORD}
@@ -441,6 +468,42 @@ def load_beside_record(cells=CELLS):
     return {tag: s for tag, s in load(f"sc_{RECORD_STAGE}_", cells=cells).items()
             if not tag.startswith(RECORD_CONTROLS)
             and parse_tag(tag)["robot"] in OUTSIDE_RECORD}
+
+
+#: Stage PAPER (2026-10-10): stage REMEASURE's primary IPOPT and SNOPT items verbatim, re-tagged,
+#: run at PROCS=2 with NO MPS -- one solve per V100, the paper's condition. It omits the four Panda
+#: IPOPT runs, which stage SVGD_R2 (2026-10-10, same args, same condition) measured under its own tag.
+PAPER_STAGE, PAPER_PANDA_IPOPT = "sc_PAPER_", "sc_SVGD_R2_"
+
+
+def _load_paper_record(cells):
+    """The record's rows at paper conditions (see load_record(which="paper")).
+
+    IPOPT and SNOPT: stage PAPER's 28 runs, plus stage SVGD_R2's four Panda IPOPT runs re-keyed
+    under the `sc_PAPER_` spelling (read verbatim, `sc_SVGD_R2_panda_...` would parse its robot as
+    `R2_panda`). NLopt: stage REMEASURE_NLOPT's 16 runs, unchanged -- they were not re-run, so
+    their seconds stay at PROCS=8 under MPS=1. A run found twice, or an SVGD_R2 run that is not
+    Panda IPOPT, is refused rather than silently preferred.
+    """
+    runs, provenance = {}, {}
+    for tag, s in load(PAPER_STAGE, cells=cells).items():
+        t = parse_tag(tag)
+        if t["solver"] in ("ipopt", "snopt") and t["robot"] not in OUTSIDE_RECORD:
+            runs[tag] = s
+    for tag, s in load(PAPER_PANDA_IPOPT, cells=cells).items():
+        key = PAPER_STAGE + tag[len(PAPER_PANDA_IPOPT):]
+        t = parse_tag(key)
+        if (t["robot"], t["solver"]) != ("panda", "ipopt"):
+            continue
+        if key in runs:
+            raise SystemExit(f"{tag} and {key} both exist; refusing to choose between them")
+        runs[key] = s
+        provenance[key] = tag
+    for tag, s in load_record(cells)[0].items():
+        if parse_tag(tag)["solver"] == "nlopt":
+            runs[tag] = s
+            provenance[tag] = tag
+    return runs, provenance
 
 
 def _load_legacy_record(cells):
@@ -497,10 +560,12 @@ def _load_legacy_record(cells):
 
 
 def main(argv):
-    legacy = "--legacy" in argv
+    legacy, paper, runtime = "--legacy" in argv, "--paper" in argv, "--runtime" in argv
+    if runtime and not paper:
+        raise SystemExit("--runtime prints the paper-conditions Table 3 only; it needs --paper")
     only = [a for a in argv if not a.startswith("--")]
     want = [s for s in SOLVERS if not only or s in only]
-    runs, provenance = load_record(which="legacy" if legacy else "remeasure")
+    runs, provenance = load_record(which="legacy" if legacy else "paper" if paper else "remeasure")
 
     retired = [tag for tag in runs if parse_tag(tag)["row"] not in STATUS_QUO_ROWS]
     for tag in retired:
@@ -521,6 +586,22 @@ def main(argv):
         print(f"Iteration-budget-bound rows are reported at the LIFTED budget, same 180 s clock: "
               f"{len(provenance)} of {len(runs)} runs")
         print("  from stages ITCAP (IPOPT max_iter 1e6; SNOPT 1e5 majors, 1e8 minors) and SCREWCAP.")
+    elif paper:
+        n_ip = sum(1 for t in runs if parse_tag(t)["solver"] in ("ipopt", "snopt"))
+        n_r2 = sum(1 for t in provenance.values() if t.startswith(PAPER_PANDA_IPOPT))
+        n_nl = sum(1 for t in runs if parse_tag(t)["solver"] == "nlopt")
+        print(f"THE CAMPAIGN OF RECORD AT PAPER CONDITIONS -- {CELLS} cells, 180 s cap, seed 1")
+        print("paper conditions: PROCS=2, no MPS (stage PAPER + SVGD_R2, 2026-10-10); NLopt rows at")
+        print("  PROCS=8 MPS=1.")
+        print(f"IPOPT + SNOPT: {n_ip} of 32 runs, {n_ip - n_r2} from stage PAPER and {n_r2} (Panda IPOPT) from")
+        print("  stage SVGD_R2: stage REMEASURE's items verbatim, re-tagged, one solve per V100.")
+        print(f"NLopt: {n_nl} of 16 runs from stage {RECORD_STAGE}_NLOPT, NOT re-run: PROCS=8 under MPS=1.")
+        print("Every other condition is the record's (fixed wsg scene, unified settings, CUDA graphs,")
+        print("  lifted budgets, adopted rungs, hardened scene, shelf-contained at the fingertips), on")
+        print("  the record's grids and scenes. Success, cost and iterations are the record's to the cell")
+        print("  but for two one-cell differences; scripts/report_paper.py pairs every run against its")
+        print("  REMEASURE twin. The GVS arm was not re-run and is not printed here.")
+        print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
     else:
         n_ipsn = sum(1 for t in runs if parse_tag(t)["solver"] in ("ipopt", "snopt"))
         n_nl = sum(1 for t in runs if parse_tag(t)["solver"] == "nlopt")
@@ -543,6 +624,12 @@ def main(argv):
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")
 
+    if runtime:
+        metric_tables(runs, heading="=== TABLE 3 AT PAPER CONDITIONS (IP and SQP: PROCS=2, no MPS)",
+                      runtime_only=True,
+                      runtime_note="IP and SQP at PROCS=2, no MPS (paper conditions); AL at PROCS=8 "
+                                   "under MPS=1 (REMEASURE_NLOPT, not re-run)")
+        return 0
     metric_tables(runs)
 
     print("\n=== PER-SOLVER DETAIL (discordant counts, McNemar p, timeouts)")
@@ -555,7 +642,7 @@ def main(argv):
         all_rows[solver] = sq
 
     flags(all_rows, want, remeasure=not legacy)
-    if not legacy:
+    if not (legacy or paper):
         beside_record(want)
     return 0
 

@@ -220,11 +220,13 @@ throughput. Iterations are identical on 100% of shared cells, nothing is lost, a
 match one-per-GPU on every row.
 
 The old record ran PROCS=8 without MPS (a **1.15-1.30x GPU-contention penalty** joint space did not
-pay); stage REMEASURE ran PROCS=8 under `MPS=1`, so its learned wall times carry the 1.12-1.19x above
-and are development-grade. **Paper numbers run at one solve per GPU
-(PROCS=2)** (Thomas: *"those are the conditions in which the final paper results will be drawn"*).
-4 per GPU under `MPS=1` is for development throughput only. Never run 4 per GPU without MPS once graphs
-are on.
+pay). Stage REMEASURE ran PROCS=8 under `MPS=1`, and stage PAPER + SVGD_R2 re-ran its 32 IPOPT and
+SNOPT runs at one solve per GPU, which **measures the premium end to end**: mean wall **1.06-1.22x**
+learned (median 1.13; soft PCS IPOPT native excepted, see Results) and **1.01-1.09x** joint space,
+with success and iterations unchanged (`scripts/report_paper.py`). **Paper numbers run at one solve per GPU (PROCS=2)** (Thomas: *"those are
+the conditions in which the final paper results will be drawn"*). 4 per GPU under `MPS=1` is for
+development throughput only: its verdicts carry over, its seconds do not. Never run 4 per GPU without
+MPS once graphs are on.
 
 ### The conditioning frame (read this before touching the learned formulation)
 
@@ -860,9 +862,20 @@ shelf-contained targets at the **fingertips for both tasks**, **180 s**, 480 cel
 guesses, seed 1 (out of sample), `--compile --set flow_cuda_graph=True`, IPOPT `max_iter` 1e6 and
 SNOPT 1e5 majors / 1e8 minors, adopted rungs (Panda `n6`, iiwa `n4`, soft PCS `soft12` `n6`, screw
 `screw7_p050` `n6`), arms `learned,numerical`, both start protocols, each
-solver at its adopted configuration, Drake nightly `0.0.20260918`, **PROCS=8 under `MPS=1`** -- a
-development-throughput condition, not the paper's one solve per GPU, so the wall-clock columns are
-development-grade.
+solver at its adopted configuration, Drake nightly `0.0.20260918`, PROCS=8 under `MPS=1`.
+
+**The record's IPOPT and SNOPT wall clocks are measured at paper conditions**, one solve per V100
+(PROCS=2, no MPS): stage PAPER (28 runs, jobs 5882397-5882400) and stage SVGD_R2 (the four Panda IPOPT
+runs), 2026-10-10, re-ran stage REMEASURE's items verbatim on its grids and scenes. **Success is
+identical on 30 of 32 runs and within one cell on two** (screw IPOPT grasp paired learned 472 -> 473,
+Panda IPOPT grasp native joint space 449 -> 448, both cap-bound), so no verdict, tally or flag moves.
+**Iterations are identical on every cell solved in both runs that the clock stopped in neither**: every
+difference (Panda IPOPT joint space 5 cells per protocol, SNOPT 2-15 per run) is a timed-out cell.
+**The MPS premium, measured**: mean wall 1.06-1.22x learned, 1.01-1.09x joint space. Soft PCS IPOPT
+native reads 1.96x (grasp) and 1.28x (pose) because a few REMEASURE cells ran ~60 s long; per cell the
+median is 1.15x and 1.09x. `scripts/report_statusquo.py --paper` prints the record at paper
+conditions, and `scripts/report_paper.py` pairs every run. NLopt was not re-run, so its seconds stay
+at PROCS=8 under `MPS=1`.
 
 **THE RECORD IS 48 LOGICAL RUNS: four robots x TWO experiments (grasp, pose) x two protocols x three
 solvers**: the 32 IPOPT and SNOPT runs from stage REMEASURE, the 16 NLopt runs from stage
@@ -912,12 +925,15 @@ but for soft PCS paired (2.0x) and soft PCS native, where the learned arm is che
 on rigid-arm pose** (10 of 12 rows; the exception is screw pose paired under both solvers). On soft PCS pose it is dearer under IPOPT and level under SNOPT.
 `N/A` means fewer than 10 shared solved cells.
 
-**Runtime (Table 3, mean over all cells clamped at 180 s) is where CUDA graphs show.** Joint space is
-faster on most IPOPT rows, but the learned arm is now faster on Panda grasp both protocols (3.52 /
-5.86 s against 6.24 / 6.27 s) and soft PCS grasp native, and under SNOPT on three of four grasp native
-rows (all but screw). The ratio is largest on the pose paired rows, where a joint-space
-solve takes a fraction of a second (soft PCS 9.27 s against 0.37 s, iiwa 1.82 against 0.10); the iiwa
-grasp wins cost 3.01 / 7.10 s against 1.09 / 1.10 s, where the old record's tie cost 13x.
+**Runtime (Table 3 at paper conditions, mean over all cells clamped at 180 s, the LAST table in
+`docs/status-quo-tables.md`) is where CUDA graphs show.** Joint space is faster on most IPOPT rows.
+Under IPOPT the learned arm is faster on Panda grasp, both protocols (3.00 / 5.01 s against 6.07 /
+6.06 s), and on soft PCS grasp native (1.21 v 3.19 s). Under SNOPT it is faster on three of four grasp
+native rows (all but screw), on iiwa pose native, and on Panda grasp paired. That last one is 12.15 v
+12.92 s, a row the development run had the other way round. The ratio is largest on the pose paired
+rows, where a joint-space solve takes a fraction of a second: soft PCS 8.70 s against 0.35 s, iiwa
+1.61 against 0.09. The iiwa grasp wins cost 2.68 / 6.27 s against 1.02 / 1.01 s, where the old
+record's tie cost 13x.
 
 **Iterations**: on Panda grasp the joint-space median fell 908 -> 206 with its bound fixed, so the
 old "containment costs joint space its cheapness" was largely the +-10 rad box; the learned arm still
@@ -927,22 +943,23 @@ Lagrangian column is `N/A` BY CONSTRUCTION** -- NLopt has no major iteration to 
 **The rescue rate** (cells only the learned arm solved, against joint space's failures) is printed
 per row as `L+` beside `JS` in the per-solver detail; the old record's 83-100% is not re-quoted.
 
-**Time-matched joint space, re-measured on stage REMEASURE's own cells** (`scripts/report_time_matched.py
---prefix sc_REMEASURE_ --exclude sc_REMEASURE_LEGACY_ --exclude sc_REMEASURE_RULE_`): joint space gets
+**Time-matched joint space, on the record's own cells at paper conditions** (`scripts/report_time_matched.py
+--prefix sc_PAPER_`, and `--prefix sc_SVGD_R2_` for Panda IPOPT; the NLopt and GVS rows `--prefix
+sc_REMEASURE_ --exclude sc_REMEASURE_LEGACY_ --exclude sc_REMEASURE_RULE_`): joint space gets
 best-of-k from each target's 8 recorded starts, random order, stopping at the first success, within
 the learned arm's wall time on the same cell. Where the budget outlasts all 8 starts ("starved") the
 joint-space figure is a lower bound.
 
 | | learned | time-matched joint space | verdict |
 | --- | --- | --- | --- |
-| **IPOPT grasp** native / paired: Panda, iiwa, soft PCS | 99.4-100% | 60-87% (starved <= 34%) | **survives** |
-| IPOPT grasp, screw | 99.0 / 98.3% | >= 90.4 / 95.1% (starved 43-61%) | unestablished |
-| **IPOPT pose native**: soft PCS / Panda | 99.4 / 95.4% | 56.8 / 58.5% | **survives** |
-| IPOPT pose native: iiwa / screw | 96.2 / 95.6% | >= 77.5 / 82.4% (starved 37-43%) | unestablished |
-| IPOPT pose paired | soft PCS 91.0%, Panda 82.3%, iiwa / screw 84.6 / 89.4% | 82.2%, 84.9%, 96.2 / 97.1% | soft PCS survives, Panda level, **joint space wins** iiwa and screw |
-| SNOPT grasp native | 90.8-99.6% (screw 83.3) | 69.1-70.7% (screw 83.5) | **survives** on three, screw level |
-| SNOPT pose native: Panda, iiwa, soft PCS / screw | 91.5-99.8 / 87.3% | >= 77.6-91.2 (starved 35-48%) / 92.4% | unestablished, screw to joint space |
-| SNOPT grasp paired, SNOPT pose paired | 48.5-81.9% | 78.2-96.1% | **joint space wins** every row |
+| **IPOPT grasp** native / paired: Panda, iiwa, soft PCS | 99.4-100% | 59-86% (starved <= 33%) | **survives** |
+| IPOPT grasp, screw | 99.0 / 98.5% | >= 89.4 / 94.9% (starved 40-58%) | unestablished |
+| **IPOPT pose native**: soft PCS / Panda | 99.4 / 95.4% | 56.2 / 56.4% | **survives** |
+| IPOPT pose native: iiwa / screw | 96.2 / 95.6% | >= 77.1 / 81.9% (starved 36-41%) | unestablished |
+| IPOPT pose paired | soft PCS 91.0%, Panda 82.3%, iiwa / screw 84.6 / 89.4% | 81.4%, 83.9%, 95.9 / 96.7% | soft PCS survives, Panda level, **joint space wins** iiwa and screw |
+| SNOPT grasp native | 90.8-99.6% (screw 83.3) | 68.5-70.5% (screw 83.3) | **survives** on three, screw level |
+| SNOPT pose native: Panda, iiwa, soft PCS / screw | 91.5-99.8 / 87.3% | >= 76.1-91.0 (starved 33-48%) / 91.6% | unestablished, screw to joint space |
+| SNOPT grasp paired, SNOPT pose paired | 48.5-81.9% | 78.1-96.1% | **joint space wins** every row |
 | **NLopt native**, all eight rows | 62.3-75.0% | 0-11.3% (starved <= 1%) | **survives** |
 | NLopt pose paired | soft PCS / iiwa 67.7 / 23.3%, screw / Panda 19.4 / 27.1% | 1.9 / 5.4%, 12.8 / 20.6% | survives soft PCS and iiwa; learned ahead on screw and Panda, single-start ties |
 | NLopt grasp paired | 0.6-2.3% | iiwa / Panda 0%, screw / soft PCS 9.9 / 7.7% | floor on iiwa and Panda, **joint space wins** screw and soft PCS |
@@ -951,9 +968,9 @@ joint-space figure is a lower bound.
 **This reverses the old caveat on interior-point grasp**: on the old record only Panda contained grasp
 survived on the rigid arms; with the scene fixed and graphs cutting the per-iteration premium it
 survives on three of the four record robots (all but screw), and on native pose on two. The paired-start pose rows still go to
-a restarting joint space. Wall clock here is PROCS=8 under MPS, which charges the learned arm
-1.12-1.19x over one solve per GPU and joint space little, so paper conditions should be no less kind
-to the learned arm. **State single-start wins as single-start, and rest a time-matched claim on the
+a restarting joint space. On REMEASURE's PROCS=8 `MPS=1` seconds every IPOPT and SNOPT joint-space
+figure was 0.0-2.0 points higher and no verdict differed. The NLopt and GVS rows are still at those
+seconds. **State single-start wins as single-start, and rest a time-matched claim on the
 "survives" rows above.** Under NLopt a joint-space solve itself runs to the clock, so restarts buy it
 almost nothing (starved <= 3% on every row).
 

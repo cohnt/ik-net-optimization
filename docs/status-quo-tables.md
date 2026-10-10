@@ -11,7 +11,8 @@ number.
 **`scripts/report_statusquo.py` owns every table here and regenerates all of them from the persisted
 runs under `results/`, together with the verdict tally and the three pre-registered flag criteria. Do
 not hand-maintain them.** If a number here disagrees with that script, the script is right. Regenerate
-with `{ <this header>; echo ---; echo; scripts/report_statusquo.py; } > docs/status-quo-tables.md`.
+with `{ <this header>; echo ---; echo; scripts/report_statusquo.py; echo; echo ---; echo;
+scripts/report_statusquo.py --paper --runtime; } > docs/status-quo-tables.md`.
 `scripts/report_statusquo.py --legacy` prints the superseded record (STATUSQUO + SOFT12 + SCREW with
 the ITCAP / SCREWCAP lifted rows substituted); `scripts/report_remeasure.py` prints the before/after,
 the attribution of every move to the scene fix or the settings, the trust-region A/B and the
@@ -21,12 +22,22 @@ Conditions: 480 cells = 60 targets x 8 guesses, seed 1 (out of sample), **180 s*
 flow_cuda_graph=True`, IPOPT `max_iter` 1e6, SNOPT 1e5 majors / 1e8 minors, adopted rungs (Panda `n6`,
 iiwa `n4`, soft PCS `soft12` `n6`, screw `screw7_p050` `n6`), hardened
 scene, shelf-contained targets at the fingertips, arms `learned,numerical`, both start protocols, each
-solver at its adopted configuration, Drake nightly `0.0.20260918`. **Run at PROCS=8 under `MPS=1`, a
-development-throughput condition, not the paper's one solve per GPU**, so the wall-clock columns are
-development-grade. **48 logical runs: four robots x two experiments x two protocols x three
+solver at its adopted configuration, Drake nightly `0.0.20260918`. **48 logical runs: four robots x two experiments x two protocols x three
 solvers**, the IPOPT and SNOPT 32 from stage REMEASURE and the NLopt 16 from stage REMEASURE_NLOPT
 (same conditions and tag family, queued last; jobs 5868202/03/04/07, collected 2026-10-10). The old
 record's NLopt runs stay on disk and are read only by `--legacy`.
+
+**Two runtime tables; the second is the one of record.** The main block below is stage REMEASURE at
+PROCS=8 under `MPS=1`, a development-throughput condition, so its Table 3 and the per-solver `L s` /
+`JS s` columns are development-grade. **Stage PAPER + SVGD_R2 (2026-10-10) re-ran all 32 IPOPT and
+SNOPT runs at the paper's condition, one solve per V100 (PROCS=2, no MPS)**, same args, grids and
+scenes, and its Table 3 is the LAST table in this file: **IP and SQP seconds at paper conditions, AL
+still at PROCS=8 under `MPS=1`** (REMEASURE_NLOPT was not re-run). Tables 1, 2 and 4 are not repeated
+because they are identical to the cell but for two one-cell differences, both cap-bound: screw IPOPT
+grasp paired learned 472 -> 473 (its cost on shared cells 9.363 -> 9.453), and Panda IPOPT grasp
+native joint space 449 -> 448 (its cost 2.231 -> 2.248, median iterations 206 -> 205); no verdict,
+tally or flag moves. `scripts/report_statusquo.py --paper` prints the full set at paper conditions,
+and `scripts/report_paper.py` pairs every run with its REMEASURE twin.
 
 **The GVS arm is OUTSIDE the record** (Thomas, 2026-10-05: *"the GVS arm doesn't help our story. We
 can still merge it into main, but it certainly doesn't replace the other soft arm"*). Stage REMEASURE
@@ -380,3 +391,46 @@ help our story ... it certainly doesn't replace the other soft arm".
   gvs_pushrod9_o1 grasp contained paired    343  366   76   99    0.096          tie      613    102   35.93   2.85   0.313   0.259  267   67   49
   gvs_pushrod9_o1 pose contained (tip) native  480  252  228    0 4.64e-69      learned       67     26    1.79   0.54   0.706   0.720  252    0    4
   gvs_pushrod9_o1 pose contained (tip) paired  275  252  109   86    0.115          tie      644     26   47.94   0.52   0.734   0.684  166  130    4
+
+---
+
+THE CAMPAIGN OF RECORD AT PAPER CONDITIONS -- 480 cells, 180 s cap, seed 1
+paper conditions: PROCS=2, no MPS (stage PAPER + SVGD_R2, 2026-10-10); NLopt rows at
+  PROCS=8 MPS=1.
+IPOPT + SNOPT: 32 of 32 runs, 28 from stage PAPER and 4 (Panda IPOPT) from
+  stage SVGD_R2: stage REMEASURE's items verbatim, re-tagged, one solve per V100.
+NLopt: 16 of 16 runs from stage REMEASURE_NLOPT, NOT re-run: PROCS=8 under MPS=1.
+Every other condition is the record's (fixed wsg scene, unified settings, CUDA graphs,
+  lifted budgets, adopted rungs, hardened scene, shelf-contained at the fingertips), on
+  the record's grids and scenes. Success, cost and iterations are the record's to the cell
+  but for two one-cell differences; scripts/report_paper.py pairs every run against its
+  REMEASURE twin. The GVS arm was not re-run and is not printed here.
+Arms: learned vs joint space (numerical). No analytic baseline is fielded.
+NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the
+      network, so a moving JS column is a property of the problem, not drift.
+
+=== TABLE 3 AT PAPER CONDITIONS (IP and SQP: PROCS=2, no MPS)
+  IP = interior point (IPOPT), AL = augmented Lagrangian (NLOPT),
+  SQP = sequential quadratic programming (SNOPT). *better* of each pair is starred;
+  a trailing * marks the best in the row. Every row prints, zeros included.
+
+  Table 3 -- mean runtime, s, over ALL cells, each clamped at the 180 s clock
+  lower is better; this machine only, never compared across machines. Clamped because SNOPT overruns its clock on cycling cells (none feasible) once the iteration budget is lifted
+  IP and SQP at PROCS=2, no MPS (paper conditions); AL at PROCS=8 under MPS=1 (REMEASURE_NLOPT, not re-run)
+  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS
+  iiwa grasp contained native                  2.68      *1.02**      *63.48*       180.00       *3.15*        14.56
+  iiwa grasp contained paired                  6.27      *1.01**     *175.89*       180.00        14.83      *14.50*
+  iiwa pose contained native                   0.67      *0.09**      *78.74*       169.95       *1.28*         1.58
+  iiwa pose contained paired                   1.61      *0.09**     *142.06*       169.95        13.14       *1.58*
+  panda grasp contained native              *3.00**         6.07      *60.01*       180.00       *3.54*        12.94
+  panda grasp contained paired              *5.01**         6.06     *178.88*       180.00      *12.15*        12.92
+  panda pose contained native                  0.77      *0.53**      *77.68*       142.98         1.67       *1.39*
+  panda pose contained paired                  2.02      *0.53**     *138.10*       142.98         8.30       *1.41*
+  screw7_p050 grasp contained native           6.93      *1.08**      *60.71*       162.88         9.30       *9.11*
+  screw7_p050 grasp contained paired          11.11      *1.08**       178.52     *162.87*        13.10       *9.11*
+  screw7_p050 pose contained native            1.10      *0.12**      *78.08*       159.39         2.35       *1.78*
+  screw7_p050 pose contained paired            1.95      *0.12**     *149.11*       159.37         5.19       *1.76*
+  soft12 grasp contained native             *1.21**         3.19      *49.85*       166.74       *6.69*        19.86
+  soft12 grasp contained paired                6.12      *3.21**       178.52     *166.74*        26.72      *19.87*
+  soft12 pose contained native                 0.61      *0.34**      *50.56*       178.70         3.97       *2.42*
+  soft12 pose contained paired                 8.70      *0.35**      *64.88*       178.70        22.11       *2.40*
