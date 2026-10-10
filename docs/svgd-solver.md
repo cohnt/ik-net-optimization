@@ -136,7 +136,7 @@ reported as the collision row's share of the wall.
 | `svgd_temperature` | 1.0 | 2: T, fixed |
 | `svgd_lr` | 1.0 | 4: a fraction of the metric's step: `svgd_lr (H + delta I)^-1 phi` (gn) or `svgd_lr / \|\|H\|\|_F` (identity) |
 | `svgd_metric` | `gn` | 4: `gn` (Stein variational Newton) or `identity` |
-| `svgd_gn_lm` | 1e-2 (pending the delta probe) | 4: delta, the Levenberg damping of the GN metric |
+| `svgd_gn_lm` | 10 | 4: delta, the Levenberg damping of the GN metric. Chosen 2026-10-10 by the most feasible cells (learned + joint space) on 6 grasp + 6 pose Panda cells, ties to the larger: delta 1e-2 / 1 / 10 gave 2 / 3 / 6 (1e-4 diverged); then svgd_lr 1.0 / 0.3 / 0.1 at delta 10 gave 6 / 0 / 0, so `svgd_lr` stays 1.0 |
 | `svgd_row_units` | `natural` | 1: `natural` or `tolerance` (the control) |
 | `svgd_row_length_scale` | 1.0 | 1: metres per radian on the orientation-type rows |
 | `svgd_kernel` | `q` | 5: `q` or `none` |
