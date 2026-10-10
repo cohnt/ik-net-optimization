@@ -2878,6 +2878,19 @@ SVGD_STEP_CAP = 1000000
 SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
 #: R1's variants, in claim order (the primary first). Each differs from `kq` in one setting.
 SVGD_VARIANTS = {"kq": [], "knone": ["--set", "svgd_kernel=none"]}
+#: The weekend single-factor rounds (the coordinator, 2026-10-10, after the cluster smoke passed):
+#: each is R1's four Panda rows at `kq` with ONE `--set` changed, as `variant: (sets, shards)`. An
+#: override of a SVGD_PINNED name REPLACES the pinned value in place (one --set per name), so
+#: `rho1e4` runs at svgd_rho=10000 and `lr1` at svgd_lr=1.0, nothing else moved.
+SVGD_ROUNDS = {
+    "SVGD_R3": {"n1": (["svgd_n=1"], 8), "n256": (["svgd_n=256"], 24)},
+    "SVGD_R4": {"rho1e4": (["svgd_rho=10000"], 24), "lr1": (["svgd_lr=1.0"], 24)},
+    "SVGD_R5": {"n16": (["svgd_n=16"], 16), "T10": (["svgd_temperature=10"], 24)},
+}
+#: The rounds' allotment base, (learned, joint space) seconds per cell -- an ASSUMPTION from the
+#: cluster smoke (pose paired, 4 cells, 60 s: learned 4-7 s, joint space 9-42 s), not a measurement.
+SVGD_ROUND_CELL_S = (5.0, 60.0)
+SVGD_STAGES = SVGD_STAGES + tuple(SVGD_ROUNDS)
 SVGD_R2_SHARDS = 8
 SVGD_R1_SHARD_SCALE = 3
 SVGD_SMOKE_SHAPE = (2, 2, 60.0)          # targets, guesses, cap -- 4 cells
@@ -2890,6 +2903,9 @@ SVGD_ALLOWED_SETS = {
                 "svgd_outer_iters", "svgd_kernel", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
     "SVGD_R1K": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
                  "svgd_outer_iters", "svgd_kernel", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
+    **{r: {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+           "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_n", "svgd_temperature"}
+       for r in SVGD_ROUNDS},
     "SVGD_SMOKE": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile",
                    "svgd_cuda_graph", "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
 }
@@ -2920,9 +2936,33 @@ def _svgd_flag(args, flag):
     return args[args.index(flag) + 1]
 
 
-def _svgd_as_svgd(it, variant, wall=None, cells_token=None):
-    """An IPOPT row item turned into the svgd item: solver, budget, execution mode, variant,
-    and the tag `..._svgd_<row>_<cells>_<cap>_<start>_<variant>`."""
+def _svgd_method_sets(overrides):
+    """SVGD_PINNED with `overrides` (NAME=VALUE strings) applied: a pinned name is REPLACED in
+    place, any other name appended after -- exactly one --set per name."""
+    by_name = {o.split("=", 1)[0]: o for o in overrides}
+    assert len(by_name) == len(overrides), f"two overrides of one name in {overrides}"
+    out, used = [], set()
+    for p in SVGD_PINNED[1::2]:
+        name = p.split("=", 1)[0]
+        out += ["--set", by_name.get(name, p)]
+        used.add(name)
+    for o in overrides:
+        if o.split("=", 1)[0] not in used:
+            out += ["--set", o]
+    return out
+
+
+def _svgd_variant_overrides(stage, variant):
+    """The NAME=VALUE overrides a variant carries on top of SVGD_PINNED."""
+    if stage in SVGD_ROUNDS:
+        return list(SVGD_ROUNDS[stage][variant][0])
+    return list(SVGD_VARIANTS[variant][1::2])
+
+
+def _svgd_as_svgd(it, variant, wall=None, cells_token=None, stage=None):
+    """An IPOPT row item turned into the svgd item: solver, budget, execution mode, the pinned
+    method values with the variant's overrides, and the tag
+    `..._svgd_<row>_<cells>_<cap>_<start>_<variant>`."""
     a = list(it["args"])
     a[a.index("--solver") + 1] = "svgd"
     i = a.index(f"max_iter={ITCAP_IPOPT_MAX_ITER}")
@@ -2930,7 +2970,7 @@ def _svgd_as_svgd(it, variant, wall=None, cells_token=None):
     del a[i - 1:i + 1]
     if wall is not None:
         a[a.index("--wall-time") + 1] = str(float(wall))
-    a += SVGD_EXEC + SVGD_BUDGET + SVGD_PINNED + list(SVGD_VARIANTS[variant])
+    a += SVGD_EXEC + SVGD_BUDGET + _svgd_method_sets(_svgd_variant_overrides(stage, variant))
     old = _svgd_flag(a, "--tag")
     head, tail = old.split("_ipopt_", 1)
     row, cells, cap, start = tail.split("_")
@@ -2949,6 +2989,8 @@ def _svgd_seconds(stage, args):
         per_cell = sum(SVGD_R2_MEAN_WALL[(task, start)])
     elif stage in SVGD_R1_SPLIT:
         per_cell = 2 * SVGD_R1_ASSUMED_ARM_CELL_S
+    elif stage in SVGD_ROUNDS:
+        per_cell = sum(SVGD_ROUND_CELL_S)
     else:                                         # the smoke: charged at the clock
         per_cell = 2 * float(_svgd_flag(args, "--wall-time"))
     return cells * per_cell + SVGD_ITEM_OVERHEAD_S
@@ -2972,6 +3014,13 @@ def stage_SVGD(which):
         items = _svgd_rows(60, 8, SVGD_R2_SHARDS, "SVGD_R2")
     elif which in SVGD_R1_SPLIT:
         items = _svgd_r1_items((SVGD_R1_SPLIT[which],))
+    elif which in SVGD_ROUNDS:
+        items = []
+        for variant, (_, shards) in SVGD_ROUNDS[which].items():
+            for it in _svgd_rows(60, 8, shards, which):
+                task = _svgd_flag(it["args"], "--task")
+                items.append(dict(_svgd_as_svgd(it, variant, stage=which),
+                                  order=0 if task == "mug" else 1))
     elif which == "SVGD_SMOKE":
         t, g, wall = SVGD_SMOKE_SHAPE
         items = [_svgd_as_svgd(it, "kq", wall=wall)
@@ -2990,6 +3039,8 @@ def svgd_allotment():
     print("  REMEASURE at PROCS=8 MPS=1 -- slightly pessimistic at PROCS=2).")
     print(f"  R1 base: ASSUMED {SVGD_R1_ASSUMED_ARM_CELL_S:g} s per cell per arm (both arms run "
           f"svgd); worst case every cell at the {STATUSQUO_WALL:g} s clock on both arms.")
+    print(f"  R3-R5 base: ASSUMED {SVGD_ROUND_CELL_S[0]:g} s learned + {SVGD_ROUND_CELL_S[1]:g} s joint "
+          f"space per cell (cluster smoke, pose paired: learned 4-7 s, joint space 9-42 s).")
     print(f"  smoke: charged at the clock.")
     print(f"\n  {'manifest':<12}{'runs':>6}{'cells':>7}{'items':>7}{'solve-h':>9}{'node-h':>8}"
           f"{'h@' + str(SVGD_NODES):>7}{'max item h':>12}")
@@ -4925,7 +4976,11 @@ def selftest():
                             f"manifests rely on {want}: set it explicitly in SVGD_VARIANTS")
     sv_expected = {"SVGD_SMOKE": (1, 1), "SVGD_R2": (4, 4 * SVGD_R2_SHARDS),
                    "SVGD_R1": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE),
-                   "SVGD_R1K": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE)}
+                   "SVGD_R1K": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE),
+                   **{r: (8, sum(4 * sh for _, sh in v.values())) for r, v in SVGD_ROUNDS.items()}}
+    if {r: (8, n) for r, (_, n) in sv_expected.items() if r in SVGD_ROUNDS} != \
+            {"SVGD_R3": (8, 128), "SVGD_R4": (8, 192), "SVGD_R5": (8, 160)}:
+        sv_fails.append("rounds R3-R5 are not 8 runs / 128, 192, 160 items")
     rm_panda = {it["id"].replace("sc_REMEASURE_", "", 1): it for it in stage_REMEASURE("REMEASURE")
                 if it["robot"] == "panda" and _svgd_flag(it["args"], "--solver") == "ipopt"}
     for stage, (want_runs, want_items) in sv_expected.items():
@@ -4937,8 +4992,7 @@ def selftest():
         if (len(runs), len(items)) != (want_runs, want_items):
             sv_fails.append(f"{stage}: {len(runs)} runs / {len(items)} items, expected "
                             f"{want_runs} / {want_items}")
-        prefix = {"SVGD_SMOKE": "sc_SVGDSMOKE_", "SVGD_R2": "sc_SVGD_R2_",
-                  "SVGD_R1": "sc_SVGD_R1_", "SVGD_R1K": "sc_SVGD_R1_"}[stage]
+        prefix = {"SVGD_SMOKE": "sc_SVGDSMOKE_", "SVGD_R1K": "sc_SVGD_R1_"}.get(stage, f"sc_{stage}_")
         variants_seen, rows_seen = set(), set()
         for it in items:
             a = it["args"]
@@ -4984,22 +5038,34 @@ def selftest():
                         or "max_iter" in sets:
                     sv_fails.append(f"{stage}: {it['id']} not graphed / budget not svgd's own")
                 pinned = dict(x.split("=", 1) for x in SVGD_PINNED[1::2])
-                if {k: sets.get(k) for k in pinned} != pinned or \
-                        pinned != {"svgd_rho": "1000", "svgd_gn_lm": "10", "svgd_lr": "0.3"}:
-                    sv_fails.append(f"{stage}: {it['id']} lacks the probe-chosen rho/gn_lm/lr")
+                if pinned != {"svgd_rho": "1000", "svgd_gn_lm": "10", "svgd_lr": "0.3"}:
+                    sv_fails.append(f"SVGD_PINNED is {pinned}, not the probe-chosen values")
                 variant = tag.rsplit("_", 1)[1]
                 variants_seen.add(variant)
-                if variant not in SVGD_VARIANTS or \
-                        {k: v for k, v in sets.items() if k == "svgd_kernel"} != \
-                        {a2.split("=")[0]: a2.split("=")[1]
-                         for a2 in SVGD_VARIANTS[variant][1::2]}:
-                    sv_fails.append(f"{stage}: {it['id']} variant {variant} mis-set")
+                known = SVGD_ROUNDS[stage] if stage in SVGD_ROUNDS else SVGD_VARIANTS
+                if variant not in known:
+                    sv_fails.append(f"{stage}: {it['id']} unknown variant {variant}")
+                    continue
+                ## The method sets are EXACTLY the pinned values with the variant's overrides
+                ## (an override of a pinned name replaces it): nothing missing, nothing extra.
+                want = dict(pinned)
+                want.update(dict(o.split("=", 1) for o in _svgd_variant_overrides(stage, variant)))
+                got = {k: v for k, v in sets.items() if k.startswith("svgd_") and k not in
+                       ("svgd_compile", "svgd_cuda_graph", "svgd_outer_iters")}
+                if got != want:
+                    sv_fails.append(f"{stage}: {it['id']} method sets {got}, expected {want}")
+                if stage in SVGD_ROUNDS and len(_svgd_variant_overrides(stage, variant)) != 1:
+                    sv_fails.append(f"{stage}: variant {variant} is not single-factor")
                 ## R1 vs the IPOPT row it came from: identical but for the documented swap.
                 ipopt_tag = tag.rsplit("_", 1)[0].replace("_svgd_", "_ipopt_", 1)
-                if stage in SVGD_R1_SPLIT:
-                    base = [o for o in _svgd_rows(60, 8, 24, "SVGD_R1")
+                if stage in SVGD_R1_SPLIT or stage in SVGD_ROUNDS:
+                    sh = (SVGD_ROUNDS[stage][variant][1] if stage in SVGD_ROUNDS else 24)
+                    base = [o for o in _svgd_rows(60, 8, sh, "SVGD_R1" if stage in SVGD_R1_SPLIT
+                                                  else stage)
                             if o["id"] == it["id"].replace(tag, ipopt_tag, 1)]
-                    if len(base) != 1 or _svgd_as_svgd(base[0], variant)["args"] != a:
+                    if len(base) != 1 or _svgd_as_svgd(
+                            base[0], variant, stage=stage if stage in SVGD_ROUNDS else None
+                    )["args"] != a:
                         sv_fails.append(f"{stage}: {it['id']} is not its IPOPT row + the swap")
             else:
                 if sets.get("max_iter") != str(ITCAP_IPOPT_MAX_ITER):
@@ -5010,9 +5076,10 @@ def selftest():
                     sv_fails.append(f"{stage}: {it['id']} is not stage REMEASURE's Panda IPOPT item")
             rows_seen.add((task, start))
             shards = int(_svgd_flag(a, "--shard").split("/")[1]) if "--shard" in a else 1
-            want_sh = {"SVGD_SMOKE": 1, "SVGD_R2": SVGD_R2_SHARDS,
-                       "SVGD_R1": SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE,
-                       "SVGD_R1K": SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE}[stage]
+            want_sh = ({"SVGD_SMOKE": 1, "SVGD_R2": SVGD_R2_SHARDS,
+                        "SVGD_R1": SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE,
+                        "SVGD_R1K": SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE}.get(stage)
+                       or SVGD_ROUNDS[stage][tag.rsplit("_", 1)[1]][1])
             if shards != want_sh:
                 sv_fails.append(f"{stage}: {it['id']} sharded {shards}-way, not {want_sh}")
             if t * g / shards * 2 * wall + SVGD_ITEM_OVERHEAD_S > 28800:
@@ -5026,7 +5093,9 @@ def selftest():
                             f"{SVGD_R1_SPLIT[stage]} only")
         if stage == "SVGD_SMOKE" and variants_seen != {"kq"}:
             sv_fails.append(f"{stage}: the smoke must run the defaults (kq)")
-        if stage in SVGD_R1_SPLIT:
+        if stage in SVGD_ROUNDS and variants_seen != set(SVGD_ROUNDS[stage]):
+            sv_fails.append(f"{stage}: variants {sorted(variants_seen)}")
+        if stage in SVGD_R1_SPLIT or stage in SVGD_ROUNDS:
             first, last = render(items)[0].split("|", 1)[0], render(items)[-1].split("|", 1)[0]
             if not ("_mugshelf_" in first and "_posetip_" in last):
                 sv_fails.append(f"{stage}: claim order is not grasp first, pose last")
@@ -5050,7 +5119,7 @@ def selftest():
         print(f"FAIL svgd stages: {msg}")
     fails += len(sv_fails)
     if not sv_fails:
-        print("ok   stages SVGD_SMOKE/R2/R1/R1K: 1/4/4/4 logical runs, R2 = REMEASURE's Panda IPOPT "
+        print("ok   stages SVGD_SMOKE/R2/R1/R1K/R3/R4/R5: 1/4/4/4/8/8/8 logical runs, R2 = REMEASURE's Panda IPOPT "
               "items, R1 (kq) + R1K (knone) = those rows under svgd + graphed mode + lifted step "
               "budget, and together exactly stage R1")
 
@@ -5122,6 +5191,7 @@ def main():
                    help="Stage H only: the G_SETTINGS name to cross-test")
     p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
                                  "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
+                                 "SVGD_R3", "SVGD_R4", "SVGD_R5",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -5270,6 +5340,9 @@ def main():
              "SVGD_R2": lambda: stage_SVGD("SVGD_R2"),
              "SVGD_R1": lambda: stage_SVGD("SVGD_R1"),
              "SVGD_R1K": lambda: stage_SVGD("SVGD_R1K"),
+             "SVGD_R3": lambda: stage_SVGD("SVGD_R3"),
+             "SVGD_R4": lambda: stage_SVGD("SVGD_R4"),
+             "SVGD_R5": lambda: stage_SVGD("SVGD_R5"),
              "PAPER": lambda: stage_PAPER(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
