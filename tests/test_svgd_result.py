@@ -240,7 +240,7 @@ def test_option_guard():
             raised, msg = True, str(exc)
         check(f"ProgramOptions({kw}) {'raises' if should_raise else 'is accepted'}",
               raised == should_raise, msg or "no raise")
-    removed = ("svgd_collision_workers", "svgd_pool_overlap", "svgd_polish_iters", "svgd_gn_every", "svgd_gn_lm", "svgd_eta_rel", "svgd_q_step_max",
+    removed = ("svgd_collision_workers", "svgd_pool_overlap", "svgd_polish_iters", "svgd_gn_every", "svgd_eta_rel", "svgd_q_step_max",
                "svgd_repulsion_T0", "svgd_anneal_frac", "svgd_gamma_t", "svgd_admm_rho",
                "svgd_tsvgd_switch_infeas", "svgd_lr_decay_t", "svgd_bandwidth",
                "svgd_row_scale_rot", "svgd_resample_every", "svgd_jitter_z", "svgd_rho0",

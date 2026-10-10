@@ -85,6 +85,11 @@ class SvgdSolverDetails:
     collision_seconds: float = 0.0 # host time blocked in the collision backend (the exactness premium)
     stop_reason: str = ""          # why the SWARM stopped: converged | wall_clock | step_cap
     n_dual_updates: int = 0        # dual-ascent steps taken (each on every particle)
+    lambda_max_median: float = None  # exact lambda_max of the GN Hessian (y coords) at the checks:
+    lambda_max_max: float = None     # median over checks of the per-check median, and largest
+    frobenius_over_lambda_median: float = None  # ||H||_F / lambda_max, median (the identity
+                                     # metric's step bound; how loose it is)
+    repulsion_ratio_median: float = None  # |repulsion| / |drive| in phi, median over steps
     lam_inf_median: float = None   # |lam_i|_inf over the particles at stop: median ...
     lam_inf_max: float = None      # ... and largest
     mu_inf_median: float = None    # |mu_i|_inf over the particles at stop: median ...

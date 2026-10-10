@@ -1,4 +1,4 @@
-"""`src/svgd/al.py` and `src/svgd/kernels.py` (and `fused.update_step`) on synthetic problems.
+"""`src/svgd/al.py`, `src/svgd/kernels.py` and the step pieces of `src/svgd/fused.py` on synthetic problems.
 
 The modules are pure tensor math on per-particle quantities and know nothing about any
 formulation, so they are tested on problems whose answers are known in closed form: the PHR
@@ -6,16 +6,10 @@ augmented Lagrangian (one fixed, shared penalty rho) against autograd and agains
 quadratic penalty it reduces to; the dual-ascent step -- unconditional, per particle, its own
 step alpha (alpha = 0 leaves the multipliers at zero), clipped and counted, zeroed on resample; AL rounds converging to the KKT point of an
 equality-constrained quadratic, one per particle; the RBF repulsion against autograd and, the check that pins its SIGN, plain
-SVGD on a 2-D standard Gaussian matching the target's mean and covariance; the Tabor-Hermans
-direction with the kernel off being exactly projected gradient descent on L / T; and the
-step size being `svgd_lr / rho` with the one shared rho.
-
-Everything runs on CPU float64 and, where a CUDA device exists, on CUDA float32 with the
-tolerances scaled to that precision. The last tests grep both modules for the
-host-synchronising calls that would break CUDA-graph capture and compile a composition of
-the AL functions with `torch.compile(dynamic=False, fullgraph=True)` against eager.
-
-No pytest config in this repo: plain `test_*` functions with a `__main__` driver.
+SVGD on a 2-D standard Gaussian matching the target's mean and covariance; the GN Hessian of
+the penalty against autograd on linear rows; one Stein variational Newton step landing on a
+quadratic's minimiser; and the identity metric being projected gradient descent with the
+per-particle step `svgd_lr / ||H_i||_F`.
 """
 
 import math
@@ -308,83 +302,146 @@ def test_plain_svgd_matches_a_gaussians_moments():
 
 
 ## --------------------------------------------------------------------------------------
-## 4. The update: projected gradient descent with kernel off, step svgd_lr / rho_i
+## 4. The update: the GN Hessian, Stein variational Newton, the per-particle identity step
 ## --------------------------------------------------------------------------------------
 
-def _toy_target(s, lo, hi):
-    """The two attributes `fused.update_step` reads off a target: the region scale `s` and
-    the bound projection."""
+def _toy_target(s, lo, hi, H_fx, w_cfg=0.0):
+    """What `fused.direction_and_hessian` / `step_from` read off a target: the region scale
+    `s`, the cost Hessian pieces and the bound projection."""
     def project(X):
         Xp = torch.minimum(torch.maximum(X, lo), hi)
         return Xp, (Xp - X).norm(dim=1)
-    return SimpleNamespace(s=s, bp=SimpleNamespace(project=project))
+    return SimpleNamespace(s=s, H_fx=H_fx, w_cfg=w_cfg, bp=SimpleNamespace(project=project))
 
 
-def test_kernel_none_is_projected_gradient_descent_on_L():
-    """With the kernel off the Tabor-Hermans step IS projected gradient descent on L_rho / T
-    in the normalised coordinates: `y <- clamp_B(y - (svgd_lr / rho_i) grad_y L_i / T)`, i.e.
-    `x <- clamp_B(x - (svgd_lr / rho_i) s^2 grad_x L_i / T)` -- checked against a hand-rolled
-    PGD on a quadratic objective with linear equality and inequality rows, through
-    `al_value`'s own autograd gradient, over several steps and with the bound clamping."""
+def _toy_problem(dtype, device, gen, N=8, n=4, m_e=2, m_i=2):
+    """f = 1/2 |x - a_i|^2 (Hessian I), linear rows h = A x - b, g = C x - d."""
+    kw = dict(dtype=dtype, device=device)
+    A = _randn(m_e, n, dtype=dtype, device=device, gen=gen)
+    C = _randn(m_i, n, dtype=dtype, device=device, gen=gen)
+    a = _randn(N, n, dtype=dtype, device=device, gen=gen)
+    b = _randn(m_e, dtype=dtype, device=device, gen=gen)
+    d = _randn(m_i, dtype=dtype, device=device, gen=gen)
+
+    def rows(x):
+        return 0.5 * ((x - a) ** 2).sum(1), x @ A.T - b, x @ C.T - d
+    J_q = torch.zeros(N, n, n, **kw)          # no configuration-space cost here (w_cfg = 0)
+    return A, C, rows, J_q, torch.eye(n, **kw)
+
+
+def _direction(tg, sc, X, rows, J_q, A, C, S):
+    xg = X.clone().requires_grad_(True)
+    F, h, g = rows(xg)
+    (gF,) = torch.autograd.grad(F.sum(), xg)
+    N = X.shape[0]
+    K = torch.eye(N, dtype=X.dtype, device=X.device)
+    fin = torch.ones(N, dtype=torch.bool, device=X.device)
+    J_h = A.unsqueeze(0).expand(N, -1, -1)
+    J_g = C.unsqueeze(0).expand(N, -1, -1)
+    return fused.direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h.detach(), g.detach(), fin,
+                                       K, torch.zeros_like(X), False, S)
+
+
+def test_gn_hessian_equals_the_autograd_hessian_on_linear_rows():
+    """On linear rows the GN Hessian of the penalty part IS its Hessian: rho A^T A on the
+    equalities plus rho C^T C on the PHR-active inequalities, in y = x / s -- checked against
+    autograd's Hessian of `al_value(0, h, g)` at points away from the active-set kink."""
+    for dtype, device, tol in _targets():
+        gen = _gen(22, device)
+        kw = dict(dtype=dtype, device=device)
+        N, n, m_e, m_i = 6, 4, 2, 3
+        A = _randn(m_e, n, dtype=dtype, device=device, gen=gen)
+        C = _randn(m_i, n, dtype=dtype, device=device, gen=gen)
+        S = _state(N, m_e, m_i, dtype, device, gen)
+        s = torch.tensor([0.5, 2.0, 1.0, 3.0], **kw)
+        X = _randn(N, n, dtype=dtype, device=device, gen=gen)
+        g = X @ C.T - 0.1
+        H = fused.gn_hessian(s, 0.0, torch.zeros(n, n, **kw), torch.zeros(N, n, n, **kw),
+                             A.expand(N, -1, -1), C.expand(N, -1, -1), g, S.mu, RHO)
+        for i in range(N):
+            def pen(y):
+                x = y * s
+                return al.al_value(torch.zeros(1, **kw), (x @ A.T - 0.3).unsqueeze(0),
+                                   (x @ C.T - 0.1).unsqueeze(0), al.replace(
+                                       S, lam=S.lam[i:i + 1], mu=S.mu[i:i + 1]), RHO).sum()
+            Ha = torch.autograd.functional.hessian(pen, X[i] / s)
+            assert _maxabs(H[i], Ha) <= 1e3 * tol * max(1.0, _maxabs(Ha)), (dtype, i, _maxabs(H[i], Ha))
+    print("PASS GN Hessian of the penalty part equals autograd's Hessian on linear rows (active set PHR)")
+
+
+def test_svn_step_lands_on_the_minimiser_of_a_quadratic():
+    """Stein variational Newton with the exact Hessian and delta = 0: on a quadratic L (the
+    objective 1/2|x - a|^2 plus equality rows, whose GN Hessian is exact) one step with
+    svgd_lr = 1, kernel off, T = 1, no bound, lands on argmin L."""
+    for dtype, device, tol in _targets():
+        gen = _gen(23, device)
+        kw = dict(dtype=dtype, device=device)
+        A, C, rows, J_q, H_fx = _toy_problem(dtype, device, gen, m_i=0)
+        N, n = 8, 4
+        C = torch.zeros(0, n, **kw)
+        S = _state(N, A.shape[0], 0, dtype, device, gen)
+        s = torch.tensor([0.5, 2.0, 1.0, 3.0], **kw)
+        tg = _toy_target(s, torch.full((n,), -1e9, **kw), torch.full((n,), 1e9, **kw), H_fx)
+        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=1.0, T=1.0,
+                              rho=RHO, metric="gn", gn_lm=0.0)
+        X = _randn(N, n, dtype=dtype, device=device, gen=gen)
+        phi, H, _ = _direction(tg, sc, X, rows, J_q, A, C, S)
+        Xn, _, _ = fused.step_from(tg, sc, X, phi, H)
+        ## argmin_x 1/2|x - a|^2 + lam.(Ax - b) + rho/2 |Ax - b|^2, per particle (one exact
+        ## Newton step from X on the quadratic, by autograd)
+        xs = []
+        for i in range(N):
+            def L(x):
+                F, h, g = rows(x.unsqueeze(0).expand(N, -1))
+                return al.al_value(F[i:i + 1], h[i:i + 1], g[i:i + 1],
+                                   al.replace(S, lam=S.lam[i:i + 1], mu=S.mu[i:i + 1]), RHO).sum()
+            x = X[i].clone().requires_grad_(True)
+            gr = torch.autograd.grad(L(x), x)[0]
+            Hx = torch.autograd.functional.hessian(L, X[i])
+            xs.append(X[i] - torch.linalg.solve(Hx, gr))
+        x_star = torch.stack(xs)
+        err = _maxabs(Xn, x_star) / max(1.0, _maxabs(x_star))
+        assert err <= 1e4 * tol, f"{dtype}: SVN step misses the minimiser by {err:.2e}"
+        print(f"     {str(dtype):14s} {device.type}: |x_SVN - x*| {err:.1e}")
+    print("PASS one SVN step with the exact Hessian (delta = 0) lands on the quadratic's minimiser")
+
+
+def test_identity_metric_is_projected_gradient_descent_with_the_frobenius_step():
+    """With the kernel off and svgd_metric = identity the step IS projected gradient descent
+    on L / T in y = x / s with the per-particle step svgd_lr / ||H_i||_F: checked against a
+    hand-rolled PGD through `al_value`'s own autograd gradient, with the bound clamp."""
     for dtype, device, tol in _targets():
         gen = _gen(21, device)
         kw = dict(dtype=dtype, device=device)
-        N, n, m_e, m_i = 8, 4, 2, 2
+        A, C, rows, J_q, H_fx = _toy_problem(dtype, device, gen)
+        N, n = 8, 4
+        S = _state(N, A.shape[0], C.shape[0], dtype, device, gen)
         s = torch.tensor([0.5, 2.0, 1.0, 3.0], **kw)
         lo = torch.tensor([-0.3, -1e9, -2.0, -1.0], **kw)
         hi = torch.tensor([0.3, 1e9, 2.0, 1.0], **kw)
-        tg = _toy_target(s, lo, hi)
-        A = _randn(m_e, n, dtype=dtype, device=device, gen=gen)
-        C = _randn(m_i, n, dtype=dtype, device=device, gen=gen)
-        a = _randn(N, n, dtype=dtype, device=device, gen=gen)
-        S = _state(N, m_e, m_i, dtype, device, gen)
-        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=0.5, T=0.8,
-                              rho=RHO)
-
-        def rows(x):
-            return 0.5 * ((x - a) ** 2).sum(1), x @ A.T - 0.1, x @ C.T - 0.2
+        tg = _toy_target(s, lo, hi, H_fx)
+        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=0.9, T=0.8,
+                              rho=RHO, metric="identity", gn_lm=0.0)
         X = torch.zeros(N, n, **kw)
         X_ref = X.clone()
         clipped = 0
         for _ in range(5):
-            xg = X.clone().requires_grad_(True)
-            F, h, g = rows(xg)
-            (gF,) = torch.autograd.grad(F.sum(), xg)
-            ch, cg = al.al_constraint_grad_coefficients(h.detach(), g.detach(), S, RHO)
-            gC = ch @ A + cg @ C
-            K = torch.eye(N, **kw)
-            fin = torch.ones(N, dtype=torch.bool, device=device)
-            X, clip, n_clip = fused.update_step(tg, sc, X, gF, gC, K, torch.zeros_like(X), fin)
+            phi, H, _ = _direction(tg, sc, X, rows, J_q, A, C, S)
+            X, clip, n_clip = fused.step_from(tg, sc, X, phi, H)
             clipped += int(n_clip.sum())
-            ## the reference: PGD on L / T, by autograd of al_value, in y = x / s
             yg = (X_ref / s).clone().requires_grad_(True)
             F2, h2, g2 = rows(yg * s)
             (gy,) = torch.autograd.grad(al.al_value(F2, h2, g2, S, RHO).sum(), yg)
-            y_new = yg.detach() - (sc.lr / RHO) * gy / sc.T
+            fro = H.flatten(1).norm(dim=1).unsqueeze(1)
+            y_new = yg.detach() - (sc.lr / fro) * gy / sc.T
             X_ref = torch.minimum(torch.maximum(y_new * s, lo), hi)
             rel = _maxabs(X, X_ref) / max(1.0, _maxabs(X_ref))
             assert rel <= tol * 100, f"{dtype}: PGD mismatch (relative) {rel:.2e}"
         assert clipped > 0, "the test must exercise the bound clamp"
-    print("PASS kernel none: the step is projected gradient descent on L_rho / T in y = x / s")
-
-
-def test_step_size_is_lr_over_the_shared_rho():
-    """`svgd_lr / rho`, the same for every particle: at rho 4 a particle with gradient G moves
-    by exactly -(lr / 4) G (kernel off, no bound), and doubling rho halves every step."""
-    dtype, device = torch.float64, torch.device("cpu")
-    kw = dict(dtype=dtype, device=device)
-    s = torch.ones(3, **kw)
-    tg = _toy_target(s, torch.full((3,), -1e9, **kw), torch.full((3,), 1e9, **kw))
-    X = torch.zeros(2, 3, **kw)
-    gF = torch.tensor([[1.0, -2.0, 0.5], [3.0, 1.0, -1.0]], **kw)
-    out = []
-    for rho in (4.0, 8.0):
-        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=0.1, T=1.0, rho=rho)
-        Xn, _, _ = fused.update_step(tg, sc, X, gF, torch.zeros_like(gF), torch.eye(2, **kw),
-                                     torch.zeros_like(X), torch.ones(2, dtype=torch.bool))
-        out.append(Xn)
-    assert _maxabs(out[0], -0.025 * gF) <= 1e-15 and _maxabs(out[1], 0.5 * out[0]) <= 1e-15, out
-    print("PASS the step is svgd_lr / rho with the one shared rho")
+        ## ||H||_F bounds lambda_max from above (the step is a safe Lipschitz step)
+        lam = fused.lambda_max(H)
+        assert bool((H.flatten(1).norm(dim=1) >= lam * (1 - 1e-6)).all())
+    print("PASS identity metric: PGD on L_rho / T in y = x / s with the step svgd_lr / ||H_i||_F")
 
 
 def test_resample_mask():
@@ -520,8 +577,9 @@ if __name__ == "__main__":
     test_rbf_repulsion_is_the_svgd_gradient()
     test_stein_direction_forms()
     test_plain_svgd_matches_a_gaussians_moments()
-    test_kernel_none_is_projected_gradient_descent_on_L()
-    test_step_size_is_lr_over_the_shared_rho()
+    test_gn_hessian_equals_the_autograd_hessian_on_linear_rows()
+    test_svn_step_lands_on_the_minimiser_of_a_quadratic()
+    test_identity_metric_is_projected_gradient_descent_with_the_frobenius_step()
     test_resample_mask()
     test_no_host_synchronising_calls_in_the_modules()
     test_compiled_chain_matches_eager()

@@ -230,10 +230,9 @@ SVGD_ENUM_FIELDS = {
     "svgd_paired_init": ("jitter", "native"),
     "svgd_kernel": ("q", "none"),
     "svgd_warmup": ("none", "cem"),
+    "svgd_metric": ("gn", "identity"),
+    "svgd_row_units": ("natural", "tolerance"),
 }
-
-## The svgd step size's default (`svgd_lr`): see `docs/svgd-solver.md`, "The step size".
-SVGD_LR_DEFAULT = 1e-10
 
 
 def CheckSvgdOptions(options):
@@ -246,9 +245,11 @@ def CheckSvgdOptions(options):
     if int(options.svgd_n) < 1:
         raise ValueError(f"svgd_n must be >= 1, got {options.svgd_n!r} (N = 1 is the "
                          f"degenerate single-particle control, not 0)")
-    for name in ("svgd_temperature", "svgd_lr", "svgd_rho"):
+    for name in ("svgd_temperature", "svgd_lr", "svgd_rho", "svgd_row_length_scale"):
         if not float(getattr(options, name)) > 0.0:
             raise ValueError(f"{name} must be > 0, got {getattr(options, name)!r}")
+    if not float(options.svgd_gn_lm) >= 0.0:
+        raise ValueError(f"svgd_gn_lm must be >= 0, got {options.svgd_gn_lm!r}")
     if options.svgd_dual_lr is not None and not float(options.svgd_dual_lr) >= 0.0:
         raise ValueError(f"svgd_dual_lr must be >= 0 (or None for svgd_rho), got {options.svgd_dual_lr!r}")
     if options.svgd_cuda_graph and not options.svgd_compile:
@@ -678,7 +679,11 @@ class ProgramOptions:
     svgd_paired_init: str = field(default="jitter", metadata={"help": "svgd: how the swarm is drawn around the program's initial guess -- 'jitter' adds svgd_jitter * N(0, I) in the normalised coordinates (particle 0 is the guess, never clipped), 'native' draws the arm's own start distribution"})
     svgd_jitter: float = field(default=0.1, metadata={"help": "svgd: paired-jitter sigma, as a fraction of each variable's region half-width (the normalised coordinates)"})
     svgd_temperature: float = field(default=1.0, metadata={"help": "svgd: the temperature T of the target exp(-L_rho / T); fixed for the whole solve"})
-    svgd_lr: float = field(default=SVGD_LR_DEFAULT, metadata={"help": "svgd: the step size; particle i steps svgd_lr / rho_i along its Stein direction in the normalised coordinates (plain gradient step, no momentum, no adaptation)"})
+    svgd_lr: float = field(default=1.0, metadata={"help": "svgd: the step, a dimensionless fraction of the metric's step -- under svgd_metric=gn dy_i = svgd_lr (H_i + svgd_gn_lm I)^-1 phi_i (Stein variational Newton), under identity dy_i = (svgd_lr / ||H_i||_F) phi_i, H_i the GN Hessian of the AL in the normalised coordinates"})
+    svgd_metric: str = field(default="gn", metadata={"help": "svgd: 'gn' -- the block-diagonal Stein variational Newton step (Detommaso et al. 2018) with the per-particle Gauss-Newton Hessian of the AL; 'identity' -- the plain SVGD direction with the per-particle step svgd_lr / ||H_i||_F"})
+    svgd_gn_lm: float = field(default=1e-2, metadata={"help": "svgd: delta, the Levenberg damping added to the GN Hessian under svgd_metric=gn"})
+    svgd_row_units: str = field(default="natural", metadata={"help": "svgd: 'natural' -- the AL is formed on the rows exactly as the program's bindings evaluate them (orientation-type rows times svgd_row_length_scale); 'tolerance' -- every row divided by acceptable_constr_viol_tol (the pre-2026-10-09 path, a control). Feasibility is per row against the tolerance either way"})
+    svgd_row_length_scale: float = field(default=1.0, metadata={"help": "svgd: metres per radian on the orientation-type rows (rpy residuals, the c box's rpy rows; NOT joint limits) under svgd_row_units=natural"})
     svgd_kernel: str = field(default="q", metadata={"help": "svgd: 'q' (RBF kernel on the configuration, median bandwidth) or 'none' (no interaction: both kernel terms dropped, the batched-AL control)"})
     svgd_bandwidth_floor: float = field(default=0.05, metadata={"help": "svgd: floor on the median-heuristic kernel bandwidth"})
     svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho / T), the whole AL gradient inside it -- an A/B"})
