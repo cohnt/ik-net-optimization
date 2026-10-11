@@ -2913,10 +2913,13 @@ SVGD_PINNED = ["--set", "svgd_rho=1000", "--set", "svgd_gn_lm=10", "--set", "svg
 #: identical success (docs/svgd-solver.md, "Batched clearance row"). It needs Thomas's Drake branch
 #: `calc-robot-clearances`, which only ~/learned-ik/venv-crc carries, so these stages are submitted
 #: with DRAKE_ENV=crc (cluster/run_items.sh; submit_bench.sh refuses either half without the other).
-#: Only rounds that had NOT run when it landed: R1-R10 and the IPOPT twins (R2, R7IPOPT) keep the
-#: default row and the tarball pin.
+#: Only rounds that had NOT finished when it landed: R1-R5 and the IPOPT twins (R2, R7IPOPT) keep the
+#: default row and the tarball pin. R6-R10 were queued on the default row when it landed; Thomas
+#: (2026-10-11 14:45, "restage everything using batch clearances") had them cancelled (R6 at 72 of
+#: 288 items, voided on the cluster as void_oldrow_R6_*) and regenerated on this row.
 SVGD_COLLISION = ["--set", "svgd_collision_backend=clearances"]
-SVGD_CLEARANCE_STAGES = ("SVGD_R11", "SVGD_R12", "SVGD_SMOKE_IIWA", "SVGD_R7")
+SVGD_CLEARANCE_STAGES = ("SVGD_R11", "SVGD_R12", "SVGD_SMOKE_IIWA", "SVGD_R7",
+                         "SVGD_R6", "SVGD_R8", "SVGD_R9", "SVGD_R10")
 #: (b): the lifted step budget. ONE knob; the IPOPT `max_iter` is removed from svgd items.
 SVGD_STEP_CAP = 1000000
 SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
@@ -2984,7 +2987,8 @@ SVGD_ALLOWED_SETS = {
        for r in ("SVGD_R3", "SVGD_R4", "SVGD_R5")},
     **{r: {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
            "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_n", "svgd_temperature",
-           "svgd_inner_iters", "svgd_multiplier_max", "svgd_paired_init"}
+           "svgd_inner_iters", "svgd_multiplier_max", "svgd_paired_init",
+           "svgd_collision_backend"}
        for r in ("SVGD_R6", "SVGD_R8", "SVGD_R9", "SVGD_R10")},
     "SVGD_R11": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
                  "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_resample",
@@ -5093,11 +5097,12 @@ def selftest():
     sv_fails = []
     if "svgd" in SOLVER_CLASSES:
         sv_fails.append("svgd is in SOLVER_CLASSES; it is a separate family")
-    ## The clearance row: only stages that had not run when it landed, never an IPOPT twin, and a
-    ## value ProgramOptions accepts (read from source text, torch-free).
+    ## The clearance row: only stages that had not FINISHED when it landed (R1-R5 had; R6-R10 were
+    ## cancelled and regenerated), never an IPOPT twin, and a value ProgramOptions accepts (read
+    ## from source text, torch-free).
     if not set(SVGD_CLEARANCE_STAGES) <= set(SVGD_STAGES) or \
             set(SVGD_CLEARANCE_STAGES) & (set(SVGD_TWIN_STAGES) | {"SVGD_R1", "SVGD_R1K", "SVGD_R2"}
-                                          | {f"SVGD_R{k}" for k in (3, 4, 5, 6, 8, 9, 10)}):
+                                          | {f"SVGD_R{k}" for k in (3, 4, 5)}):
         sv_fails.append(f"SVGD_CLEARANCE_STAGES {SVGD_CLEARANCE_STAGES} names a twin, a run round "
                         "or an unknown stage")
     gp_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
