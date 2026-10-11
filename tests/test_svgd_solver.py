@@ -491,6 +491,26 @@ def test_stop_reasons_and_log():
     check("stop: multipliers stay inside +-svgd_multiplier_max",
           max(d.extras["trace"]["max_lam_inf"] + d.extras["trace"]["max_mu_inf"])
           <= float(p.options.svgd_multiplier_max), str(d.extras["trace"]["max_lam_inf"]))
+    ## Multiplier clips by row group, on the cluster's step (compiled + CUDA graphs) with a
+    ## clip bound small enough to bind: the groups are the program's own and sum to the total.
+    ov = dict(svgd_n=16, svgd_kernel="q", svgd_stop_patience=10 ** 6, svgd_outer_iters=3,
+              svgd_multiplier_max=1e-3)
+    if torch.cuda.is_available():
+        ov.update(svgd_compile=True, svgd_cuda_graph=True)
+    _, d, _ = run_cell(p, "pose", "clips by group", ov, wall=60.0, quiet=True)
+    groups = d.multiplier_clips_by_group
+    print(f"    multiplier clips by group ({'graphed' if ov.get('svgd_cuda_graph') else 'eager'}): "
+          f"{groups}; total {d.n_multiplier_clipped}; median |.|_inf by group "
+          f"{ {k: round(v, 4) for k, v in d.multiplier_inf_median_by_group.items()} }")
+    check("clips by group: keyed by the program's row groups, summing to the total (> 0)",
+          isinstance(groups, dict) and set(groups) == set(d.multiplier_inf_median_by_group)
+          and {"pose_pos", "pose_rpy", "collision", "joint_limit_lo", "joint_limit_hi"} <= set(groups)
+          and sum(groups.values()) == d.n_multiplier_clipped > 0, f"{groups} {d.n_multiplier_clipped}")
+    check("clips by group: per-group median |.|_inf at stop inside the clip bound",
+          all(0.0 <= v <= 1e-3 * (1 + 1e-6) for v in d.multiplier_inf_median_by_group.values()),  # float32
+          str(d.multiplier_inf_median_by_group))
+    p.options = replace(p.options, svgd_compile=False, svgd_cuda_graph=False,
+                        svgd_multiplier_max=ProgramOptions().svgd_multiplier_max)
 
 
 def test_step_with_kernel_off_is_pgd_on_the_programs_L():

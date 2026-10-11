@@ -233,6 +233,7 @@ def arm_stats(summary, arm, other, clamp_wall=False):
             mu_med=median([sv.get("mu_inf_median") for sv in svgd]),
             mu_max=max([sv.get("mu_inf_max") or 0.0 for sv in svgd], default=None),
             mclip=sum(sv.get("n_multiplier_clipped") or 0 for sv in svgd),
+            mclip_groups=_sum_dicts([sv.get("multiplier_clips_by_group") for sv in svgd]),
             resampled_median=median(frac), resampled_max=max(frac, default=None),
             selected_median=median([sv.get("selected_index") for sv in svgd]),
             selected_none=sum(1 for sv in svgd if sv.get("selected_index") == -1),
@@ -283,6 +284,19 @@ def pair_str(m):
 
 
 ## ------------------------------------------------------------------ the rows --
+def _sum_dicts(ds):
+    """Key-wise sum of the dicts in `ds`, first-seen key order, zeros kept; None when no
+    entry is a dict (records that predate the key)."""
+    ds = [d for d in ds if isinstance(d, dict)]
+    if not ds:
+        return None
+    out = {}
+    for d in ds:
+        for k, v in d.items():
+            out[k] = out.get(k, 0) + (v or 0)
+    return out
+
+
 def print_svgd_detail(rep, tag, L, J):
     """Per arm: error / over-cap BUG lines, the svgd population lines, and the feasibility
     agreement checks (solver vs its Drake re-check vs verify()). An arm the run did not carry
@@ -306,6 +320,9 @@ def print_svgd_detail(rep, tag, L, J):
               f"{fmt(st['resampled_median'], 0, 3)} max {fmt(st['resampled_max'], 0, 3)}  "
               f"selected idx median {fmt(st['selected_median'], 0, 0)} (none: {st['selected_none']})  "
               f"collision share of wall {fmt(st['coll_share'], 0, 2)}")
+        if st["mclip_groups"] is not None:   # None on records before 2026-10-11 (R1, R1K): no line
+            print(f"    {'':<17} multiplier clips by row group  "
+                  + "  ".join(f"{k} {v}" for k, v in st["mclip_groups"].items()))
         print(f"    {'':<17} stop {dict(st['stop'])}  warm-up {fmt(st['warmup'], 0, 1)} s  "
               f"compile (per record) {fmt(st['compile_record'], 0, 1)} s  "
               f"recovered_* on {st['recovered']} cell(s)")

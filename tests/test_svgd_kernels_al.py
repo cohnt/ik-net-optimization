@@ -155,6 +155,57 @@ def test_dual_update_is_unconditional_and_per_particle():
           "zeroed on resample")
 
 
+def test_dual_update_counts_clips_by_row_group():
+    """`dual_update(by_row=True)` counts, per row, the multiplier entries the clip bound
+    (summed over particles), and `by_group` sums those into row groups: built so every
+    row's clip count is known in advance, with one group spanning h and g's index lists in
+    an interleaved order. The total equals `n_clipped`, which `by_row` leaves unchanged;
+    `inf_norm_by_group` is the per-group |.|_inf. Neither syncs with the host."""
+    M = 10.0
+    for dtype, device, _ in _targets():
+        kw = dict(dtype=dtype, device=device)
+        N, m_e, m_i = 5, 3, 4
+        ## groups: 0 "pos" = h cols 0, 2; 1 "rpy" = h col 1; 2 "col" = g col 3;
+        ## 3 "jl" = g cols 0, 2; 4 "trust" = g col 1 (never clips)
+        h_grp = torch.tensor([0, 1, 0], dtype=torch.long, device=device)
+        g_grp = torch.tensor([3, 4, 3, 2], dtype=torch.long, device=device)
+        S = ALState(lam=torch.full((N, m_e), 9.0, **kw), mu=torch.full((N, m_i), 9.0, **kw))
+        S.lam[:, 1] = -9.0
+        h = torch.zeros(N, m_e, **kw)
+        g = torch.zeros(N, m_i, **kw)
+        h[:2, 0] = 2.0            # col 0: particles 0, 1 cross +M           -> 2 clips
+        h[4, 0] = -30.0           # ... particle 4 crosses -M                 -> 1 more
+        h[:, 1] = -1.5            # col 1: every particle crosses -M          -> 5 clips
+        h[3, 2] = 0.5             # col 2: 9.5, inside the box                -> 0
+        g[:3, 0] = 5.0            # col 0: three particles cross +M           -> 3 clips
+        g[:, 1] = -20.0           # col 1: clamped at 0 from below, not a clip -> 0
+        g[1, 2] = 1.5             # col 2: one particle crosses               -> 1 clip
+        g[:, 3] = 4.0             # col 3: all five                           -> 5 clips
+        S2, n, (lam_rows, mu_rows) = al.dual_update(h, g, S, 1.0, M, by_row=True)
+        S2b, nb = al.dual_update(h, g, S, 1.0, M)
+        assert torch.equal(S2.lam, S2b.lam) and torch.equal(S2.mu, S2b.mu) and int(n) == int(nb)
+        assert lam_rows.tolist() == [3, 5, 0] and mu_rows.tolist() == [3, 0, 1, 5], (
+            lam_rows.tolist(), mu_rows.tolist())
+        grp = al.by_group(lam_rows, h_grp, 5) + al.by_group(mu_rows, g_grp, 5)
+        assert grp.device == lam_rows.device and grp.dtype == torch.long
+        assert grp.tolist() == [3, 5, 5, 4, 0], grp.tolist()
+        assert int(grp.sum()) == int(n) == 17
+        ## per-group |.|_inf at the clipped state, per particle
+        inf = al.inf_norm_by_group(S2.lam, h_grp, 5) + al.inf_norm_by_group(S2.mu, g_grp, 5)
+        ref = torch.zeros(N, 5, **kw)
+        for j in range(m_e):
+            k = int(h_grp[j]); ref[:, k] = torch.maximum(ref[:, k], S2.lam[:, j].abs())
+        for j in range(m_i):
+            k = int(g_grp[j]); ref[:, k] = torch.maximum(ref[:, k], S2.mu[:, j].abs())
+        assert torch.equal(inf, ref) and float(inf[:, 1].min()) == M and float(inf[:, 4].max()) == 0.0
+        ## no rows at all: empty counts, a zero total
+        E = ALState.init(N, 0, 0, dtype=dtype, device=device)
+        _, n0, (l0, m0) = al.dual_update(torch.zeros(N, 0, **kw), torch.zeros(N, 0, **kw), E, 1.0, M,
+                                         by_row=True)
+        assert int(n0) == 0 and l0.numel() == 0 and m0.numel() == 0
+    print("PASS multiplier clips by row group: per-row counts, group sums, total unchanged, |.|_inf")
+
+
 def _toy_equality_qp(N, n, m, dtype, device, gen):
     """min 1/2 |x - a_i|^2 s.t. B x = c, a different `a_i` per particle, shared (B, c)."""
     a = _randn(N, n, dtype=torch.float64, device="cpu", gen=gen)
@@ -571,6 +622,7 @@ if __name__ == "__main__":
     test_al_value_and_coefficients_agree_with_autograd()
     test_al_with_zero_multipliers_is_the_quadratic_penalty()
     test_dual_update_is_unconditional_and_per_particle()
+    test_dual_update_counts_clips_by_row_group()
     test_al_rounds_converge_to_the_kkt_point_on_every_particle()
     test_pairwise_sqdist_matches_brute_force()
     test_median_bandwidth_matches_numpy_on_the_upper_triangle()
