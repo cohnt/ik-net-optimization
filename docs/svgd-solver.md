@@ -870,8 +870,45 @@ mechanisms are in play and the records separate them partly:
 **Cap check**: 0 cells at the step budget on every N = 1 and N = 256 row; 2 N = 1 cells at the clock
 (pose paired). The flag is not raised.
 
+### R4: rho = 1e4 and lr = 1.0 (`rho1e4`, `lr1`), learned arm only, measured 2026-10-11
+
+**Jobs 5886389 / 90 / 92 / 96, 192 items, 0 error cells; `--variants kq,knone,n1,n256,rho1e4,lr1`.**
+Each differs from `kq` in one setting (`svgd_rho` 1000 -> 10000; `svgd_lr` 0.3 -> 1.0).
+
+**Lead: both are inert on success.** 480 / 480 on every row for both, +0 / -0 against `kq` cell for
+cell, the same verdicts against the IPOPT twin and the same 85 + 22 rescued cells. That is now six
+variants (kernel off, N = 1, N = 256, rho x10, lr x3.3, and the primary) with identical success on
+1920 cells: **on this grid the learned arm's success under the augmented-Lagrangian swarm is
+insensitive to every setting varied so far**, and the two pose rows are won against IPOPT by all of
+them.
+
+**What they change** (learned arm; cost / violation / wall are medians over the cells all four
+solved; redraws, clips and feasible particles over all 480 cells):
+
+| row | cost IPOPT / kq / rho1e4 / lr1 | wall kq / rho1e4 / lr1 | outer steps kq / rho1e4 / lr1 | median particles redrawn per cell (of 64) kq / rho1e4 / lr1 | clipped updates kq / rho1e4 / lr1 | feasible at stop kq / rho1e4 / lr1 |
+| --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | 4.14 / 8.32 / **6.23** / 9.70 | 12.0 / 7.8 / 7.1 s | 24 / 16 / 14 | 21 / 61 / 58 | 252k / 732k / 517k | 6 / 14 / 5 |
+| grasp native | 4.52 / 8.58 / 7.69 / 10.18 | 6.4 / 7.0 / 7.3 s | 13 / 14 / 14 | 0 / 10 / 42 | 9.6k / 154k / 381k | 13 / 17 / 4 |
+| pose paired | 6.44 / 5.62 / **5.17** / 5.26 | 5.8 / 5.4 / 4.2 s | 13 / 12 / 9 | 48 / 65 / 75 | 367k / 821k / 725k | 21 / 27 / 41 |
+| pose native | 6.76 / 7.50 / 6.70 / **6.15** | 5.7 / 5.8 / 4.7 s | 13 / 13 / 11 | 3 / 7 / 21 | 38k / 147k / 223k | 31 / 30 / 45 |
+
+- **rho = 1e4** stops earlier on grasp paired (16 against 24 outer steps, 7.8 against 12.0 s) at a
+  better objective (6.2 against 8.3) with more feasible particles (14 against 6), and is level
+  elsewhere. It triples the redraws (the median paired cell redraws 61 of its 64 particles over the
+  run against 21) and the clipped updates: the stiffer penalty throws more particles past 10 rad
+  and pins more multipliers at the 1e4 clip. Violations are unchanged (1.5e-5 to 4.3e-5).
+- **lr = 1.0** is the setting the screen demoted for churn, and the 480-cell rows agree on the
+  mechanism without agreeing on the cost: it stops fastest (9-14 outer steps, 4.2-7.3 s), with the
+  most redraws (42 of 64 on grasp native against 0 at lr = 0.3) and the most clipped updates, and
+  returns the worst grasp objective (9.7 / 10.2 against 8.3 / 8.6) but the best pose one
+  (5.3 / 6.2 against 5.6 / 7.5), with 41-45 feasible particles on pose against 21-31.
+- Neither moves a verdict, a violation band or the collision share (0.89-0.91). The step is the
+  same ~480 ms per outer step.
+
+**Cap check**: 0 cells at the step budget, 0 at the clock, on all eight rows.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
-R5"*, extended to R6-R10): R4 (rho = 1e4, lr = 1.0), R5 (N = 16, T = 10), R6
+R5"*, extended to R6-R10): R5 (N = 16, T = 10), R6
 (lr = 0.1, K = 1, K = 100), R8 (N = 4, 32, 128), R9 (rho = 100, rho = 1e5, clip 1e6), R10 (paired
 init from the native draw). Their sections are appended as they land.
 
