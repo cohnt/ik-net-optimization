@@ -339,24 +339,28 @@ options construction and turns every cell into an instant failure.
 ssh tcohn@txe1-login.mit.edu 'grep -c "svgd_inner_iters\|svgd_multiplier_max\|svgd_paired_init" ~/learned-ik/repo/src/generic_program.py'
 ```
 
-Then submit with no dependency flags:
+Then submit with no dependency flags. **These four run on the clearance row under `DRAKE_ENV=crc`**
+(next section): they were submitted on the default row on 2026-10-11 overnight, and when the row
+landed Thomas (14:45, *"restage everything using batch clearances"*) had them cancelled -- R6 at 72
+of 288 items, R8-R10 unstarted -- and regenerated with the pin. R6's old-row items are void, kept on
+the cluster as `~/learned-ik/void_oldrow_R6_*`, never collected.
 
 ```bash
 cd $STAGE
-PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R6.txt 4
-PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R8.txt 4
-PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R9.txt 4
-PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R10.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R6.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R8.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R9.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R10.txt 4
 ```
 
 ## From R11 on: the clearance collision row, under `DRAKE_ENV=crc`
 
 Thomas, 2026-10-11: the batched clearance row (`svgd_collision_backend=clearances`,
 `src/svgd/collision_backend.py`) is a strict improvement and the svgd rounds use it from now on.
-**Every svgd item of R11, R12, SMOKE_IIWA and R7 carries `--set svgd_collision_backend=clearances`**
-(`SVGD_COLLISION` / `SVGD_CLEARANCE_STAGES` in `cluster/gen_manifest.py`); nothing else changed in
-those manifests, and every other manifest regenerates byte-identical. R1-R10 are done or running and
-keep the default `autodiff` row; **the IPOPT twins (R2, R7IPOPT, and stage PAPER for the iiwa) stay on
+**Every svgd item of R6, R8, R9, R10, R11, R12, SMOKE_IIWA and R7 carries
+`--set svgd_collision_backend=clearances`** (`SVGD_COLLISION` / `SVGD_CLEARANCE_STAGES` in
+`cluster/gen_manifest.py`); nothing else changed in those manifests, and every other manifest
+regenerates byte-identical. R1-R5 finished on the default `autodiff` row and keep it; **the IPOPT twins (R2, R7IPOPT, and stage PAPER for the iiwa) stay on
 the tarball pin** and never carry it. The selftest holds all of that, plus the value being one
 `ProgramOptions` accepts.
 
@@ -393,10 +397,10 @@ the fix that `run_items.sh` now carries. The test ran from `~/learned-ik/scratch
 campaign tree (adf534c) predates it.
 
 **Read these rounds with that in mind.** The clearance row cuts the collision share of a step from
-~0.9 to ~0.3, so at the 180 s clock a cell gets roughly 3-4x more steps. R11's `drop` / `keep` are
+~0.9 to ~0.3, so at the 180 s clock a cell gets roughly 3-4x more steps. R6, R8-R11's variants are
 read against R1's `kq`, and R7's `kq@seed2` beside the seed-1 `kq`; both baselines ran the
 `autodiff` row, so **those comparisons carry the backend as a second difference** (in seconds and,
-through the clock, possibly in success). The IPOPT-twin pairings (R12 against PAPER, R7 against
+through the clock, possibly in success). Wall from these rounds is not comparable to R1-R5's. The IPOPT-twin pairings (R12 against PAPER, R7 against
 R7IPOPT) are unaffected in kind -- the twin is a different solver anyway -- but now also run on a
 different Drake build. Record metadata says which: `drake_version_txt` reads
 `0.0.20261011+crc.15a2c97 15a2c97...` and `drake_path` is inside `venv-crc`.
