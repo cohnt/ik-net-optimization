@@ -20,7 +20,9 @@ grasp scene with the target mug welded by `GenerateDiagramWithMug`), this file p
      program's own `config_jacobian` (forward mode), to 1e-12 relative, and the rows go
      through the robot's `TorchConfigToPlantQ`, checked against `ConfigToPlantQ`;
   3. `init_from_q` against `SetStartFromQ` (c and z UNCLIPPED, q_c the clipped residual)
-     and the round trip `evaluate(init_from_q(q)).q == q` to the flow's inverse floor;
+     and the round trip `evaluate(init_from_q(q)).q == q` to the flow's inverse floor; and
+     the swarm's native `c` (`native_c`, the solver's `_draw_native`) against the program's
+     own native start (`SetNativeStart`) on every learned program;
   4. `to_drake_x` / `from_drake_x`, including through `benchmark.verify`;
   5. `project` returns the exact clip distance, and `regions=True` clips the c and z boxes;
   6. a timing table (printed only): evaluate with and without the collision row, N in
@@ -468,7 +470,7 @@ def test_gradients_match_autodiff():
         p = bp.program
         coll_row = next(b.start for b in bp._blocks if b.kind == "collision")
         noncoll = [r for r in range(bp.n_rows) if r != coll_row]
-        worst, worst_coll, worst_jq, n_used = 0.0, 0.0, 0.0, 0
+        worst, worst_coll, worst_jq, n_used, n_jump = 0.0, 0.0, 0.0, 0, 0
         for x_np in lumped_batch(bp, rng, 16):
             if n_used >= 4 or np.abs(drake_q(p, x_np)).max() >= 100.0:
                 continue
@@ -484,6 +486,25 @@ def test_gradients_match_autodiff():
             denom = max(1.0, np.abs(J_ref[noncoll]).max())
             worst = max(worst, float(np.abs(J[noncoll] - J_ref[noncoll]).max() / denom))
             dc = np.abs(J[coll_row] - J_ref[coll_row]).max() / max(1.0, np.abs(J_ref[coll_row]).max())
+            if bp.is_learned and dc > 1e-8:
+                ## Drake's collision gradient is itself discontinuous here: the batched q_plant
+                ## and the program's differ by the rpy conversion's last ulp (~1e-15), and at a
+                ## witness-feature tie Drake's own `d row / d q` jumps across that gap (measured
+                ## on an iiwa grasp particle, 2026-10-11: 1.5e-7 on a 3e-3 gradient for a 1e-15
+                ## shift). Then the claim is the one that holds at the SAME plant vector: the
+                ## batched row is Drake's gradient at the batched q_plant pulled back through
+                ## the batched d q_plant / d x -- and the jump is confirmed to be Drake's.
+                qp_b = bp.evaluate(x[None], need_collision=False).q_plant[0].detach().cpu().numpy()
+                qp_d = np.asarray(p.ConfigToPlantQ(drake_q(p, x_np)[:bp.ndof]), dtype=float)
+                _, g_b = bp.collision.eval(qp_b[None])
+                _, g_d = bp.collision.eval(qp_d[None])
+                assert np.abs(g_b - g_d).max() > 1e-10 * max(1.0, np.abs(g_d).max()), (
+                    robot, task, arm, dc, "the collision gradient differs without a Drake jump")
+                Jp = torch.autograd.functional.jacobian(
+                    lambda v: bp.evaluate(v[None], need_collision=False).q_plant[0], x).cpu().numpy()
+                ref = g_b[0] @ Jp
+                dc = np.abs(J[coll_row] - ref).max() / max(1.0, np.abs(ref).max())
+                n_jump += 1
             worst_coll = max(worst_coll, float(dc))
             if not bp.is_learned and bp.plant_q_is_padded_cfg:
                 ## Bitwise against the in-process row's stored gradient, which is Drake's own
@@ -517,7 +538,8 @@ def test_gradients_match_autodiff():
         tol = 1e-8 if bp.is_learned else 1e-12
         print(f"    {robot}/{task}/{arm:9s}: non-collision rows {worst:.2e}, collision row "
               f"{worst_coll:.2e}{' (bitwise vs the in-process row)' if not bp.is_learned and bp.plant_q_is_padded_cfg else ''}, "
-              f"jacobian_q vs autograd {worst_jq:.1e}")
+              f"jacobian_q vs autograd {worst_jq:.1e}"
+              f"{f'; {n_jump} particle(s) at a Drake gradient jump, checked at the batched q_plant' if n_jump else ''}")
         assert worst <= tol, (robot, task, arm, worst)
         assert worst_coll <= max(tol, 1e-15), (robot, task, arm, worst_coll)
         assert worst_jq <= 1e-12
@@ -564,6 +586,50 @@ def test_init_from_q_matches_SetStartFromQ():
     ref = bp.program.SetStartFromQ(far[0])
     assert abs(float(dist[0]) - ref) <= 1e-12, (float(dist[0]), ref)
     print("PASS init_from_q matches SetStartFromQ (c, z unclipped; q_c clipped residual)")
+
+
+def test_native_c_matches_the_programs_native_start():
+    """`--start native`: every benchmark script builds a FRESH program per cell
+    (`create_prog`) and calls `program.SetNativeStart(q_init, rng)`, which redraws the latent
+    and zeroes the correction and leaves `c` where `create_prog` put it -- on the grasp task
+    the program's `GraspCStart()`, one code path on every robot since the 2026-10-09 settings
+    unification. The swarm's native draw (`svgd_paired_init = native`, and every resample
+    under either protocol) must start from the SAME `c`: `native_c()` and the `c` block of
+    the solver's own `_draw_native` (a float64 swarm), to 1e-12, on every learned program of
+    every robot -- read AFTER `SetStartFromQ` has moved the program's guess elsewhere (the
+    paired protocol's state when a resample fires), since the rule recomputes it from the
+    program's data. Until 2026-10-11 the iiwa grasp arm was replayed at the legacy
+    `[mug centre, 0, 0, 0]` instead."""
+    from src.svgd.solver import SvgdSolver
+    rng = np.random.default_rng(8)
+    for (robot, task), cls in LEARNED.items():
+        diagram, target = _scene(robot, task)
+        with HiddenPrints():
+            p = cls(diagram, options=replace(_options(robot, task, "learned"), svgd_dtype="float64"),
+                    model=_solver(robot))
+            if task == "pose":
+                p.create_prog(target)
+            else:
+                p.create_prog(target_mug=target)
+        q = collision_free_q(p, rng, 1)[0]
+        p.SetNativeStart(q, np.random.default_rng(0))
+        c_prog = np.asarray(p.prog.GetInitialGuess(p.c), dtype=float)
+        if task == "mug":
+            assert np.array_equal(c_prog, np.asarray(p.GraspCStart(), dtype=float)), (robot, task)
+        p.SetStartFromQ(q)                          # the guess's c moves off its native value
+        moved = float(np.abs(np.asarray(p.prog.GetInitialGuess(p.c)) - c_prog).max())
+        solver = SvgdSolver(p)
+        solver._build()
+        c_bp = solver._tg.bp.native_c().cpu().numpy()
+        X, _ = solver._draw_native(4, solver._generator(0))
+        c_draw = X[:, :6].detach().cpu().numpy()
+        d_bp = float(np.abs(c_bp - c_prog).max())
+        d_draw = float(np.abs(c_draw - c_prog[None]).max())
+        print(f"    {robot}/{task}: |native_c - SetNativeStart's c| {d_bp:.1e}, solver native "
+              f"draw's c block {d_draw:.1e} (the paired guess had moved c by {moved:.2f})")
+        assert d_bp <= 1e-12 and d_draw <= 1e-12, (robot, task, d_bp, d_draw)
+        del solver
+    print("PASS the swarm's native c is the program's native start c on every learned program")
 
 
 def test_to_drake_x_round_trips():
@@ -740,6 +806,7 @@ if __name__ == "__main__":
         test_row_parity_all_programs()
         test_gradients_match_autodiff()
         test_init_from_q_matches_SetStartFromQ()
+        test_native_c_matches_the_programs_native_start()
         test_to_drake_x_round_trips()
         test_project()
         test_robot_hooks()
