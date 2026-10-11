@@ -785,12 +785,12 @@ def stage_print_row(rep, root, key, tags, runs, order, primary):
             ("numerical", 1, "ABLATION -- joint space under svgd vs joint space under IPOPT "
                              "(the swarm without the network; not a baseline)")):
         print(f"\n  {title}, same cells, exact McNemar (svgd+ / IPOPT+ = cells only that solver solved):")
-        print(f"    {'variant':<10}{'round':<7}{'svgd':>6}{'IPOPT':>7}{'svgd+':>7}{'IPOPT+':>8}"
+        print(f"    {'variant':<12}{'round':<7}{'svgd':>6}{'IPOPT':>7}{'svgd+':>7}{'IPOPT+':>8}"
               f"{'p':>10}  verdict")
         for v in order:
             if v == STAGE_TWIN or v not in tags:
                 continue
-            head = f"    {v:<10}{runs[tags[v]]['round']:<7}"
+            head = f"    {v:<12}{runs[tags[v]]['round']:<7}"
             if arm not in arms_of(v):
                 print(f"{head}not run ({arms_only(arms_of(v))})")
                 continue
@@ -909,7 +909,7 @@ def stage_overview(rep, matrix, order, runs_by_row, runs=None):
     for arm, k, title in (("learned", "L", "learned under svgd -- the question"),
                           ("numerical", "J", "joint space under svgd -- the ablation")):
         print(f"\n  {title}")
-        print(f"    {'variant':<10}{'round':<7}" + "".join(f"{c:>16}" for c in cols)
+        print(f"    {'variant':<12}{'round':<7}" + "".join(f"{c:>16}" for c in cols)
               + ("     W/T/L vs IPOPT" if arm == "learned" else ""))
         for v in order:
             cells, tally, rnd = [], Counter(), None
@@ -935,7 +935,7 @@ def stage_overview(rep, matrix, order, runs_by_row, runs=None):
                 if vd:
                     tally[mark] += 1
                 cells.append(f"{b[k]['succ']} {mark}")
-            line = f"    {v:<10}{rnd or '':<7}" + "".join(f"{c:>16}" for c in cells)
+            line = f"    {v:<12}{rnd or '':<7}" + "".join(f"{c:>16}" for c in cells)
             if arm == "learned" and v != STAGE_TWIN:
                 line += f"     {tally['W']}/{tally['T']}/{tally['L']}"
             print(line)
@@ -1006,7 +1006,7 @@ def stage_main(args):
         what = "the IPOPT twin" if v == STAGE_TWIN else setting_diff(variants, v, primary)
         if set(info["arms"]) != set(ARMS):
             what += f"; {arms_only(info['arms'])} (--arms {','.join(info['arms'])})"
-        print(f"    {v:<10}{info['round']:<4}{info['manifest']:<10}  {what}\n"
+        print(f"    {v:<12}{info['round']:<4}{info['manifest']:<10}  {what}\n"
               f"    {'':<24}--set {sets}")
     for key in matrix:
         stage_print_row(rep, args.root, key, runs_by_row[key], runs, order, primary)
