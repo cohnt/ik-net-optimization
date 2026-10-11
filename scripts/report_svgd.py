@@ -53,10 +53,18 @@ svgd is printed but is no headline and no tally is built on it. Every stage pair
 every variant against the primary `kq` per arm, and a variant-by-row table across the rounds.
 
 A run carries the arms its manifest item's `--arms` names, and that is checked like the rest. The
-rounds R3-R5 run the LEARNED arm only (gen_manifest's SVGD_ROUND_ARMS): their ablation lines and
+rounds R3-R12 run the LEARNED arm only (gen_manifest's SVGD_ROUND_ARMS): their ablation lines and
 joint-space cells read `not run` / `--`, their block has no learned-vs-joint-space line, and
 their cost column (`cost/tw`) is taken on the cells the run and the IPOPT twin's learned arm both
 solved, the twin standing in for the absent arm.
+
+Robots and grid seeds come from gen_manifest too (SVGD_STAGE_CONTEXT, SVGD_TWIN_OF). Each ROBOT is
+its own block, the Panda's first: the iiwa's round R12 pairs with stage PAPER's iiwa IPOPT runs
+(`sc_PAPER_iiwa_n4_ipopt_*`), checked exactly as R2 is. A run on another GRID SEED (round R7, seed
+2) is its own column `<variant>@seed<k>`, printed beside the seed-1 one and paired only with the
+twin on its own seed (`ipopt@seed2`, stage SVGD_R7IPOPT); the seed is part of the provenance
+check and of every pairing's must-match list, so R7 never pairs with R2, and the A/B and
+variant-vs-variant tables pair only columns on one grid.
 """
 import argparse
 import ast
@@ -421,9 +429,12 @@ def print_row(rep, root, robot, row, start, columns, n_cells, cap, prefix, varia
 
 ## ------------------------------------------------------------- A/B vs primary --
 def ab_vs_primary(rep, matrix, columns, primary=M.PRIMARY, twin=M.IPOPT, legend=None,
-                  must=MUST_MATCH, arms_of=None):
+                  must=MUST_MATCH, arms_of=None, skip=None):
     """`arms_of(column)` -> the arms that column's runs carry (stage mode reads it off the
-    manifest); an arm either side did not run prints as `not run`, never as missing."""
+    manifest); an arm either side did not run prints as `not run`, never as missing. `skip` maps
+    a column that cannot pair with the primary (stage mode: another grid seed) to why -- one note
+    line each, no pairing attempted."""
+    skip = skip or {}
     legend = M.variant_token(M.PRIMARY) if legend is None else legend
     print(f"\n{'=' * 100}\nA/B against the primary {primary} ({legend}): each "
           f"column differs from it in ONE setting; exact McNemar per arm on the same cells "
@@ -431,8 +442,13 @@ def ab_vs_primary(rep, matrix, columns, primary=M.PRIMARY, twin=M.IPOPT, legend=
     print(f"  {'row':<34}{'column':<12}{'arm':<13}{primary:>6}{'col':>6}{'col+':>6}{'prim+':>6}"
           f"{'p':>9}{'steps prim':>11}{'steps col':>10}{'wall prim':>10}{'wall col':>9}"
           f"{'feas prim':>10}{'feas col':>9}{'spread prim':>12}{'spread col':>11}")
+    if not [c for c in columns if c not in (twin, primary)]:
+        print(f"  (no column but the primary {primary} on these rows: nothing to pair)")
     for column in columns:
         if column in (twin, primary):
+            continue
+        if column in skip:
+            print(f"  {column}: not paired with the primary -- {skip[column]}")
             continue
         for robot, row, start in matrix:
             label = f"{robot} {M.ROW_NAME[row]} {start}"
@@ -565,12 +581,42 @@ def go_no_go(rep, matrix, columns, variant_kw, profile):
 ## until it lands -- with no edit.
 STAGE_FAMILIES = {"SVGD": "sc_SVGD"}
 STAGE_TWIN = M.IPOPT              # the IPOPT twin's variant name; its tags carry no variant token
-STAGE_TWIN_STAGE = "SVGD_R2"      # the gen_manifest stage that builds the twin
-STAGE_SKIP = ("SVGD_SMOKE",)      # a 4-cell grid at 60 s: it pairs with nothing
+STAGE_SKIP = ("SVGD_SMOKE", "SVGD_SMOKE_IIWA")   # 4-cell grids at 60 s: they pair with nothing
 STAGE_SOLVERS = ("ipopt", "svgd")
+## A twin that is not an svgd stage carries its own stage's tag family and no round token:
+## `sc_PAPER_<robot>_<rung>_ipopt_...` (gen_manifest's SVGD_TWIN_OF; the iiwa's twin is stage PAPER).
+STAGE_TWIN_FAMILIES = ("PAPER",)
 ## A matching grid_hash covers none of these, nor a scene edit: never pair across a scene change.
-STAGE_MUST_MATCH = MUST_MATCH + ("scene_fingerprint",)
+## `seed` too: two grids drawn from different seeds are different cells whatever the hash says.
+STAGE_MUST_MATCH = MUST_MATCH + ("scene_fingerprint", "seed")
 STAGE_VERDICT_MARK = {"svgd": "W", "tie": "T", "IPOPT": "L"}
+## A run on a grid seed other than the record's (stage R7) is its own COLUMN, `<variant>@seed<k>`,
+## beside the seed-1 one in every table, and pairs only with the twin and runs of its own seed.
+SEED_SEP = "@seed"
+
+
+def base_of(column):
+    """`kq@seed2` -> `kq`: the variant a column runs."""
+    return column.split(SEED_SEP, 1)[0]
+
+
+def seed_suffix(column):
+    """`kq@seed2` -> `@seed2`; `` for a column on the record's seed."""
+    return column[len(base_of(column)):]
+
+
+def is_twin(column):
+    return base_of(column) == STAGE_TWIN
+
+
+def twin_of(column):
+    """The IPOPT twin a column pairs with: the one on its own grid seed."""
+    return STAGE_TWIN + seed_suffix(column)
+
+
+def same_grid_columns(columns, column):
+    """The columns of `columns` on `column`'s grid seed."""
+    return [c for c in columns if seed_suffix(c) == seed_suffix(column)]
 
 
 def arms_only(arms):
@@ -605,38 +651,54 @@ def manifest_sets(args):
 def parse_stage_tag(tag):
     """`sc_SVGD_<round>_<robot>_<rung>_<solver>_<row>_<cells>_<cap>_<start>[_<variant>]` -> its
     fields. The IPOPT twin carries no variant token (variant `ipopt`); every svgd run ends in
-    one. Parsed from the right, as report_statusquo.parse_tag is, so a robot name containing
-    underscores cannot shift the fields. Raises ValueError on anything else."""
+    one. An external twin (STAGE_TWIN_FAMILIES) is `sc_<FAMILY>_<robot>_..._<start>`, IPOPT only,
+    its family standing as the round. Parsed from the right, as report_statusquo.parse_tag is, so
+    a robot name containing underscores cannot shift the fields. Raises ValueError on anything
+    else."""
     p = tag.split("_")
-    if len(p) < 10 or p[:2] != ["sc", "SVGD"]:
+    if len(p) >= 9 and p[0] == "sc" and p[1] in STAGE_TWIN_FAMILIES:
+        rnd, body = p[1], p[2:]
+    elif len(p) >= 10 and p[:2] == ["sc", "SVGD"]:
+        rnd, body = p[2], p[3:]
+    else:
         raise ValueError(f"not an sc_SVGD stage tag: {tag}")
     variant = None
-    if p[-1] not in M.STARTS:
-        variant, p = p[-1], p[:-1]
-    rung, solver, row, cells, cap, start = p[-6:]
-    robot = "_".join(p[3:-6])
-    if (not robot or solver not in STAGE_SOLVERS or row not in M.TASK_ROWS
-            or (solver == "ipopt") != (variant is None) or not cells.isdigit()):
+    if body[-1] not in M.STARTS:
+        variant, body = body[-1], body[:-1]
+    if len(body) < 7:
         raise ValueError(f"not an sc_SVGD stage tag: {tag}")
-    return dict(round=p[2], robot=robot, rung=rung, solver=solver, row=row, cells=int(cells),
+    rung, solver, row, cells, cap, start = body[-6:]
+    robot = "_".join(body[:-6])
+    if (not robot or solver not in STAGE_SOLVERS or row not in M.TASK_ROWS
+            or (solver == "ipopt") != (variant is None) or not cells.isdigit()
+            or (rnd in STAGE_TWIN_FAMILIES and solver != "ipopt")):
+        raise ValueError(f"not an sc_SVGD stage tag: {tag}")
+    return dict(round=rnd, robot=robot, rung=rung, solver=solver, row=row, cells=int(cells),
                 cap=float(cap), start=start, variant=variant or STAGE_TWIN)
 
 
 def stage_catalogue(family="SVGD"):
-    """Every logical run of the family as gen_manifest builds it.
+    """Every logical run of the family as gen_manifest builds it, the IPOPT twins included (an
+    svgd stage's, or stage PAPER's for the iiwa: gen_manifest's SVGD_TWIN_OF).
 
     Returns (runs, variants): `runs` maps tag -> its parsed fields plus `manifest` (the
-    gen_manifest stage that builds it), `sets` (its --set overrides) and `arms` (its --arms, in
-    order); `variants` maps each variant, in manifest order (the twin, then the primary, then the
-    rounds), to its round, manifest, sets and arms. Asserts that every tag parses to what its item actually runs, and that a
-    variant runs the same settings on every row -- a broken scheme fails here, not in a table."""
+    gen_manifest stage that builds it), `sets` (its --set overrides), `arms` (its --arms, in
+    order), `seed` (its --seed) and `column` (its variant, `<variant>@seed<k>` off the record's
+    seed); `variants` maps each ROBOT, in manifest order, to its columns -- the twin, the primary,
+    each other seed's twin and primary, then the rounds in manifest order -- each with its round,
+    manifest, sets, arms, seed and variant. Asserts that every tag parses to what its item
+    actually runs, that it runs on its stage's context, that a column runs the same settings on
+    every row, and that every svgd run has an IPOPT twin on its own grid -- a broken scheme fails
+    here, not in a table."""
     assert family in STAGE_FAMILIES, family
     G = _gen_manifest()
     runs, variants = {}, {}
-    for stage in G.SVGD_STAGES:
-        if stage in STAGE_SKIP:
-            continue
-        for it in G.stage_SVGD(stage):
+    sources = [(stage, G.stage_SVGD(stage)) for stage in G.SVGD_STAGES if stage not in STAGE_SKIP]
+    sources += [(st, G.svgd_twin_items(st)) for st in dict.fromkeys(G.SVGD_TWIN_OF.values())
+                if st not in G.SVGD_STAGES]
+    twin_stages = set(G.SVGD_TWIN_OF.values())
+    for stage, items in sources:
+        for it in items:
             a = it["args"]
             tag = _flag(a, "--tag")
             t = parse_stage_tag(tag)
@@ -646,24 +708,47 @@ def stage_catalogue(family="SVGD"):
             parsed = {k: t[k] for k in ran}
             assert parsed == ran, f"{tag} parses to {parsed}; its {stage} item runs {ran}"
             assert M.TASK_ROWS[t["row"]][0] == _flag(a, "--task"), f"{tag}: task {_flag(a, '--task')}"
-            if stage == STAGE_TWIN_STAGE:
+            seed = int(_flag(a, "--seed"))
+            ctx = (t["robot"], t["rung"], seed)
+            assert it["robot"] == t["robot"], f"{tag}: names {t['robot']}, its item runs {it['robot']}"
+            if stage in twin_stages:
                 assert t["variant"] == STAGE_TWIN, f"{tag}: {stage} must be the IPOPT twin"
-            elif stage in G.SVGD_R1_SPLIT:
-                assert t["variant"] == G.SVGD_R1_SPLIT[stage], f"{tag}: {stage} carries {G.SVGD_R1_SPLIT[stage]}"
-            elif stage in G.SVGD_ROUNDS:
-                assert t["variant"] in G.SVGD_ROUNDS[stage], f"{tag}: not a variant of {stage}"
+                assert G.SVGD_TWIN_OF.get(ctx) == stage, f"{tag}: {stage} is not the twin of {ctx}"
+            else:
+                assert G.svgd_context(stage) == ctx, f"{tag}: runs {ctx}, {stage} runs {G.svgd_context(stage)}"
+                if stage in G.SVGD_R1_SPLIT:
+                    assert t["variant"] == G.SVGD_R1_SPLIT[stage], f"{tag}: {stage} carries {G.SVGD_R1_SPLIT[stage]}"
+                elif stage in G.SVGD_ROUNDS:
+                    assert t["variant"] in G.SVGD_ROUNDS[stage], f"{tag}: not a variant of {stage}"
             sets = manifest_sets(a)
             arms = tuple(_flag(a, "--arms").split(","))
             assert arms and set(arms) <= set(ARMS), f"{tag}: --arms {_flag(a, '--arms')}"
-            info = dict(t, manifest=stage, sets=sets, arms=arms)
+            column = t["variant"] + ("" if seed == G.SVGD_SEED else f"{SEED_SEP}{seed}")
+            info = dict(t, manifest=stage, sets=sets, arms=arms, seed=seed, column=column)
             prev = runs.get(tag)                  # shards of one run share its base tag
             assert prev is None or prev == info, f"{tag}: two items disagree about the run"
             runs[tag] = info
-            v = variants.setdefault(t["variant"], dict(round=t["round"], manifest=stage, sets=sets,
-                                                       arms=arms))
+            v = variants.setdefault(t["robot"], {}).setdefault(
+                column, dict(round=t["round"], manifest=stage, sets=sets, arms=arms, seed=seed,
+                             variant=t["variant"]))
             assert (v["manifest"], v["sets"], v["arms"]) == (stage, sets, arms), \
-                f"variant {t['variant']} runs different settings or arms in {v['manifest']} and {stage}"
-    return runs, variants
+                f"{t['robot']} {column} runs different settings or arms in {v['manifest']} and {stage}"
+    ## Every svgd run pairs with an IPOPT twin on ITS OWN grid: same robot, rung, row, start, seed.
+    twins = {(t["robot"], t["rung"], t["row"], t["start"], t["seed"]): tag
+             for tag, t in runs.items() if t["variant"] == STAGE_TWIN}
+    for tag, t in runs.items():
+        if t["variant"] != STAGE_TWIN:
+            k = (t["robot"], t["rung"], t["row"], t["start"], t["seed"])
+            assert k in twins and runs[twins[k]]["column"] == twin_of(t["column"]), \
+                f"{tag}: no IPOPT twin on its grid {k}"
+    primary = stage_primary()
+    out = {}
+    for robot, cols in variants.items():
+        head = []
+        for sfx in dict.fromkeys(seed_suffix(c) for c in cols):
+            head += [c for c in (STAGE_TWIN + sfx, primary + sfx) if c in cols and c not in head]
+        out[robot] = {c: cols[c] for c in head + [c for c in cols if c not in head]}
+    return runs, out
 
 
 def stage_primary():
@@ -684,12 +769,12 @@ def setting_diff(variants, variant, primary):
 
 def stage_run_problems(info, s):
     """Why the run on disk is not the run its tag names, or []: its overrides, solver, start,
-    task, cap, arms and cell count must be exactly what its manifest item ran. The arms are the
+    task, cap, grid seed, arms and cell count must be exactly what its manifest item ran. The arms are the
     item's `--arms` (a round runs the learned arm only), read off the records -- the metadata
     does not carry them -- and checked against `metadata["arms"]` too should a run ever record it."""
     m = s.get("metadata", {})
     want = dict(overrides=info["sets"], solver=info["solver"], start=info["start"],
-                task=M.TASK_ROWS[info["row"]][0], wall_time=info["cap"])
+                task=M.TASK_ROWS[info["row"]][0], wall_time=info["cap"], seed=info["seed"])
     bad = [f"{k} {m.get(k)!r} != the manifest's {v!r}" for k, v in want.items() if m.get(k) != v]
     records = s.get("records", {})
     extra = [a for a in records if a not in info["arms"]]
@@ -739,8 +824,11 @@ def stage_print_row(rep, root, key, tags, runs, order, primary):
     thr = budget_threshold(cells)
     print(f"\n{'=' * 100}\n{robot} {M.ROW_NAME[row]}, {start}   ({cells} cells, cap {cap:g} s, "
           f"rung {infos[0]['rung']})")
-    twin_tag = tags.get(STAGE_TWIN)
-    print(f"  IPOPT twin ({STAGE_TWIN_STAGE}): {twin_tag}")
+    ## One twin per grid seed; a column pairs only with the twin on its own seed (twin_of).
+    for tw in (v for v in order if is_twin(v) and v in tags):
+        info = runs[tags[tw]]
+        on = "" if not seed_suffix(tw) else f", grid seed {info['seed']}"
+        print(f"  IPOPT twin{on} ({info['manifest']}): {tags[tw]}")
     print(f"  cap rule: >= {thr} of {cells} cells at the ITERATION budget (svgd: the step cap) -> "
           f"no verdict; >= {thr} at the clock -> a result at the fielded clock, flagged")
     ## Load, and use a run only if it is the run its tag names.
@@ -760,7 +848,6 @@ def stage_print_row(rep, root, key, tags, runs, order, primary):
             loaded[v], status[v] = None, "REFUSED"
             continue
         loaded[v], status[v] = s, "ok"
-    twin = loaded.get(STAGE_TWIN)
     ## An arm the manifest item did not run (a round: learned only) has no stats -- None.
     arms_of = lambda v: runs[tags[v]]["arms"]
     stats = {v: tuple(arm_stats(s, arm, other, clamp_wall=True) if arm in arms_of(v) else None
@@ -768,16 +855,17 @@ def stage_print_row(rep, root, key, tags, runs, order, primary):
              for v, s in loaded.items() if s is not None}
     vs_twin = {}
     for v, s in loaded.items():
-        if v == STAGE_TWIN or s is None or twin is None:
+        twin = loaded.get(twin_of(v))
+        if is_twin(v) or s is None or twin is None:
             continue
         why = incomparable(s, twin, STAGE_MUST_MATCH)
         if why is None and not same_chart(s, twin):
             why = "checkpoint differs -- two charts are two formulations"
         if why:
-            rep.refuse(f"{tags[v]} vs IPOPT twin {twin_tag}: {why}")
+            rep.refuse(f"{tags[v]} vs IPOPT twin {tags[twin_of(v)]}: {why}")
             continue
         vs_twin[v] = {arm: mcnemar_pair(s, arm, twin, arm) for arm in ARMS
-                      if arm in arms_of(v) and arm in arms_of(STAGE_TWIN)}
+                      if arm in arms_of(v) and arm in arms_of(twin_of(v))}
     ## The LEAD (learned) and the ABLATION (joint space): each arm under svgd against the same
     ## arm under IPOPT, on the same cells.
     for arm, k, title in (
@@ -788,7 +876,7 @@ def stage_print_row(rep, root, key, tags, runs, order, primary):
         print(f"    {'variant':<12}{'round':<7}{'svgd':>6}{'IPOPT':>7}{'svgd+':>7}{'IPOPT+':>8}"
               f"{'p':>10}  verdict")
         for v in order:
-            if v == STAGE_TWIN or v not in tags:
+            if is_twin(v) or v not in tags:
                 continue
             head = f"    {v:<12}{runs[tags[v]]['round']:<7}"
             if arm not in arms_of(v):
@@ -799,10 +887,11 @@ def stage_print_row(rep, root, key, tags, runs, order, primary):
                 continue
             m = vs_twin.get(v, {}).get(arm)
             if m is None:
-                why = "the twin is MISSING" if twin is None else "refused, see above"
+                why = (f"the twin is {status.get(twin_of(v), 'MISSING')}"
+                       if loaded.get(twin_of(v)) is None else "refused, see above")
                 print(f"{head}{stats[v][k]['succ']:>6}{'--':>7}   not paired: {why}")
                 continue
-            sv, tw = stats[v][k], stats[STAGE_TWIN][k]
+            sv, tw = stats[v][k], stats[twin_of(v)][k]
             if max(sv["icap"], tw["icap"]) >= thr:
                 verdict_s = "NO VERDICT (iteration-budget-bound)"
             else:
@@ -824,6 +913,7 @@ def stage_print_row(rep, root, key, tags, runs, order, primary):
             print(f"    {status[v]}: {tag}")
             continue
         s = loaded[v]
+        twin = loaded.get(twin_of(v))
         L, J = stats[v]
         if L is None or J is None:
             stage_print_one_arm(rep, tag, info, s, L, J, twin, vs_twin.get(v, {}), cap)
@@ -918,7 +1008,7 @@ def stage_overview(rep, matrix, order, runs_by_row, runs=None):
                 if tag is None:
                     cells.append("")
                     continue
-                rnd = rnd or tag.split("_")[2]
+                rnd = rnd or (runs[tag]["round"] if runs is not None else tag.split("_")[2])
                 if arm not in arms_of(tag):
                     cells.append("--")
                     continue
@@ -926,7 +1016,7 @@ def stage_overview(rep, matrix, order, runs_by_row, runs=None):
                 if b is None:
                     cells.append("MISSING" if tag in rep.missing else "REFUSED")
                     continue
-                if v == STAGE_TWIN:
+                if is_twin(v):
                     cells.append(str(b[k]["succ"]))
                     continue
                 vd = rep.verdicts.get((key, v, arm))
@@ -936,21 +1026,26 @@ def stage_overview(rep, matrix, order, runs_by_row, runs=None):
                     tally[mark] += 1
                 cells.append(f"{b[k]['succ']} {mark}")
             line = f"    {v:<12}{rnd or '':<7}" + "".join(f"{c:>16}" for c in cells)
-            if arm == "learned" and v != STAGE_TWIN:
+            if arm == "learned" and not is_twin(v):
                 line += f"     {tally['W']}/{tally['T']}/{tally['L']}"
             print(line)
 
 
 def stage_pairwise(rep, matrix, order):
     """Variant against variant, every pair that has landed, per arm and row: exact McNemar on the
-    same cells. Cell (row variant A, column variant B) reads `+a/-b p`, a = cells only A solved."""
+    same cells. Cell (row variant A, column variant B) reads `+a/-b p`, a = cells only A solved.
+    Only columns on one grid pair: the record's seed always prints; another seed (`@seed<k>`)
+    prints only once two of its svgd columns have landed."""
     print(f"\n{'=' * 100}\nVARIANT vs VARIANT -- every pair of landed svgd variants, exact McNemar on "
           f"the same cells; row variant A against column variant B, +A-only/-B-only p")
     for arm, title in (("learned", "learned under svgd"), ("numerical", "joint space under svgd (ablation)")):
-        for key in matrix:
-            landed = [v for v in order if v != STAGE_TWIN and key + (v,) in rep.blocks
+        for key, sfx in ((k, x) for k in matrix for x in dict.fromkeys(seed_suffix(v) for v in order)):
+            landed = [v for v in order if not is_twin(v) and seed_suffix(v) == sfx
+                      and key + (v,) in rep.blocks
                       and arm in rep.blocks[key + (v,)].get("arms", ARMS)]
-            label = f"{key[0]} {M.ROW_NAME[key[1]]} {key[2]}"
+            label = f"{key[0]} {M.ROW_NAME[key[1]]} {key[2]}" + (f" (grid {sfx[1:]})" if sfx else "")
+            if sfx and len(landed) < 2:
+                continue
             if len(landed) < 2:
                 print(f"\n  {title}, {label}: {len(landed)} variant(s) landed -- nothing to pair")
                 continue
@@ -976,45 +1071,77 @@ def stage_pairwise(rep, matrix, order):
 
 def stage_main(args):
     prefix = STAGE_FAMILIES[args.stage]
-    runs, variants = stage_catalogue(args.stage)
+    runs, variants_by_robot = stage_catalogue(args.stage)
     primary = stage_primary()
-    order = list(variants)
+    every = {c for cols in variants_by_robot.values() for c in cols}
+    want = None
     if args.variants:
         want = [t.strip() for t in args.variants.split(",") if t.strip()]
-        unknown = [t for t in want if t not in variants]
+        unknown = [t for t in want if t not in every and t not in {base_of(c) for c in every}]
         if unknown:
-            raise SystemExit(f"--variants: {unknown} not built by gen_manifest; it builds {order}")
-        order = [v for v in order if v in want or v in (STAGE_TWIN, primary)]
+            raise SystemExit(f"--variants: {unknown} not built by gen_manifest; it builds "
+                             f"{list(dict.fromkeys(c for cols in variants_by_robot.values() for c in cols))}")
     robots, rows, starts = M.parse_row_filter(args.rows)
-    matrix = stage_rows(runs, robots, rows, starts)
-    runs_by_row = {key: {} for key in matrix}
-    for tag, t in runs.items():
-        key = (t["robot"], t["row"], t["start"])
-        if key in runs_by_row and t["variant"] in order:
-            runs_by_row[key][t["variant"]] = tag
     rep = Report()
     rep.verdicts = {}
-    print(f"svgd report, stage {args.stage}: the {prefix}_* family from cluster/gen_manifest.py, "
-          f"{len(matrix)} rows x {len(order)} variants, root {args.root}")
-    print("  LEAD per row: learned under svgd vs learned under IPOPT (the twin) on the same cells; "
-          "joint space under svgd is an ABLATION (docs/svgd-solver.md, the per-row analysis rule).")
-    print(f"  variants (manifest order), each with every --set it runs, then what it changes from "
-          f"the primary {primary}:")
-    for v in order:
-        info = variants[v]
-        sets = " ".join(f"{k}={val!r}" for k, val in info["sets"].items())
-        what = "the IPOPT twin" if v == STAGE_TWIN else setting_diff(variants, v, primary)
-        if set(info["arms"]) != set(ARMS):
-            what += f"; {arms_only(info['arms'])} (--arms {','.join(info['arms'])})"
-        print(f"    {v:<12}{info['round']:<4}{info['manifest']:<10}  {what}\n"
-              f"    {'':<24}--set {sets}")
-    for key in matrix:
-        stage_print_row(rep, args.root, key, runs_by_row[key], runs, order, primary)
-    ab_vs_primary(rep, matrix, order, primary=primary, twin=STAGE_TWIN,
-                  legend=f"round {variants[primary]['round']}, manifest {variants[primary]['manifest']}",
-                  must=STAGE_MUST_MATCH, arms_of=lambda v: variants[v]["arms"])
-    stage_overview(rep, matrix, order, runs_by_row, runs)
-    stage_pairwise(rep, matrix, order)
+    printed = 0
+    ## One block per robot, in manifest order (the Panda first): its own columns, rows, A/B,
+    ## overview and pairwise tables. A robot's rows pair only with that robot's twins.
+    for robot, variants in variants_by_robot.items():
+        if robots and robot not in robots:
+            continue
+        order = list(variants)
+        if want is not None:
+            ## A column prints if it or its variant is asked for; the primary always does, and
+            ## so does every twin a printed column pairs with.
+            keep = [c for c in order if not is_twin(c)
+                    and (c in want or base_of(c) in want or base_of(c) == primary)]
+            order = [c for c in order if c in keep or c == STAGE_TWIN
+                     or (is_twin(c) and any(twin_of(k) == c for k in keep))]
+        matrix = stage_rows(runs, {robot}, rows, starts)
+        if not matrix:
+            continue
+        runs_by_row = {key: {} for key in matrix}
+        for tag, t in runs.items():
+            key = (t["robot"], t["row"], t["start"])
+            if key in runs_by_row and t["column"] in order:
+                runs_by_row[key][t["column"]] = tag
+        rung = next(t["rung"] for t in runs.values() if t["robot"] == robot)
+        if printed:
+            print(f"\n{'#' * 100}\n")
+        print(f"svgd report, stage {args.stage}, robot {robot} (rung {rung}): the {prefix}_* family "
+              f"from cluster/gen_manifest.py, {len(matrix)} rows x {len(order)} variants, root {args.root}")
+        print("  LEAD per row: learned under svgd vs learned under IPOPT (the twin) on the same cells; "
+              "joint space under svgd is an ABLATION (docs/svgd-solver.md, the per-row analysis rule).")
+        print(f"  variants (manifest order), each with every --set it runs, then what it changes from "
+              f"the primary {primary}:")
+        for v in order:
+            info = variants[v]
+            if is_twin(v):
+                what = "the IPOPT twin"
+            elif primary in variants:
+                what = setting_diff(variants, base_of(v), primary)
+            else:
+                what = "(no primary on this robot)"
+            if seed_suffix(v):
+                what += f"; grid seed {info['seed']} -- pairs only with {twin_of(v)}, never with seed-1 runs"
+            if set(info["arms"]) != set(ARMS):
+                what += f"; {arms_only(info['arms'])} (--arms {','.join(info['arms'])})"
+            print(f"    {v:<12}{info['round'] + ' ':<4}{info['manifest']:<10}  {what}\n"
+                  f"    {'':<24}--set {' '.join(f'{k}={val!r}' for k, val in info['sets'].items())}")
+        for key in matrix:
+            stage_print_row(rep, args.root, key, runs_by_row[key], runs, order, primary)
+        if primary in variants:
+            ab_vs_primary(rep, matrix, [c for c in order if not is_twin(c) or c == STAGE_TWIN],
+                          primary=primary, twin=STAGE_TWIN,
+                          legend=f"round {variants[primary]['round']}, manifest {variants[primary]['manifest']}",
+                          must=STAGE_MUST_MATCH, arms_of=lambda v: variants[v]["arms"],
+                          skip={c: f"grid seed {variants[c]['seed']}, a different grid; see its LEAD "
+                                   f"line against {twin_of(c)}"
+                                for c in order if seed_suffix(c) and not is_twin(c)})
+        stage_overview(rep, matrix, order, runs_by_row, runs)
+        stage_pairwise(rep, matrix, order)
+        printed += 1
     print(f"\n{'=' * 100}\nmissing runs: {len(rep.missing)}")
     for t in rep.missing:
         print(f"  {t}")

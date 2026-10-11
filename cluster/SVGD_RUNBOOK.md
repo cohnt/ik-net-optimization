@@ -279,8 +279,8 @@ These continue the ladder into phase 2, stripping out what is not important (the
 Thomas, 2026-10-11 overnight: *"You can use local and cluster compute"*). Each rung attributes **one**
 setting of the primary `kq`. The conventions are those of R3-R5: learned arm only, `SVGD_PINNED`
 plus one override that replaces a pinned name in place, the record flags, graphed, the lifted step
-cap, and PROCS=2 with no MPS. There is no R7, because the seed control needs IPOPT twins on new
-grids and waits for Thomas.
+cap, and PROCS=2 with no MPS. R7, the seed control, needed IPOPT twins on a new grid and waited for
+Thomas. He approved it on 2026-10-11, and it has its own section below.
 
 | manifest | variant | the one change against `kq` | what it attributes |
 | --- | --- | --- | --- |
@@ -382,6 +382,118 @@ carries `resample_mode`, `n_dropped`, `n_live` and `n_resampled`. A cell whose e
 dropped stops with `stop_reason = all_dead`. It is scored infeasible, and `recovered_*` holds the
 last iterate it recorded.
 
+## R12 (iiwa n4) and SVGD_SMOKE_IIWA
+
+Thomas (2026-10-11) wants the other robots. R12 is the primary `kq` on the **iiwa at its adopted
+`n4`** (`models/iiwa14/iiwa14__n4__step620000.pkl`, already on `~/learned-ik` from stage
+REMEASURE/PAPER): the record's four iiwa rows (`mugshelf` / `posetip` x paired / native), 480 cells,
+180 s, `--solver svgd --compile` and exactly R1's `kq` `--set` list. Diffed against R1's `kq` line, an
+R12 item differs in the script (`scripts/iiwa/iiwa_benchmark.py`), the checkpoint, `--arms learned`
+and the tag; nothing else.
+
+- **Learned arm only**, 24 shards, as R4. Tags `sc_SVGD_R12_iiwa_n4_svgd_<row>_480_180_<start>_kq`.
+- **Its IPOPT twin is stage PAPER's iiwa IPOPT runs**, `sc_PAPER_iiwa_n4_ipopt_<row>_480_180_<start>`:
+  the record's rows at paper conditions (PROCS=2, no MPS), already collected. No new twin manifest.
+  The selftest holds R12's IPOPT rows, built at PAPER's 8 shards under PAPER's tag, equal to PAPER's
+  iiwa IPOPT items (ids, scripts, args). So grid, scene and cap flags are PAPER's by construction.
+- The robot is a **context** in `gen_manifest.py` (`SVGD_STAGE_CONTEXT`, `SVGD_TWIN_OF`). The Panda
+  manifests regenerate byte-identical.
+
+`SVGD_SMOKE_IIWA` is the joint-space safety smoke. It has **one item per row** (4 items), each a
+2 x 2 grid (4 cells) at 60 s, `--arms learned,numerical`, at the same primary setting. Tags are
+`sc_SVGDSMOKE_iiwa_n4_svgd_<row>_4_60_<start>_kq`. It exists so the joint-space arm is seen to run
+on the iiwa before anyone trusts the learned-only R12. It is not a result and pairs with nothing.
+
+**Allotment** (`python cluster/gen_manifest.py --stage SVGD_R12 --allotment`). The assumption is the
+rounds' **5 s per learned cell** (`SVGD_ROUND_CELL_S`), with no iiwa svgd measurement behind it. R1
+measured a 6-12 s median per cell on the Panda at N = 64, so expect R12 to run longer. The smoke is
+charged at its clock, both arms.
+
+```
+  manifest          runs  cells  items  solve-h  node-h    h@4  max item h
+  SVGD_R12             4   1920     96      7.5     3.7    0.9        0.08
+  SVGD_SMOKE_IIWA      4     16      4      0.7     0.4    0.1        0.18
+```
+
+The worst case puts every cell at the 180 s clock: 96 solve-h, or 48 node-h, about 12 h on 4 idle
+nodes. Each item is then 20 cells x 180 s = 1 h, far inside `ITEM_TIMEOUT`.
+
+**Submit order.** SMOKE_IIWA goes first. R12 goes `afterok` on it, and both go after R11 in FIFO.
+Both need the same restage R11 needs: the manifests are new, and the staged tree must carry this
+commit. Do this after the restage (R11's section):
+
+```bash
+cd $STAGE
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_SMOKE_IIWA.txt 1   # -> <SMOKE_IIWA>
+DEPENDENCY=afterok:<SMOKE_IIWA> PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R12.txt 4
+```
+
+`afterok` gates on the smoke JOB's exit status, not on its numbers, as with SVGD_SMOKE. A smoke that
+runs and solves nothing still releases R12. Before reading R12, read the smoke's four
+`summary.json`:
+
+- zero `error` records on **both** arms (`_abort_on_dead_arm` would have failed the job);
+- `metadata.svgd_warmup_seconds` present for both arms;
+- solver / Drake / `verify()` feasibility agreeing;
+- wall <= cap + 1 s.
+
+## R7: the seed control (SVGD_R7IPOPT, SVGD_R7)
+
+Approved by Thomas, 2026-10-11. These are the Panda `n6` rows on a **second grid, `--seed 2`**,
+where everything else runs seed 1. `--seed` is what both benchmark scripts draw the grid from
+(`np.random.default_rng(args.seed)` for the targets and guesses). `grid_hash` hashes those draws, so
+a seed-2 run cannot share R2's hash. There are two manifests:
+
+| manifest | what | runs | items | node-h (PROCS=2) | h on 4 idle nodes |
+| --- | --- | --- | --- | --- | --- |
+| `manifest_stageSVGD_R7IPOPT.txt` | the IPOPT twins: stage SVGD_R2's items exactly, `--seed 2`, both arms, 8 shards; tags `sc_SVGD_R7_panda_n6_ipopt_<row>_480_180_<start>` | 4 | 32 | 2.6 | 0.6 |
+| `manifest_stageSVGD_R7.txt` | svgd at `kq`, learned arm only, 24 shards; tags `sc_SVGD_R7_panda_n6_svgd_<row>_480_180_<start>_kq` | 4 | 96 | 3.7 (assumed) | 0.9 |
+
+The selftest holds every R7IPOPT item equal to its SVGD_R2 item apart from `--seed` and the tag. It
+also holds every R7 item equal to its R7IPOPT row plus R1's `kq` swap.
+
+**The R7IPOPT figure is R2's.** It is charged at the same Panda IPOPT means, so the estimate is 2.6
+node-h, about **0.6 h on 4 idle nodes**. (The "~0.6" quoted for R2 is hours on 4 idle nodes, not
+node-hours.) What R2 measured: 3.2 solve-h of solves, plus 32 x 180 s per-item overhead. That is
+about 2.4 node-h at PROCS=2, consistent with the estimate. R7 uses the rounds' 5 s per learned cell
+assumption.
+
+**Submit order.** Both manifests can run any time after the restage. They are independent of each
+other, with no `afterok` needed, and they queue FIFO behind R12:
+
+```bash
+cd $STAGE
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R7IPOPT.txt 2
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R7.txt 4
+```
+
+**How it is read.** `scripts/report_svgd.py --stage SVGD` prints R7 as the column `kq@seed2` in the
+Panda rows' LEAD table, beside `kq`. It is paired only with its own twin, `ipopt@seed2` (R7IPOPT). The
+seed is in both the provenance check (`metadata.seed` must equal the item's `--seed`) and every
+pairing's must-match list, beside `grid_hash`. So R7 is **refused** against R2's twin, and a seed-2
+run that carries a seed-1 grid is refused too. The A/B against the seed-1 primary and the
+variant-vs-variant tables do not pair across grids. They print a note line instead.
+
+## Collect, promote and report R12, SMOKE_IIWA and R7
+
+These follow the Collect section below:
+
+```bash
+bash $WT/cluster/collect_results.sh --status
+bash $WT/cluster/collect_results.sh                  # rsync + merge shards; prints the staging dir
+# review, then promote each merged run (the collector prints this line with its staging dir):
+cp -r <STAGING>/results/iiwa/benchmark/sc_SVGD_R12_iiwa_n4_svgd_* results/iiwa/benchmark/
+cp -r <STAGING>/results/iiwa/benchmark/sc_SVGDSMOKE_iiwa_n4_svgd_* results/iiwa/benchmark/
+cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R7_panda_n6_* results/panda/benchmark/
+# the report reads staged runs too, so it can be run before promoting:
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows iiwa              # the iiwa block only
+.venv/bin/python scripts/report_svgd.py --stage SVGD --variants kq            # kq, kq@seed2 and the iiwa
+bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R12          # (and _SMOKE_IIWA, _R7IPOPT, _R7) only once the queue is idle
+```
+
+The report exits 0 with runs missing, 2 on a refused pairing and 3 on a BUG line. The smoke is not
+read by the stage report. Read its `summary.json` files directly (the checklist above).
+
 ## Collect
 
 Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs and `results/`, and
@@ -395,7 +507,8 @@ bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1
 
 Tags: `sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq`,
 `sc_SVGD_R2_panda_n6_ipopt_<row>_480_180_<start>` and
-`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`.
+`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`; R12, SMOKE_IIWA and R7 are listed in
+their own sections above.
 
 - R2 pairs cell for cell with the record's `sc_REMEASURE_panda_n6_ipopt_*`: same grid, same scene,
   same args.

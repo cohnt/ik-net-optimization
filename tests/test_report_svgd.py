@@ -23,7 +23,13 @@ And the stage mode (`--stage SVGD`, the cluster's `sc_SVGD_*` family):
   - a grid_hash mismatch, and a run whose overrides are not its manifest item's, REFUSE (exit 2);
   - the rounds run the learned arm only (gen_manifest's `--arms learned`): such a run pairs its
     LEAD, prints its ablation as `not run`, takes cost against the twin's learned arm, and a run
-    whose arms are not its manifest item's is REFUSED.
+    whose arms are not its manifest item's is REFUSED;
+  - the ROBOT dimension: the iiwa round R12 is its own block after the Panda's, its LEAD paired
+    against stage PAPER's iiwa IPOPT run (an `sc_PAPER_` tag) with the same provenance check as
+    R2, its ablation `not run`; with nothing on disk it is MISSING and not fatal;
+  - the SEED dimension: R7 (grid seed 2) is the column `kq@seed2` beside `kq` in the LEAD table,
+    paired against its own twin `ipopt@seed2` (SVGD_R7IPOPT) and never against R2's; a run at
+    the wrong seed is REFUSED as not the run its tag names, and a twin on another grid is refused.
 The stage fixtures keep gen_manifest's real tags but are 16-cell runs: the catalogue's cell count
 is patched to the fixture's, which is the one thing the 480-cell tag cannot carry.
 """
@@ -210,38 +216,47 @@ STAGE_ROW = ("panda", "mugshelf", "paired")
 STAGE_FP = "64dbd94dc2c2f4007d89fc3bfe3f8777e0be272f"
 
 
-def _stage_tags():
+def _stage_tags(robot="panda"):
+    """(runs, `robot`'s columns, (robot, row, start, column) -> tag)."""
     runs, variants = R.stage_catalogue()
-    by = {(t["robot"], t["row"], t["start"], t["variant"]): tag for tag, t in runs.items()}
-    return runs, variants, by
+    by = {(t["robot"], t["row"], t["start"], t["column"]): tag for tag, t in runs.items()}
+    return runs, variants[robot], by
 
 
-def _stage_meta(info, grid=GRID, overrides=None):
+CKPTS = {robot: ck for robot, _, ck in GM.ADOPTED_RUNGS}
+
+
+def _stage_meta(info, grid=GRID, overrides=None, seed=None):
     return dict(task=M.TASK_ROWS[info["row"]][0], solver=info["solver"], config="latent",
-                wall_time=info["cap"], seed=1, grid_hash=grid, robot=info["robot"],
-                scene="panda_finray_collision_hardened.yaml", scene_mode="hardened",
+                wall_time=info["cap"], seed=info["seed"] if seed is None else seed,
+                grid_hash=grid, robot=info["robot"],
+                scene=f"{info['robot']}_collision_hardened.yaml", scene_mode="hardened",
                 scene_fingerprint=STAGE_FP, target_placement="shelf", shelf_inset=0.1,
-                start=info["start"], checkpoint=CKPT, n_targets=T, n_guesses=G,
+                start=info["start"], checkpoint=CKPTS[info["robot"]], n_targets=T, n_guesses=G,
                 overrides=info["sets"] if overrides is None else overrides)
 
 
-def _stage_write(root, variant, learned, numerical, grid=GRID, overrides=None):
-    """`numerical=None` writes a learned-only run, as a round's `--arms learned` item does."""
-    runs, _, by = _stage_tags()
-    tag = by[STAGE_ROW + (variant,)]
-    d = os.path.join(root, "panda", "benchmark", tag)
+def _stage_write(root, variant, learned, numerical, grid=GRID, overrides=None, row=None,
+                 seed=None):
+    """`numerical=None` writes a learned-only run, as a round's `--arms learned` item does.
+    `variant` is the report's column (`kq`, `kq@seed2`, `ipopt@seed2`); `row` defaults to
+    STAGE_ROW; `seed` overrides the metadata's (default: the manifest item's)."""
+    row = STAGE_ROW if row is None else row
+    runs, _, by = _stage_tags(row[0])
+    tag = by[row + (variant,)]
+    d = os.path.join(root, row[0], "benchmark", tag)
     os.makedirs(d, exist_ok=True)
     records = {"learned": learned} if numerical is None else {"learned": learned,
                                                               "numerical": numerical}
     arms = [bm.Arm(a, None) for a in records]
-    payload = dict(metadata=_stage_meta(runs[tag], grid, overrides), n_targets=T, n_guesses=G,
-                   summary=bm.summarise(records, arms, T, G), records=records)
+    payload = dict(metadata=_stage_meta(runs[tag], grid, overrides, seed), n_targets=T,
+                   n_guesses=G, summary=bm.summarise(records, arms, T, G), records=records)
     with open(os.path.join(d, "summary.json"), "w") as f:
         json.dump(payload, f, default=bm._json_default)
     return tag
 
 
-def _stage_run(root, extra=()):
+def _stage_run(root, extra=(), row=None):
     real = R.stage_catalogue
 
     def small(family="SVGD"):
@@ -252,24 +267,27 @@ def _stage_run(root, extra=()):
     R.stage_catalogue = small
     try:
         with contextlib.redirect_stdout(out):
-            rep = R.main(["--stage", "SVGD", "--root", root, "--rows", ",".join(STAGE_ROW)]
-                         + list(extra))
+            rep = R.main(["--stage", "SVGD", "--root", root, "--rows",
+                          ",".join(STAGE_ROW if row is None else row)] + list(extra))
     finally:
         R.stage_catalogue = real
     return rep, out.getvalue()
 
 
-def _stage_twin(root, grid=GRID):
+def _stage_twin(root, grid=GRID, column=R.STAGE_TWIN, row=None, overrides=None):
     ## IPOPT twin: learned solves 0..9, joint space 0..9.
-    return _stage_write(root, R.STAGE_TWIN, [_rec(i, i < 10, 1.5, svgd=False) for i in range(N_CELLS)],
-                        [_rec(i, i < 10, 2.5, svgd=False) for i in range(N_CELLS)], grid)
+    return _stage_write(root, column, [_rec(i, i < 10, 1.5, svgd=False) for i in range(N_CELLS)],
+                        [_rec(i, i < 10, 2.5, svgd=False) for i in range(N_CELLS)], grid,
+                        overrides=overrides, row=row)
 
 
 def test_stage_tag_parsing_every_variant():
     runs, variants, _ = _stage_tags()
+    ## The Panda's seed-1 columns: the twin, R1's and every Panda seed-1 round's variants.
+    panda1 = [r for r in GM.SVGD_ROUNDS if GM.svgd_context(r) == ("panda", "n6", 1)]
     named = ({R.STAGE_TWIN} | set(GM.SVGD_VARIANTS)
-             | {v for rnd in GM.SVGD_ROUNDS.values() for v in rnd})
-    assert set(variants) == named, (sorted(variants), sorted(named))
+             | {v for r in panda1 for v in GM.SVGD_ROUNDS[r]})
+    assert {c for c in variants if not R.seed_suffix(c)} == named, (sorted(variants), sorted(named))
     assert next(iter(variants)) == R.STAGE_TWIN and list(variants)[1] == R.stage_primary() == "kq"
     seen = set()
     for stage in GM.SVGD_STAGES:
@@ -287,15 +305,16 @@ def test_stage_tag_parsing_every_variant():
                                + ([] if t["variant"] == R.STAGE_TWIN else [t["variant"]]))
             assert rebuilt == tag, (rebuilt, tag)
             assert runs[tag]["manifest"] == stage
-            seen.add((t["variant"], t["row"], t["start"]))
+            if (t["robot"], t["rung"], runs[tag]["seed"]) == ("panda", "n6", 1):
+                seen.add((t["variant"], t["row"], t["start"]))
     ## Every variant on the rows its manifest gives it (both starts, or a round variant's own
     ## `starts` filter -- `initnative` runs the paired rows only), and its settings are its manifest's.
     expected = set()
     for v in named:
         starts = M.STARTS
-        for rnd in GM.SVGD_ROUNDS.values():
-            if v in rnd:
-                starts = tuple(rnd[v][2].split(","))
+        for r in panda1:
+            if v in GM.SVGD_ROUNDS[r]:
+                starts = tuple(GM.SVGD_ROUNDS[r][v][2].split(","))
         expected |= {(v, r, s) for r in M.TASK_ROWS for s in starts}
     assert seen == expected, (seen ^ expected)
     assert variants["knone"]["sets"]["svgd_kernel"] == "none"
@@ -307,8 +326,8 @@ def test_stage_tag_parsing_every_variant():
     ## The arms are the manifest's: the twin and R1 run both, the rounds what SVGD_ROUND_ARMS says.
     assert variants[R.STAGE_TWIN]["arms"] == variants["kq"]["arms"] == R.ARMS
     round_arms = tuple(GM.SVGD_ROUND_ARMS.split(","))
-    for rnd in GM.SVGD_ROUNDS.values():
-        for v in rnd:
+    for r in panda1:
+        for v in GM.SVGD_ROUNDS[r]:
             assert variants[v]["arms"] == round_arms, (v, variants[v]["arms"])
     ## Not stage tags: the smoke's, the cluster smoke's, the record's, a twin with a variant token.
     for bad in (M.make_tag("panda", "mugshelf", "paired", "al64", 10, 20),
@@ -464,6 +483,132 @@ def test_stage_run_not_what_its_tag_names_is_refused():
         rep, text = _stage_run(root)
         assert any(tag in m and "not the run its tag names" in m for m in rep.refused), rep.refused
         assert STAGE_ROW + ("kq",) not in rep.blocks and rep.status == 2
+
+
+## ------------------------------------------------------- robot and seed dimensions --
+IIWA_ROW = ("iiwa", "mugshelf", "paired")
+GRID2 = "fedcba987654"
+
+
+def test_stage_catalogue_robots_and_seeds():
+    runs, _ = R.stage_catalogue()
+    _, panda, by = _stage_tags("panda")
+    _, iiwa, _ = _stage_tags("iiwa")
+    ## The iiwa: its twin (stage PAPER's IPOPT run, the record's rows at paper conditions) and the
+    ## primary, learned arm only, on the n4 chart at seed 1.
+    assert list(iiwa) == [R.STAGE_TWIN, "kq"], list(iiwa)
+    assert iiwa[R.STAGE_TWIN]["manifest"] == "PAPER" and iiwa["kq"]["manifest"] == "SVGD_R12"
+    assert iiwa["kq"]["arms"] == ("learned",) and iiwa[R.STAGE_TWIN]["arms"] == R.ARMS
+    assert iiwa["kq"]["sets"] == panda["kq"]["sets"], "R12 is the primary's settings exactly"
+    twin = by[IIWA_ROW + (R.STAGE_TWIN,)]
+    assert twin == "sc_PAPER_iiwa_n4_ipopt_mugshelf_480_180_paired", twin
+    assert R.parse_stage_tag(twin)["round"] == "PAPER" and runs[twin]["seed"] == 1
+    assert runs[twin]["sets"] == {"correction_cost_weight": 10.0, "flow_cuda_graph": True,
+                                  "max_iter": 1000000}
+    assert by[IIWA_ROW + ("kq",)] == "sc_SVGD_R12_iiwa_n4_svgd_mugshelf_480_180_paired_kq"
+    ## The Panda's second grid: R7's twin and primary, BESIDE the seed-1 pair (columns 3 and 4).
+    assert list(panda)[:4] == [R.STAGE_TWIN, "kq", "ipopt@seed2", "kq@seed2"], list(panda)[:4]
+    assert panda["ipopt@seed2"]["manifest"] == "SVGD_R7IPOPT" and panda["kq@seed2"]["manifest"] == "SVGD_R7"
+    assert panda["ipopt@seed2"]["seed"] == panda["kq@seed2"]["seed"] == 2
+    assert panda["ipopt@seed2"]["sets"] == panda[R.STAGE_TWIN]["sets"]
+    assert panda["kq@seed2"]["sets"] == panda["kq"]["sets"] and panda["kq@seed2"]["arms"] == ("learned",)
+    assert R.twin_of("kq@seed2") == "ipopt@seed2" and R.twin_of("kq") == R.STAGE_TWIN
+    assert by[STAGE_ROW + ("kq@seed2",)] == "sc_SVGD_R7_panda_n6_svgd_mugshelf_480_180_paired_kq"
+    assert by[STAGE_ROW + ("ipopt@seed2",)] == "sc_SVGD_R7_panda_n6_ipopt_mugshelf_480_180_paired"
+    ## Not stage tags: PAPER is IPOPT only; an unknown family; a PAPER tag with a variant.
+    for bad in ("sc_PAPER_iiwa_n4_svgd_mugshelf_480_180_paired_kq",
+                "sc_PAPER_iiwa_n4_ipopt_mugshelf_480_180_paired_kq",
+                "sc_PAPERX_iiwa_n4_ipopt_mugshelf_480_180_paired"):
+        try:
+            R.parse_stage_tag(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"parsed a non-stage tag: {bad}")
+
+
+def test_stage_iiwa_block_after_the_panda():
+    with tempfile.TemporaryDirectory() as root:
+        ## Nothing on disk: every iiwa run is MISSING, not fatal, no refusal, no bug.
+        rep, text = _stage_run(root, row=("mugshelf", "paired"))
+        _, _, by = _stage_tags("iiwa")
+        assert by[IIWA_ROW + ("kq",)] in rep.missing and by[IIWA_ROW + (R.STAGE_TWIN,)] in rep.missing
+        assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+        assert text.index("robot panda (rung n6)") < text.index("robot iiwa (rung n4)")
+        iiwa = text[text.index("robot iiwa (rung n4)"):]
+        assert "IPOPT twin (PAPER): sc_PAPER_iiwa_n4_ipopt_mugshelf_480_180_paired" in iiwa
+        abl = iiwa[iiwa.index("ABLATION -- joint space"):iiwa.index("[ipopt] round")]
+        assert next(l for l in abl.splitlines() if l.strip().startswith("kq")).split()[2:] == \
+            ["not", "run", "(learned", "arm", "only)"]
+    with tempfile.TemporaryDirectory() as root:
+        ## The twin (stage PAPER's run) and R12's learned-only kq: the LEAD pairs them.
+        _stage_twin(root, row=IIWA_ROW)
+        _stage_write(root, "kq", [_rec(i, i < 13, 1.0) for i in range(N_CELLS)], None, row=IIWA_ROW)
+        rep, text = _stage_run(root, row=IIWA_ROW)
+        assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+        b = rep.blocks[IIWA_ROW + ("kq",)]
+        assert (b["vs_twin"]["learned"]["a_only"], b["vs_twin"]["learned"]["b_only"]) == (3, 0)
+        assert set(b["vs_twin"]) == {"learned"} and b["J"] is None
+        lead = text[text.index("LEAD -- learned under svgd"):text.index("ABLATION -- joint space")]
+        assert next(l for l in lead.splitlines() if l.strip().startswith("kq")).split()[1:6] == \
+            ["R12", "13", "10", "3", "0"]
+        assert rep.verdicts[(IIWA_ROW, "kq", "learned")] == "tie"
+        assert "no column but the primary kq on these rows" in text
+    with tempfile.TemporaryDirectory() as root:
+        ## A PAPER run whose overrides are not the PAPER item's (its budget unlifted) is REFUSED,
+        ## exactly as an R2 twin would be -- so R12 has nothing to pair with.
+        sets = dict(R.stage_catalogue()[0]["sc_PAPER_iiwa_n4_ipopt_mugshelf_480_180_paired"]["sets"])
+        del sets["max_iter"]
+        tw = _stage_twin(root, row=IIWA_ROW, overrides=sets)
+        _stage_write(root, "kq", [_rec(i, i < 13, 1.0) for i in range(N_CELLS)], None, row=IIWA_ROW)
+        rep, text = _stage_run(root, row=IIWA_ROW)
+        assert any(tw in m and "not the run its tag names" in m for m in rep.refused), rep.refused
+        assert rep.blocks[IIWA_ROW + ("kq",)]["vs_twin"] == {} and rep.status == 2
+        assert "not paired: the twin is REFUSED" in text
+
+
+def test_stage_seed2_pairs_its_own_twin_only():
+    with tempfile.TemporaryDirectory() as root:
+        ## Seed 1: R2's twin and R1's kq on GRID. Seed 2: R7's twin and kq on GRID2.
+        _stage_twin(root)
+        _stage_write(root, "kq", [_rec(i, i < 14, 1.0) for i in range(N_CELLS)],
+                     [_rec(i, i < 10, 2.0) for i in range(N_CELLS)])
+        _stage_twin(root, grid=GRID2, column="ipopt@seed2")
+        _stage_write(root, "kq@seed2", [_rec(i, i < 12, 1.0) for i in range(N_CELLS)], None,
+                     grid=GRID2)
+        rep, text = _stage_run(root)
+        assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+        assert rep.blocks[STAGE_ROW + ("kq@seed2",)]["vs_twin"]["learned"]["a_only"] == 2
+        assert rep.verdicts[(STAGE_ROW, "kq@seed2", "learned")] == "tie"
+        ## Beside kq in the LEAD table, its own round, paired against the seed-2 twin.
+        lead = text[text.index("LEAD -- learned under svgd"):text.index("ABLATION -- joint space")]
+        lines = [l.split() for l in lead.splitlines() if l.strip().startswith("kq")]
+        assert [l[0] for l in lines[:2]] == ["kq", "kq@seed2"], lines
+        assert lines[1][1:6] == ["R7", "12", "10", "2", "0"], lines[1]
+        assert "IPOPT twin, grid seed 2 (SVGD_R7IPOPT): sc_SVGD_R7_panda_n6_ipopt_mugshelf_480_180_paired" in text
+        ## The A/B against the seed-1 primary does not pair it; the overview prints it beside kq.
+        ab = text[text.index("A/B against the primary kq"):text.index("VARIANTS ACROSS ROUNDS")]
+        assert "kq@seed2: not paired with the primary -- grid seed 2" in ab
+        assert not any("kq@seed2" in l and "learned" in l.split() for l in ab.splitlines())
+        ov = text[text.index("VARIANTS ACROSS ROUNDS"):text.index("VARIANT vs VARIANT")]
+        rows = [l.split()[0] for l in ov[:ov.index("joint space under svgd")].splitlines()
+                if l.strip().startswith(("kq", "ipopt"))]
+        assert rows[:4] == ["ipopt", "kq", "ipopt@seed2", "kq@seed2"], rows
+    with tempfile.TemporaryDirectory() as root:
+        ## R7's run carrying the seed-1 grid (R2's hash) is refused against the seed-2 twin, and
+        ## an R7 run made at seed 1 is not the run its tag names.
+        _stage_twin(root, grid=GRID2, column="ipopt@seed2")
+        _stage_write(root, "kq@seed2", [_rec(i, i < 12, 1.0) for i in range(N_CELLS)], None,
+                     grid=GRID)
+        rep, _ = _stage_run(root)
+        assert any("grid_hash " + GRID + " != " + GRID2 in m for m in rep.refused), rep.refused
+        assert rep.blocks[STAGE_ROW + ("kq@seed2",)]["vs_twin"] == {} and rep.status == 2
+    with tempfile.TemporaryDirectory() as root:
+        _stage_twin(root, grid=GRID2, column="ipopt@seed2")
+        tag = _stage_write(root, "kq@seed2", [_rec(i, i < 12, 1.0) for i in range(N_CELLS)], None,
+                           grid=GRID2, seed=1)
+        rep, _ = _stage_run(root)
+        assert any(tag in m and "seed 1 != the manifest's 2" in m for m in rep.refused), rep.refused
+        assert STAGE_ROW + ("kq@seed2",) not in rep.blocks and rep.status == 2
 
 
 def main():
