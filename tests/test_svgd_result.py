@@ -249,8 +249,78 @@ def test_option_guard():
     check("no field of a removed piece survives on ProgramOptions", not present, str(present))
 
 
+def test_svgd_kill_keeps_the_iterate():
+    """The kill test owed by the smoke's go/no-go (4): a solve that dies mid-swarm must leave
+    `program.last_iterate` at the swarm's latest best particle, and the harness's recovery path
+    (`_recover_from_last_iterate`, what `run_grid`'s per-cell `except` calls) must score it into
+    the `recovered_*` keys. The kill is an exception raised from the solver's own
+    `RecordIterate` hook on its 4th outer check -- the same path an OOM, a CUDA error or a
+    SIGTERM-handler raise would take -- so the solve is lost exactly as a real kill loses it."""
+    print("\n--- svgd kill test: the iterate survives an abnormal exit ---")
+    log = os.path.join(REPO, "results/_test_svgd_kill.log")
+    target, sampler = a_reachable_target()
+    opts = ProgramOptions(which_solver="svgd", max_wall_time=60.0, file_print_name=log,
+                          collision_avoidance=True)
+    with HiddenPrints():
+        diagram = BuildEnv(meshcat=None, directives_file=SCENE)
+        p = PandaIKProgramNumerical(diagram, options=opts)
+        p.create_prog(target)
+    rng = np.random.default_rng(2)
+    q_init = rng.uniform(sampler.plant.GetPositionLowerLimits(),
+                         sampler.plant.GetPositionUpperLimits())
+    p.SetStartFromQ(q_init)
+
+    calls = []
+    real_record = p.RecordIterate
+
+    def killing_record(vars):
+        real_record(vars)
+        calls.append(np.array(vars, dtype=float))
+        if len(calls) == 4:
+            raise RuntimeError("kill test: the solve dies here")
+    p.RecordIterate = killing_record
+
+    record = {"feasible": None}
+    raised = None
+    with HiddenPrints():
+        try:
+            p.Solve()
+        except Exception as exc:                     # what run_grid's per-cell except sees
+            raised = exc
+            record["error"] = f"{type(exc).__name__}: {exc}"
+            record["feasible"] = False
+            record["fail_reason"] = "error"
+            bm._recover_from_last_iterate(p, record, lambda program, q: (True, {}), 1e-4, 1e-3)
+    check("the kill propagated out of Solve() as an exception",
+          isinstance(raised, RuntimeError) and "kill test" in str(raised), repr(raised))
+    check("RecordIterate was called on every outer check up to the kill (4 calls)",
+          len(calls) == 4, str(len(calls)))
+    last = getattr(p, "last_iterate", None)
+    check("program.last_iterate is the iterate recorded at the kill",
+          last is not None and np.array_equal(last, calls[-1]))
+    check("... and it moved from the start (the swarm had run)",
+          last is not None and np.max(np.abs(last - calls[0])) > 0 or len(calls) < 2,
+          f"|x_kill - x_0|_inf = {np.max(np.abs(last - calls[0])) if last is not None else None}")
+    check("recovered_feasible is scored (a bool)", isinstance(record.get("recovered_feasible"), bool),
+          str(record.get("recovered_feasible")))
+    check("recovered_max_violation is a finite number",
+          isinstance(record.get("recovered_max_violation"), float)
+          and np.isfinite(record["recovered_max_violation"]),
+          str(record.get("recovered_max_violation")))
+    check("recovered_q has the robot's joint count",
+          record.get("recovered_q") is not None and len(record["recovered_q"]) == 7,
+          str(record.get("recovered_q")))
+    check("no recovered_error", "recovered_error" not in record, str(record.get("recovered_error")))
+    check("the verdict keys are untouched by recovery (the cell still FAILED)",
+          record["feasible"] is False and record["fail_reason"] == "error")
+    print(f"        (recovered_feasible {record.get('recovered_feasible')}, recovered_max_violation "
+          f"{record.get('recovered_max_violation')!r}, recovered_fail_reason "
+          f"{record.get('recovered_fail_reason')!r})")
+
+
 def main():
     test_svgd_result_duck_type()
+    test_svgd_kill_keeps_the_iterate()
     test_bad_svgd_set_is_refused_at_options()
     test_option_guard()
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")
