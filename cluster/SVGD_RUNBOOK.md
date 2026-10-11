@@ -218,7 +218,13 @@ main). Use the record for verdicts and `sc_PAPER_*` for paper-condition seconds.
 ## Weekend rounds R3-R5
 
 These are three single-factor rounds, each on R1's four Panda rows (`mugshelf` and `posetip`, paired
-and native).
+and native), **learned arm only** (`--arms learned`, `SVGD_ROUND_ARMS`). Thomas, 2026-10-10 evening:
+*"drop joint space ablation arm from R3, R4, R5."* Joint-space svgd is an ablation, measured at the
+default setting by R1 (`kq`) and R1K (`knone`); with the kernel off it runs to the 180 s clock on most
+grasp cells, which made R1K about three times slower than R1 and would have pushed the variant ladder
+past the 10-12 maintenance window. The first submission (jobs 5883538-49, then 5884557-68) carried
+both arms and was cancelled unrun; the learned-only manifests were resubmitted as jobs 5886385-88 (R3),
+5886389/90/92/96 (R4) and 5886397-400 (R5) at 21:50 EDT behind R1K.
 
 **Shared settings.** All items use the record flags and PROCS=2 with no MPS. They are graphed and
 carry the lifted step cap.
@@ -240,11 +246,12 @@ The tags are `sc_SVGD_R<k>_panda_n6_svgd_<row>_480_180_<start>_<variant>`.
 | `manifest_stageSVGD_R4.txt` | `rho1e4` / `lr1` | `svgd_rho=10000` / `svgd_lr=1.0` (replacing 1000 / 0.3) | 24 / 24 | 8 | 192 | 39.5 | 0.41 |
 | `manifest_stageSVGD_R5.txt` | `n16` / `T10` | `svgd_n=16` / `svgd_temperature=10` | 16 / 24 | 8 | 160 | 38.7 | 0.59 |
 
-That totals about 116 node-hours, or about 29 h on 4 idle nodes, after R1 and R1K.
+Learned only, that totals about 20 node-hours, or about 5 h on 4 idle nodes, after R1K (the two-arm
+estimate was 116 node-hours).
 
-**The cost estimate is an assumption, not a measurement.** It charges 5 s for the learned arm plus
-60 s for joint space per cell. The cluster smoke only covered pose paired, on 4 cells at 60 s, where
-learned took 4-7 s and joint space 9-42 s. Grasp rows, `n256` and `T10` may cost more per cell.
+**The cost estimate is an assumption, not a measurement.** It charges 5 s per learned cell. R1 measured
+a 6-12 s median on the V100s at N = 64 (`n256` costs about 4x that per step, `n1` far less), so expect
+R3 to run longer than the estimate.
 `python cluster/gen_manifest.py --stage SVGD_R3 --allotment` prints this together with the other
 svgd manifests.
 
