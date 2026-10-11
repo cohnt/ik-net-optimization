@@ -969,9 +969,17 @@ the rest over all 480):
 **Cap check**: 0 cells at the step budget, 0 at the clock, on all eight rows.
 
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
-R5"*, extended to R6-R10): R6
-(lr = 0.1, K = 1, K = 100), R8 (N = 4, 32, 128), R9 (rho = 100, rho = 1e5, clip 1e6), R10 (paired
-init from the native draw). Their sections are appended as they land.
+R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
+the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
+72 of 288 items done on the default row and was cancelled and voided with R8-R10 unstarted, so no
+round mixes the two rows). Submitted 2026-10-11 15:00 in this order: R11 (resample `drop` / `keep`),
+the iiwa joint-space smoke, R12 (iiwa `n4`, `kq`, after the smoke), the seed-2 IPOPT twins (on the
+nightly tarball), R7 (`kq` at seed 2), R6 (lr = 0.1, K = 1, K = 100), R8 (N = 4, 32, 128), R9
+(rho = 100, rho = 1e5, clip 1e6), R10 (paired init from the native draw). Their sections are appended
+as they land. **Wall from these rounds is not comparable to R1-R5's**, and a variant read against R1's
+`kq` carries the collision backend as a second difference (seconds, and through the clock possibly
+success); the clearance row evaluates the same functional bitwise, so success differences at the
+clock are the only channel.
 
 ## Other robots: screw and soft PCS plumbing (2026-10-11)
 
