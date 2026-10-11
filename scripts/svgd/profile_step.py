@@ -120,12 +120,12 @@ def time_row(p, method, N, dtype, mode, steps):
     sync = (lambda: torch.cuda.synchronize(s.device)) if s.device.type == "cuda" else (lambda: None)
     inner = 1
     for _ in range(2):                                                   # untimed
-        X, _, _ = s._step_split(X, S)
+        X = s._step_split(X, S)[0]
     s._col.reset()
     sync()
     t0 = time.perf_counter()
     for _ in range(steps):
-        X, _, _ = s._step_split(X, S)
+        X = s._step_split(X, S)[0]
     sync()
     dt = time.perf_counter() - t0
     col = s._col
