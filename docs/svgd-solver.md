@@ -857,9 +857,9 @@ mechanisms are in play and the records separate them partly:
   (Thomas, 2026-10-11): a redraw is the swarm's own dynamics**, distinct from a single-trajectory
   solver's RESTART and from the MULTISTART protocol of the time-budget column; the one-solve column
   may run the fielded `native` mode, and R11 (`svgd_resample` drop / keep) characterises what the
-  redraw buys rather than repairing a fairness defect. Terminology from here on: redraw (a particle
-  replaced inside a running swarm), restart (a solver relaunched from a new start), multistart (the
-  time-budget protocol).
+  redraw buys rather than repairing a fairness defect. Terminology from here on (Thomas's choice): RESAMPLE
+  (a particle replaced inside a running swarm, the Monte Carlo sense), restart (a solver relaunched
+  from a new start), multistart (the time-budget protocol).
 - **The step.** On the native rows, where almost nothing is redrawn, N = 1 still ties N = 64 and beats
   IPOPT on pose (480 against 458, 13 of the 22 rescues without any redraw): the damped
   Gauss-Newton step on the augmented Lagrangian reaches a feasible point from starts where IPOPT's
