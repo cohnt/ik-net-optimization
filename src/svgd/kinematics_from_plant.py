@@ -38,10 +38,16 @@ torch's global default dtype to float32 and default device to cuda AT IMPORT, so
 `torch.tensor(...)` in the benchmark process silently downcasts a float64 chain and
 leaves a 1e-8 noise floor in what is supposed to be a 1e-13 agreement.
 
-Robots whose configuration is not the plant's position vector (the soft PCS arm, whose
-sub-links are floating bodies with no joint) do not go through `KinematicTree`: they
-implement `BodyPoseProvider` with their own batched map, and `from_plant` raises on them
-by name rather than producing a tree that is missing bodies.
+FLOATING BODIES ARE JOINTS TOO (2026-10-11). The soft PCS arm's sub-links are free bodies,
+which Drake models as `QuaternionFloatingJoint`s from the world, each owning seven plant
+positions `[qw, qx, qy, qz, x, y, z]` with `X_FM` the rotation of the NORMALISED quaternion
+(Drake normalises it; measured) and the translation. Replaying them is one more motion
+rule, so a robot whose CONFIGURATION is not the plant vector still has its plant replayed
+here -- every body checked against `CalcRelativeTransform` like any other scene. What such
+a robot supplies is the configuration -> plant map (`BatchedProgram.from_program`'s
+`config_to_plant_q`); the closed-form geometric Jacobians (`FrameChain.poses(...,
+jacobians=True)`) are defined for one-coordinate joints only and refuse a floating
+ancestor by name, so that robot's rows are differentiated by autograd.
 """
 
 import math
@@ -51,8 +57,8 @@ from typing import Optional, Protocol, Sequence, Tuple  # noqa: F401 (Sequence: 
 import numpy as np
 import torch
 
-from pydrake.multibody.tree import (BodyIndex, PrismaticJoint, RevoluteJoint,
-                                    ScrewJoint, WeldJoint)
+from pydrake.multibody.tree import (BodyIndex, PrismaticJoint, QuaternionFloatingJoint,
+                                    RevoluteJoint, ScrewJoint, WeldJoint)
 
 from src.screw_arm.kinematics import quat_multiply, quat_rotate, quat_to_matrix
 
@@ -74,13 +80,15 @@ class JointRecord:
     `X_PF` is the parent-body-to-F offset and `X_MC` the M-to-child-body offset, both
     fixed; `X_FM(q)` is the moving part -- rotation about `axis` by `q` (revolute),
     translation `axis * q` (prismatic), both at once with `axis * pitch * q / 2pi`
-    (screw), or the identity (weld). For a WELD the joint's own fixed `X_FM` is folded
-    into `X_PF`, so the replay is one rule for every kind. Offsets are plain float
+    (screw), the identity (weld), or, for a quaternion floating joint, the pose read off
+    its seven positions `[qw, qx, qy, qz, x, y, z]` (`floating`, the quaternion normalised
+    as Drake normalises it; `position_slot` is the first of the seven). For a WELD the
+    joint's own fixed `X_FM` is folded into `X_PF`, so the replay is one rule for every kind. Offsets are plain float
     tuples: the record is frozen and device-free, and `BatchedFK` builds the tensors on
     whatever (dtype, device) it is asked for.
     """
     name: str
-    kind: str                       # "revolute" | "weld" | "screw" | "prismatic"
+    kind: str                       # "revolute" | "weld" | "screw" | "prismatic" | "floating"
     parent: int                     # BodyIndex of the parent body
     child: int                      # BodyIndex of the child body
     position_slot: Optional[int]    # index into the plant's q; None for a weld
@@ -91,7 +99,9 @@ class JointRecord:
 
 
 _SUPPORTED = {RevoluteJoint: "revolute", WeldJoint: "weld", ScrewJoint: "screw",
-              PrismaticJoint: "prismatic"}
+              PrismaticJoint: "prismatic", QuaternionFloatingJoint: "floating"}
+#: Plant positions each joint kind owns (a weld owns none).
+_NUM_POSITIONS = {"revolute": 1, "screw": 1, "prismatic": 1, "floating": 7, "weld": 0}
 
 
 def _pose_tuple(X) -> Pose:
@@ -150,7 +160,8 @@ class KinematicTree:
     @staticmethod
     def from_plant(plant) -> "KinematicTree":
         """Extract the tree from a finalized plant. Raises on anything that is not a
-        single tree of revolute / weld / screw / prismatic joints over every body."""
+        single tree of revolute / weld / screw / prismatic / quaternion floating joints
+        over every body."""
         if not plant.is_finalized():
             raise RuntimeError("KinematicTree.from_plant needs a finalized plant.")
         nb = plant.num_bodies()
@@ -170,9 +181,8 @@ class KinematicTree:
             if kind is None:
                 raise NotImplementedError(
                     f"joint {joint.name()!r} is a {type(joint).__name__}; this extractor "
-                    f"replays revolute, weld, screw and prismatic joints only. A robot whose "
-                    f"configuration is not the plant's q (the soft PCS arm's floating "
-                    f"sub-links) provides its own BodyPoseProvider instead.")
+                    f"replays revolute, weld, screw, prismatic and quaternion floating "
+                    f"joints only.")
             child = int(joint.child_body().index())
             if child in incoming:
                 raise RuntimeError(
@@ -203,7 +213,8 @@ class KinematicTree:
 
         ## Every plant position must be owned by exactly one recorded joint, or a row of
         ## `q` would be silently ignored.
-        slots = sorted(r.position_slot for r in records if r.position_slot is not None)
+        slots = sorted(r.position_slot + k for r in records if r.position_slot is not None
+                       for k in range(_NUM_POSITIONS[r.kind]))
         if slots != list(range(plant.num_positions())):
             raise RuntimeError(
                 f"the recorded joints own position slots {slots} but the plant has "
@@ -224,6 +235,10 @@ class KinematicTree:
             ## Fold the weld's fixed F->M into the parent offset so the replay's
             ## `X_PF * X_FM(q) * X_MC` holds with X_FM(q) = I.
             X_PF = X_PF @ joint.X_FM()
+        elif isinstance(joint, QuaternionFloatingJoint):
+            if joint.num_positions() != 7:
+                raise RuntimeError(f"joint {joint.name()!r} has {joint.num_positions()} positions")
+            slot = int(joint.position_start())
         else:
             if joint.num_positions() != 1:
                 raise RuntimeError(f"joint {joint.name()!r} has {joint.num_positions()} positions")
@@ -257,8 +272,9 @@ class BodyPoseProvider(Protocol):
 
     `body_names[i]` names `BodyIndex(i)`; `body_poses(cfg)` returns `(quat [B, nb, 4]
     wxyz, pos [B, nb, 3])`, world at index 0 as the identity, differentiable in `cfg`.
-    `BatchedFK` implements it for any robot whose configuration is the plant's `q`; the
-    soft PCS arm implements it over its strain coordinates.
+    `BatchedFK` implements it for any plant of revolute / prismatic / screw / weld /
+    quaternion floating joints, which since 2026-10-11 includes the soft PCS arm's plant
+    (its strain coordinates enter through `BatchedProgram`'s `config_to_plant_q`).
     """
     body_names: Sequence[str]
 
@@ -305,6 +321,9 @@ class BatchedFK:
         ## Anchored poses: run the chain once at batch 1. No joint on an anchored body's
         ## path moves, so the result is independent of q and is cached as constants.
         q0 = torch.zeros(1, tree.num_positions, dtype=dtype, device=self.device)
+        for r in tree.joints:
+            if r.kind == "floating":                 # the identity pose, not a zero quaternion
+                q0[0, r.position_slot] = 1.0
         quat0, pos0 = self._chain(q0, skip_anchored=False)
         self._anchored_quat = {b: quat0[0, b].detach().clone() for b in tree.anchored}
         self._anchored_pos = {b: pos0[0, b].detach().clone() for b in tree.anchored}
@@ -313,10 +332,13 @@ class BatchedFK:
 
     def _joint_motion(self, j, q, B):
         """`(quat [B, 4], trans [B, 3])` of X_FM(q) for one joint and its coordinate
-        `q [B]` (None for a weld)."""
+        `q [B]` (None for a weld; `[B, 7]` for a floating joint)."""
         r = j["record"]
         if r.kind == "weld":
             return (self._identity_q.expand(B, 4), self._zero_p.expand(B, 3))
+        if r.kind == "floating":
+            quat = q[:, :4]
+            return quat / torch.linalg.norm(quat, dim=-1, keepdim=True), q[:, 4:7]
         axis = j["axis"]
         if r.kind == "prismatic":
             return (self._identity_q.expand(B, 4), q.unsqueeze(-1) * axis)
@@ -347,8 +369,7 @@ class BatchedFK:
             p = pp + quat_rotate(qp, j["pPF"].expand(B, 3))
             Q = quat_multiply(qp, j["qPF"].expand(B, 4))
             ## ... F -> M (the joint's motion) ...
-            coord = None if r.position_slot is None else q[:, r.position_slot]
-            step_q, step_p = self._joint_motion(j, coord, B)
+            step_q, step_p = self._joint_motion(j, _coordinate(q, r), B)
             p = p + quat_rotate(Q, step_p)
             Q = quat_multiply(Q, step_q)
             ## ... M -> child body (fixed).
@@ -473,10 +494,17 @@ class FrameChain:
             kinds = [self._steps[a]["joint"]["record"] for a in anc]
             self._frame_anc.append(dict(
                 steps=anc,
+                floating=[r.name for r in kinds if r.kind == "floating"],
                 slots=torch.tensor([r.position_slot for r in kinds], dtype=torch.long, device=device),
                 rot=t([0.0 if r.kind == "prismatic" else 1.0 for r in kinds], (1, len(anc), 1)),
                 lin=t([1.0 if r.kind == "prismatic" else (r.pitch / TWO_PI if r.kind == "screw" else 0.0)
                        for r in kinds], (1, len(anc), 1))))
+
+    @property
+    def has_jacobians(self):
+        """True when every frame's root path is one-coordinate joints (and welds), so
+        `poses(..., jacobians=True)` is available."""
+        return not any(a["floating"] for a in self._frame_anc)
 
     def poses(self, q, jacobians=False):
         """`[(quat [B, 4], pos [B, 3]), ...]` per frame; with `jacobians=True` each entry
@@ -486,6 +514,12 @@ class FrameChain:
         tensor ops, so a solver gets the rows' derivative without a backward through the
         chain; `tests/test_svgd_solver.py` pins it against autograd of these very poses."""
         fk = self.fk
+        if jacobians and not self.has_jacobians:
+            floating = sorted({n for a in self._frame_anc for n in a["floating"]})
+            raise NotImplementedError(
+                f"closed-form frame Jacobians are defined for one-coordinate joints; a frame's "
+                f"root path crosses the floating joint(s) {floating}. Differentiate these "
+                f"poses by autograd.")
         q = torch.as_tensor(q, dtype=fk.dtype, device=fk.device)
         if q.dim() != 2 or q.shape[1] != self.num_positions:
             raise ValueError(f"expected q of shape [B, {self.num_positions}], got {tuple(q.shape)}")
@@ -503,7 +537,7 @@ class FrameChain:
             if jacobians:
                 W.append(quat_rotate(Q, j["axis"].expand(B, 3)))      # axis in the world
                 O.append(p)                                           # a point on it
-            step_q, step_p = fk._joint_motion(j, q[:, r.position_slot], B)
+            step_q, step_p = fk._joint_motion(j, _coordinate(q, r), B)
             p = p + quat_rotate(Q, step_p)
             Q = quat_multiply(Q, step_q)
             M.append((Q, p))
@@ -517,9 +551,9 @@ class FrameChain:
             if not jacobians:
                 out.append((quat, pos))
                 continue
+            anc = self._frame_anc[k]
             Jp = torch.zeros(B, 3, self.num_positions, dtype=fk.dtype, device=fk.device)
             Jw = torch.zeros_like(Jp)
-            anc = self._frame_anc[k]
             if anc["steps"]:
                 Wk = torch.stack([W[a] for a in anc["steps"]], dim=1)     # [B, K, 3]
                 Ok = torch.stack([O[a] for a in anc["steps"]], dim=1)
@@ -530,6 +564,16 @@ class FrameChain:
                 Jw[:, :, anc["slots"]] = cols_w.transpose(1, 2)
             out.append((quat, pos, Jp, Jw))
         return out
+
+
+def _coordinate(q, r):
+    """The plant positions joint record `r` reads: None (weld), `q[:, slot]` (one
+    coordinate) or `q[:, slot:slot + 7]` (floating)."""
+    if r.position_slot is None:
+        return None
+    if r.kind == "floating":
+        return q[:, r.position_slot:r.position_slot + 7]
+    return q[:, r.position_slot]
 
 
 def _compose(a: Pose, b: Pose) -> Pose:

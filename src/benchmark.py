@@ -246,6 +246,12 @@ def solver_diagnostics(result, solver):
             out["hit_iteration_cap_status"] = bool(getattr(details, "hit_iteration_cap", False))
         out["svgd"] = {k: getattr(details, k, None) for k in _SVGD_DETAIL_KEYS}
         out["svgd"]["phase_times"] = dict(out["svgd"].get("phase_times") or {})
+        ## How the step ran (eager / compiled / graphed split step, or the autograd path of a
+        ## robot without closed-form row Jacobians) -- recorded since 2026-10-11, when the screw
+        ## and soft PCS arms made the two paths coexist in one campaign.
+        extras = getattr(details, "extras", None) or {}
+        out["svgd"]["step_mode"] = extras.get("step_mode")
+        out["svgd"]["derivative_mode"] = extras.get("derivative_mode")
     else:
         out["solver_status"] = getattr(details, "status", None)
     return out
