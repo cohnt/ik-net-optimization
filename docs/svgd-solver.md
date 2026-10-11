@@ -699,6 +699,14 @@ pose cells. The re-run below has 0 error cells.
 The learned arm solves every cell on every row. The gain is on pose, where IPOPT loses 85 and 22
 cells from a bad start and the swarm loses none; on grasp both are at the ceiling.
 
+**What the swarm rescued (read from the R2 twin's records).** Every one of the 85 + 22 pose cells
+and the 1 grasp cell that the learned arm solves under svgd and not under IPOPT is an IPOPT
+`constraint` failure: converged, at a median 118 majors and 1.5-1.7 s, to a locally infeasible point
+with `max_violation` 0.25 (paired) / 0.06 (native), `timed_out` 0, no runaway (`|q|_inf` < 1000 on
+all 108). So the gain is basin coverage, not budget: a single interior-point trajectory from that
+start ends in the wrong basin, and the 64-particle swarm (6-31 feasible particles at stop) does not.
+The swarm spends a median 5.7 s on those cells against IPOPT's 1.6 s to fail.
+
 **What it costs** (mean wall over all cells, each clamped at the cap; svgd steps are OUTER steps of 10
 inner steps, not comparable to majors):
 
