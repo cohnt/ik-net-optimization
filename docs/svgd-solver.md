@@ -681,6 +681,27 @@ inner steps, not comparable to majors):
 - Multiplier clips: 252k (grasp paired), 9.6k, 367k, 38k updates at the 1e4 clip on the learned
   arm. Which row group hits it is not recorded (phase-2: per-group clip counters).
 
+**Step profile at the fielded configuration (laptop, RTX 3080 Ti, graphed float32, 20 timed steps;
+`scripts/svgd/profile_step.py --dtypes float32 --modes graphed`, 2026-10-11;
+`results/profiling/svgd_step_fielded_{pose,mug}_laptop_20261011.json`).** ms per INNER step, learned
+arm, pose / grasp scene, with the serial collision row's share:
+
+| N | 1 | 16 | 64 | 256 | 1024 |
+| --- | --- | --- | --- | --- | --- |
+| ms / step (pose / grasp) | 2.1 / 2.1 | 7.9 / 6.4 | 21.9 / 23.5 | 90.6 / 84.0 | 355 / 335 |
+| collision share | 0.15 / 0.17 | 0.84 / 0.80 | 0.92 / 0.92 | 0.96 / 0.96 | 0.94 / 0.94 |
+| collision us / config | 308 / 360 | 414 / 318 | 315 / 339 | 339 / 313 | 326 / 306 |
+
+Everything but the collision row costs ~1.8 ms at N = 1, ~2-4 ms at N = 64 and ~21 ms at N = 1024
+on this GPU; the row is a flat ~310-340 us per configuration, so the step is linear in N from
+N = 16 up. Joint space is 0.8 / 16.6 / 267 ms at N = 1 / 64 / 1024 (pose), its row cheaper per
+configuration (~250 us) because the plant has no gripper-to-flow frame work to do. **Go/no-go (5)
+("ms/step within 2x of `profile_step`") was written for a same-machine comparison and is read as
+such**: R1's V100 nodes run ~49 ms per inner step at N = 64 (490 ms per outer step of 10), 2.2x this
+laptop, entirely the serial row at ~690 against ~330 us per configuration on slower cores -- a
+host difference, not a solver one, and consistent with the 88-91% collision share measured in R1
+itself. Timing is never compared across machines (CLAUDE.md); the cluster's own share is the check.
+
 **The joint-space ablation** (the swarm without the network; its own McNemar is against the
 joint-space IPOPT twin, and it is NOT a baseline): grasp 338 / 480 on both protocols (143 cells at the
 clock; IPOPT 449 / 448, p ~ 1e-22 to IPOPT), pose 451 / 480 on both (IPOPT 200, p = 6e-68 to svgd).
