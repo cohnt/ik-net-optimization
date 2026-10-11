@@ -931,8 +931,14 @@ solved; redraws, clips and feasible particles over all 480 cells):
 one setting (`svgd_n` 64 -> 16; `svgd_temperature` 1 -> 10).
 
 **Lead: both inert on success.** N = 16 solves 480 / 479 / 480 / 480, T = 10 480 / 480 / 479 / 480;
-each is +0 / -1 against `kq` on one row (a `constraint` stop at a violation of 1.0e-4, the gate
-itself, at 3 s and 30 s), and both carry `kq`'s verdicts against the IPOPT twin. Eight variants now
+each is +0 / -1 against `kq` on one row, and both carry `kq`'s verdicts against the IPOPT twin.
+**The two lost cells are the first go/no-go (3) disagreements in 3840 cells, and the reporter
+flags them as BUG lines**: on each the swarm's float32 rows read its one feasible particle as
+inside the 1e-4 gate (`solver_feasible`), the float64 Drake re-check read 1.0030e-4 and 1.0005e-4
+(`drake_feasible` False), and the cell returned that particle scored infeasible (`feasible_relaxed`
+True at the 1e-3 gate). The mechanism is the gate rule of CLAUDE.md -- the stop fires at the gate
+the particle is pinned to, so the last ulp decides -- not a code defect; the fix candidates are a
+margin inside the gate for the stop rule, or the float64 polish before the verdict (phase 2). Eight variants now
 sit within one cell of each other on every row.
 
 **What they change** (learned arm; cost / violation / wall medians over the cells all four solved;
