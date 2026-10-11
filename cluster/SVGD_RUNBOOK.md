@@ -349,6 +349,58 @@ PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R9.txt 4
 PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R10.txt 4
 ```
 
+## From R11 on: the clearance collision row, under `DRAKE_ENV=crc`
+
+Thomas, 2026-10-11: the batched clearance row (`svgd_collision_backend=clearances`,
+`src/svgd/collision_backend.py`) is a strict improvement and the svgd rounds use it from now on.
+**Every svgd item of R11, R12, SMOKE_IIWA and R7 carries `--set svgd_collision_backend=clearances`**
+(`SVGD_COLLISION` / `SVGD_CLEARANCE_STAGES` in `cluster/gen_manifest.py`); nothing else changed in
+those manifests, and every other manifest regenerates byte-identical. R1-R10 are done or running and
+keep the default `autodiff` row; **the IPOPT twins (R2, R7IPOPT, and stage PAPER for the iiwa) stay on
+the tarball pin** and never carry it. The selftest holds all of that, plus the value being one
+`ProgramOptions` accepts.
+
+**Why** (local measurement, `docs/svgd-solver.md`, "Batched clearance row"): the same functional
+from one batched, GIL-released, Drake-threaded `CalcRobotClearances` call -- values bitwise equal
+to the program's binding, gradients within 4.1e-14 of their largest entry. It is 7-10x per
+configuration at 20 threads, and end to end (Panda paired, learned arm, 10 cells, 60 s) it gives
+3.5-4.6x lower median wall per cell (pose 3.68 -> 1.04 s, grasp 7.61 -> 1.65 s) at identical
+success (10/10 on both backends, both tasks). It is an EXECUTION setting like `svgd_compile`: the
+selftest does not count it as a round's one factor, and the reporter names it in full in every
+setting diff.
+
+**The binding exists only on Thomas's Drake branch `calc-robot-clearances`** (commit 15a2c97228), so
+these four manifests run under the second environment, `~/learned-ik/venv-crc`: the project venv's
+exact freeze plus that branch's wheel, with the tarball OFF `PYTHONPATH` (`cluster/README.md`, "A
+second Drake for the svgd clearance row"). Submit them with **`DRAKE_ENV=crc`**; `submit_bench.sh`
+refuses them without it, refuses `DRAKE_ENV=crc` on any manifest that is not all-clearances, and
+refuses `crc` until `~/learned-ik/verify_venv_crc.DONE` reads `OK`. Under `crc`, `run_items.sh` sets
+`DRAKE_NUM_THREADS` = the job's CPUs / PROCS (logged in each worker's header); without it the worker's `OMP_NUM_THREADS=1`
+would leave the row on one thread (~1.2x). A tree whose code predates the option (or a pydrake
+without the binding) refuses `clearances` when `ProgramOptions` is built, so every cell would fail
+instantly: hence the guards.
+
+**venv-crc is built and verified (2026-10-11).** Job 5892137 (`download`) built it; the freeze
+gained exactly `drake @ file://...crc.15a2c97...whl`, `Mosek==11.1.2` and `pydot==4.0.1` and changed
+nothing else (`~/learned-ik/venv-crc-build/freeze.*.txt`; 5892040 was the same build stopped by a
+bad import check, rebuilt from scratch). It is 7.7 GB; `home-crc`'s drake_models cache is 74 MB and
+carries the same key as `home`'s. Job 5892228 (`debug-cpu`, no internet) passed every check in
+`verify_venv_crc.sh`. That covers the SNOPT, IPOPT and NLopt solves, the plant step, all four
+svgd-context scenes built offline, and `tests/test_collision_clearances.py` ALL PASS at 16 Drake
+threads under `OMP_NUM_THREADS=1`: values bitwise, gradients within 4.1e-14 relative, 16 threads ==
+1 thread bitwise. Job 5892222 passed at only 1 thread, because `nproc` honours `OMP_NUM_THREADS`,
+the fix that `run_items.sh` now carries. The test ran from `~/learned-ik/scratch-crc`, because the
+campaign tree (adf534c) predates it.
+
+**Read these rounds with that in mind.** The clearance row cuts the collision share of a step from
+~0.9 to ~0.3, so at the 180 s clock a cell gets roughly 3-4x more steps. R11's `drop` / `keep` are
+read against R1's `kq`, and R7's `kq@seed2` beside the seed-1 `kq`; both baselines ran the
+`autodiff` row, so **those comparisons carry the backend as a second difference** (in seconds and,
+through the clock, possibly in success). The IPOPT-twin pairings (R12 against PAPER, R7 against
+R7IPOPT) are unaffected in kind -- the twin is a different solver anyway -- but now also run on a
+different Drake build. Record metadata says which: `drake_version_txt` reads
+`0.0.20261011+crc.15a2c97 15a2c97...` and `drake_path` is inside `venv-crc`.
+
 ## Round R11: what happens to a runaway particle
 
 R11 attributes the primary's handling of a runaway (`|q|_inf > svgd_resample_q_max`) or non-finite
@@ -373,8 +425,9 @@ queue is idle. Then check the staged tree and submit:
 
 ```bash
 ssh tcohn@txe1-login.mit.edu 'grep -c "svgd_resample\"" ~/learned-ik/repo/src/generic_program.py'   # must be >= 1
+ssh tcohn@txe1-login.mit.edu 'grep -c "svgd_collision_backend" ~/learned-ik/repo/src/generic_program.py'   # must be >= 1
 cd $STAGE
-PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R11.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R11.txt 4
 ```
 
 Read the results with `scripts/report_svgd.py --stage SVGD --variants kq,drop,keep`. Each record
@@ -387,9 +440,10 @@ last iterate it recorded.
 Thomas (2026-10-11) wants the other robots. R12 is the primary `kq` on the **iiwa at its adopted
 `n4`** (`models/iiwa14/iiwa14__n4__step620000.pkl`, already on `~/learned-ik` from stage
 REMEASURE/PAPER): the record's four iiwa rows (`mugshelf` / `posetip` x paired / native), 480 cells,
-180 s, `--solver svgd --compile` and exactly R1's `kq` `--set` list. Diffed against R1's `kq` line, an
-R12 item differs in the script (`scripts/iiwa/iiwa_benchmark.py`), the checkpoint, `--arms learned`
-and the tag; nothing else.
+180 s, `--solver svgd --compile` and exactly R1's `kq` `--set` list plus the clearance row. Diffed
+against R1's `kq` line, an R12 item differs in the script (`scripts/iiwa/iiwa_benchmark.py`), the
+checkpoint, `--arms learned`, the tag and `--set svgd_collision_backend=clearances` (from R11 on,
+section above; submitted under `DRAKE_ENV=crc`); nothing else. The same holds for SMOKE_IIWA and R7.
 
 - **Learned arm only**, 24 shards, as R4. Tags `sc_SVGD_R12_iiwa_n4_svgd_<row>_480_180_<start>_kq`.
 - **Its IPOPT twin is stage PAPER's iiwa IPOPT runs**, `sc_PAPER_iiwa_n4_ipopt_<row>_480_180_<start>`:
@@ -424,8 +478,8 @@ commit. Do this after the restage (R11's section):
 
 ```bash
 cd $STAGE
-PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_SMOKE_IIWA.txt 1   # -> <SMOKE_IIWA>
-DEPENDENCY=afterok:<SMOKE_IIWA> PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R12.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_SMOKE_IIWA.txt 1   # -> <SMOKE_IIWA>
+DEPENDENCY=afterok:<SMOKE_IIWA> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R12.txt 4
 ```
 
 `afterok` gates on the smoke JOB's exit status, not on its numbers, as with SVGD_SMOKE. A smoke that
@@ -463,8 +517,8 @@ other, with no `afterok` needed, and they queue FIFO behind R12:
 
 ```bash
 cd $STAGE
-PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R7IPOPT.txt 2
-PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R7.txt 4
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R7IPOPT.txt 2              # the tarball: no DRAKE_ENV
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R7.txt 4
 ```
 
 **How it is read.** `scripts/report_svgd.py --stage SVGD` prints R7 as the column `kq@seed2` in the

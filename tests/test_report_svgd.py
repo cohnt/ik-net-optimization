@@ -499,7 +499,10 @@ def test_stage_catalogue_robots_and_seeds():
     assert list(iiwa) == [R.STAGE_TWIN, "kq"], list(iiwa)
     assert iiwa[R.STAGE_TWIN]["manifest"] == "PAPER" and iiwa["kq"]["manifest"] == "SVGD_R12"
     assert iiwa["kq"]["arms"] == ("learned",) and iiwa[R.STAGE_TWIN]["arms"] == R.ARMS
-    assert iiwa["kq"]["sets"] == panda["kq"]["sets"], "R12 is the primary's settings exactly"
+    ## R12 is the primary's settings exactly, plus the clearance collision row (an execution
+    ## setting: the same functional, batched; gen_manifest's SVGD_CLEARANCE_STAGES).
+    CLR = {"svgd_collision_backend": "clearances"}
+    assert iiwa["kq"]["sets"] == {**panda["kq"]["sets"], **CLR}, "R12 is the primary + the clearance row"
     twin = by[IIWA_ROW + (R.STAGE_TWIN,)]
     assert twin == "sc_PAPER_iiwa_n4_ipopt_mugshelf_480_180_paired", twin
     assert R.parse_stage_tag(twin)["round"] == "PAPER" and runs[twin]["seed"] == 1
@@ -511,7 +514,11 @@ def test_stage_catalogue_robots_and_seeds():
     assert panda["ipopt@seed2"]["manifest"] == "SVGD_R7IPOPT" and panda["kq@seed2"]["manifest"] == "SVGD_R7"
     assert panda["ipopt@seed2"]["seed"] == panda["kq@seed2"]["seed"] == 2
     assert panda["ipopt@seed2"]["sets"] == panda[R.STAGE_TWIN]["sets"]
-    assert panda["kq@seed2"]["sets"] == panda["kq"]["sets"] and panda["kq@seed2"]["arms"] == ("learned",)
+    assert panda["kq@seed2"]["sets"] == {**panda["kq"]["sets"], **CLR} and \
+        panda["kq@seed2"]["arms"] == ("learned",)
+    ## The ipopt twins never carry it; R11's variants do, and the report names it in their diff.
+    assert "svgd_collision_backend" not in panda["ipopt@seed2"]["sets"]
+    assert "svgd_collision_backend='clearances'" in R.setting_diff(panda, "drop", "kq")
     assert R.twin_of("kq@seed2") == "ipopt@seed2" and R.twin_of("kq") == R.STAGE_TWIN
     assert by[STAGE_ROW + ("kq@seed2",)] == "sc_SVGD_R7_panda_n6_svgd_mugshelf_480_180_paired_kq"
     assert by[STAGE_ROW + ("ipopt@seed2",)] == "sc_SVGD_R7_panda_n6_ipopt_mugshelf_480_180_paired"
