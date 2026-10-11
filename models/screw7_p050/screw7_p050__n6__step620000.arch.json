@@ -1,0 +1,28 @@
+{
+  "coeff_fn_config": 3,
+  "coeff_fn_internal_size": 1024,
+  "coupling_layer": "glow",
+  "dim_latent_space": 7,
+  "init_scale": 0.04473500291638653,
+  "lambd_predict": 1.0,
+  "nb_nodes": 6,
+  "permute_random_enabled": true,
+  "provenance": {
+    "global_step": 620000,
+    "imported_from": {
+      "path": "/home/gridsan/tcohn/learned-ik-helix/repo/models/helix7_p050/helix7_p050__n6__step620000.pkl",
+      "robot_name": "helix7_p050",
+      "sha256": "868e9e57933420c32ce2610745fdbc2ca817da0fe3715593ed89fbdb464e070a"
+    },
+    "source_checkpoint": "/home/gridsan/tcohn/learned-ik-helix/results/train/helix7_p050_n6/checkpoints/ikflow-checkpoint-step=620000.ckpt",
+    "staged_learned_ik_commit": "4f78b8ef2767aaf1510d2884145ed49d1146bb7b"
+  },
+  "rnvp_clamp": 2.5,
+  "robot_name": "screw7_p050",
+  "run_description": null,
+  "sigmoid_on_output": false,
+  "softflow_enabled": true,
+  "softflow_noise_scale": 0.001,
+  "y_noise_scale": 1e-07,
+  "zeros_noise_scale": 0.001
+}

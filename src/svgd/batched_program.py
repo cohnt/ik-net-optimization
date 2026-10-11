@@ -40,10 +40,15 @@ THE THREE PIECES IT BUILDS ON, each pinned by its own test:
 ROBOTS WHOSE CONFIGURATION IS NOT THE PLANT'S q (the soft PCS arm) plug in behind two
 hooks on `from_program`: `body_pose_provider` (a `BodyPoseProvider`: `body_names`,
 `body_poses(q_plant) -> (quat, pos)`) and `config_to_plant_q` (a differentiable torch map
-`cfg [N, ndof] -> q_plant [N, num_pos]`). The defaults are `KinematicTree.from_plant` and
-the rigid arms' `PadQ` (gripper joints at 0.04), and the default `config_to_plant_q` is
-CHECKED against `program.ConfigToPlantQ` at construction, so a robot that needs the hooks
-is refused by name rather than evaluated on the wrong plant vector.
+`cfg [N, ndof] -> q_plant [N, num_pos]`). The defaults are `KinematicTree.from_plant` (which
+replays quaternion floating joints too, so the soft PCS arm's plant needs no provider of its
+own) and, for the map, the program's own `TorchConfigToPlantQ(dtype, device)` where it
+defines one (the soft PCS arm: its exact strain kinematics in torch, permuted into the
+plant's slots), else the rigid arms' `PadQ` (gripper joints at 0.04). Any map not passed
+explicitly is CHECKED against `program.ConfigToPlantQ` at construction, so a robot whose
+plant vector the map does not reproduce is refused by name rather than evaluated on the
+wrong plant vector. A robot behind such a map has no closed-form row Jacobians
+(`has_analytic_row_jacobians` is False): the solver differentiates its rows by autograd.
 
 House rules: explicit `dtype=`/`device=` on every tensor (`jrl.config` mutates torch's
 defaults at import); no Python loop over particles; no in-place ops on autograd tensors;
@@ -276,10 +281,21 @@ class BatchedProgram:
                     f"pass body_pose_provider= and config_to_plant_q= to from_program.") from exc
             body_pose_provider = BatchedFK(tree, dtype=dtype, device=self.device)
         self.fk: BodyPoseProvider = body_pose_provider
-        self.plant_q_is_padded_cfg = config_to_plant_q is None
+        self.plant_q_is_padded_cfg = False
         if config_to_plant_q is None:
-            config_to_plant_q = self._default_config_to_plant_q()
-            self._check_config_to_plant_q(config_to_plant_q)
+            hook = getattr(program, "TorchConfigToPlantQ", None)
+            if hook is not None:
+                ## The robot's own differentiable map (raises NotImplementedError where the
+                ## robot has none in torch, e.g. the GVS arm's JAX root-find). Checked in
+                ## float64 -- the same map, built at float64, so a float32 swarm's own rounding
+                ## (~1e-7) is not mistaken for a different robot -- and used at `dtype`.
+                self._check_config_to_plant_q(hook(dtype=torch.float64, device=self.device),
+                                              source="TorchConfigToPlantQ")
+                config_to_plant_q = hook(dtype=dtype, device=self.device)
+            else:
+                config_to_plant_q = self._default_config_to_plant_q()
+                self._check_config_to_plant_q(config_to_plant_q)
+                self.plant_q_is_padded_cfg = True
         self.config_to_plant_q: Callable[[Tensor], Tensor] = config_to_plant_q
 
         ## -- frames: program.frame and the flow's conditioning frame -------------------
@@ -360,9 +376,10 @@ class BatchedProgram:
             return torch.cat([cfg, pad.expand(cfg.shape[0], n_pad)], dim=1)
         return pad_q
 
-    def _check_config_to_plant_q(self, fn):
-        """The default pad must agree with the program's own map, or this is not a robot
-        the default serves."""
+    def _check_config_to_plant_q(self, fn, source=None):
+        """The map must agree with the program's own `ConfigToPlantQ` (to 1e-12, at three
+        uniform draws from `ConfigLimits`), or this is not a robot it serves. `source` None:
+        the default pad; else the name of the program's hook that supplied `fn`."""
         rng = np.random.default_rng(0)
         lower, upper = self.program.ConfigLimits()
         lower = np.asarray(lower, dtype=float)[:self.ndof]
@@ -375,6 +392,13 @@ class BatchedProgram:
         mine = fn(torch.tensor(cfg, dtype=torch.float64, device=self.device)).detach().cpu().numpy()
         theirs = np.stack([np.asarray(self.program.ConfigToPlantQ(c), dtype=float) for c in cfg])
         if mine.shape != theirs.shape or np.abs(mine - theirs).max() > 1e-12:
+            if source is not None:
+                err = (np.abs(mine - theirs).max() if mine.shape == theirs.shape
+                       else f"shape {mine.shape} vs {theirs.shape}")
+                raise RuntimeError(
+                    f"{type(self.program).__name__}.{source} does not reproduce "
+                    f"program.ConfigToPlantQ (max |difference| {err}); the swarm would "
+                    f"optimise a different plant vector than Drake evaluates.")
             raise NotImplementedError(
                 f"{type(self.program).__name__}: the default configuration -> plant map (PadQ) "
                 f"does not reproduce program.ConfigToPlantQ; pass config_to_plant_q= and "
@@ -643,11 +667,14 @@ class BatchedProgram:
         """The conditioning pose `create_prog` set, recomputed from the program's own data
         (the initial guess may since have been overwritten by `SetStartFromQ`).
 
-        Pose programs record it as `program.initial_guess`. Grasp programs seed `c` in one
-        of two ways: the Panda and soft PCS programs at the flow-frame pose of a grasp
-        (`target_mug.middle @ X_grasp_ee`), the iiwa and screw programs at the mug centre
-        with zero rpy (`[t, 0, 0, 0]`). Which rule applies is read from the class's MRO;
-        an unknown class falls back to the current initial guess with a warning.
+        Pose programs record it as `program.initial_guess`. Grasp programs: the Panda and
+        soft PCS programs at the flow-frame pose of a grasp (`target_mug.middle @
+        X_grasp_ee`), the screw programs by their own `GraspCStart()` (the same pose under
+        the unified settings), the iiwa programs at the mug centre with zero rpy (`[t, 0,
+        0, 0]` -- the pre-2026-10-08 rule, which the iiwa program itself no longer uses;
+        kept here unchanged so the iiwa swarm stays bit-identical, flagged 2026-10-11).
+        Which rule applies is read from the class's MRO; an unknown class falls back to the
+        current initial guess with a warning.
         """
         p = self.program
         if not self.is_learned:
@@ -658,11 +685,16 @@ class BatchedProgram:
                 return np.asarray(ig, dtype=float).copy()
         else:
             names = [k.__name__ for k in type(p).__mro__]
+            if any(n.startswith("Screw") for n in names):
+                ## The screw arm reads the program's own rule, which honours the
+                ## `legacy_robot_settings` control (mug centre, zero rpy) and is the
+                ## flow-frame grasp pose otherwise.
+                return np.asarray(p.GraspCStart(), dtype=float).copy()
             if any(n.startswith(("Panda", "Soft")) for n in names) and hasattr(p, "X_grasp_ee"):
                 X_W_ee = p.target_mug.middle @ p.X_grasp_ee
                 return np.concatenate([X_W_ee.translation(),
                                        X_W_ee.rotation().ToRollPitchYaw().vector()])
-            if any(n.startswith(("Iiwa", "Screw")) for n in names):
+            if any(n.startswith("Iiwa") for n in names):
                 return np.array([*p.target_mug.middle.translation(), 0.0, 0.0, 0.0])
         warnings.warn(f"{type(p).__name__}: no rule for the native c; using the current "
                       f"initial guess of c")
@@ -1041,7 +1073,8 @@ class BatchedProgram:
         the frames come from the plant replay (`FrameChain`) and the plant vector is the
         padded configuration (so a plant-space gradient is a configuration-space one by a
         slice). A robot behind its own hooks goes through autograd instead."""
-        return self._frame_chain is not None and self.plant_q_is_padded_cfg
+        return (self._frame_chain is not None and self._frame_chain.has_jacobians
+                and self.plant_q_is_padded_cfg)
 
     def generic_rows_jacobian_cfg(self, ev: Evaluation) -> Tensor:
         """`d drake_rows / d cfg`, `[N, n_rows, ndof]`, in closed form from an

@@ -1,8 +1,13 @@
 """The batched torch FK extracted from a plant, against the plant itself.
 
 DRAKE IS THE ORACLE, at freshly drawn configurations, on the very scenes the solver
-builds: both hardened rigid scenes, a Panda grasp scene with its welded target mug, and
-the screw arm's scene with its limit repair applied. A golden file would miss a scene
+builds: both hardened rigid scenes, a Panda grasp scene with its welded target mug, the
+screw arm's pose and grasp scenes with their limit repair applied (the screw joint's motion
+-- rotation and axial translation at once -- is in every body past the upper arm, and the
+test asserts the tree really carries a `screw` joint), and the soft PCS arm's scene, whose
+33 sub-links are QUATERNION FLOATING joints (2026-10-11), drawn at configurations through
+the arm's own strain kinematics with each quaternion rescaled off the unit sphere, since
+Drake normalises it and the replay must too. A golden file would miss a scene
 change, a Drake pin move and a parser regression alike; this runs in the solver's own
 environment on every invocation.
 
@@ -38,6 +43,8 @@ from pydrake.multibody.tree import BodyIndex
 from src.generic_program import orientation_error_rpy
 from src.screw_arm.limits import ApplyScrewJointLimits, RequireFiniteLimits
 from src.screw_arm.params import PRIMARY as SCREW_PRIMARY, GetSpec
+from src.soft_arm import kinematics as SOFT_K
+from src.soft_arm.params import GetSpec as GetSoftSpec
 from src.svgd.kinematics_from_plant import (BatchedFK, KinematicTree, canonical_quat, pose7,
                                             quat_from_rpy_batched, rpy_from_quat,
                                             wrap_residual)
@@ -47,6 +54,8 @@ REPO = RepoDir()
 PANDA_YAML = os.path.join(REPO, "models/panda/panda_finray_collision_hardened.yaml")
 IIWA_YAML = os.path.join(REPO, "models/iiwa14/iiwa14_collision_hardened.yaml")
 SCREW_YAML = os.path.join(REPO, f"models/{SCREW_PRIMARY}/{SCREW_PRIMARY}_collision_hardened.yaml")
+SOFT_RUNG = "soft12"
+SOFT_YAML = os.path.join(REPO, f"models/{SOFT_RUNG}/{SOFT_RUNG}_collision_hardened.yaml")
 
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 _CACHE = {}
@@ -58,7 +67,7 @@ _CACHE = {}
 class _Scene:
     """A plant, a context and the two task frames, by name."""
 
-    def __init__(self, name, diagram, gripper, repair=None):
+    def __init__(self, name, diagram, gripper, repair=None, sampler=None):
         self.name = name
         self.diagram = diagram
         self.plant = diagram.GetSubsystemByName("plant")
@@ -69,10 +78,16 @@ class _Scene:
         self.between_fingers = self.plant.GetFrameByName("between_fingers")
         self.lower = np.asarray(self.plant.GetPositionLowerLimits(), dtype=float)
         self.upper = np.asarray(self.plant.GetPositionUpperLimits(), dtype=float)
-        RequireFiniteLimits(self.plant, name)
+        ## `sampler(n, rng) -> [n, nq]` for a plant whose positions are not a box (the soft
+        ## PCS arm's floating bodies have +-inf limits); otherwise the limits must be finite.
+        self.sampler = sampler
+        if sampler is None:
+            RequireFiniteLimits(self.plant, name)
 
     def random_q(self, n, seed):
         rng = np.random.default_rng(seed)
+        if self.sampler is not None:
+            return self.sampler(n, rng)
         return rng.uniform(self.lower, self.upper, size=(n, self.plant.num_positions()))
 
     def home_q(self):
@@ -95,6 +110,24 @@ def _screw_repair(plant):
     ApplyScrewJointLimits(plant, GetSpec(SCREW_PRIMARY))
 
 
+def _soft_sampler(plant):
+    """Plant positions of the soft PCS arm at uniform normalized strains, through the arm's
+    own kinematics and slot map, with every floating quaternion then rescaled by a factor
+    in [0.5, 2]: Drake normalises the quaternion of a `QuaternionFloatingJoint`, so the
+    replay is checked off the unit sphere too."""
+    spec = GetSoftSpec(SOFT_RUNG)
+    picks = SOFT_K.PlantSlotMap(plant, spec)
+    starts = [plant.GetBodyByName(name).floating_positions_start() for name in spec.body_names()]
+
+    def sample(n, rng):
+        cfg = torch.as_tensor(rng.uniform(-1.0, 1.0, size=(n, spec.ndof)), dtype=torch.float64)
+        Q = SOFT_K.config_to_plant_q(cfg, spec).numpy()[:, picks]
+        for s in starts:
+            Q[:, s:s + 4] *= rng.uniform(0.5, 2.0, size=(n, 1))
+        return Q
+    return sample
+
+
 def scenes():
     if "scenes" not in _CACHE:
         with HiddenPrints():
@@ -106,8 +139,17 @@ def scenes():
             q_mug = panda.random_q(1, seed=7)[0]
             diagram_mug, _ = GenerateDiagramWithMug(q_mug, _MugStub(panda), PANDA_YAML, None)
             panda_mug = _Scene("panda+mug", diagram_mug, "panda_hand")
+            ## The screw arm's grasp scene, built the same way (a fresh diagram, so the
+            ## limit repair is applied to it again, as the program's __init__ does).
+            q_mug = screw.random_q(1, seed=8)[0]
+            diagram_mug, _ = GenerateDiagramWithMug(q_mug, _MugStub(screw), SCREW_YAML, None)
+            screw_mug = _Scene(f"{SCREW_PRIMARY}+mug", diagram_mug, "hand", repair=_screw_repair)
+            soft_diagram = BuildEnv(None, SOFT_YAML)
+            soft = _Scene(SOFT_RUNG, soft_diagram, "hand",
+                          sampler=_soft_sampler(soft_diagram.GetSubsystemByName("plant")))
         assert panda_mug.plant.HasBodyNamed("mug_body_link")
-        _CACHE["scenes"] = [panda, iiwa, panda_mug, screw]
+        assert screw_mug.plant.HasBodyNamed("mug_body_link")
+        _CACHE["scenes"] = [panda, iiwa, panda_mug, screw, screw_mug, soft]
     return _CACHE["scenes"]
 
 
@@ -138,6 +180,11 @@ def test_body_poses_match_drake_on_every_scene():
         tree = KinematicTree.from_plant(scene.plant)
         assert tree.num_bodies == scene.plant.num_bodies()
         assert tree.num_positions == scene.plant.num_positions()
+        kinds = {r.kind for r in tree.joints}
+        if scene.name.startswith(SCREW_PRIMARY):
+            assert "screw" in kinds, f"{scene.name}: no screw joint in the replayed tree"
+        if scene.name == SOFT_RUNG:
+            assert sum(r.kind == "floating" for r in tree.joints) == 33, scene.name
         Q = scene.random_q(n, seed=1)
         ref_q, ref_p = zip(*(_drake_body_poses(scene, q) for q in Q))
         ref_q, ref_p = np.stack(ref_q), np.stack(ref_p)       # [n, nb, 4], [n, nb, 3]
@@ -154,7 +201,7 @@ def test_body_poses_match_drake_on_every_scene():
             ## stay unit by composition alone.
             norm_err = float((torch.linalg.norm(quat, dim=-1) - 1.0).abs().max())
             assert norm_err <= 1e-13, f"{scene.name}/{device}: |quat| - 1 = {norm_err:.2e}"
-            print(f"     {scene.name:10s} {device:4s} {tree.num_bodies:2d} bodies x {n}: "
+            print(f"     {scene.name:16s} {device:4s} {tree.num_bodies:2d} bodies x {n}: "
                   f"pos {dp:.1e}  quat {dq:.1e}  |q|-1 {norm_err:.1e}")
     print("PASS every body's world pose matches CalcRelativeTransform on every scene")
 
@@ -183,7 +230,7 @@ def test_task_frames_match_drake():
                 err = float(np.abs(got - ref).max())
                 assert err <= 1e-13, f"{scene.name}/{device}/{label}: pose7 off by {err:.2e}"
                 assert bool((canonical_quat(quat)[:, 0] >= 0).all())
-                print(f"     {scene.name:10s} {device:4s} {label:16s} pose7 {err:.1e}")
+                print(f"     {scene.name:16s} {device:4s} {label:16s} pose7 {err:.1e}")
     print("PASS task frames and canonical quaternions match Drake")
 
 
@@ -320,7 +367,7 @@ def test_jacobians_match_central_differences():
                 rpy_note = f"rpy-FD {rpy_err:.1e}"
             else:
                 rpy_note = f"rpy at gimbal lock (pitch {pitch:+.4f}), skipped"
-            print(f"     {scene.name:10s} {label:6s} jacrev-FD {fd_err:.1e}  "
+            print(f"     {scene.name:16s} {label:6s} jacrev-FD {fd_err:.1e}  "
                   f"jacfwd-jacrev {fr_err:.1e}  {rpy_note}")
     print("PASS autograd Jacobians match central differences; jacfwd == jacrev")
 
@@ -361,15 +408,16 @@ def test_tree_is_topological_and_slots_come_from_position_start():
                 assert r.kind == "weld"
                 continue
             assert r.position_slot == joint.position_start(), (scene.name, r.name)
-            slots.append(r.position_slot)
+            assert joint.num_positions() == (7 if r.kind == "floating" else 1), (scene.name, r.name)
+            slots += list(range(r.position_slot, r.position_slot + joint.num_positions()))
         assert sorted(slots) == list(range(plant.num_positions()))
         ## Anchored = welded to world, world included, and nothing moving reaches them.
         for r in tree.joints:
             if r.child in tree.anchored:
                 assert r.kind == "weld" and r.parent in tree.anchored, (scene.name, r.name)
         assert 0 in tree.anchored
-        print(f"     {scene.name:10s} {len(tree.joints)} joints, {len(tree.anchored)} anchored "
-              f"bodies, slots {slots}")
+        print(f"     {scene.name:16s} {len(tree.joints)} joints, {len(tree.anchored)} anchored "
+              f"bodies, {len(slots)} slots")
 
     ## The Panda scene is the one where declaration order would have been WRONG: the
     ## finger welds (parent `panda_hand`) are registered before the hand weld. If that
@@ -389,22 +437,57 @@ def test_tree_is_topological_and_slots_come_from_position_start():
     print("PASS joints are replayed in topological order with slots from position_start()")
 
 
-def test_from_plant_refuses_a_floating_body():
-    """The soft PCS arm's sub-links are floating bodies; the extractor must say so by
-    name rather than return a tree that is missing them."""
+def test_from_plant_replays_a_floating_body():
+    """A free body is a `QuaternionFloatingJoint` from the world (2026-10-11: replayed, no
+    longer refused). Its pose at a NON-unit quaternion matches Drake's (which normalises),
+    and the closed-form frame Jacobians -- defined for one-coordinate joints -- refuse a
+    frame behind it by name rather than returning garbage columns."""
     from pydrake.multibody.plant import MultibodyPlant
-    plant = MultibodyPlant(0.0)
     from pydrake.multibody.tree import SpatialInertia
-    plant.AddRigidBody("loose", SpatialInertia.SolidSphereWithMass(1.0, 0.1))
+    plant = MultibodyPlant(0.0)
+    body = plant.AddRigidBody("loose", SpatialInertia.SolidSphereWithMass(1.0, 0.1))
     plant.Finalize()
+    tree = KinematicTree.from_plant(plant)
+    (rec,) = tree.joints
+    assert rec.kind == "floating" and rec.position_slot == 0 and tree.num_positions == 7
+    q = np.array([2.0, 0.3, -0.4, 0.5, 0.1, 0.2, 0.3])
+    ctx = plant.CreateDefaultContext()
+    plant.SetPositions(ctx, q)
+    X = plant.CalcRelativeTransform(ctx, plant.world_frame(), body.body_frame())
+    fk = BatchedFK(tree, dtype=torch.float64, device="cpu")
+    quat, pos = fk.body_poses(torch.as_tensor(q[None], dtype=torch.float64))
+    dq = _quat_diff_up_to_sign(quat[:, 1].numpy(), X.rotation().ToQuaternion().wxyz()[None])
+    dp = float(np.abs(pos[0, 1].numpy() - X.translation()).max())
+    assert dq <= 1e-15 and dp <= 1e-15, (dq, dp)
+    chain = fk.frame_chain([(int(body.index()), ((1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0)))])
+    assert not chain.has_jacobians
+    (cq, cp), = chain.poses(torch.as_tensor(q[None], dtype=torch.float64))
+    assert torch.equal(cq, quat[:, 1]) and torch.equal(cp, pos[:, 1])
     try:
-        KinematicTree.from_plant(plant)
-    except (NotImplementedError, RuntimeError) as e:
-        assert "loose" in str(e) or "Floating" in str(e) or "floating" in str(e).lower(), str(e)
-        print(f"     refused: {str(e).splitlines()[0][:90]}...")
+        chain.poses(torch.as_tensor(q[None], dtype=torch.float64), jacobians=True)
+    except NotImplementedError as e:
+        assert rec.name in str(e), str(e)
     else:
-        raise AssertionError("from_plant accepted a plant with a floating body")
-    print("PASS from_plant raises on a robot whose configuration is not the plant's q")
+        raise AssertionError("closed-form Jacobians through a floating joint must refuse")
+    ## And the soft PCS arm's scene: its task frames through the FrameChain fast path
+    ## agree with the full replay bitwise on the same chain arithmetic.
+    soft = next(sc for sc in scenes() if sc.name == SOFT_RUNG)
+    stree = KinematicTree.from_plant(soft.plant)
+    sfk = BatchedFK(stree, dtype=torch.float64, device="cpu")
+    frames = [(int(f.body().index()),
+               (tuple(f.GetFixedPoseInBodyFrame().rotation().ToQuaternion().wxyz()),
+                tuple(f.GetFixedPoseInBodyFrame().translation())))
+              for f in (soft.between_fingers, soft.plant.GetFrameByName("soft_tip"))]
+    Q = torch.as_tensor(soft.random_q(16, seed=4), dtype=torch.float64)
+    bq, bp = sfk.body_poses(Q)
+    worst = 0.0
+    for (b, X_BF), (fq, fp) in zip(frames, sfk.frame_chain(frames).poses(Q)):
+        rq, rp = sfk.frame_pose(bq, bp, b, X_BF)
+        worst = max(worst, float((fq - rq).abs().max()), float((fp - rp).abs().max()))
+    assert worst <= 1e-15, worst
+    print(f"     loose body: quat {dq:.1e}, pos {dp:.1e}; soft12 frame chain vs full replay "
+          f"{worst:.1e}; jacobians=True refused by name")
+    print("PASS from_plant replays a floating body; closed-form Jacobians refuse it by name")
 
 
 if __name__ == "__main__":
@@ -416,5 +499,5 @@ if __name__ == "__main__":
     test_jacobians_match_central_differences()
     test_rpy_gradient_is_finite_at_drakes_singular_guard()
     test_tree_is_topological_and_slots_come_from_position_start()
-    test_from_plant_refuses_a_floating_body()
+    test_from_plant_replays_a_floating_body()
     print("ALL PASS")
