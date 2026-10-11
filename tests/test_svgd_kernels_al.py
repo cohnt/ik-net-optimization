@@ -9,7 +9,9 @@ equality-constrained quadratic, one per particle; the RBF repulsion against auto
 SVGD on a 2-D standard Gaussian matching the target's mean and covariance; the GN Hessian of
 the penalty against autograd on linear rows; one Stein variational Newton step landing on a
 quadratic's minimiser; and the identity metric being projected gradient descent with the
-per-particle step `svgd_lr / ||H_i||_F`.
+per-particle step `svgd_lr / ||H_i||_F`. The kernel spaces (`svgd_kernel`: the fielded `q`
+reproducing the previous step bit for bit, and x, z, c, cz, qz, pose against autograd) and the
+metric's temperature (`svgd_metric_temperature`) close it.
 """
 
 import math
@@ -44,7 +46,7 @@ def _gen(seed, device):
 
 
 def _randn(*shape, dtype, device, gen):
-    return torch.randn(*shape, generator=gen, dtype=torch.float64).to(dtype=dtype, device=device)
+    return torch.randn(*shape, generator=gen, dtype=torch.float64, device="cpu").to(dtype=dtype, device=device)
 
 
 def _maxabs(a, b=None):
@@ -543,8 +545,8 @@ def test_live_weights_drop_particles_exactly():
                               rho=10.0)
         X = _randn(N, n, dtype=dtype, device=device, gen=gen)
         finite = torch.ones(N, dtype=torch.bool, device=device)
-        K0, R0, _ = fused.kernel_terms(sc, y, finite, X)
-        K1, R1, _ = fused.kernel_terms(sc, y, finite, X, all_live)
+        K0, R0, _, _ = fused.kernel_terms(sc, y, finite, X)
+        K1, R1, _, _ = fused.kernel_terms(sc, y, finite, X, all_live)
         assert torch.equal(K0, K1) and torch.equal(R0, R1)
         gF = _randn(N, n, dtype=dtype, device=device, gen=gen)
         gC = _randn(N, n, dtype=dtype, device=device, gen=gen)
@@ -555,9 +557,9 @@ def test_live_weights_drop_particles_exactly():
             p1 = kernels.stein_direction(K0, R_y, gF, gC, 1.0, inside=inside, avg_scale=ones)
             assert torch.equal(p0, p1)
 
-        Km, Rm, _ = fused.kernel_terms(sc, y, finite, X, live)
+        Km, Rm, _, _ = fused.kernel_terms(sc, y, finite, X, live)
         Xs = X[live]
-        Ks, Rs, _ = fused.kernel_terms(sc, sub, finite[live], Xs)
+        Ks, Rs, _, _ = fused.kernel_terms(sc, sub, finite[live], Xs)
         assert _maxabs(Km[live][:, live], Ks) <= tol and _maxabs(Rm[live], Rs) <= tol * 10
         dead = ~live
         assert bool((Km[dead][:, live] == 0).all()) and bool((Km[live][:, dead] == 0).all())
@@ -689,6 +691,464 @@ def test_compiled_chain_matches_eager():
     print("PASS compiled AL chain matches eager (full graph, no breaks)")
 
 
+## --------------------------------------------------------------------------------------
+## 6. The kernel spaces and the metric's temperature (2026-10-11)
+## --------------------------------------------------------------------------------------
+
+## The fielded step as it stood before the kernel spaces and the metric's temperature
+## (svgd tip 5f15f55), VERBATIM, as the reference the fielded configuration must reproduce
+## bit for bit: `svgd_kernel = q`, `svgd_metric_temperature = off`.
+
+def _head_kernel_terms(sc, cfg, finite, X, live=None):
+    N = X.shape[0]
+    dtype, device = X.dtype, X.device
+    if sc.kernel == "none" or N < 2:
+        return (torch.eye(N, dtype=dtype, device=device),
+                torch.zeros_like(cfg), sc.kernel != "none")
+    y = cfg.detach()
+    fin = finite & torch.isfinite(y).all(dim=1)
+    if live is not None:
+        fin = fin & live
+    y0 = torch.where(fin.unsqueeze(1), y, torch.zeros_like(y))
+    hbw = kernels.median_bandwidth(kernels.pairwise_sqdist(y0), N, floor=sc.bandwidth_floor,
+                                   live=live)
+    K, _ = kernels.rbf_terms(y0, hbw)
+    mask = fin.unsqueeze(1) & fin.unsqueeze(0)
+    K = torch.where(mask, K, torch.eye(N, dtype=dtype, device=device))
+    R = (2.0 / hbw) * (K.sum(dim=1, keepdim=True) * y0 - K @ y0)
+    R = torch.where(fin.unsqueeze(1), R, torch.zeros_like(R))
+    return K, R, True
+
+
+def _head_direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kernel_on, S,
+                                live=None):
+    _bmv = fused._bmv
+    N, n = X.shape
+    avg_scale = None
+    if live is not None:
+        finite = finite & live
+        n_live = live.sum()
+        avg_scale = torch.where(n_live == N, torch.ones((), dtype=X.dtype, device=X.device),
+                                N / torch.clamp(n_live, min=1).to(X.dtype))
+    ch, cg = al.al_constraint_grad_coefficients(h, g, S, sc.rho)
+    gC = _bmv(J_h.transpose(1, 2), ch) + _bmv(J_g.transpose(1, 2), cg)
+    R_x = _bmv(J_q.transpose(1, 2), R) if kernel_on else torch.zeros_like(X)
+    sv = tg.s.unsqueeze(0)
+    fin = finite.unsqueeze(1)
+    zero = torch.zeros_like(X)
+    gF_y = torch.where(fin, sv * gF, zero)
+    gC_y = torch.where(fin, sv * gC, zero)
+    R_y = torch.where(fin, sv * R_x, zero)
+    use_kernel = sc.kernel != "none"
+    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside, kernel=use_kernel,
+                                  avg_scale=avg_scale)
+    rep = R_y / N if use_kernel else zero
+    if use_kernel and avg_scale is not None:
+        rep = rep * avg_scale
+    ratio = rep.norm(dim=1) / torch.clamp((phi - rep).norm(dim=1), min=torch.finfo(X.dtype).tiny)
+    ratio = torch.nanmedian(torch.where(finite, ratio, torch.full_like(ratio, float("nan"))))
+    H = fused.gn_hessian(tg.s, tg.w_cfg, tg.H_fx, J_q, J_h, J_g, g, S.mu, sc.rho)
+    eye = torch.eye(n, dtype=X.dtype, device=X.device).unsqueeze(0).expand(N, -1, -1)
+    ok = finite & torch.isfinite(H).flatten(1).all(dim=1)
+    H = torch.where(ok.view(-1, 1, 1), H, eye)
+    return phi, H, ratio
+
+
+def _head_step_from(tg, sc, X, phi, H, live=None):
+    n = X.shape[1]
+    if sc.metric == "gn":
+        eye = torch.eye(n, dtype=X.dtype, device=X.device).unsqueeze(0)
+        Y, info = torch.linalg.solve_ex(H + sc.gn_lm * eye, phi.unsqueeze(2), check_errors=False)
+        dy = sc.lr * Y.squeeze(2)
+        good = (info == 0) & torch.isfinite(dy).all(dim=1)
+    else:
+        fro = torch.clamp(H.flatten(1).norm(dim=1), min=torch.finfo(X.dtype).tiny)
+        dy = (sc.lr / fro).unsqueeze(1) * phi
+        good = torch.isfinite(dy).all(dim=1)
+    dy = torch.where(good.unsqueeze(1), dy, torch.zeros_like(dy))
+    sv = tg.s.unsqueeze(0)
+    Xn = X + sv * dy
+    Xp, _ = tg.bp.project(Xn)
+    if live is not None:
+        l1 = live.unsqueeze(1)
+        Xp = torch.where(l1, Xp, X)
+        Xn = torch.where(l1, Xn, X)
+    moved = (Xp != Xn) & torch.isfinite(Xn)
+    clip = torch.where(moved, (Xp - Xn) / sv, torch.zeros_like(X)).norm(dim=1)
+    return Xp.detach(), clip, moved.sum(dim=1)
+
+
+W_Z, ND = 3, 4                     # the toy learned layout: [c6 | z (3) | q_c (4)], 13 variables
+N_VARS = 6 + W_Z + ND
+
+
+def _toy_learned(dtype, device, gen, N=9, m_e=3, m_i=2, learned=True):
+    """A learned-arm-shaped toy: region scale s, a box, the block layout `BatchedProgram`
+    exposes (`is_learned`, `width`, `ndof`), a LINEAR configuration map `cfg = X @ B^T` (so
+    `J_q = B`, exactly) and a linear task-pose map `pose = cfg @ P^T` (`d pose / d cfg = P`)."""
+    kw = dict(dtype=dtype, device=device)
+    n = N_VARS if learned else ND
+    s = 0.5 + _randn(n, dtype=dtype, device=device, gen=gen).abs()
+    lo, hi = torch.full((n,), -3.0, **kw), torch.full((n,), 3.0, **kw)
+
+    def project(X):
+        Xp = torch.minimum(torch.maximum(X, lo), hi)
+        return Xp, (Xp - X).norm(dim=1)
+    bp = SimpleNamespace(project=project, is_learned=learned, width=W_Z if learned else 0,
+                         ndof=ND)
+    tg = SimpleNamespace(s=s, H_fx=0.1 * torch.eye(n, **kw), w_cfg=0.3, bp=bp)
+    B = _randn(ND, n, dtype=dtype, device=device, gen=gen) if learned else torch.eye(ND, **kw)
+    P = _randn(7, ND, dtype=dtype, device=device, gen=gen)
+    X = _randn(N, n, dtype=dtype, device=device, gen=gen)
+    p = SimpleNamespace(
+        tg=tg, B=B, P=P, X=X, cfg=X @ B.T, J_q=B.unsqueeze(0).expand(N, -1, -1).contiguous(),
+        gF=_randn(N, n, dtype=dtype, device=device, gen=gen),
+        J_h=_randn(N, m_e, n, dtype=dtype, device=device, gen=gen),
+        J_g=_randn(N, m_i, n, dtype=dtype, device=device, gen=gen),
+        h=_randn(N, m_e, dtype=dtype, device=device, gen=gen),
+        g=_randn(N, m_i, dtype=dtype, device=device, gen=gen),
+        S=_state(N, m_e, m_i, dtype, device, gen),
+        finite=torch.ones(N, dtype=torch.bool, device=device))
+    p.pose = p.cfg @ P.T
+    p.pose_jac = P.unsqueeze(0).expand(N, -1, -1).contiguous()
+    return p
+
+
+def _sc(kernel="q", **kw):
+    base = dict(kernel=kernel, bandwidth_floor=0.05, inside=False, lr=0.3, T=1.0, rho=10.0,
+                metric="gn", gn_lm=1.0)
+    base.update(kw)
+    return fused.StepConfig(**base)
+
+
+def _head_chain(tg, sc, X, cfg, gF, J_q, J_h, J_g, h, g, finite, lam, mu, live=None):
+    S = ALState(lam=lam, mu=mu)
+    K, R, kon = _head_kernel_terms(sc, cfg, finite, X, live)
+    phi, H, ratio = _head_direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R,
+                                                kon, S, live)
+    Xn, clip, n_clip = _head_step_from(tg, sc, X, phi, H, live)
+    return K, R, phi, H, ratio, Xn, clip, n_clip
+
+
+def _new_chain(tg, sc, X, cfg, gF, J_q, J_h, J_g, h, g, finite, lam, mu, live=None):
+    S = ALState(lam=lam, mu=mu)
+    K, R, kon, _ = fused.kernel_terms(sc, cfg, finite, X, live, tg=tg)
+    phi, H, ratio = fused.direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R,
+                                                kon, S, live)
+    Xn, clip, n_clip = fused.step_from(tg, sc, X, phi, H, live)
+    return K, R, phi, H, ratio, Xn, clip, n_clip
+
+
+def test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise():
+    """(a) `svgd_kernel = q` with `svgd_metric_temperature = off` -- the fielded step -- gives
+    the kernel, repulsion, direction, Hessian, ratio and step of the pre-2026-10-11 code
+    (`_head_*`, verbatim) BIT FOR BIT, under both metrics, with and without a dropped particle
+    and a non-finite one; eager on every target, and compiled on CUDA (the compiled new chain
+    against the compiled old one). The end-to-end twin -- a 30-step solve per task x arm x
+    eager / compiled / graphed against arrays saved at the old tip -- was run when the change
+    landed (docs/svgd-solver.md, the options table)."""
+    for dtype, device, tol in _targets():
+        gen = _gen(31, device)
+        p = _toy_learned(dtype, device, gen)
+        N = p.X.shape[0]
+        fin = p.finite.clone()
+        fin[4] = False
+        live = torch.ones(N, dtype=torch.bool, device=device)
+        live[2] = False
+        for metric in ("gn", "identity"):
+            sc = _sc("q", metric=metric)
+            assert sc.metric_temperature is False
+            for lv in (None, live):
+                args = (p.tg, sc, p.X, p.cfg, p.gF, p.J_q, p.J_h, p.J_g, p.h, p.g, fin,
+                        p.S.lam, p.S.mu, lv)
+                ref, new = _head_chain(*args), _new_chain(*args)
+                for a, b in zip(ref, new):
+                    assert torch.equal(a, b), (dtype, metric, lv is None)
+        if device.type == "cuda":
+            sc = _sc("q")
+            args = (p.tg, sc, p.X, p.cfg, p.gF, p.J_q, p.J_h, p.J_g, p.h, p.g, fin,
+                    p.S.lam, p.S.mu, live)
+            ref = torch.compile(_head_chain, dynamic=False)(*args)
+            new = torch.compile(_new_chain, dynamic=False)(*args)
+            for a, b in zip(ref, new):
+                assert torch.equal(a, b), "compiled"
+            print(f"     compiled CUDA {dtype}: bit-identical")
+    print("PASS svgd_kernel=q, svgd_metric_temperature=off: the previous step bit for bit")
+
+
+def test_metric_temperature():
+    """(e) `svgd_metric_temperature = on`: at T = 1 bit-identical to off (eager, and compiled
+    on CUDA); at T = 0.1 the step is `svgd_lr (H / 0.1 + delta I)^-1 phi` where off is
+    `svgd_lr (H + delta I)^-1 phi`, and under the identity metric `svgd_lr / (||H||_F / T)`;
+    `from_options` maps the option, and ProgramOptions refuses any other value."""
+    from src.generic_program import ProgramOptions
+    for dtype, device, tol in _targets():
+        gen = _gen(32, device)
+        kw = dict(dtype=dtype, device=device)
+        p = _toy_learned(dtype, device, gen)
+        tg = p.tg
+        tg.bp.project = lambda X: (X, torch.zeros(X.shape[0], **kw))     # no clamp: the raw step
+        N, n = p.X.shape
+        S = p.S
+        sc1 = _sc("q", T=1.0)
+        K, R, kon, _ = fused.kernel_terms(sc1, p.cfg, p.finite, p.X, tg=tg)
+        phi, H, _ = fused.direction_and_hessian(tg, sc1, p.X, p.gF, p.J_q, p.J_h, p.J_g, p.h,
+                                                p.g, p.finite, K, R, kon, S)
+        for metric in ("gn", "identity"):
+            off = fused.step_from(tg, _sc("q", T=1.0, metric=metric), p.X, phi, H)
+            on = fused.step_from(tg, _sc("q", T=1.0, metric=metric, metric_temperature=True),
+                                 p.X, phi, H)
+            for a, b in zip(off, on):
+                assert torch.equal(a, b), (dtype, metric)
+        if device.type == "cuda":
+            f = lambda sc: torch.compile(lambda X, phi, H: fused.step_from(tg, sc, X, phi, H),
+                                         dynamic=False)(p.X, phi, H)
+            for a, b in zip(f(_sc("q", T=1.0)), f(_sc("q", T=1.0, metric_temperature=True))):
+                assert torch.equal(a, b), "compiled"
+        T, lr, dl = 0.1, 0.3, 1.0
+        eye = torch.eye(n, **kw)
+        for flag, Hm in ((False, H), (True, H / T)):
+            Xn, _, _ = fused.step_from(tg, _sc("q", T=T, lr=lr, gn_lm=dl, metric_temperature=flag),
+                                       p.X, phi, H)
+            dy = lr * torch.linalg.solve(Hm + dl * eye, phi.unsqueeze(2)).squeeze(2)
+            ref = p.X + tg.s * dy
+            err = _maxabs(Xn, ref) / max(1.0, _maxabs(ref))
+            assert err <= 1e3 * tol, (dtype, flag, err)
+        Xon, _, _ = fused.step_from(tg, _sc("q", T=T, metric="identity", metric_temperature=True),
+                                    p.X, phi, H)
+        fro = H.flatten(1).norm(dim=1, keepdim=True)
+        ref = p.X + tg.s * (0.3 * T / fro) * phi
+        assert _maxabs(Xon, ref) / max(1.0, _maxabs(ref)) <= 1e3 * tol
+        Xoff, _, _ = fused.step_from(tg, _sc("q", T=T, lr=lr, gn_lm=dl), p.X, phi, H)
+        assert _maxabs(Xoff, Xn) > 1e-3, "on and off must differ at T = 0.1"
+    o = ProgramOptions(which_solver="svgd", svgd_metric_temperature="on")
+    assert fused.StepConfig.from_options(o).metric_temperature is True
+    assert fused.StepConfig.from_options(ProgramOptions()).metric_temperature is False
+    try:
+        ProgramOptions(svgd_metric_temperature="maybe")
+        raise AssertionError("svgd_metric_temperature='maybe' was accepted")
+    except ValueError as exc:
+        assert "svgd_metric_temperature" in str(exc)
+    print("PASS svgd_metric_temperature: on at T = 1 is off bit for bit; at T = 0.1 the metric is H / T")
+
+
+NEW_SPACES = ("x", "z", "c", "cz", "qz", "pose")
+
+
+def _support(space, n):
+    """The decision-variable coordinates a DIRECT (y-routed) repulsion may touch."""
+    c, z = set(range(6)), set(range(6, 6 + W_Z))
+    return {"x": set(range(n)), "z": z, "c": c, "cz": c | z}.get(space)
+
+
+def _kernel_by_autograd(space, tg, Y, B, P, hs):
+    """`sum_j K(y_i, y_j)` built from y with autograd's graph, at FIXED bandwidths `hs`, and
+    the kernel's features of y -- the same spaces as `fused.kernel_features`, written out."""
+    X = Y * tg.s
+    cfg = X @ B.T
+    pose = cfg @ P.T
+    c, z = Y[:, :6], Y[:, 6:6 + W_Z]
+    feats = {"q": [cfg], "x": [Y], "z": [z], "c": [c], "cz": [c, z], "qz": [cfg, z],
+             "pose": [pose]}[space]
+    return feats
+
+
+def test_new_kernel_spaces():
+    """(b) every new space gives a finite direction on a random swarm; its repulsion is the
+    exact SVGD repulsion of its (product) RBF -- `R_j = sum_i grad_{y_i} K(y_i, y_j)` -- by
+    autograd through the features at the bandwidths it used, with the configuration and pose
+    factors pulled back through J_q (and d pose / d cfg); it is zero when the particles
+    coincide in that space and nonzero when they do not; and the DIRECT spaces' repulsion lies
+    in its block (zero outside it) and does not depend on J_q. `bw` has one bandwidth per
+    factor. (c) `cz` at equal bandwidths is the single RBF on the stacked [c; z]."""
+    for dtype, device, tol in _targets():
+        gen = _gen(33, device)
+        p = _toy_learned(dtype, device, gen)
+        tg, N, n = p.tg, p.X.shape[0], p.X.shape[1]
+        for space in NEW_SPACES:
+            sc = _sc(space)
+            K, R, kon, bw = fused.kernel_terms(sc, p.cfg, p.finite, p.X, tg=tg, pose=p.pose,
+                                               pose_jac=p.pose_jac)
+            assert kon and isinstance(R, tuple)
+            assert bw.shape == ((2,) if space in ("cz", "qz") else (1,)), (space, bw.shape)
+            R_y = fused.repulsion_y(tg, p.X, p.J_q, R, kon, p.finite)
+            phi, H, ratio = fused.direction_and_hessian(tg, sc, p.X, p.gF, p.J_q, p.J_h, p.J_g,
+                                                        p.h, p.g, p.finite, K, R, kon, p.S)
+            assert bool(torch.isfinite(phi).all()) and bool(torch.isfinite(R_y).all()), space
+            assert float(R_y.abs().max()) > 1e-6, f"{space}: no repulsion on a random swarm"
+            ## the exact repulsion, by autograd at the bandwidths used
+            Y = (p.X / tg.s).detach()
+            Y1 = Y.clone().requires_grad_(True)
+            f1 = _kernel_by_autograd(space, tg, Y1, p.B, p.P, bw)
+            f2 = _kernel_by_autograd(space, tg, Y, p.B, p.P, bw)
+            expo = sum(((a.unsqueeze(1) - b.unsqueeze(0)) ** 2).sum(2) / hk
+                       for a, b, hk in zip(f1, f2, bw))
+            Ka = torch.exp(-expo)
+            assert _maxabs(K, Ka.detach()) <= 1e3 * tol, (space, _maxabs(K, Ka))
+            (G,) = torch.autograd.grad(Ka.sum(), Y1)
+            err = _maxabs(R_y, -G) / max(1.0, _maxabs(G))
+            assert err <= 1e3 * tol, (space, dtype, err)
+            ## direct spaces: in their block, and independent of J_q
+            sup = _support(space, n)
+            if sup is not None:
+                outside = [k for k in range(n) if k not in sup]
+                if outside:
+                    assert bool((R_y[:, outside] == 0).all()), space
+                R_y2 = fused.repulsion_y(tg, p.X, 7.0 * p.J_q, R, kon, p.finite)
+                assert torch.equal(R_y, R_y2), space
+            ## coincident in the space -> no repulsion; the other blocks are free to differ
+            Xc, cfgc, posec = p.X.clone(), p.cfg.clone(), p.pose.clone()
+            if space in ("x",):
+                Xc[:] = p.X[0]
+            if space in ("z", "cz", "qz"):
+                Xc[:, 6:6 + W_Z] = p.X[0, 6:6 + W_Z]
+            if space in ("c", "cz"):
+                Xc[:, :6] = p.X[0, :6]
+            if space == "qz":
+                cfgc[:] = p.cfg[0]
+            if space == "pose":
+                posec[:] = p.pose[0]
+            Kc, Rc, _, _ = fused.kernel_terms(sc, cfgc, p.finite, Xc, tg=tg, pose=posec,
+                                              pose_jac=p.pose_jac)
+            Rc_y = fused.repulsion_y(tg, Xc, p.J_q, Rc, True, p.finite)
+            ## float32: coincident rows still differ by roundoff in K @ u against K 1 * u, which
+            ## the floored bandwidth's 2 / h = 800 amplifies; float64 pins the exact zero.
+            small = 1e-9 if dtype == torch.float64 else 2e-2
+            assert _maxabs(Rc_y) <= small * max(1.0, _maxabs(R_y)), (space, _maxabs(Rc_y))
+            assert _maxabs(Xc, p.X) > 0.1 or space == "x" or space == "pose", space
+        ## (c) cz at equal bandwidths = one RBF on [c; z]: a floor far above the median
+        sc = _sc("cz", bandwidth_floor=50.0)
+        K, R, kon, bw = fused.kernel_terms(sc, p.cfg, p.finite, p.X, tg=tg)
+        assert torch.equal(bw, torch.full((2,), 2500.0, dtype=dtype, device=device))
+        Y = p.X / tg.s
+        u = torch.cat([Y[:, :6], Y[:, 6:6 + W_Z]], dim=1)
+        K1, R1 = kernels.rbf_terms(u, 2500.0)
+        R_y = fused.repulsion_y(tg, p.X, p.J_q, R, kon, p.finite)
+        assert _maxabs(K, K1) <= 1e2 * tol and _maxabs(R_y[:, :6 + W_Z], R1) <= 1e2 * tol * max(1.0, _maxabs(R1))
+        assert bool((R_y[:, 6 + W_Z:] == 0).all())
+        ## N = 1 and none: no interaction
+        K0, R0, kon0, bw0 = fused.kernel_terms(_sc("cz"), p.cfg[:1], p.finite[:1], p.X[:1], tg=tg)
+        assert torch.equal(K0, torch.ones(1, 1, dtype=dtype, device=device)) and bw0.shape == (2,)
+        Kn, Rn, konn, bwn = fused.kernel_terms(_sc("none"), p.cfg, p.finite, p.X, tg=tg)
+        assert not konn and bwn.shape == (0,)
+    print("PASS kernel spaces x, z, c, cz, qz, pose: exact repulsion by autograd, block support, "
+          "zero on coincidence; cz at equal bandwidths = RBF on [c; z]")
+
+
+def test_pose_kernel_ignores_self_motion():
+    """(d) `pose`: two particles with the SAME task pose and DIFFERENT latents (and
+    configurations) -- the flow's self-motion -- repel not at all, while a third with a
+    different pose is repelled; the quaternion is canonicalised first, so the same rotation
+    given as q and -q is the same pose; `fused.pose_and_jacobian` is the 7-vector
+    [position; canonical quaternion]."""
+    for dtype, device, tol in _targets():
+        gen = _gen(34, device)
+        p = _toy_learned(dtype, device, gen, N=3)
+        tg = p.tg
+        X = p.X.clone()
+        X[1, 6:6 + W_Z] = X[0, 6:6 + W_Z] + 1.5                         # a different z ...
+        cfg = X @ p.B.T
+        quat = torch.nn.functional.normalize(_randn(3, 4, dtype=dtype, device=device, gen=gen), dim=1)
+        quat[1] = -quat[0]                                             # ... the same rotation
+        pos = _randn(3, 3, dtype=dtype, device=device, gen=gen)
+        pos[1] = pos[0]                                                # ... and position
+        Jp = _randn(3, 3, ND + 2, dtype=dtype, device=device, gen=gen)
+        Jw = _randn(3, 3, ND + 2, dtype=dtype, device=device, gen=gen)
+        pose, pose_jac = fused.pose_and_jacobian(quat, pos, Jp, Jw, ND)
+        assert pose.shape == (3, 7) and pose_jac.shape == (3, 7, ND)
+        assert bool((pose[:, 3] >= 0).all()) and _maxabs(pose[0], pose[1]) <= tol
+        sc = _sc("pose")
+        for pair in ((0, 1), (0, 2)):
+            idx = list(pair)
+            K, R, kon, _ = fused.kernel_terms(sc, cfg[idx], p.finite[idx], X[idx], tg=tg,
+                                              pose=pose[idx], pose_jac=pose_jac[idx])
+            R_y = fused.repulsion_y(tg, X[idx], p.J_q[idx], R, kon, p.finite[idx])
+            if pair == (0, 1):
+                small = 1e-9 if dtype == torch.float64 else 1e-3
+                assert _maxabs(R_y) <= small, ("self-motion repelled", _maxabs(R_y))
+                Kq, Rq, _, _ = fused.kernel_terms(_sc("q"), cfg[idx], p.finite[idx], X[idx])
+                assert _maxabs(fused.repulsion_y(tg, X[idx], p.J_q[idx], Rq, True, p.finite[idx])) > 1e-3
+            else:
+                assert _maxabs(R_y) > 1e-3, "different poses must repel"
+    print("PASS pose kernel: same pose, different z -> no repulsion; different pose -> repulsion")
+
+
+def test_pose_jacobian_matches_finite_differences_on_the_panda():
+    """`fused.pose_and_jacobian` (the quaternion's derivative from the world angular-velocity
+    Jacobian, `1/2 [-v^T; w I - [v]x] Jw`, at the canonical quaternion) against central
+    differences of the batched kinematics of the real Panda grasp frame (`between_fingers`,
+    `program.frame`), float64. Skipped where the Panda programs cannot be built."""
+    try:
+        sys.path.insert(0, HERE)
+        import test_batched_program as TB
+        bp = TB.batched("panda", "mug", "numerical", dtype=torch.float64)
+    except Exception as exc:                        # pragma: no cover
+        print(f"SKIP pose Jacobian on the Panda: {type(exc).__name__}: {exc}")
+        return
+    rng = np.random.default_rng(3)
+    lo, hi = (b.detach().cpu().numpy() for b in bp.bounds)
+    Q = torch.tensor(rng.uniform(lo, hi, size=(6, bp.ndof)), dtype=torch.float64, device=bp.device)
+    q_plant, (quat, pos), _, (Jp, Jw) = bp.kinematics(Q, row_jacobians=True)
+    pose, J = fused.pose_and_jacobian(quat, pos, Jp, Jw, bp.ndof)
+    eps = 1e-6
+    Jfd = torch.zeros_like(J)
+    for k in range(bp.ndof):
+        d = torch.zeros_like(Q)
+        d[:, k] = eps
+        _, (qa, pa), _, _ = bp.kinematics(Q + d)
+        _, (qb, pb), _, _ = bp.kinematics(Q - d)
+        pa7 = torch.cat([pa, fused.canonical_quat(qa)], dim=1)
+        pb7 = torch.cat([pb, fused.canonical_quat(qb)], dim=1)
+        Jfd[:, :, k] = (pa7 - pb7) / (2 * eps)
+    err = _maxabs(J, Jfd)
+    assert err <= 1e-7, f"pose Jacobian vs central differences: {err:.2e}"
+    ## The autograd path's twin (`_Target.pose_and_jacobian_ev`, for a robot behind its own
+    ## pose provider) agrees with the closed form.
+    from src.svgd.solver import _Target
+    tg = _Target(bp, 1e-4)
+    Xg = Q.clone().requires_grad_(True)
+    out = bp.evaluate(Xg, need_collision=False)
+    pose_a, J_a = tg.pose_and_jacobian_ev(SimpleNamespace(out=out, cfg=out.q))
+    err_a = max(_maxabs(pose_a, pose), _maxabs(J_a, J))
+    assert err_a <= 1e-10, f"autograd pose Jacobian vs closed form: {err_a:.2e}"
+    print(f"PASS pose Jacobian (canonical quaternion via Jw) vs central differences on the Panda "
+          f"grasp frame: {err:.1e}; the autograd path's agrees to {err_a:.1e}")
+    TB.close_all()
+
+
+def test_joint_space_refuses_latent_kernels():
+    """(f) `z`, `c`, `cz` and `qz` name blocks the joint-space arm does not have: refused at
+    solver CONSTRUCTION (`fused.check_kernel_for_arm`, called by `SvgdSolver.__init__`, which
+    `WarmUpSvgdStep` runs before the first cell), never from inside the step; `q`, `x`, `pose`
+    and `none` are accepted there, and every space is accepted on the learned arm. Every space
+    passes ProgramOptions, which does not know the arm."""
+    from src.generic_program import ProgramOptions
+    from src.svgd.solver import SvgdSolver
+    for space in fused.KERNEL_SPACES:
+        ProgramOptions(which_solver="svgd", svgd_kernel=space)
+        fused.check_kernel_for_arm(space, True)
+        joint = SimpleNamespace(options=ProgramOptions(which_solver="svgd", svgd_kernel=space))
+        learned = SimpleNamespace(options=joint.options, z=None)
+        if space in fused.LATENT_KERNELS:
+            for call in (lambda: fused.check_kernel_for_arm(space, False),
+                         lambda: SvgdSolver(joint)):
+                try:
+                    call()
+                    raise AssertionError(f"svgd_kernel={space} accepted on joint space")
+                except ValueError as exc:
+                    assert space in str(exc) and "joint-space" in str(exc), str(exc)
+        else:
+            fused.check_kernel_for_arm(space, False)
+            SvgdSolver(joint)
+        SvgdSolver(learned)
+    try:
+        ProgramOptions(svgd_kernel="rbf")
+        raise AssertionError("svgd_kernel='rbf' accepted")
+    except ValueError:
+        pass
+    print("PASS z / c / cz / qz refused on the joint-space arm at construction; q / x / pose / none accepted")
+
+
 if __name__ == "__main__":
     test_al_value_and_coefficients_agree_with_autograd()
     test_al_with_zero_multipliers_is_the_quadratic_penalty()
@@ -707,4 +1167,10 @@ if __name__ == "__main__":
     test_live_weights_drop_particles_exactly()
     test_no_host_synchronising_calls_in_the_modules()
     test_compiled_chain_matches_eager()
+    test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise()
+    test_metric_temperature()
+    test_new_kernel_spaces()
+    test_pose_kernel_ignores_self_motion()
+    test_pose_jacobian_matches_finite_differences_on_the_panda()
+    test_joint_space_refuses_latent_kernels()
     print("ALL PASS")

@@ -704,12 +704,12 @@ def profile(Ns=(64, 256)):
             if s.device.type == "cuda":
                 torch.cuda.synchronize(s.device)
         for _ in range(3):
-            X, _, _ = s._step_split(X, S)
+            X = s._step_split(X, S)[0]
         s._col.reset()
         sync()
         t0 = time.perf_counter()
         for _ in range(20):
-            X, _, _ = s._step_split(X, S)
+            X = s._step_split(X, S)[0]
         sync()
         dt = (time.perf_counter() - t0) / 20
         print(f"    N={N:4d}: {1e3 * dt:6.1f} ms/step  "

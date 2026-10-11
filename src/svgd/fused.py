@@ -50,6 +50,7 @@ from torch.utils._pytree import tree_flatten, tree_unflatten
 
 from src.svgd import al, kernels
 from src.svgd.al import ALState
+from src.svgd.kinematics_from_plant import canonical_quat
 
 ## ------------------------------------------------------------------------------------ ##
 ##                                   freeze and cache                                    ##
@@ -74,10 +75,28 @@ def clear_cache():
     _CACHE.clear()
 
 
+## The kernel spaces (`svgd_kernel`). `q` is fielded; the rest are the kernel-space screen's
+## (2026-10-11). The ones naming a latent or conditioning block exist only on the learned arm.
+KERNEL_SPACES = ("none", "q", "x", "z", "c", "cz", "qz", "pose")
+LATENT_KERNELS = ("z", "c", "cz", "qz")
+
+
+def check_kernel_for_arm(kernel, is_learned, arm=""):
+    """Refuse, at construction, a kernel space the arm has no block for: `z`, `c`, `cz` and
+    `qz` name the learned arm's latent / conditioning blocks, which joint space does not have."""
+    if kernel not in KERNEL_SPACES:
+        raise ValueError(f"svgd_kernel={kernel!r} is not one of {KERNEL_SPACES}")
+    if kernel in LATENT_KERNELS and not is_learned:
+        raise ValueError(f"svgd_kernel={kernel!r} needs the learned arm's conditioning-pose / "
+                         f"latent blocks; the joint-space arm {arm} has neither (its decision "
+                         f"variables are q alone). Use q, x (== q normalised by the half-range), "
+                         f"pose or none")
+
+
 @dataclass(frozen=True)
 class StepConfig:
     """The option values the stages read as Python constants (part of the cache key)."""
-    kernel: str                 # svgd_kernel: "q" | "none"
+    kernel: str                 # svgd_kernel: KERNEL_SPACES
     bandwidth_floor: float      # svgd_bandwidth_floor
     inside: bool                # svgd_constraint_inside_kernel
     lr: float                   # svgd_lr (a fraction of the Newton / Lipschitz step)
@@ -89,6 +108,9 @@ class StepConfig:
     ## and leaves dropped particles out. False under `native`, whose stages are then exactly
     ## the pre-2026-10-11 code (the live tensor is an input they never read).
     live_weights: bool = False
+    ## svgd_metric_temperature = "on": the Newton metric is H / T (and the identity metric's
+    ## step bound ||H / T||_F). False is exactly the pre-2026-10-11 step.
+    metric_temperature: bool = False
 
     @staticmethod
     def from_options(opts):
@@ -98,7 +120,9 @@ class StepConfig:
                           lr=float(opts.svgd_lr), T=float(opts.svgd_temperature),
                           rho=float(opts.svgd_rho), metric=str(opts.svgd_metric),
                           gn_lm=float(opts.svgd_gn_lm),
-                          live_weights=str(getattr(opts, "svgd_resample", "native")) != "native")
+                          live_weights=str(getattr(opts, "svgd_resample", "native")) != "native",
+                          metric_temperature=str(getattr(opts, "svgd_metric_temperature",
+                                                         "off")) == "on")
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -213,32 +237,145 @@ def _bmv(A, v):
     return (A @ v.unsqueeze(2)).squeeze(2)
 
 
-def kernel_terms(sc, cfg, finite, X, live=None):
-    """`(K, R, kernel_on)`: the RBF kernel on the configuration and its repulsion in
-    configuration space (`kernels.rbf_terms`, median bandwidth). Non-finite particles are
-    isolated (their K row and column are the identity's, their R zero) so a NaN cannot
-    spread through the kernel average. `svgd_kernel = none` (or N = 1): `K = I`, `R = 0`.
-    `live [N]` bool (`svgd_resample = drop` / `keep`): dropped particles are isolated the
-    same way -- `K_ij = 0` for a dropped j, so they enter no other particle's average or
-    repulsion -- and left out of the median bandwidth."""
+def kernel_terms(sc, cfg, finite, X, live=None, tg=None, pose=None, pose_jac=None):
+    """`(K, R, kernel_on, bw)`: the kernel matrix, its repulsion, whether a kernel is on, and the
+    bandwidth(s) `bw [n_features]` it used (`[0]` under `none`).
+
+    `svgd_kernel = q` (fielded): the RBF on the configuration, median bandwidth, and `R` its
+    repulsion IN CONFIGURATION SPACE `[N, ndof]` (`kernels.rbf_terms`), pulled back to y by
+    `repulsion_y` through the flow's J_q -- the pre-2026-10-11 code, unchanged. Every other
+    space (`kernel_features`) returns `R` as a pair `(R_cfg [N, ndof] or None, R_y [N, n] or
+    None)`: the configuration-space part (the `q` factor of `qz`, and `pose`'s repulsion pulled
+    back through `pose_jac = d pose / d cfg`) and the part acting DIRECTLY on the normalised
+    decision variables y (`x`, `z`, `c`, `cz`, the `z` factor of `qz`). A product kernel
+    (`cz`, `qz`) is `prod_k exp(-|u_k,i - u_k,j|^2 / h_k)`, each factor with its own median
+    bandwidth, and its repulsion the sum of the factors' terms (grad log K = sum_k grad log K_k).
+
+    Non-finite particles are isolated (their K row and column are the identity's, their R zero)
+    so a NaN cannot spread through the kernel average. `svgd_kernel = none` (or N = 1): `K = I`,
+    `R = 0`. `live [N]` bool (`svgd_resample = drop` / `keep`): dropped particles are isolated
+    the same way -- `K_ij = 0` for a dropped j, so they enter no other particle's average or
+    repulsion -- and left out of the median bandwidth(s). `tg` (the target: region scale `s`,
+    the block layout) is needed by every space but `q` and `none`; `pose` / `pose_jac` by `pose`."""
     N = X.shape[0]
     dtype, device = X.dtype, X.device
+    n_feat = {"none": 0, "cz": 2, "qz": 2}.get(sc.kernel, 1)
     if sc.kernel == "none" or N < 2:
+        bw = torch.full((n_feat,), float(sc.bandwidth_floor) ** 2, dtype=dtype, device=device)
         return (torch.eye(N, dtype=dtype, device=device),
-                torch.zeros_like(cfg), sc.kernel != "none")
-    y = cfg.detach()
-    fin = finite & torch.isfinite(y).all(dim=1)
+                torch.zeros_like(cfg), sc.kernel != "none", bw)
+    if sc.kernel == "q":
+        y = cfg.detach()
+        fin = finite & torch.isfinite(y).all(dim=1)
+        if live is not None:
+            fin = fin & live
+        y0 = torch.where(fin.unsqueeze(1), y, torch.zeros_like(y))
+        hbw = kernels.median_bandwidth(kernels.pairwise_sqdist(y0), N, floor=sc.bandwidth_floor,
+                                       live=live)
+        K, _ = kernels.rbf_terms(y0, hbw)
+        mask = fin.unsqueeze(1) & fin.unsqueeze(0)
+        K = torch.where(mask, K, torch.eye(N, dtype=dtype, device=device))
+        R = (2.0 / hbw) * (K.sum(dim=1, keepdim=True) * y0 - K @ y0)
+        R = torch.where(fin.unsqueeze(1), R, torch.zeros_like(R))
+        return K, R, True, hbw.reshape(1)
+    feats = kernel_features(sc.kernel, tg, X, cfg, pose)
+    fin = finite
+    for u, _, _ in feats:
+        fin = fin & torch.isfinite(u).all(dim=1)
     if live is not None:
         fin = fin & live
-    y0 = torch.where(fin.unsqueeze(1), y, torch.zeros_like(y))
-    hbw = kernels.median_bandwidth(kernels.pairwise_sqdist(y0), N, floor=sc.bandwidth_floor,
-                                   live=live)
-    K, _ = kernels.rbf_terms(y0, hbw)
+    f1 = fin.unsqueeze(1)
+    us, hs = [], []
+    expo = torch.zeros(N, N, dtype=dtype, device=device)
+    for u, _, _ in feats:
+        u0 = torch.where(f1, u, torch.zeros_like(u))
+        sq = kernels.pairwise_sqdist(u0)
+        h = kernels.median_bandwidth(sq, N, floor=sc.bandwidth_floor, live=live)
+        expo = expo + sq / h
+        us.append(u0)
+        hs.append(h)
+    K = torch.exp(-expo)
     mask = fin.unsqueeze(1) & fin.unsqueeze(0)
     K = torch.where(mask, K, torch.eye(N, dtype=dtype, device=device))
-    R = (2.0 / hbw) * (K.sum(dim=1, keepdim=True) * y0 - K @ y0)
-    R = torch.where(fin.unsqueeze(1), R, torch.zeros_like(R))
-    return K, R, True
+    Ksum = K.sum(dim=1, keepdim=True)
+    n = X.shape[1]
+    R_cfg, R_y = None, None
+    for u0, h, (_, route, sl) in zip(us, hs, feats):
+        R = (2.0 / h) * (Ksum * u0 - K @ u0)
+        R = torch.where(f1, R, torch.zeros_like(R))
+        if route == "cfg":
+            R_cfg = R if R_cfg is None else R_cfg + R
+        elif route == "pose":
+            Jp = torch.where(f1.unsqueeze(2), torch.nan_to_num(pose_jac.detach(), nan=0.0,
+                             posinf=0.0, neginf=0.0), torch.zeros_like(pose_jac))
+            Rc = _bmv(Jp.transpose(1, 2), R)
+            R_cfg = Rc if R_cfg is None else R_cfg + Rc
+        else:                                       # "y": a slice of the decision variables
+            parts = [R]
+            if sl.start > 0:
+                parts.insert(0, torch.zeros(N, sl.start, dtype=dtype, device=device))
+            if sl.stop < n:
+                parts.append(torch.zeros(N, n - sl.stop, dtype=dtype, device=device))
+            Ry = torch.cat(parts, dim=1) if len(parts) > 1 else R
+            R_y = Ry if R_y is None else R_y + Ry
+    return K, (R_cfg, R_y), True, torch.stack(hs)
+
+
+def kernel_blocks(tg):
+    """`{"c": slice, "z": slice}`: the conditioning-pose and latent blocks of the learned arm's
+    lumped decision vector `[c6 | z | q_c]` (`BatchedProgram._split`); {} on joint space."""
+    bp = tg.bp
+    if not bp.is_learned:
+        return {}
+    return {"c": slice(0, 6), "z": slice(6, 6 + int(bp.width))}
+
+
+def kernel_features(space, tg, X, cfg, pose=None):
+    """`[(u [N, d], route, slice)]`, the factor(s) of kernel `space` (every space but `none`):
+    `u` the coordinates the RBF factor measures distance in, `route` how its repulsion reaches
+    y -- "cfg" (through the flow's J_q), "pose" (through d pose / d cfg, then J_q) or "y"
+    (directly on the decision-variable `slice`). All y-coordinates are the normalised
+    `y = x / s` the step moves in. Also what `feasible_spread_kernel` measures."""
+    if space == "q":
+        return [(cfg.detach(), "cfg", None)]
+    if space == "pose":
+        return [(pose.detach(), "pose", None)]
+    y = X.detach() / tg.s.unsqueeze(0)
+    if space == "x":
+        return [(y, "y", slice(0, y.shape[1]))]
+    blk = kernel_blocks(tg)
+    if not blk:
+        raise ValueError(f"svgd_kernel={space!r} needs the learned arm's blocks")
+    zs, cs = blk["z"], blk["c"]
+    if space == "z":
+        return [(y[:, zs], "y", zs)]
+    if space == "c":
+        return [(y[:, cs], "y", cs)]
+    if space == "cz":
+        return [(y[:, cs], "y", cs), (y[:, zs], "y", zs)]
+    if space == "qz":
+        return [(cfg.detach(), "cfg", None), (y[:, zs], "y", zs)]
+    raise ValueError(f"unknown kernel space {space!r}")
+
+
+def pose_and_jacobian(quat, pos, Jp, Jw, ndof):
+    """`(pose [N, 7], d pose / d cfg [N, 7, ndof])` of the task frame: the 7-vector
+    `[position; quaternion wxyz canonical w >= 0]` (`pose7`) and its derivative from the frame's
+    geometric Jacobian -- `Jp` for the position, and for the quaternion the world angular
+    velocity's `Jw` through `d quat = 1/2 (0, omega) (x) quat`, i.e. `1/2 [-v^T; w I - [v]x] Jw`,
+    evaluated at the CANONICAL quaternion (the sign flip is piecewise constant, so this is the
+    canonical quaternion's own derivative). Static shapes; the plant columns beyond the
+    configuration (the gripper pad) are dropped."""
+    qc = canonical_quat(quat)
+    w, v = qc[:, 0], qc[:, 1:]
+    zero = torch.zeros_like(w)
+    vx = torch.stack([torch.stack([zero, -v[:, 2], v[:, 1]], dim=1),
+                      torch.stack([v[:, 2], zero, -v[:, 0]], dim=1),
+                      torch.stack([-v[:, 1], v[:, 0], zero], dim=1)], dim=1)       # [v]x
+    eye = torch.eye(3, dtype=qc.dtype, device=qc.device).unsqueeze(0)
+    E = 0.5 * torch.cat([-v.unsqueeze(1), w.view(-1, 1, 1) * eye - vx], dim=1)  # [N, 4, 3]
+    J = torch.cat([Jp[:, :, :ndof], E @ Jw[:, :, :ndof]], dim=1)
+    return torch.cat([pos, qc], dim=1), J
 
 
 def gn_hessian(s, w_cfg, H_fx, J_q, J_h, J_g, g, mu, rho):
@@ -258,6 +395,26 @@ def gn_hessian(s, w_cfg, H_fx, J_q, J_h, J_g, g, mu, rho):
     return 0.5 * (H + H.transpose(1, 2))
 
 
+def repulsion_y(tg, X, J_q, R, kernel_on, finite):
+    """The kernel's repulsion in the normalised coordinates y, `[N, n]`, zero at non-finite
+    particles: `s * J_q^T R` for a configuration-space `R` (`svgd_kernel = q`, the fielded
+    code), and for the other spaces' pair `(R_cfg, R_y)` the configuration part pulled back
+    the same way plus the part acting directly on y (`kernel_terms`)."""
+    sv = tg.s.unsqueeze(0)
+    fin = finite.unsqueeze(1)
+    zero = torch.zeros_like(X)
+    if isinstance(R, tuple):
+        R_cfg, R_dir = R
+        R_out = zero
+        if R_cfg is not None:
+            R_out = sv * _bmv(J_q.transpose(1, 2), R_cfg)
+        if R_dir is not None:
+            R_out = R_out + R_dir
+        return torch.where(fin, R_out, zero)
+    R_x = _bmv(J_q.transpose(1, 2), R) if kernel_on else torch.zeros_like(X)
+    return torch.where(fin, sv * R_x, zero)
+
+
 def direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kernel_on, S,
                           live=None):
     """The SVGD direction `phi` in `y = X / s` (`kernels.stein_direction`, the Tabor-Hermans
@@ -275,13 +432,12 @@ def direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kern
                                 N / torch.clamp(n_live, min=1).to(X.dtype))
     ch, cg = al.al_constraint_grad_coefficients(h, g, S, sc.rho)
     gC = _bmv(J_h.transpose(1, 2), ch) + _bmv(J_g.transpose(1, 2), cg)
-    R_x = _bmv(J_q.transpose(1, 2), R) if kernel_on else torch.zeros_like(X)
     sv = tg.s.unsqueeze(0)
     fin = finite.unsqueeze(1)
     zero = torch.zeros_like(X)
     gF_y = torch.where(fin, sv * gF, zero)
     gC_y = torch.where(fin, sv * gC, zero)
-    R_y = torch.where(fin, sv * R_x, zero)
+    R_y = repulsion_y(tg, X, J_q, R, kernel_on, finite)
     use_kernel = sc.kernel != "none"
     phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside, kernel=use_kernel,
                                   avg_scale=avg_scale)
@@ -306,17 +462,24 @@ def step_from(tg, sc, X, phi, H, live=None):
                                   step; ||H||_F >= lambda_max(H), a safe Lipschitz bound and a
                                   pure reduction, so the step stays graph-capturable)
 
+    `svgd_metric_temperature = on` (`sc.metric_temperature`) puts `H_i / T` in place of `H_i`
+    in both -- `(H_i / T + delta I)^-1 phi_i`, and `||H_i / T||_F = ||H_i||_F / T` -- so the
+    metric matches the drive `-grad L / T`; off (the default) is exactly the step above.
+
     Returns `(X_new, clip [N], n_clip [N])`: the clamp's distance per particle in y and how
     many coordinates it moved. A failed solve (or a non-finite step) is a zero step. `live
     [N]` bool: a dropped particle is FROZEN -- `X_new = X` exactly, no clamp, nothing counted."""
     n = X.shape[1]
     if sc.metric == "gn":
         eye = torch.eye(n, dtype=X.dtype, device=X.device).unsqueeze(0)
-        Y, info = torch.linalg.solve_ex(H + sc.gn_lm * eye, phi.unsqueeze(2), check_errors=False)
+        Hm = H / sc.T if sc.metric_temperature else H
+        Y, info = torch.linalg.solve_ex(Hm + sc.gn_lm * eye, phi.unsqueeze(2), check_errors=False)
         dy = sc.lr * Y.squeeze(2)
         good = (info == 0) & torch.isfinite(dy).all(dim=1)
     else:
         fro = torch.clamp(H.flatten(1).norm(dim=1), min=torch.finfo(X.dtype).tiny)
+        if sc.metric_temperature:
+            fro = fro / sc.T
         dy = (sc.lr / fro).unsqueeze(1) * phi
         good = torch.isfinite(dy).all(dim=1)
     dy = torch.where(good.unsqueeze(1), dy, torch.zeros_like(dy))
@@ -405,12 +568,17 @@ def stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S):
     gF = _bmv(J_q.transpose(1, 2), dFc) + dFx
     J_h, J_g = tg.row_jacobians_out(out, X, J_q)
     live = live_mask(sc, S)
-    K, R, kernel_on = kernel_terms(sc, cfg, finite, X, live)
+    pose = pose_jac = None
+    if sc.kernel == "pose":
+        (quat, pos), (Jp, Jw) = kin[1], kin[3]
+        pose, pose_jac = pose_and_jacobian(quat, pos, Jp, Jw, bp.ndof)
+    K, R, kernel_on, bw = kernel_terms(sc, cfg, finite, X, live, tg=tg, pose=pose,
+                                       pose_jac=pose_jac)
     phi, H, ratio = direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R,
                                           kernel_on, S, live)
     Xn, clip, n_clip = step_from(tg, sc, X, phi, H, live)
     return dict(X=Xn, clip=clip, n_clip=n_clip, H=H, ratio=ratio, h=h.detach(), g=g.detach(),
-                F=out.F.detach(), infeas=infeas, finite=finite)
+                F=out.F.detach(), infeas=infeas, finite=finite, bw=bw)
 
 
 ## ------------------------------------------------------------------------------------ ##

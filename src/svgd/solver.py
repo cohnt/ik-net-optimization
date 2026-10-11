@@ -25,12 +25,18 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
  4. Direction (Tabor-Hermans "Q method", `kernels.stein_direction`):
     `phi_i = (1/N) sum_j [K(q_j, q_i)(-grad_y f_j / T) + grad_{y_j} K(q_j, q_i)]
              - (1/T) grad_y (L - f)_i`;
-    RBF kernel on q, median bandwidth, the repulsion pulled back to y through the flow's VJP;
-    `svgd_kernel = none` drops both kernel terms, `svgd_constraint_inside_kernel` puts the
+    `svgd_kernel` the RBF's space (median bandwidth per factor, `fused.kernel_terms`): `q`
+    (fielded) the configuration, repulsion pulled back to y through the flow's VJP; `x` all of
+    y; `z` / `c` the latent / conditioning block of y (learned arm only), repulsion on that block
+    directly; `cz` / `qz` products of two factors, each its own bandwidth; `pose` the task
+    frame's [position; canonical quaternion], pulled back through d pose / d q and the VJP;
+    `none` drops both kernel terms. `svgd_constraint_inside_kernel` puts the
     whole `-grad L / T` under the average. Step (`fused.step_from`), `H_i` the GN Hessian of
     the AL in y (`fused.gn_hessian`): `svgd_metric = gn` (Stein variational Newton, Detommaso
     et al. 2018) `dy_i = svgd_lr (H_i + svgd_gn_lm I)^-1 phi_i`; `identity`
-    `dy_i = (svgd_lr / ||H_i||_F) phi_i`; then `y_i <- clamp_B(y_i + dy_i)`.
+    `dy_i = (svgd_lr / ||H_i||_F) phi_i`; `svgd_metric_temperature = on` uses `H_i / T` in
+    place of `H_i` in both (off, fielded: the drive's 1/T is unmatched); then
+    `y_i <- clamp_B(y_i + dy_i)`.
  5. Every K = `svgd_inner_iters` steps a CHECK: the dual-ascent step on every particle,
     unconditionally (`al.dual_update`: `lam_i += alpha h_i`, `mu_i = max(0, mu_i + alpha g_i)`,
     `alpha = svgd_dual_lr`, default `svgd_rho`, clipped to `+-svgd_multiplier_max`), and the
@@ -427,6 +433,19 @@ class _Target:
         """`_row_jacobians` on the autograd path (a robot behind its own pose provider)."""
         return self._row_jacobians(self.generic_jacobian_cfg(ev), ev.Xg.detach(), J_q)
 
+    def pose_and_jacobian_ev(self, ev):
+        """`(pose [N, 7], d pose / d cfg [N, 7, ndof])` of the task frame (`program.frame`) on
+        the AUTOGRAD path (`svgd_kernel = pose`): the canonical [position; quaternion] 7-vector
+        and its derivative by one vmapped backward through the kinematics. The closed-form
+        twin (`fused.pose_and_jacobian`, from the frame's geometric Jacobian) is the split
+        step's."""
+        quat, pos = ev.out.pose_frame
+        pose = torch.cat([pos, fused.canonical_quat(quat)], dim=1)
+        N = pose.shape[0]
+        E = torch.eye(7, dtype=self.dtype, device=self.device).unsqueeze(1)
+        J = self._batched_grad(pose, ev.cfg, E, N)
+        return pose.detach(), torch.nan_to_num(J.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+
     ## -- the per-outer-check trace -------------------------------------------------------
     TRACE_COLUMNS = ("min_infeas", "med_infeas", "n_feasible", "med_lam_inf", "max_lam_inf",
                      "med_mu_inf", "max_mu_inf", "min_F_feasible", "med_h_pos", "med_h_rot",
@@ -535,6 +554,10 @@ class SvgdSolver:
         self.options = program.options
         opts = self.options
         self.method = opts.svgd_method
+        ## A kernel space naming a block the arm does not have is refused HERE, at
+        ## construction (WarmUpSvgdStep builds a solver before the first cell), never in the step.
+        fused.check_kernel_for_arm(str(opts.svgd_kernel), hasattr(program, "z"),
+                                   arm=type(program).__name__)
         self._sc = fused.StepConfig.from_options(opts)
         self._runner = None
         self.N = int(opts.svgd_n)
@@ -553,6 +576,7 @@ class SvgdSolver:
         if self._tg is not None:
             return
         bp = BatchedProgram.from_program(self.program, dtype=self.dtype)
+        fused.check_kernel_for_arm(self._sc.kernel, bp.is_learned, arm=type(self.program).__name__)
         if bp.device.type == "cuda":
             ## cuSOLVER for the GN metric's batched `solve_ex`. PROCESS-WIDE, and deliberate:
             ## torch's default heuristic routes the [N, 20, 20] batches to MAGMA, whose
@@ -672,7 +696,8 @@ class SvgdSolver:
         """One step as `fused`'s three stages with the collision row between them: stage 1,
         the plant vector copied to the host, stage 2 launched on the GPU, the collision row on
         the CPU (in this process), stage 3. Returns `(X_new, clip [N], n_clip [N], lambda_max
-        [N] or None, ||H||_F / lambda_max [N] or None, repulsion/drive ratio [])`."""
+        [N] or None, ||H||_F / lambda_max [N] or None, repulsion/drive ratio [], the kernel's
+        bandwidth(s) [n_factors])`."""
         r = self._runner
         bp = self._tg.bp
         cfg, q_plant = r.s1(X)
@@ -689,7 +714,7 @@ class SvgdSolver:
         col_grad = None if col[1] is None else torch.as_tensor(col[1]).to(**kw)
         o = r.s3(X, cfg, J_q, kin, col_row, col_grad, fused.state_dict(S))
         lam, fro_ratio = self._diagnose(o["H"], want_lam)
-        return o["X"], o["clip"], o["n_clip"], lam, fro_ratio, o["ratio"]
+        return o["X"], o["clip"], o["n_clip"], lam, fro_ratio, o["ratio"], o["bw"]
 
     def _step_eager(self, X, S, want_lam=False):
         """The same step through autograd (a robot behind its own pose provider)."""
@@ -701,14 +726,18 @@ class SvgdSolver:
         dFc, dFx = tg.cost_parts(ev)
         gF = (J_q.transpose(1, 2) @ dFc.unsqueeze(2)).squeeze(2) + dFx
         live = fused.live_mask(sc, S)
-        K, R, kernel_on = fused.kernel_terms(sc, ev.cfg, ev.finite, X, live)
+        pose = pose_jac = None
+        if sc.kernel == "pose":
+            pose, pose_jac = tg.pose_and_jacobian_ev(ev)
+        K, R, kernel_on, bw = fused.kernel_terms(sc, ev.cfg, ev.finite, X, live, tg=tg,
+                                                 pose=pose, pose_jac=pose_jac)
         with torch.no_grad():
             phi, H, ratio = fused.direction_and_hessian(
                 tg, sc, X, gF.detach(), J_q, J_h.detach(), J_g.detach(), ev.h.detach(),
                 ev.g.detach(), ev.finite, K, R, kernel_on, S, live)
             Xn, clip, n_clip = fused.step_from(tg, sc, X, phi, H, live)
         lam, fro_ratio = self._diagnose(H, want_lam)
-        return Xn, clip, n_clip, lam, fro_ratio, ratio
+        return Xn, clip, n_clip, lam, fro_ratio, ratio, bw
 
     def _row_group_index(self):
         """`(h_row_group [m_e], g_row_group [m_i], n_groups)`: each `h` / `g` column's index
@@ -748,7 +777,8 @@ class SvgdSolver:
         for t_outer in range(outer_iters):
             clip_check = torch.zeros((), dtype=self.dtype, device=self.device)
             for k in range(inner_iters):
-                X, clip, n_clip, lam, fro_ratio, ratio = step_fn(X, S, want_lam=(k == inner_iters - 1))
+                X, clip, n_clip, lam, fro_ratio, ratio, bw = step_fn(X, S, want_lam=(k == inner_iters - 1))
+                stats["bw"] = bw
                 if lam is not None:
                     lam_f = torch.where(torch.isfinite(lam), lam, torch.full_like(lam, float("nan")))
                     stats["lam_med"].append(torch.nanmedian(lam_f))
@@ -844,6 +874,9 @@ class SvgdSolver:
         stats["lambda_max_median"] = float(np.nanmedian(lm)) if np.isfinite(lm).any() else None
         stats["lambda_max_max"] = float(np.nanmax(lx[np.isfinite(lx)])) if np.isfinite(lx).any() else None
         stats["repulsion_ratio_median"] = float(np.nanmedian(ra)) if np.isfinite(ra).any() else None
+        bw = stats.pop("bw", None)
+        stats["bandwidths"] = (None if bw is None or self._sc.kernel == "none" else
+                               [float(b) for b in bw.detach().to("cpu", torch.float64).numpy()])
         return X, S, status, stats
 
     ## -------------------------------- Drake re-check ----------------------------------
@@ -866,6 +899,24 @@ class SvgdSolver:
         return worst
 
     ## ----------------------------------- solve ----------------------------------------
+    def _kernel_spread(self, X, evf, feas):
+        """`feasible_spread_kernel`: the median pairwise distance among the feasible (live)
+        particles at stop IN THE KERNEL'S OWN SPACE and units (`fused.kernel_features`): the
+        configuration for `q`, the normalised y (or its block) for `x` / `z` / `c`, the
+        [position; canonical quaternion] 7-vector for `pose`; for a product kernel (`cz`, `qz`)
+        one spread per factor, a 2-list. None under `none`."""
+        space = self._sc.kernel
+        if space == "none":
+            return None
+        pose = None
+        if space == "pose":
+            quat, pos = evf.out.pose_frame
+            pose = torch.cat([pos, fused.canonical_quat(quat)], dim=1)
+        feats = fused.kernel_features(space, self._tg, X, evf.cfg, pose)
+        idx = np.flatnonzero(feas)
+        out = [_median_pairwise_distance(u.detach().cpu().double().numpy()[idx]) for u, _, _ in feats]
+        return out[0] if len(out) == 1 else out
+
     def solve(self):
         program = self.program
         opts = self.options
@@ -933,6 +984,7 @@ class SvgdSolver:
         n_feasible = int(feas.sum())
         cfg_np = evf.cfg.detach().cpu().double().numpy()
         spread = _median_pairwise_distance(cfg_np[feas]) if n_feasible >= 2 else None
+        spread_kernel = self._kernel_spread(X, evf, feas) if n_feasible >= 2 else None
         ## The swarm's clamp onto B ran in the swarm's dtype, whose rounding of a bound can sit
         ## an ulp outside the float64 bound Drake holds; the same clamp in float64 removes that
         ## (it moves no coordinate by more than the swarm dtype's rounding, recorded).
@@ -1036,7 +1088,10 @@ class SvgdSolver:
             n_multiplier_clipped=int(sstats.get("n_multiplier_clipped", 0)),
             multiplier_clips_by_group=dict(sstats.get("multiplier_clips_by_group") or {}),
             multiplier_inf_median_by_group=mult_inf_by_group,
-            feasible_q_spread=spread, extras=extras)
+            feasible_q_spread=spread, kernel=self._sc.kernel,
+            metric_temperature=str(getattr(opts, "svgd_metric_temperature", "off")),
+            bandwidths=sstats.get("bandwidths"), feasible_spread_kernel=spread_kernel,
+            extras=extras)
         write_log(opts.file_print_name, details)
         return SvgdResult(program, bp.to_drake_x(x_ret), details, success=bool(drake_ok))
 
