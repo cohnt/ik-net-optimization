@@ -20,7 +20,10 @@ And the stage mode (`--stage SVGD`, the cluster's `sc_SVGD_*` family):
   - the LEAD pairing is learned-under-svgd against learned-under-IPOPT (the R2 twin), the joint-space
     ablation its own pairing, and the A/B and variant-vs-variant tables pair against `kq`;
   - a missing run prints as MISSING with its tag and is not fatal;
-  - a grid_hash mismatch, and a run whose overrides are not its manifest item's, REFUSE (exit 2).
+  - a grid_hash mismatch, and a run whose overrides are not its manifest item's, REFUSE (exit 2);
+  - the rounds run the learned arm only (gen_manifest's `--arms learned`): such a run pairs its
+    LEAD, prints its ablation as `not run`, takes cost against the twin's learned arm, and a run
+    whose arms are not its manifest item's is REFUSED.
 The stage fixtures keep gen_manifest's real tags but are 16-cell runs: the catalogue's cell count
 is patched to the fixture's, which is the one thing the 480-cell tag cannot carry.
 """
@@ -207,12 +210,14 @@ def _stage_meta(info, grid=GRID, overrides=None):
 
 
 def _stage_write(root, variant, learned, numerical, grid=GRID, overrides=None):
+    """`numerical=None` writes a learned-only run, as a round's `--arms learned` item does."""
     runs, _, by = _stage_tags()
     tag = by[STAGE_ROW + (variant,)]
     d = os.path.join(root, "panda", "benchmark", tag)
     os.makedirs(d, exist_ok=True)
-    records = {"learned": learned, "numerical": numerical}
-    arms = [bm.Arm("learned", None), bm.Arm("numerical", None)]
+    records = {"learned": learned} if numerical is None else {"learned": learned,
+                                                              "numerical": numerical}
+    arms = [bm.Arm(a, None) for a in records]
     payload = dict(metadata=_stage_meta(runs[tag], grid, overrides), n_targets=T, n_guesses=G,
                    summary=bm.summarise(records, arms, T, G), records=records)
     with open(os.path.join(d, "summary.json"), "w") as f:
@@ -272,6 +277,12 @@ def test_stage_tag_parsing_every_variant():
     assert variants["knone"]["sets"]["svgd_kernel"] == "none"
     assert variants["rho1e4"]["sets"]["svgd_rho"] == 10000 and variants["kq"]["sets"]["svgd_rho"] == 1000
     assert "max_iter" in variants[R.STAGE_TWIN]["sets"] and "max_iter" not in variants["kq"]["sets"]
+    ## The arms are the manifest's: the twin and R1 run both, the rounds what SVGD_ROUND_ARMS says.
+    assert variants[R.STAGE_TWIN]["arms"] == variants["kq"]["arms"] == R.ARMS
+    round_arms = tuple(GM.SVGD_ROUND_ARMS.split(","))
+    for rnd in GM.SVGD_ROUNDS.values():
+        for v in rnd:
+            assert variants[v]["arms"] == round_arms, (v, variants[v]["arms"])
     ## Not stage tags: the smoke's, the cluster smoke's, the record's, a twin with a variant token.
     for bad in (M.make_tag("panda", "mugshelf", "paired", "al64", 10, 20),
                 "sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq",
@@ -292,9 +303,8 @@ def test_stage_lead_pairing_ab_and_missing():
         ## IPOPT-only 5..9).
         _stage_write(root, "kq", [_rec(i, i < 14, 1.0) for i in range(N_CELLS)],
                      [_rec(i, i < 5 or i == 15, 2.0) for i in range(N_CELLS)])
-        ## n1: learned solves 0..7 only -> 6 cells only kq solved.
-        _stage_write(root, "n1", [_rec(i, i < 8, 1.0) for i in range(N_CELLS)],
-                     [_rec(i, i < 5, 2.0) for i in range(N_CELLS)])
+        ## n1 (a round: learned only): learned solves 0..7 only -> 6 cells only kq solved.
+        _stage_write(root, "n1", [_rec(i, i < 8, 1.0) for i in range(N_CELLS)], None)
         rep, text = _stage_run(root)
         key = STAGE_ROW
         b = rep.blocks[key + ("kq",)]
@@ -333,6 +343,76 @@ def test_stage_lead_pairing_ab_and_missing():
         tw["records"]["learned"][0]["wall_time"] = 1000.0
         st = R.arm_stats(tw, "learned", "numerical", clamp_wall=True)
         assert abs(st["wall"] - (2.0 * 15 + 180.0) / 16) < 1e-12, st["wall"]
+
+
+def test_stage_learned_only_round():
+    with tempfile.TemporaryDirectory() as root:
+        _stage_twin(root)                          # learned 0..9 (cost 1.5), joint space 0..9
+        _stage_write(root, "kq", [_rec(i, i < 14, 1.0) for i in range(N_CELLS)],
+                     [_rec(i, i < 5 or i == 15, 2.0) for i in range(N_CELLS)])
+        ## n1, learned arm only: solves 0..11 (cost 3.0) -> svgd-only 10, 11 against the twin, and
+        ## 10 cells it and the twin's learned arm both solved (0..9) for the cost column.
+        n1 = _stage_write(root, "n1", [_rec(i, i < 12, 3.0) for i in range(N_CELLS)], None)
+        rep, text = _stage_run(root)
+        key = STAGE_ROW
+        assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+        assert n1 not in rep.missing
+        ## The LEAD pairs n1's learned arm with the twin's.
+        b = rep.blocks[key + ("n1",)]
+        assert set(b["vs_twin"]) == {"learned"} and b["J"] is None and b["arms"] == ("learned",)
+        lead = text[text.index("LEAD -- learned under svgd"):text.index("ABLATION -- joint space")]
+        line = next(l for l in lead.splitlines() if l.strip().startswith("n1"))
+        assert line.split()[2:6] == ["12", "10", "2", "0"], line
+        assert rep.verdicts[(key, "n1", "learned")] == "tie"
+        assert (key, "n1", "numerical") not in rep.verdicts
+        ## The ABLATION says not run -- not MISSING, not a row of zeros.
+        abl = text[text.index("ABLATION -- joint space"):text.index("[ipopt] round")]
+        line = next(l for l in abl.splitlines() if l.strip().startswith("n1"))
+        assert line.split()[2:] == ["not", "run", "(learned", "arm", "only)"], line
+        ## Its block: the learned row only, no learned-vs-joint-space line, cost against the twin.
+        blk = text[text.index(f"[n1] round"):text.index("A/B against the primary")]
+        assert "joint space arm not run (learned arm only" in blk, blk
+        assert "learned vs joint space" not in blk and "joint space  " not in blk, blk
+        assert "cost/tw = median reported cost on the n cells this arm AND the same arm of the " \
+               "IPOPT twin both solved" in blk
+        row = next(l for l in blk.splitlines() if l.strip().startswith("learned "))
+        assert row.split()[:7] == ["learned", "12/16", "+2/-0", "p=0.5", "1.0e-09", "3.000", "10"], row
+        assert b["L"]["cost_vs_twin"] == 3.0 and b["L"]["n_vs_twin"] == 10
+        ## The kq block keeps both arms and its learned-vs-joint-space line.
+        assert "learned vs joint space under svgd (printed, NOT a headline): 14 v 6" in text
+        ## A/B: n1's joint-space line is `not run`; its learned line pairs (+0 / -2 against kq).
+        ab = text[text.index("A/B against the primary kq"):text.index("VARIANTS ACROSS ROUNDS")]
+        assert any(" n1 " in l and "joint space" in l and "not run (learned arm only)" in l
+                   for l in ab.splitlines()), ab
+        line = next(l for l in ab.splitlines() if " n1 " in l and "learned" in l)
+        f = line.split()
+        assert f[f.index("learned") + 1:f.index("learned") + 5] == ["14", "12", "0", "2"], line
+        ## The overview: n1's learned cell carries its verdict, its joint-space cell is `--`.
+        ov = text[text.index("VARIANTS ACROSS ROUNDS"):text.index("VARIANT vs VARIANT")]
+        lt = ov[ov.index("learned under svgd"):ov.index("joint space under svgd")]
+        jt = ov[ov.index("joint space under svgd"):]
+        assert "12 T" in next(l for l in lt.splitlines() if l.strip().startswith("n1"))
+        assert next(l for l in jt.splitlines() if l.strip().startswith("n1")).split()[2] == "--"
+        ## Pairwise: the learned matrix pairs kq against n1; the joint-space one skips n1.
+        pw = text[text.index("VARIANT vs VARIANT"):]
+        assert "+2/-0" in pw[:pw.index("joint space under svgd")]
+        js = pw[pw.index("joint space under svgd"):]
+        assert "1 variant(s) landed -- nothing to pair" in js.splitlines()[0], js
+
+
+def test_stage_arms_not_the_manifests_are_refused():
+    with tempfile.TemporaryDirectory() as root:
+        _stage_twin(root)
+        ## A round run carrying a joint-space arm its manifest item never ran ...
+        n1 = _stage_write(root, "n1", [_rec(i, True, 1.0) for i in range(N_CELLS)],
+                          [_rec(i, True, 1.0) for i in range(N_CELLS)])
+        ## ... and an R1 run missing the joint-space arm its item did run.
+        kq = _stage_write(root, "kq", [_rec(i, True, 1.0) for i in range(N_CELLS)], None)
+        rep, _ = _stage_run(root)
+        assert any(n1 in m and "carries arm(s) ['numerical']" in m for m in rep.refused), rep.refused
+        assert any(kq in m and "joint space has 0 of" in m for m in rep.refused), rep.refused
+        assert STAGE_ROW + ("n1",) not in rep.blocks and STAGE_ROW + ("kq",) not in rep.blocks
+        assert rep.status == 2
 
 
 def test_stage_grid_hash_refusal():
