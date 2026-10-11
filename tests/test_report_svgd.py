@@ -272,8 +272,16 @@ def test_stage_tag_parsing_every_variant():
             assert rebuilt == tag, (rebuilt, tag)
             assert runs[tag]["manifest"] == stage
             seen.add((t["variant"], t["row"], t["start"]))
-    ## Every variant on all four Panda rows, and a variant's settings are its manifest's.
-    assert seen == {(v, r, s) for v in named for r in M.TASK_ROWS for s in M.STARTS}
+    ## Every variant on the rows its manifest gives it (both starts, or a round variant's own
+    ## `starts` filter -- `initnative` runs the paired rows only), and its settings are its manifest's.
+    expected = set()
+    for v in named:
+        starts = M.STARTS
+        for rnd in GM.SVGD_ROUNDS.values():
+            if v in rnd:
+                starts = tuple(rnd[v][2].split(","))
+        expected |= {(v, r, s) for r in M.TASK_ROWS for s in starts}
+    assert seen == expected, (seen ^ expected)
     assert variants["knone"]["sets"]["svgd_kernel"] == "none"
     assert variants["rho1e4"]["sets"]["svgd_rho"] == 10000 and variants["kq"]["sets"]["svgd_rho"] == 1000
     assert "max_iter" in variants[R.STAGE_TWIN]["sets"] and "max_iter" not in variants["kq"]["sets"]
