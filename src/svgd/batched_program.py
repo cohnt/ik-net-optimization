@@ -67,7 +67,7 @@ from pydrake.solvers import (BoundingBoxConstraint, LinearConstraint, LinearCost
                              QuadraticConstraint, QuadraticCost)
 
 from src.svgd.batched_flow import BatchedFlow
-from src.svgd.collision_backend import CollisionEvaluator, collision_row
+from src.svgd.collision_backend import collision_row, make_collision_evaluator
 from src.svgd.kinematics_from_plant import (BatchedFK, BodyPoseProvider, KinematicTree,
                                             canonical_quat, rpy_from_quat, wrap_residual)
 
@@ -209,7 +209,8 @@ class BatchedProgram:
 
         `device` defaults to wherever the program's network lives (learned arm) or CUDA if
         available (joint space). `collision` is a `CollisionEvaluator` to share; otherwise the
-        program's own (`CollisionEvaluator.from_program`: its constraint, in this process).
+        one `svgd_collision_backend` names (`make_collision_evaluator`: by default the
+        program's own constraint, in this process).
 
         `body_pose_provider` / `config_to_plant_q` are the hooks for a robot whose
         configuration is not the plant's position vector (module docstring).
@@ -341,7 +342,7 @@ class BatchedProgram:
         ## -- the collision row: the program's own constraint, in this process --------------
         self._has_collision = any(b.kind == "collision" for b in self._blocks)
         if collision is None and self._has_collision:
-            collision = CollisionEvaluator.from_program(program)
+            collision = make_collision_evaluator(program)   # svgd_collision_backend
         self.collision = collision
         self._native_c = self._compute_native_c()
         return self

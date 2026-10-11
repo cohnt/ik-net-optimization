@@ -257,6 +257,7 @@ def solver_diagnostics(result, solver):
 _SVGD_DETAIL_KEYS = ("method", "dtype", "n_particles", "iterations", "inner_steps",
                      "map_evals", "n_feasible", "n_resampled", "selected_index",
                      "solver_feasible", "drake_feasible", "phase_times", "collision_seconds",
+                     "collision_backend", "collision_threads",
                      "stop_reason", "n_dual_updates", "lam_inf_median", "lam_inf_max",
                      "mu_inf_median", "mu_inf_max", "bound_clip", "n_multiplier_clipped",
                      "multiplier_clips_by_group", "multiplier_inf_median_by_group",

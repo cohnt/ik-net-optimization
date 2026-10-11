@@ -16,9 +16,40 @@ over the N particles calling the PROGRAM'S OWN constraint
 (`program.collision_free_constraint_eval`, on the program's own plant context) on AutoDiffXd --
 `Eval(InitializeAutoDiff(q))`, exactly what the program's binding does -- and returns the value
 `[N]` and gradient `[N, nq]`. It holds the GIL for the whole batch (pydrake does not release it in
-`Eval`), so it is serial and costs roughly N x the per-configuration Eval. A batched C++
-clearance-with-Jacobians call that releases the GIL is a Drake-side item for Thomas, not patched
-here. (`from_spec` builds the same constraint on a rebuilt scene, for callers holding no program.)
+`Eval`), so it is serial and costs roughly N x the per-configuration Eval. (`from_spec` builds the
+same constraint on a rebuilt scene, for callers holding no program.) This is backend
+`autodiff`, the default of `ProgramOptions.svgd_collision_backend`.
+
+**The clearances backend (`svgd_collision_backend="clearances"`, `ClearanceEvaluator`)** computes
+the SAME functional from ONE `CollisionChecker.CalcRobotClearances(Q, influence_distance)` call --
+batched, GIL-released, parallel over the checker's per-thread contexts (`Parallelism.Max()`) --
+which Thomas added on Drake branch `calc-robot-clearances`. The cluster's Drake (and this repo's
+default pydrake) lacks it, so the default stays `autodiff` and `clearances` is refused at options
+construction where the binding is missing. The aggregation replicates
+`solvers/minimum_value_constraint.cc` (`MinimumValueLowerBoundConstraint`, the class
+`MinimumDistanceLowerBoundConstraint` delegates to) in numpy float64:
+
+    v_infl = bound + influence_distance_offset
+    x_i    = (d_i - v_infl) / (v_infl - bound)            for every pair with d_i < v_infl
+    p_i    = phi(x_i) / phi(-1),  phi = QuadraticallySmoothedHingeLoss (the default; the
+             constraint is built with no penalty function): x^2/2 on (-1, 0), -1/2 - x below
+    y      = SoftOverMax(p padded with zeros to M, alpha = 100)
+           = log(sum_j exp(alpha (p_j - t))) / alpha + t,  t = max_j p_j
+    dy/dq  = sum_i exp(alpha (p_i - t)) phi'(x_i) / phi(-1) / (v_infl - bound) * dd_i/dq
+             / sum_j exp(alpha (p_j - t))
+
+with `M` the scene's collision-candidate count (`max_num_values`) and, when no pair lies inside
+the influence distance, `y = log(M) / alpha` with zero gradient (Drake's initial `y`); `M = 0`
+gives `y = 0`. `dd_i/dq` is the checker's per-pair Jacobian (`RobotClearance.jacobians()`), the
+same derivative the constraint forms from `CalcJacobianTranslationalVelocity` and the query's
+normal. The checker is built UNPADDED, so its distances are the constraint's own query's
+distances. **The pair sets are checked, not assumed**: the constraint visits the SceneGraph's
+collision candidates (never anchored-vs-anchored); the checker visits the robot-involving ones
+after its own filter matrix (which adds welded-subgraph filters). Construction requires every
+plant candidate's body pair to be unfiltered in the checker and the two counts to agree, so the
+sets are equal; on both Panda scenes they are (302 pose, 342 grasp).
+`tests/test_collision_clearances.py` measures the agreement: values bitwise equal, gradients to
+4e-14 of their largest entry, bitwise independent of thread count and batch.
 
 **A non-finite configuration must never reach Drake.** `MultibodyPlant::SetPositions` has a
 `DRAKE_DEMAND(AllFinite(q))`; in pydrake that failure surfaces as `SystemExit` (a BaseException,
@@ -41,6 +72,7 @@ where a boolean suffices (collision-free draws, redraws): `SceneGraphCollisionCh
 
 import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
@@ -188,6 +220,9 @@ class CollisionEvaluator:
     plant vector); rows that are non-finite, or on which Drake aborts, come back NaN.
     """
 
+    backend = "autodiff"
+    num_threads = 1
+
     def __init__(self, constraint, nq, scale):
         self.constraint = constraint
         self.nq = int(nq)
@@ -284,6 +319,45 @@ def collision_row(q_plant, evaluator):
 ##                      ParallelCollisionChecker (boolean, C++-parallel)                 ##
 ## ------------------------------------------------------------------------------------ ##
 
+def _scene_checker(spec, padding, edge_step_size=0.05):
+    """`(RobotDiagram, SceneGraphCollisionChecker, robot instance names)` over the scene `spec`
+    describes, with `padding` on every robot-environment and robot-robot pair.
+
+    **Robot model instances are derived, not named**: an instance is part of the robot iff it
+    owns a body Drake does not consider anchored to the world, i.e. anything that moves with
+    the configuration (see `ParallelCollisionChecker`)."""
+    from pydrake.multibody.parsing import (LoadModelDirectives, ModelDirectives,
+                                           ProcessModelDirectives)
+    from pydrake.multibody.tree import ModelInstanceIndex
+    from pydrake.planning import RobotDiagramBuilder, SceneGraphCollisionChecker
+    with HiddenPrints():
+        builder = RobotDiagramBuilder()
+        parser = builder.parser()
+        parser.package_map().AddPackageXml(os.path.join(RepoDir(), "package.xml"))
+        directives = LoadModelDirectives(spec.yaml_path)
+        extra = spec.extra_directives()
+        if extra:
+            combined = ModelDirectives()
+            combined.directives = list(directives.directives) + list(extra)
+            directives = combined
+        ProcessModelDirectives(directives, builder.plant(), parser)
+        model = builder.Build()
+        plant = model.plant()
+        robot = []
+        for i in range(plant.num_model_instances()):
+            mi = ModelInstanceIndex(i)
+            if any(not plant.IsAnchored(plant.get_body(b)) for b in plant.GetBodyIndices(mi)):
+                robot.append(mi)
+        if not robot:
+            raise RuntimeError("collision checker: no moving model instance in %s"
+                               % spec.yaml_path)
+        names = tuple(plant.GetModelInstanceName(m) for m in robot)
+        checker = SceneGraphCollisionChecker(
+            model=model, robot_model_instances=robot, edge_step_size=edge_step_size,
+            env_collision_padding=padding, self_collision_padding=padding)
+    return model, checker, names
+
+
 class ParallelCollisionChecker:
     """`SceneGraphCollisionChecker` over the same scene, for where a boolean suffices.
 
@@ -302,39 +376,11 @@ class ParallelCollisionChecker:
     """
 
     def __init__(self, spec, padding=None, edge_step_size=0.05):
-        from pydrake.multibody.parsing import (LoadModelDirectives, ModelDirectives,
-                                               ProcessModelDirectives)
-        from pydrake.multibody.tree import ModelInstanceIndex
-        from pydrake.planning import RobotDiagramBuilder, SceneGraphCollisionChecker
         self.spec = spec
         self.padding = spec.collision_bound if padding is None else float(padding)
-        with HiddenPrints():
-            builder = RobotDiagramBuilder()
-            parser = builder.parser()
-            parser.package_map().AddPackageXml(os.path.join(RepoDir(), "package.xml"))
-            directives = LoadModelDirectives(spec.yaml_path)
-            extra = spec.extra_directives()
-            if extra:
-                combined = ModelDirectives()
-                combined.directives = list(directives.directives) + list(extra)
-                directives = combined
-            ProcessModelDirectives(directives, builder.plant(), parser)
-            self.model = builder.Build()
-            plant = self.model.plant()
-            robot = []
-            for i in range(plant.num_model_instances()):
-                mi = ModelInstanceIndex(i)
-                if any(not plant.IsAnchored(plant.get_body(b)) for b in plant.GetBodyIndices(mi)):
-                    robot.append(mi)
-            if not robot:
-                raise RuntimeError("ParallelCollisionChecker: no moving model instance in %s"
-                                   % spec.yaml_path)
-            self.robot_instance_names = tuple(plant.GetModelInstanceName(m) for m in robot)
-            self.nq = plant.num_positions()
-            self.checker = SceneGraphCollisionChecker(
-                model=self.model, robot_model_instances=robot,
-                edge_step_size=edge_step_size,
-                env_collision_padding=self.padding, self_collision_padding=self.padding)
+        self.model, self.checker, self.robot_instance_names = _scene_checker(
+            spec, self.padding, edge_step_size)
+        self.nq = self.model.plant().num_positions()
 
     def collision_free(self, q_plant):
         """bool[N]: True where no checked pair is closer than `padding`. Non-finite rows are
@@ -349,6 +395,244 @@ class ParallelCollisionChecker:
             ok = self.checker.CheckConfigsCollisionFree(Q[finite], Parallelism.Max())
             out[finite] = np.asarray(ok, dtype=bool)
         return out
+
+
+## ------------------------------------------------------------------------------------ ##
+##              ClearanceEvaluator (the same row, from ONE batched Drake call)           ##
+## ------------------------------------------------------------------------------------ ##
+
+SOFT_MAX_ALPHA = 100.0      # `SmoothOverMax` in solvers/minimum_value_constraint.cc
+
+
+def clearances_unavailable_reason():
+    """None when the running pydrake has `CollisionChecker.CalcRobotClearances`, otherwise a
+    sentence saying why the `clearances` backend cannot run."""
+    try:
+        import pydrake
+        from pydrake.planning import CollisionChecker
+    except Exception as e:                        # pragma: no cover - pydrake is a dependency
+        return "pydrake.planning does not import (%s)" % e
+    if not hasattr(CollisionChecker, "CalcRobotClearances"):
+        return ("the running pydrake (%s) has no CollisionChecker.CalcRobotClearances -- it "
+                "needs a Drake built from branch `calc-robot-clearances` (temporarily "
+                "/home/tommy/opt/rlg/drake-build-crc; prepend its site-packages to PYTHONPATH)"
+                % os.path.dirname(pydrake.__file__))
+    return None
+
+
+def _quadratic_hinge(x):
+    """`QuadraticallySmoothedHingeLoss` for x < 0 (every value it is handed here), and its
+    derivative: x^2/2 on (-1, 0), -1/2 - x at and below -1."""
+    inner = x > -1
+    return np.where(inner, 0.5 * x * x, -0.5 - x), np.where(inner, x, -1.0)
+
+
+_CLEARANCE_CHECKERS = OrderedDict()   # SceneSpec -> (model, checker, robot names)
+
+
+class ClearanceEvaluator:
+    """The SAME scaled row and gradient as `CollisionEvaluator`, computed from one
+    `CollisionChecker.CalcRobotClearances(Q, influence_distance)` call -- batched, GIL-released,
+    parallel over the checker's per-thread contexts -- plus Drake's penalty aggregation
+    replicated in numpy float64 (module docstring, "The clearances backend").
+
+    The checker is unpadded (padding 0 on every pair, so its distances are the raw signed
+    distances the constraint's own query returns) and is built from `spec`. `max_num_values`
+    is the constraint's own padding length -- the number of collision candidates of the scene
+    the PROGRAM's constraint was built on -- and construction refuses a checker whose
+    candidate set differs from it (`_check_pair_sets`).
+    """
+
+    backend = "clearances"
+
+    def __init__(self, spec, max_num_values=None, plant_candidates=None, parallelism=None):
+        reason = clearances_unavailable_reason()
+        if reason is not None:
+            raise RuntimeError("svgd_collision_backend='clearances': " + reason)
+        from pydrake.common import Parallelism
+        self.spec = spec
+        cached = _CLEARANCE_CHECKERS.get(spec)
+        if cached is None:
+            cached = _scene_checker(spec, padding=0.0)
+            _CLEARANCE_CHECKERS[spec] = cached
+            while len(_CLEARANCE_CHECKERS) > 1:
+                _CLEARANCE_CHECKERS.popitem(last=False)
+        self.model, self.checker, self.robot_instance_names = cached
+        self.nq = self.model.plant().num_positions()
+        self.scale = float(spec.row_scale)
+        self.bound = float(spec.collision_bound)
+        self.influence = float(spec.collision_bound + spec.influence_distance_offset)
+        self.parallelism = Parallelism.Max() if parallelism is None else parallelism
+        self.num_threads = (min(int(self.parallelism.num_threads()),
+                                int(self.checker.num_allocated_contexts()))
+                            if self.checker.SupportsParallelChecking() else 1)
+        checker_count = int(self.checker.MaxNumDistances())
+        if plant_candidates is not None:
+            self._check_pair_sets(plant_candidates, checker_count)
+        self.max_num_values = checker_count if max_num_values is None else int(max_num_values)
+        if self.max_num_values != checker_count:
+            raise RuntimeError(
+                "ClearanceEvaluator: the constraint pads to %d values but the checker can "
+                "report %d distances -- the two pair sets differ" % (self.max_num_values,
+                                                                    checker_count))
+
+    @staticmethod
+    def from_program(program, spec=None, parallelism=None):
+        """The program's row: its scene (via `spec`, defaulting to the solver's own
+        `SceneSpec` reading), its options, and the candidate count of ITS plant -- what its
+        `MinimumDistanceLowerBoundConstraint` pads `SmoothOverMax` to."""
+        if spec is None:
+            from src.svgd.solver import _scene_spec
+            spec = _scene_spec(program)
+        cands = _plant_candidate_pairs(program.plant, program.plant_context)
+        return ClearanceEvaluator(spec, max_num_values=len(cands), plant_candidates=cands,
+                                  parallelism=parallelism)
+
+    @staticmethod
+    def from_spec(spec, parallelism=None):
+        """The same, the candidate count read off a plant rebuilt from `spec` exactly as
+        `CollisionEvaluator.from_spec` rebuilds it."""
+        diagram = spec.build_diagram()
+        plant = diagram.GetSubsystemByName("plant")
+        context = diagram.CreateDefaultContext()
+        cands = _plant_candidate_pairs(plant, plant.GetMyContextFromRoot(context))
+        return ClearanceEvaluator(spec, max_num_values=len(cands), plant_candidates=cands,
+                                  parallelism=parallelism)
+
+    def _check_pair_sets(self, plant_candidates, checker_count):
+        """The constraint visits the plant's collision candidates (SceneGraph never makes an
+        anchored-anchored pair a candidate); the checker visits the robot-involving
+        candidates of ITS SceneGraph after applying its own filter matrix (which adds the
+        welded-subgraph filters). Every plant candidate's body pair must be unfiltered in the
+        checker -- so plant pairs are a subset of checker pairs -- and the counts must agree,
+        which makes the sets equal."""
+        plant = self.model.plant()
+        filtered = []
+        for a, b in plant_candidates:
+            ba, bb = plant.GetBodyByName(a[1], plant.GetModelInstanceByName(a[0])), \
+                plant.GetBodyByName(b[1], plant.GetModelInstanceByName(b[0]))
+            if self.checker.IsCollisionFilteredBetween(ba, bb):
+                filtered.append((a, b))
+        if filtered or checker_count != len(plant_candidates):
+            raise RuntimeError(
+                "ClearanceEvaluator: the checker's pair set is not the constraint's: %d plant "
+                "candidates, %d checker distances, %d plant pairs filtered by the checker "
+                "(first: %r)" % (len(plant_candidates), checker_count, len(filtered),
+                                 filtered[:3]))
+
+    def eval(self, Q, need_grad=True):
+        Q = np.asarray(Q, dtype=np.float64)
+        if Q.ndim != 2 or Q.shape[1] != self.nq:
+            raise ValueError("collision row: got shape %r, the scene has %d plant positions"
+                             % (Q.shape, self.nq))
+        n, nq = Q.shape
+        values = np.full(n, np.nan)
+        grads = np.full((n, nq), np.nan) if need_grad else None
+        rows = np.flatnonzero(np.all(np.isfinite(Q), axis=1))   # never hand Drake a NaN
+        if rows.size == 0:
+            return values, grads
+        if self.max_num_values == 0:                # a non-constraint: y = 0 (Drake's rule)
+            values[rows] = 0.0
+            if need_grad:
+                grads[rows] = 0.0
+            return values, grads
+        configs = [np.ascontiguousarray(Q[i]) for i in rows]
+        try:
+            results = self.checker.CalcRobotClearances(configs, self.influence,
+                                                       self.parallelism)
+        except KeyboardInterrupt:
+            raise
+        except BaseException:
+            ## Per row, so one bad configuration costs only its own row (NaN by contract).
+            results, kept = [], []
+            for i, q in zip(rows, configs):
+                try:
+                    results.append(self.checker.CalcRobotClearances([q], self.influence, 1)[0])
+                    kept.append(i)
+                except KeyboardInterrupt:
+                    raise
+                except BaseException:
+                    continue
+            rows = np.asarray(kept, dtype=int)
+            if rows.size == 0:
+                return values, grads
+        self._aggregate(results, rows, values, grads)
+        return values, grads
+
+    def _aggregate(self, results, rows, values, grads):
+        """`MinimumValueLowerBoundConstraint`'s penalty over each configuration's distances,
+        vectorised over the batch (module docstring for the formula)."""
+        m, infl, bound, alpha = self.max_num_values, self.influence, self.bound, SOFT_MAX_ALPHA
+        dist = [r.distances() for r in results]
+        counts = np.fromiter((d.size for d in dist), dtype=np.int64, count=len(dist))
+        d = np.concatenate(dist) if counts.sum() else np.zeros(0)
+        seg = np.repeat(np.arange(len(dist)), counts)
+        keep = d < infl                               # `value < influence_value`, strict
+        d, seg = d[keep], seg[keep]
+        nb = len(dist)
+        k = np.bincount(seg, minlength=nb)            # penalised values per configuration
+
+        ## x = (v - v_influence) / (v_influence - v_min); penalty = phi(x) / phi(-1).
+        denom = infl - bound
+        x = (d - infl) / denom
+        phi, dphi = _quadratic_hinge(x)
+        scaling = 1.0 / 0.5                           # 1 / QuadraticallySmoothedHingeLoss(-1)
+        p = phi * scaling
+        ## SoftOverMax(p padded with zeros to m) = log(sum_j exp(a (p_j - t))) / a + t, t the
+        ## max (>= 0, the padding's zeros included when k < m).
+        t = np.zeros(nb)
+        np.maximum.at(t, seg, p)
+        e = np.exp(alpha * (p - t[seg]))
+        sum_exp = np.bincount(seg, weights=e, minlength=nb) \
+            + (m - k) * np.exp(alpha * (0.0 - t))
+        y = np.log(sum_exp) / alpha + t
+        ## Nothing within the influence distance: y = SoftOverMax(zeros(m)) = log(m)/a,
+        ## constant (Drake's initial value of y, with an empty derivative).
+        y[k == 0] = np.log(float(m)) / alpha
+        values[rows] = self.scale * y
+        if grads is None:
+            return
+        ## dy/dq = sum_j w_j dp_j / sum_exp, w_j = exp(a (p_j - t)), dp_j = phi'(x_j) *
+        ## scaling * J_j / (v_influence - v_min), J_j the pair's d(distance)/dq.
+        nq = grads.shape[1]
+        G = np.zeros((nb, nq))
+        if d.size:
+            jac = [r.jacobians() for r in results]
+            J = np.concatenate(jac, axis=0)[keep]
+            coef = e * dphi * scaling / denom
+            np.add.at(G, seg, coef[:, None] * J)
+        G /= sum_exp[:, None]
+        G[k == 0] = 0.0
+        grads[rows] = self.scale * G
+
+
+def _plant_candidate_pairs(plant, plant_context):
+    """The collision candidates of `plant`'s SceneGraph -- the pairs, and the count,
+    `MinimumDistanceLowerBoundConstraint` pads its smooth max to -- as
+    ((instance, body), (instance, body)) name pairs, so they can be looked up in another
+    plant built from the same scene."""
+    inspector = plant.get_geometry_query_input_port().Eval(plant_context).inspector()
+    out = []
+    for ga, gb in inspector.GetCollisionCandidates():
+        names = []
+        for g in (ga, gb):
+            body = plant.GetBodyFromFrameId(inspector.GetFrameId(g))
+            names.append((plant.GetModelInstanceName(body.model_instance()), body.name()))
+        out.append(tuple(names))
+    return out
+
+
+def make_collision_evaluator(program):
+    """The collision row the solver uses, by `program.options.svgd_collision_backend`:
+    'autodiff' -- `CollisionEvaluator.from_program` (the program's own constraint, per
+    configuration); 'clearances' -- `ClearanceEvaluator.from_program` (one batched call)."""
+    backend = getattr(program.options, "svgd_collision_backend", "autodiff")
+    if backend == "autodiff":
+        return CollisionEvaluator.from_program(program)
+    if backend == "clearances":
+        return ClearanceEvaluator.from_program(program)
+    raise ValueError("svgd_collision_backend=%r is not one of ('autodiff', 'clearances')"
+                     % (backend,))
 
 
 ## ------------------------------------------------------------------------------------ ##
