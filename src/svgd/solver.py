@@ -657,6 +657,14 @@ class SvgdSolver:
         lam, fro_ratio = self._diagnose(H, want_lam)
         return Xn, clip, n_clip, lam, fro_ratio, ratio
 
+    def _row_group_index(self):
+        """`(h_row_group [m_e], g_row_group [m_i], n_groups)`: each `h` / `g` column's index
+        into `bp.row_groups`, as device tensors built here (never attributes of the target,
+        so the compiled stages' structure signature does not see them)."""
+        bp = self._tg.bp
+        li = lambda v: torch.tensor(v, dtype=torch.long, device=self.device)
+        return li(bp.h_row_group), li(bp.g_row_group), len(bp.row_groups)
+
     ## ---------------------------------- swarm -----------------------------------------
     def _swarm(self, X, S, deadline, outer_iters, inner_iters, record):
         """The outer/inner loop; returns `(X, S, stop_status, stats)`."""
@@ -670,6 +678,11 @@ class SvgdSolver:
                      ratio=[], fro_ratio=[])
         clip_tot = torch.zeros((), dtype=self.dtype, device=self.device)
         nclip_tot = torch.zeros((), dtype=torch.long, device=self.device)
+        ## Multiplier clips by row group (`BatchedProgram.row_groups`), accumulated on the
+        ## device at the dual checks -- which run eagerly, outside any compiled / captured
+        ## stage -- and moved to the host once, after the loop.
+        h_grp, g_grp, n_grp = self._row_group_index()
+        mclip_grp = torch.zeros(n_grp, dtype=torch.long, device=self.device)
         best_seen = float("inf")
         stale = 0
         status = STATUS_STEP_CAP
@@ -691,7 +704,10 @@ class SvgdSolver:
             ## -- the check, at the current swarm: the dual step, unconditionally --
             with torch.no_grad():
                 ev = tg.evaluate(X, need_grad=False)
-            S, n_clipped = al.dual_update(ev.h, ev.g, S, self._alpha, float(opts.svgd_multiplier_max))
+            S, n_clipped, (lam_rows, mu_rows) = al.dual_update(
+                ev.h, ev.g, S, self._alpha, float(opts.svgd_multiplier_max), by_row=True)
+            mclip_grp = (mclip_grp + al.by_group(lam_rows, h_grp, n_grp)
+                         + al.by_group(mu_rows, g_grp, n_grp))
             stats["n_dual_updates"] += 1
             mask = al.resample_mask(ev.cfg, ev.finite, float(opts.svgd_resample_q_max))
             n_re = int(mask.sum().item())
@@ -731,6 +747,8 @@ class SvgdSolver:
                 break
         stats["bound_clip"] = float(clip_tot.item())
         stats["bound_clip_count"] = int(nclip_tot.item())
+        stats["multiplier_clips_by_group"] = dict(zip(
+            self._tg.bp.row_groups, (int(n) for n in mclip_grp.cpu().tolist())))
         ## Per-step diagnostics, moved to the host once.
         to_np = lambda xs: (torch.stack(xs).detach().to("cpu", torch.float64).numpy()
                             if xs else np.zeros(0))
@@ -871,6 +889,13 @@ class SvgdSolver:
                 return np.zeros(M.shape[0])
             return M.detach().abs().amax(dim=1).cpu().double().numpy()
         lam_inf, mu_inf = inf_norms(S.lam), inf_norms(S.mu)
+        ## Per row group, |lam_i|_inf (an h group) or |mu_i|_inf (a g group) over the
+        ## group's rows, median over the particles at stop.
+        h_grp, g_grp, n_grp = self._row_group_index()
+        grp_inf = (al.inf_norm_by_group(S.lam.detach(), h_grp, n_grp)
+                   + al.inf_norm_by_group(S.mu.detach(), g_grp, n_grp))   # groups are disjoint
+        grp_med = np.median(grp_inf.cpu().double().numpy(), axis=0)   # as lam_inf_median
+        mult_inf_by_group = {name: float(grp_med[j]) for j, name in enumerate(bp.row_groups)}
         extras.update(dict(
             trace=trace, derivative_mode="analytic" if tg.analytic else "autograd",
             violation_at_stop=[float(x) for x in v],
@@ -901,6 +926,8 @@ class SvgdSolver:
             mu_inf_median=float(np.median(mu_inf)), mu_inf_max=float(np.max(mu_inf)),
             bound_clip=float(sstats.get("bound_clip", 0.0)),
             n_multiplier_clipped=int(sstats.get("n_multiplier_clipped", 0)),
+            multiplier_clips_by_group=dict(sstats.get("multiplier_clips_by_group") or {}),
+            multiplier_inf_median_by_group=mult_inf_by_group,
             feasible_q_spread=spread, extras=extras)
         write_log(opts.file_print_name, details)
         return SvgdResult(program, bp.to_drake_x(x_ret), details, success=bool(drake_ok))

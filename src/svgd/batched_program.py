@@ -54,7 +54,7 @@ kinematics and the collision evaluator (which screens non-finite rows before Dra
 import os
 import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -110,7 +110,9 @@ class RowSpec:
     `kind` is "eq" (an `h` row, `value - lb`), "lo" (a `g` row, `lb - value`) or "hi" (a
     `g` row, `value - ub`); `drake_binding` is the Drake binding's description and
     `drake_row` the row within it; `group` names the `RowScaling` field applied (empty for
-    the z and c boxes).
+    the z and c boxes). `row_group` is the row's DIAGNOSTIC label (`BatchedProgram.row_groups`:
+    which block of rows it belongs to, e.g. for counting multiplier clips by group); it is
+    never read by the step.
     """
     name: str
     kind: str
@@ -119,6 +121,7 @@ class RowSpec:
     lb: float
     ub: float
     group: str = ""
+    row_group: str = ""
 
 
 @dataclass
@@ -154,6 +157,7 @@ class _RowBlock:
     group: str            # RowScaling group ("" for unscaled)
     names: List[str]
     key: str = ""         # extra_rows key for extra bindings
+    labels: Optional[List[str]] = None   # per-row diagnostic label; None: `key or kind`
     A: Optional[Tensor] = None       # linear: [size, nv]
     Q: Optional[Tensor] = None       # quadratic: [nv, nv]
     b: Optional[Tensor] = None       # quadratic: [nv]
@@ -405,8 +409,11 @@ class BatchedProgram:
                 if self.is_mug:
                     if size != 3:
                         raise NotImplementedError(f"mug IKConstraint with {size} rows")
+                    ## x, y pin the gripper to the mug's axis (the equalities); z keeps it
+                    ## within the mug's height (the inequality).
                     self._blocks.append(_RowBlock(GENERIC_BINDING, "mug", start, 3, lb, ub, "mug",
-                                                  ["mug_x", "mug_y", "mug_z"]))
+                                                  ["mug_x", "mug_y", "mug_z"],
+                                                  labels=["mug_xy", "mug_xy", "mug_z"]))
                 else:
                     if size != 6:
                         raise NotImplementedError(f"pose IKConstraint with {size} rows")
@@ -499,7 +506,8 @@ class BatchedProgram:
                 idx = blk.start + r
                 base = dict(name=blk.names[r], drake_binding=blk.binding, drake_row=r
                             if blk.binding != GENERIC_BINDING else idx, lb=lb, ub=ub,
-                            group=blk.group)
+                            group=blk.group, row_group=blk.labels[r] if blk.labels is not None
+                            else (blk.key or blk.kind))
                 if lb == ub:
                     eq_idx.append(idx); eq_lb.append(lb); eq_s.append(scale)
                     eq_spec.append(RowSpec(kind="eq", **base))
@@ -517,6 +525,7 @@ class BatchedProgram:
         self._hi = (li(hi_idx), t(hi_ub), t(hi_s))
         self.h_spec: List[RowSpec] = eq_spec
         self.g_spec: List[RowSpec] = lo_spec + hi_spec
+        self._label_row_groups()
         ## The same split restricted to the GENERIC rows (functions of the configuration
         ## alone), for `evaluate_cfg`: `h_generic_mask[i]` says whether `h[:, i]` is one,
         ## and `evaluate_cfg`'s `h` is `h[:, h_generic_mask]` in the same order.
@@ -538,6 +547,32 @@ class BatchedProgram:
         self._eq_ex = (li(shift(eq_idx, xe)), t(pick(eq_lb, xe)), t(pick(eq_s, xe)))
         self._lo_ex = (li(shift(lo_idx, xl)), t(pick(lo_lb, xl)), t(pick(lo_s, xl)))
         self._hi_ex = (li(shift(hi_idx, xh)), t(pick(hi_ub, xh)), t(pick(hi_s, xh)))
+
+    def _label_row_groups(self):
+        """Finish every `h` / `g` entry's `row_group` label and build `row_groups`,
+        `h_row_group`, `g_row_group` (`RowSpec`'s docstring). The label is the block's own
+        (`_RowBlock.labels`, else its extra-rows key, else its kind: `pose_pos`, `pose_rpy`,
+        `mug_xy`, `mug_z`, `collision`, `joint_limit`, `z_box`, `c_box`, `trust`, ...),
+        read off the rows built here and never chosen per robot. A `g` label
+        with rows on both sides is split into `<label>_lo` / `<label>_hi`; an `h` label that
+        also names `g` rows becomes `<label>_eq`, so `h` and `g` never share a group. Plain
+        Python (lists of str / int), so it adds nothing to the step's tensors."""
+        g_base = [s.row_group for s in self.g_spec]
+        sides = {}
+        for s, lab in zip(self.g_spec, g_base):
+            sides.setdefault(lab, set()).add(s.kind)
+        g_lab = [f"{lab}_{s.kind}" if len(sides[lab]) > 1 else lab
+                 for s, lab in zip(self.g_spec, g_base)]
+        h_lab = [f"{s.row_group}_eq" if s.row_group in sides else s.row_group for s in self.h_spec]
+        self.h_spec = [replace(s, row_group=lab) for s, lab in zip(self.h_spec, h_lab)]
+        self.g_spec = [replace(s, row_group=lab) for s, lab in zip(self.g_spec, g_lab)]
+        groups: List[str] = []
+        for lab in h_lab + g_lab:
+            if lab not in groups:
+                groups.append(lab)
+        self.row_groups: List[str] = groups                          # h groups, then g groups
+        self.h_row_group: List[int] = [groups.index(lab) for lab in h_lab]   # [m_e] -> group
+        self.g_row_group: List[int] = [groups.index(lab) for lab in g_lab]   # [m_i] -> group
 
     def _build_costs(self):
         prog = self.program.prog

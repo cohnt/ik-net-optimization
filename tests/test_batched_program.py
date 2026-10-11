@@ -355,6 +355,23 @@ def _check_rows(bp, X_np, label):
         assert counts[("LatentTrustRegion", "hi")] == 1 and ("LatentTrustRegion", "lo") not in counts
     else:
         assert all(k[0] == GENERIC_BINDING for k in counts)
+    ## The diagnostic row groups (multiplier clips by group): every row labelled, the index
+    ## lists agree with the labels, and h and g never share a group.
+    h_lab, g_lab = [s.row_group for s in bp.h_spec], [s.row_group for s in bp.g_spec]
+    assert [bp.row_groups[i] for i in bp.h_row_group] == h_lab
+    assert [bp.row_groups[i] for i in bp.g_row_group] == g_lab
+    assert not set(h_lab) & set(g_lab) and set(h_lab) | set(g_lab) == set(bp.row_groups)
+    expect = {"joint_limit_lo", "joint_limit_hi", "collision"}
+    if bp.is_mug:
+        expect |= {"mug_xy", "mug_z_lo", "mug_z_hi"}
+    elif p.options.orientation_error_form == "rpy":
+        expect |= {"pose_pos", "pose_rpy"}
+    else:
+        expect |= {"pose_pos", "pose_rpy_lo", "pose_rpy_hi"}
+    if bp.is_learned:
+        expect |= {"z_box_lo", "z_box_hi", "c_box_lo", "c_box_hi", "trust"}
+    assert set(bp.row_groups) == expect, (label, bp.row_groups)
+    fig["row_groups"] = list(bp.row_groups)
     return fig
 
 

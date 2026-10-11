@@ -156,6 +156,22 @@ def test_mcnemar_directions_cost_and_bugs():
         assert cem_tag in rep.missing and cem_tag in text
 
 
+def test_multiplier_clips_by_group_line():
+    """Records carrying `multiplier_clips_by_group` print one summed line per arm, zeros
+    kept; an arm whose records predate the key prints no such line."""
+    with tempfile.TemporaryDirectory() as root:
+        _twin(root)
+        learned = [_rec(i, i < 10, 1.0) for i in range(N_CELLS)]
+        for i, r in enumerate(learned):
+            r["svgd"]["multiplier_clips_by_group"] = {"pose_pos": 0, "trust": i % 2, "c_box_hi": 1}
+        numerical = [_rec(i, i < 10, 2.0) for i in range(N_CELLS)]
+        _write(root, "al64", learned, numerical, _meta())
+        _, text = _run(root, ["--columns", "al64"])
+        lines = [l for l in text.splitlines() if "multiplier clips by row group" in l]
+        assert lines == [f"    {'':<17} multiplier clips by row group  pose_pos 0  trust "
+                         f"{N_CELLS // 2}  c_box_hi {N_CELLS}"], lines
+
+
 def test_grid_hash_refusal():
     with tempfile.TemporaryDirectory() as root:
         _twin(root)

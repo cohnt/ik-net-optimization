@@ -73,17 +73,40 @@ def violation(h: Tensor, g: Tensor) -> Tensor:
     return stacked.amax(dim=1)
 
 
-def dual_update(h: Tensor, g: Tensor, S: ALState, alpha, multiplier_max):
+def dual_update(h: Tensor, g: Tensor, S: ALState, alpha, multiplier_max, by_row=False):
     """The dual-ascent step on every particle, unconditionally (module docstring), at the
     scaled rows `h`, `g` of the current swarm. Returns `(S_new, n_clipped [] long)`, the
-    number of multiplier entries the clip bound. (A particle with a non-finite row is redrawn,
-    and its multipliers zeroed, at the same check.)"""
+    number of multiplier entries the clip bound; with `by_row=True` also
+    `(lam_rows [m_e], mu_rows [m_i])` long, those entries per row summed over the particles
+    (`n_clipped` is their total). (A particle with a non-finite row is redrawn, and its
+    multipliers zeroed, at the same check.)"""
     lam_raw = S.lam + alpha * h
     mu_raw = torch.clamp(S.mu + alpha * g, min=0.0)
-    clipped = (lam_raw.abs() > multiplier_max).sum() + (mu_raw > multiplier_max).sum()
+    lam_rows = (lam_raw.abs() > multiplier_max).sum(0)
+    mu_rows = (mu_raw > multiplier_max).sum(0)
+    clipped = lam_rows.sum() + mu_rows.sum()
     lam = torch.clamp(lam_raw, min=-multiplier_max, max=multiplier_max)
     mu = torch.clamp(mu_raw, max=multiplier_max)
+    if by_row:
+        return replace(S, lam=lam, mu=mu), clipped, (lam_rows, mu_rows)
     return replace(S, lam=lam, mu=mu), clipped
+
+
+def by_group(rows: Tensor, row_group: Tensor, n_groups: int) -> Tensor:
+    """Sum a per-row vector `[m]` into its groups: `row_group [m]` long, each row's group
+    index in `[0, n_groups)` -> `[n_groups]`, on the device of `rows` (no host sync)."""
+    out = torch.zeros(n_groups, dtype=rows.dtype, device=rows.device)
+    return out.index_add(0, row_group, rows)
+
+
+def inf_norm_by_group(M: Tensor, row_group: Tensor, n_groups: int) -> Tensor:
+    """`|M_i|_inf` restricted to each group's columns: `M [N, m]`, `row_group [m]` ->
+    `[N, n_groups]` (0 for a group with no column in `M`)."""
+    out = torch.zeros(M.shape[0], n_groups, dtype=M.dtype, device=M.device)
+    if M.shape[1] == 0:
+        return out
+    idx = row_group.unsqueeze(0).expand(M.shape[0], -1)
+    return out.scatter_reduce(1, idx, M.abs(), reduce="amax", include_self=True)
 
 
 def reset(S: ALState, mask: Tensor) -> ALState:

@@ -96,6 +96,11 @@ class SvgdSolverDetails:
     mu_inf_max: float = None       # ... and largest
     bound_clip: float = 0.0        # total clamp distance onto the true bounds (normalised y)
     n_multiplier_clipped: int = 0  # multiplier entries the +-svgd_multiplier_max clip bound
+    multiplier_clips_by_group: dict = None  # ... the same, by row group (`BatchedProgram.
+                                   # row_groups`: pose_pos, collision, joint_limit_hi, ...);
+                                   # sums to n_multiplier_clipped
+    multiplier_inf_median_by_group: dict = None  # per row group, |lam_i|_inf (h groups) or
+                                   # |mu_i|_inf (g groups) over its rows, median over particles at stop
     feasible_q_spread: float = None  # median pairwise |q_a - q_b| among feasible particles at stop
     extras: dict = field(default_factory=dict)
 
