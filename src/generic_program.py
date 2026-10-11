@@ -232,6 +232,7 @@ SVGD_ENUM_FIELDS = {
     "svgd_warmup": ("none", "cem"),
     "svgd_metric": ("gn", "identity"),
     "svgd_row_units": ("natural", "tolerance"),
+    "svgd_collision_backend": ("autodiff", "clearances"),
 }
 
 
@@ -255,6 +256,13 @@ def CheckSvgdOptions(options):
     if options.svgd_cuda_graph and not options.svgd_compile:
         raise ValueError("svgd_cuda_graph=True requires svgd_compile=True (the graphs replay "
                          "the compiled stages)")
+    if options.svgd_collision_backend == "clearances":
+        ## Refused here, before the first cell, rather than at the first solve -- inside
+        ## run_grid's per-cell `except` -- which would score a full column of instant failures.
+        from src.svgd.collision_backend import clearances_unavailable_reason
+        reason = clearances_unavailable_reason()
+        if reason is not None:
+            raise ValueError("svgd_collision_backend='clearances': " + reason)
 
 
 @dataclass
@@ -701,6 +709,7 @@ class ProgramOptions:
     svgd_warmup_iters: int = field(default=10, metadata={"help": "svgd: CEM warm-up iterations"})
     svgd_warmup_elite: float = field(default=0.1, metadata={"help": "svgd: CEM elite fraction"})
     svgd_compile: bool = field(default=False, metadata={"help": "svgd: torch.compile the split step's three stages (src/svgd/fused.py; compiled by WarmUpSvgdStep, outside any timed cell)"})
+    svgd_collision_backend: str = field(default="autodiff", metadata={"help": "svgd: how the exact collision row is evaluated -- 'autodiff', the program's own MinimumDistanceLowerBoundConstraint on AutoDiffXd one configuration at a time (serial, GIL-bound); 'clearances', the same functional from ONE CollisionChecker.CalcRobotClearances call (batched, GIL-released, Drake-threaded) plus Drake's penalty aggregation in numpy. 'clearances' needs a Drake carrying CalcRobotClearances (branch calc-robot-clearances) and is refused where the running pydrake lacks it"})
     svgd_cuda_graph: bool = field(default=False, metadata={"help": "svgd: replay the compiled stages as CUDA graphs, captured by WarmUpSvgdStep before the first timed cell (requires svgd_compile and CUDA)"})
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})

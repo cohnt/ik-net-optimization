@@ -83,6 +83,8 @@ class SvgdSolverDetails:
     drake_feasible: bool = False   # ... and the exact `prog.EvalBinding` re-check
     solve_seconds: float = 0.0
     collision_seconds: float = 0.0 # host time blocked in the collision backend (the exactness premium)
+    collision_backend: str = "autodiff"  # which evaluator ran the row (`svgd_collision_backend`)
+    collision_threads: int = 1     # Drake threads the row's call used (1: the serial autodiff loop)
     stop_reason: str = ""          # why the SWARM stopped: converged | wall_clock | step_cap
     n_dual_updates: int = 0        # dual-ascent steps taken (each on every particle)
     lambda_max_median: float = None  # exact lambda_max of the GN Hessian (y coords) at the checks:

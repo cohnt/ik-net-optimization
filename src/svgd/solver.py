@@ -63,10 +63,13 @@ space uniform in `ConfigLimits`, kept collision-free by `ParallelCollisionChecke
 bounded redraws and a documented fallback), then clamped onto the true bounds with the clip
 distance recorded. The seed is `svgd_seed` mixed with a CRC of the initial guess.
 
-THE COLLISION ROW runs IN THIS PROCESS (no process pool, Thomas 2026-10-09): the program's own
-`MinimumDistanceLowerBoundConstraint` on AutoDiffXd, one particle at a time
-(`collision_backend.CollisionEvaluator`), serial and GIL-bound. Its seconds are accumulated per
-solve (`collision_seconds`, the collision share of the step).
+THE COLLISION ROW runs IN THIS PROCESS (no process pool, Thomas 2026-10-09): by default the
+program's own `MinimumDistanceLowerBoundConstraint` on AutoDiffXd, one particle at a time
+(`collision_backend.CollisionEvaluator`), serial and GIL-bound; under
+`svgd_collision_backend="clearances"` the same functional from one batched, Drake-threaded
+`CalcRobotClearances` call (`collision_backend.ClearanceEvaluator`). Its seconds are accumulated
+per solve (`collision_seconds`, the collision share of the step); `collision_backend` and
+`collision_threads` record which ran.
 
 THE STEP IS SPLIT AROUND THE COLLISION ROW (`src/svgd/fused.py`, `_step_split`) on the fielded
 robots: stage 1 (the configuration) -> stage 2 (the flow Jacobian, the kinematics) launched on
@@ -916,6 +919,8 @@ class SvgdSolver:
             timed_out=(stop == STATUS_WALL_CLOCK), hit_iteration_cap=(stop == STATUS_STEP_CAP),
             solver_feasible=bool(solver_ok), drake_feasible=bool(drake_ok),
             solve_seconds=total, collision_seconds=float(self._col.seconds),
+            collision_backend=str(getattr(self._col.evaluator, "backend", "autodiff")),
+            collision_threads=int(getattr(self._col.evaluator, "num_threads", 1)),
             stop_reason=str(sstats.get("stop_reason", "")),
             n_dual_updates=int(sstats.get("n_dual_updates", 0)),
             lambda_max_median=sstats.get("lambda_max_median"),
