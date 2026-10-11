@@ -242,9 +242,9 @@ The tags are `sc_SVGD_R<k>_panda_n6_svgd_<row>_480_180_<start>_<variant>`.
 
 | manifest | variant | the one change against R1's `kq` | shards | runs | items | node-h (assumed) | max item h |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `manifest_stageSVGD_R3.txt` | `n1` / `n256` | `svgd_n=1` / `svgd_n=256` | 8 / 24 | 8 | 128 | 37.9 | 1.13 |
-| `manifest_stageSVGD_R4.txt` | `rho1e4` / `lr1` | `svgd_rho=10000` / `svgd_lr=1.0` (replacing 1000 / 0.3) | 24 / 24 | 8 | 192 | 39.5 | 0.41 |
-| `manifest_stageSVGD_R5.txt` | `n16` / `T10` | `svgd_n=16` / `svgd_temperature=10` | 16 / 24 | 8 | 160 | 38.7 | 0.59 |
+| `manifest_stageSVGD_R3.txt` | `n1` / `n256` | `svgd_n=1` / `svgd_n=256` | 8 / 24 | 8 | 128 | 5.9 | 1.5 |
+| `manifest_stageSVGD_R4.txt` | `rho1e4` / `lr1` | `svgd_rho=10000` / `svgd_lr=1.0` (replacing 1000 / 0.3) | 24 / 24 | 8 | 192 | 7.5 | 1.9 |
+| `manifest_stageSVGD_R5.txt` | `n16` / `T10` | `svgd_n=16` / `svgd_temperature=10` | 16 / 24 | 8 | 160 | 6.7 | 1.7 |
 
 Learned only, that totals about 20 node-hours, or about 5 h on 4 idle nodes, after R1K (the two-arm
 estimate was 116 node-hours).
