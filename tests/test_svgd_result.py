@@ -229,6 +229,9 @@ def test_option_guard():
              (dict(svgd_rho=0.0), True),
              (dict(svgd_dual_lr=0.0), False),
              (dict(svgd_dual_lr=-1.0), True),
+             (dict(svgd_resample="drop"), False),
+             (dict(svgd_resample="keep"), False),
+             (dict(svgd_resample="redraw"), True),
              (dict(svgd_constraint_inside_kernel=True), False),
              (dict(svgd_cuda_graph=True), True),
              (dict(svgd_compile=True, svgd_cuda_graph=True), False)]
@@ -318,11 +321,182 @@ def test_svgd_kill_keeps_the_iterate():
           f"{record.get('recovered_fail_reason')!r})")
 
 
+## ------------------------------------------------------------------------------------ ##
+##                     svgd_resample: native / drop / keep (2026-10-11)                  ##
+## ------------------------------------------------------------------------------------ ##
+
+def _resample_programs():
+    """The learned and joint-space Panda pose programs of `tests/test_svgd_solver.py` (the
+    hardened pose scene, a target at the frame of a collision-free q, the n6 chart)."""
+    sys.path.append(os.path.join(REPO, "tests"))
+    import test_svgd_solver as TS                                       # noqa: E402
+    import test_batched_program as TB                                   # noqa: E402
+    return TS, TB
+
+
+def _solve_capture(p, q0, overrides, X_override=None, warm=False):
+    """One svgd solve on `p` from `q0` under `overrides`; returns `(details, result, X, S)`,
+    the swarm and AL state at stop captured from `_swarm`."""
+    from dataclasses import replace
+    import torch
+    from src.svgd.solver import SvgdSolver
+    p.options = replace(p.options, which_solver="svgd", max_wall_time=600.0,
+                        acceptable_constr_viol_tol=1e-4, file_print_name="",
+                        svgd_stop_patience=10 ** 6, **overrides)
+    with HiddenPrints():
+        p.SetStartFromQ(q0)
+    solver = SvgdSolver(p, particles_override=X_override)
+    if warm:
+        solver.warm_up()
+    cap = {}
+    real = solver._swarm
+
+    def swarm(*a, **k):
+        X, S, status, stats = real(*a, **k)
+        cap["X"], cap["S"] = X.detach().clone(), S
+        return X, S, status, stats
+    solver._swarm = swarm
+    result = solver.solve()
+    S = cap["S"]
+    return (result.get_solver_details(), result, cap["X"].cpu().double().numpy(),
+            {k: getattr(S, k).detach().cpu().double().numpy() for k in ("lam", "mu", "live")})
+
+
+def test_resample_modes_without_deaths_are_bit_identical_to_native():
+    """`drop` and `keep` with NO particle ever dying produce bit-identical X and S to `native`
+    on the same seed: the live-weighted step with every weight one is the native step, eager
+    and (CUDA) compiled, on both arms. (Native itself was checked bit-identical against the
+    pre-change tree out of process, 2026-10-11: eager, compiled and graphed.)"""
+    print("\n--- svgd_resample: drop / keep without deaths == native, bit for bit ---")
+    import torch
+    TS, TB = _resample_programs()
+    execs = ["eager"] + (["compiled"] if torch.cuda.is_available() else [])
+    for arm in ("learned", "numerical"):
+        p = TS.pose_program(arm)
+        q0 = TB.collision_free_q(p, np.random.default_rng(5), 1)[0]
+        for exe in execs:
+            base = dict(svgd_n=8, svgd_outer_iters=3, svgd_compile=exe == "compiled",
+                        svgd_cuda_graph=False)
+            ref = _solve_capture(p, q0, dict(base, svgd_resample="native"), warm=exe != "eager")
+            check(f"{arm}/{exe}: native resampled nothing (the precondition)",
+                  ref[0].n_resampled == 0, str(ref[0].n_resampled))
+            for mode in ("drop", "keep"):
+                got = _solve_capture(p, q0, dict(base, svgd_resample=mode), warm=exe != "eager")
+                same = (np.array_equal(ref[2], got[2], equal_nan=True)
+                        and all(np.array_equal(ref[3][k], got[3][k], equal_nan=True)
+                                for k in ("lam", "mu"))
+                        and np.array_equal(ref[1].get_x_val(), got[1].get_x_val(), equal_nan=True))
+                check(f"{arm}/{exe}: {mode} with no deaths is bit-identical to native (X, lam, mu, x)",
+                      same and got[0].n_dropped == 0 and got[0].n_live == 8
+                      and got[0].resample_mode == mode,
+                      f"max |dX| {np.nanmax(np.abs(ref[2] - got[2]))}, n_dropped {got[0].n_dropped}")
+
+
+def test_resample_modes_on_injected_particles():
+    """A NON-FINITE particle (learned arm, injected through `particles_override`) is redrawn
+    under native, dropped under drop, dropped under keep; a finite RUNAWAY particle (joint
+    space, `|q|_inf` above a lowered threshold) is redrawn under native, dropped -- and frozen
+    -- under drop, and kept, still stepping, under keep. A swarm whose every particle is
+    non-finite stops `all_dead` under drop, scored infeasible without a raise."""
+    print("\n--- svgd_resample: injected non-finite and runaway particles ---")
+    TS, TB = _resample_programs()
+    N = 8
+    ## Non-finite particle 3, learned arm.
+    p = TS.pose_program("learned")
+    q0 = TB.collision_free_q(p, np.random.default_rng(5), 1)[0]   # the start no particle dies from
+    rng = np.random.default_rng(3)
+    with HiddenPrints():
+        p.SetStartFromQ(q0)
+    x0 = np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float)
+    X = np.repeat(x0[None, :], N, axis=0) + 0.01 * rng.standard_normal((N, x0.size))
+    X[3, :] = np.nan
+    for mode in ("native", "drop", "keep"):
+        d, r, Xs, S = _solve_capture(p, q0, dict(svgd_n=N, svgd_outer_iters=3, svgd_resample=mode),
+                                     X_override=X)
+        live = d.extras["live_at_stop"]
+        print(f"        non-finite / {mode}: n_resampled {d.n_resampled} n_dropped {d.n_dropped} "
+              f"n_live {d.n_live} selected {d.selected_index} status {d.status_name!r}")
+        if mode == "native":
+            check("non-finite / native: redrawn (n_resampled >= 1, nothing dropped, finite at stop)",
+                  d.n_resampled >= 1 and d.n_dropped == 0 and d.n_live == N and all(live)
+                  and bool(np.all(np.isfinite(Xs[3]))), str(d.n_resampled))
+        else:
+            check(f"non-finite / {mode}: dropped (live[3] False, n_dropped >= 1, nothing redrawn, "
+                  f"S.live agrees, multipliers zero)",
+                  d.n_resampled == 0 and d.n_dropped >= 1 and not live[3] and d.n_live == sum(live)
+                  and S["live"][3] == 0.0 and np.all(S["lam"][3] == 0) and np.all(S["mu"][3] == 0)
+                  and bool(np.all(np.isnan(Xs[3]))), f"{d.n_dropped} {live}")
+            check(f"non-finite / {mode}: the dropped particle is never selected, the return is finite",
+                  d.selected_index != 3 and bool(np.all(np.isfinite(r.get_x_val()))),
+                  str(d.selected_index))
+        check(f"non-finite / {mode}: the record carries resample_mode, n_dropped, n_live",
+              d.resample_mode == mode and isinstance(d.n_dropped, int) and isinstance(d.n_live, int))
+        block = bm.solver_diagnostics(r, "svgd").get("svgd") or {}
+        check(f"non-finite / {mode}: solver_diagnostics persists the three keys",
+              block.get("resample_mode") == mode and block.get("n_dropped") == d.n_dropped
+              and block.get("n_live") == d.n_live, str({k: block.get(k) for k in
+                                                        ("resample_mode", "n_dropped", "n_live")}))
+
+    ## Finite runaway particle 5, joint space: q6 = 3.7 against a threshold of 3.2 (Panda q6
+    ## runs to 3.75), one step per check and a small step, so it is still a runaway at the
+    ## first check. Every other particle sits near a start with |q|_inf < 2.6.
+    p = TS.pose_program("numerical")
+    rng = np.random.default_rng(11)
+    while True:
+        q0 = TB.collision_free_q(p, rng, 1)[0]
+        if np.abs(q0).max() < 2.6:
+            break
+    with HiddenPrints():
+        p.SetStartFromQ(q0)
+    x0 = np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float)
+    X = np.repeat(x0[None, :], N, axis=0) + 0.01 * rng.standard_normal((N, x0.size))
+    X[5, 5] = 3.7
+    ov = dict(svgd_n=N, svgd_resample_q_max=3.2, svgd_inner_iters=1, svgd_lr=0.05)
+    out = {}
+    for mode in ("native", "drop", "keep"):
+        for outer in (2, 4):
+            out[mode, outer] = _solve_capture(p, q0, dict(ov, svgd_outer_iters=outer,
+                                                          svgd_resample=mode), X_override=X)
+        d = out[mode, 4][0]
+        print(f"        runaway / {mode}: n_resampled {d.n_resampled} n_dropped {d.n_dropped} "
+              f"n_live {d.n_live} |q5|_inf {np.abs(out[mode, 4][2][5]).max():.3f}")
+    d2, d4 = out["native", 2][0], out["native", 4][0]
+    check("runaway / native: redrawn (n_resampled >= 1, nothing dropped)",
+          d4.n_resampled >= 1 and d4.n_dropped == 0 and d4.n_live == N, str(d4.n_resampled))
+    d4, X2, X4 = out["drop", 4][0], out["drop", 2][2], out["drop", 4][2]
+    check("runaway / drop: dropped (live[5] False, n_dropped >= 1, nothing redrawn)",
+          d4.n_dropped >= 1 and d4.n_resampled == 0 and not d4.extras["live_at_stop"][5],
+          f"{d4.n_dropped} {d4.extras['live_at_stop']}")
+    check("runaway / drop: FROZEN -- identical after 2 and after 4 checks, still above the threshold",
+          np.array_equal(X2[5], X4[5]) and np.abs(X4[5]).max() > 3.2, f"{X2[5]} {X4[5]}")
+    d4, X2, X4 = out["keep", 4][0], out["keep", 2][2], out["keep", 4][2]
+    check("runaway / keep: kept (nothing dropped or redrawn, every particle live)",
+          d4.n_dropped == 0 and d4.n_resampled == 0 and d4.n_live == N
+          and all(d4.extras["live_at_stop"]), f"{d4.n_dropped} {d4.n_resampled}")
+    check("runaway / keep: still stepping -- moved between the 2nd and the 4th check",
+          not np.array_equal(X2[5], X4[5]), f"{X2[5]} {X4[5]}")
+
+    ## Every particle non-finite under drop: the swarm stops all_dead, scored infeasible.
+    Xbad = np.full((4, x0.size), np.nan)
+    d, r, _, _ = _solve_capture(p, q0, dict(svgd_n=4, svgd_outer_iters=3, svgd_resample="drop"),
+                                X_override=Xbad)
+    verdict = bm.verify(p, r, lambda program, q: (True, {}), 1e-4, relaxed_tol=1e-3)
+    print(f"        all dead: stop {d.stop_reason!r} status {d.status_name!r} n_dropped "
+          f"{d.n_dropped} n_live {d.n_live} verify {verdict.fail_reason!r}")
+    check("all dead: stop_reason all_dead, status infeasible, every particle dropped, no raise",
+          d.stop_reason == "all_dead" and d.status_name == "infeasible" and d.n_dropped == 4
+          and d.n_live == 0 and not r.is_success() and d.selected_index == -1, str(d))
+    check("all dead: the returned point is NaN, so verify scores it 'nan' (run_grid then scores "
+          "the last iterate under recovered_*)", verdict.fail_reason == "nan", str(verdict))
+
+
 def main():
     test_svgd_result_duck_type()
     test_svgd_kill_keeps_the_iterate()
     test_bad_svgd_set_is_refused_at_options()
     test_option_guard()
+    test_resample_modes_without_deaths_are_bit_identical_to_native()
+    test_resample_modes_on_injected_particles()
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")
     for name in FAILURES:
         print(f"  FAILED: {name}")

@@ -89,7 +89,13 @@ latent ball are inequality ROWS, never bounds.
    penalty is not. Recorded per cell: the dual updates taken, the median and largest
    `|lam_i|_inf` and `|mu_i|_inf` at stop, and the clip count.
 7. **Resampling** at every check: a particle with `|q|_inf > svgd_resample_q_max` or a non-finite row
-   is redrawn from the arm's NATIVE start distribution with zero multipliers (`n_resampled`).
+   is redrawn from the arm's NATIVE start distribution with zero multipliers (`n_resampled`). That
+   is `svgd_resample = native`, the fielded mode. `drop` removes such a particle from the swarm
+   instead (`n_dropped`). A dropped particle is frozen. It is left out of every other particle's
+   kernel average, repulsion and median bandwidth, the average being over the `n_live` live
+   particles, and it is never feasible or selected. `keep` lets a runaway keep stepping, and drops a
+   non-finite particle as `drop` does, since it cannot step without poisoning the kernel average.
+   If every particle is dropped, the swarm stops with `all_dead` and the cell is scored infeasible.
 8. **Stop**: the wall clock (`max_wall_time`, less `svgd_time_reserve` for the re-check), the
    outer-step cap (`svgd_outer_iters`), or -- once some particle is feasible at the gate -- when the
    best feasible particle's objective f has improved by less than `svgd_stop_rel` (relative) over
@@ -149,6 +155,7 @@ are reported as the collision row's share of the wall.
 | `svgd_inner_iters` | 10 | 6, 7, 8: K, the cadence of the dual step, resampling and the stop rule |
 | `svgd_outer_iters` | 300 | 8: the step cap (`max_iter`, when set, also binds) |
 | `svgd_resample_q_max` | 10.0 | 7: runaway threshold, rad |
+| `svgd_resample` | `native` | 7: a runaway or non-finite particle is redrawn (`native`), dropped (`drop`), or, if a finite runaway, kept stepping (`keep`, which still drops a non-finite particle). Dropping is a static-shape live weight in the AL state. Round R11 |
 | `svgd_stop_patience` | 5 | 8 |
 | `svgd_stop_rel` | 1e-3 | 8 |
 | `svgd_recheck_topk` | 10 | 9 |

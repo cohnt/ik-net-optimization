@@ -349,6 +349,39 @@ PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R9.txt 4
 PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R10.txt 4
 ```
 
+## Round R11: what happens to a runaway particle
+
+R11 attributes the primary's handling of a runaway (`|q|_inf > svgd_resample_q_max`) or non-finite
+particle, `svgd_resample` (2026-10-11). The conventions are R4's: the four Panda rows, learned arm
+only, N = 64, `SVGD_PINNED` plus the one override, 24 shards, both protocols, PROCS=2 with no MPS.
+
+| manifest | variant | the one change against `kq` | what it attributes |
+| --- | --- | --- | --- |
+| `manifest_stageSVGD_R11.txt` | `drop` / `keep` | `svgd_resample=drop` / `=keep` (default `native`) | `native` redraws the particle from the arm's native start; `drop` removes it from the swarm; `keep` lets a runaway keep stepping and drops only a non-finite particle |
+
+**Allotment** (the same 5 s per learned cell assumption as R4):
+
+```
+  manifest      runs  cells  items  solve-h  node-h    h@4  max item h
+  SVGD_R11         8   3840    192     14.9     7.5    1.9        0.08
+```
+
+**R11 needs a code restage.** `svgd_resample` is a new option, so the staged tree must carry this
+commit. A tree without it refuses the option when `ProgramOptions` is built, so every cell fails
+instantly. `stage_code.sh` refuses while campaign jobs are queued or running, so restage once the
+queue is idle. Then check the staged tree and submit:
+
+```bash
+ssh tcohn@txe1-login.mit.edu 'grep -c "svgd_resample\"" ~/learned-ik/repo/src/generic_program.py'   # must be >= 1
+cd $STAGE
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R11.txt 4
+```
+
+Read the results with `scripts/report_svgd.py --stage SVGD --variants kq,drop,keep`. Each record
+carries `resample_mode`, `n_dropped`, `n_live` and `n_resampled`. A cell whose every particle was
+dropped stops with `stop_reason = all_dead`. It is scored infeasible, and `recovered_*` holds the
+last iterate it recorded.
+
 ## Collect
 
 Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs and `results/`, and
@@ -357,7 +390,7 @@ Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs
 ```bash
 bash $WT/cluster/collect_results.sh --status
 bash $WT/cluster/collect_results.sh                  # rsync + merge shards, incremental
-bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R10) only once the queue is idle
+bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R11) only once the queue is idle
 ```
 
 Tags: `sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq`,

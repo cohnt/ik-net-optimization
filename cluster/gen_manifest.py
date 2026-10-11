@@ -2887,7 +2887,10 @@ SVGD_VARIANTS = {"kq": [], "knone": ["--set", "svgd_kernel=none"]}
 #: native distribution, so a native item would be `kq`'s run again) and runs the paired rows only.
 #: R6-R10 (the coordinator and Thomas, 2026-10-11 overnight) continue the ladder's phase 2, each
 #: rung attributing one setting of the primary; there is no R7 (the seed control needs IPOPT twins
-#: on new grids and waits for Thomas).
+#: on new grids and waits for Thomas). R11 (2026-10-11) attributes the runaway / non-finite
+#: particle handling, `svgd_resample` (default `native`, the redraw): `drop` removes such a particle
+#: from the swarm, `keep` lets a runaway keep stepping (a non-finite one is still dropped). It
+#: needs code the R6-R10 staging predates (the option is new), so it needs a restage.
 SVGD_BOTH = "paired,native"
 SVGD_ROUNDS = {
     "SVGD_R3": {"n1": (["svgd_n=1"], 8, SVGD_BOTH), "n256": (["svgd_n=256"], 24, SVGD_BOTH)},
@@ -2904,6 +2907,8 @@ SVGD_ROUNDS = {
                 "rho1e5": (["svgd_rho=100000"], 24, SVGD_BOTH),
                 "clip1e6": (["svgd_multiplier_max=1000000"], 24, SVGD_BOTH)},
     "SVGD_R10": {"initnative": (["svgd_paired_init=native"], 24, "paired")},
+    "SVGD_R11": {"drop": (["svgd_resample=drop"], 24, SVGD_BOTH),
+                 "keep": (["svgd_resample=keep"], 24, SVGD_BOTH)},
 }
 #: The rounds' allotment base, (learned, joint space) seconds per cell -- an ASSUMPTION from the
 #: cluster smoke (pose paired, 4 cells, 60 s: learned 4-7 s, joint space 9-42 s), not a measurement.
@@ -2933,6 +2938,8 @@ SVGD_ALLOWED_SETS = {
            "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_n", "svgd_temperature",
            "svgd_inner_iters", "svgd_multiplier_max", "svgd_paired_init"}
        for r in ("SVGD_R6", "SVGD_R8", "SVGD_R9", "SVGD_R10")},
+    "SVGD_R11": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                 "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_resample"},
     "SVGD_SMOKE": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile",
                    "svgd_cuda_graph", "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
 }
@@ -3068,7 +3075,7 @@ def svgd_allotment():
     print("  REMEASURE at PROCS=8 MPS=1 -- slightly pessimistic at PROCS=2).")
     print(f"  R1 base: ASSUMED {SVGD_R1_ASSUMED_ARM_CELL_S:g} s per cell per arm (both arms run "
           f"svgd); worst case every cell at the {STATUSQUO_WALL:g} s clock on both arms.")
-    print(f"  R3-R10 base: ASSUMED {SVGD_ROUND_CELL_S[0]:g} s per learned cell; the rounds run the "
+    print(f"  R3-R11 base: ASSUMED {SVGD_ROUND_CELL_S[0]:g} s per learned cell; the rounds run the "
           f"learned arm only (SVGD_ROUND_ARMS). R1 measured 6-12 s median at N = 64.")
     print(f"  smoke: charged at the clock.")
     print(f"\n  {'manifest':<12}{'runs':>6}{'cells':>7}{'items':>7}{'solve-h':>9}{'node-h':>8}"
@@ -5011,8 +5018,10 @@ def selftest():
                       for r, v in SVGD_ROUNDS.items()}}
     if {r: n for r, n in sv_expected.items() if r in SVGD_ROUNDS} != \
             {"SVGD_R3": (8, 128), "SVGD_R4": (8, 192), "SVGD_R5": (8, 160), "SVGD_R6": (12, 288),
-             "SVGD_R8": (12, 288), "SVGD_R9": (12, 288), "SVGD_R10": (2, 48)}:
-        sv_fails.append("rounds R3-R10 are not 8/8/8/12/12/12/2 runs, 128/192/160/288/288/288/48 items")
+             "SVGD_R8": (12, 288), "SVGD_R9": (12, 288), "SVGD_R10": (2, 48),
+             "SVGD_R11": (8, 192)}:
+        sv_fails.append("rounds R3-R11 are not 8/8/8/12/12/12/2/8 runs, "
+                        "128/192/160/288/288/288/48/192 items")
     rm_panda = {it["id"].replace("sc_REMEASURE_", "", 1): it for it in stage_REMEASURE("REMEASURE")
                 if it["robot"] == "panda" and _svgd_flag(it["args"], "--solver") == "ipopt"}
     for stage, (want_runs, want_items) in sv_expected.items():
@@ -5158,7 +5167,7 @@ def selftest():
         print(f"FAIL svgd stages: {msg}")
     fails += len(sv_fails)
     if not sv_fails:
-        print("ok   stages SVGD_SMOKE/R2/R1/R1K/R3/R4/R5/R6/R8/R9/R10: 1/4/4/4/8/8/8/12/12/12/2 logical runs, R2 = REMEASURE's Panda IPOPT "
+        print("ok   stages SVGD_SMOKE/R2/R1/R1K/R3/R4/R5/R6/R8/R9/R10/R11: 1/4/4/4/8/8/8/12/12/12/2/8 logical runs, R2 = REMEASURE's Panda IPOPT "
               "items, R1 (kq) + R1K (knone) = those rows under svgd + graphed mode + lifted step "
               "budget, and together exactly stage R1")
 
@@ -5231,7 +5240,7 @@ def main():
     p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
                                  "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
                                  "SVGD_R3", "SVGD_R4", "SVGD_R5", "SVGD_R6", "SVGD_R8",
-                                 "SVGD_R9", "SVGD_R10",
+                                 "SVGD_R9", "SVGD_R10", "SVGD_R11",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -5387,6 +5396,7 @@ def main():
              "SVGD_R8": lambda: stage_SVGD("SVGD_R8"),
              "SVGD_R9": lambda: stage_SVGD("SVGD_R9"),
              "SVGD_R10": lambda: stage_SVGD("SVGD_R10"),
+             "SVGD_R11": lambda: stage_SVGD("SVGD_R11"),
              "PAPER": lambda: stage_PAPER(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
