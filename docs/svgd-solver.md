@@ -941,12 +941,14 @@ screw pose and grasp scenes (the `ScrewJoint` asserted present) and on the soft 
 
 - **Screw arm: the fielded path.** The plant walker replays the `ScrewJoint`, and `FrameChain`'s
   closed-form row Jacobians carry its `pitch / 2pi` column. So the step is the compiled / graphed
-  split step, as on the Panda and the iiwa. One rule changed: its native grasp `c`
-  (`svgd_paired_init = native`, resampling) is now the program's own `GraspCStart()`. Before, it
-  was `[mug centre, 0, 0, 0]`, the rule from before the 2026-10-08 settings unification.
-- **The iiwa still uses that old rule.** `_compute_native_c` sets the iiwa's native grasp `c` to
-  the mug centre with zero rpy, while `IiwaMugProgram` seeds `GraspCStart()`. It is left unchanged
-  so the iiwa stays bit-identical, and flagged here.
+  split step, as on the Panda and the iiwa.
+- **The native grasp `c` is the program's own `GraspCStart()` on every robot.**
+  `_compute_native_c` (used by `svgd_paired_init = native` and by every resample) now calls it.
+  Until this change the iiwa and screw grasp arms were replayed at `[mug centre, 0, 0, 0]`, the
+  rule from before the settings unification, so the iiwa swarm's native draws started from a
+  different `c` than `IiwaMugProgram` seeds. The Panda and soft PCS values are unchanged bit for
+  bit. `tests/test_batched_program.py` pins `native_c()` and the solver's native draw against
+  `SetNativeStart` on every learned program, to 1e-12.
 - **Soft PCS arm: the autograd / eager path.** Its 33 sub-links are `QuaternionFloatingJoint`s.
   `KinematicTree` now replays those too (Drake normalises the quaternion, and so does the replay),
   so the arm needs no provider of its own. The configuration-to-plant map is the program's

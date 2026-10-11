@@ -665,16 +665,19 @@ class BatchedProgram:
 
     def _compute_native_c(self):
         """The conditioning pose `create_prog` set, recomputed from the program's own data
-        (the initial guess may since have been overwritten by `SetStartFromQ`).
+        (the initial guess may since have been overwritten by `SetStartFromQ`). It is what
+        `--start native` leaves `c` at: `SetNativeStart` redraws only the latent and zeroes
+        the correction.
 
-        Pose programs record it as `program.initial_guess`. Grasp programs: the Panda and
-        soft PCS programs at the flow-frame pose of a grasp (`target_mug.middle @
-        X_grasp_ee`), the screw programs by their own `GraspCStart()` (the same pose under
-        the unified settings), the iiwa programs at the mug centre with zero rpy (`[t, 0,
-        0, 0]` -- the pre-2026-10-08 rule, which the iiwa program itself no longer uses;
-        kept here unchanged so the iiwa swarm stays bit-identical, flagged 2026-10-11).
-        Which rule applies is read from the class's MRO; an unknown class falls back to the
-        current initial guess with a warning.
+        Pose programs record it as `program.initial_guess`. Grasp programs: the program's
+        own `GraspCStart()` -- since the 2026-10-09 settings unification ONE code path on
+        every robot, the flow-frame pose of the generating configuration (`target_mug.middle
+        @ X_grasp_ee`), and the mug centre with zero rpy only under the
+        `legacy_robot_settings` control on the arms that once seeded it. Until 2026-10-11 the
+        iiwa (and the screw arm) were replayed with that legacy rule unconditionally, so the
+        iiwa swarm's native draws and resamples started from a different `c` than its program.
+        `tests/test_batched_program.py` pins the rule against `SetNativeStart` on every grasp
+        program. A program with neither falls back to the current initial guess with a warning.
         """
         p = self.program
         if not self.is_learned:
@@ -683,19 +686,8 @@ class BatchedProgram:
             ig = getattr(p, "initial_guess", None)
             if ig is not None:
                 return np.asarray(ig, dtype=float).copy()
-        else:
-            names = [k.__name__ for k in type(p).__mro__]
-            if any(n.startswith("Screw") for n in names):
-                ## The screw arm reads the program's own rule, which honours the
-                ## `legacy_robot_settings` control (mug centre, zero rpy) and is the
-                ## flow-frame grasp pose otherwise.
-                return np.asarray(p.GraspCStart(), dtype=float).copy()
-            if any(n.startswith(("Panda", "Soft")) for n in names) and hasattr(p, "X_grasp_ee"):
-                X_W_ee = p.target_mug.middle @ p.X_grasp_ee
-                return np.concatenate([X_W_ee.translation(),
-                                       X_W_ee.rotation().ToRollPitchYaw().vector()])
-            if any(n.startswith("Iiwa") for n in names):
-                return np.array([*p.target_mug.middle.translation(), 0.0, 0.0, 0.0])
+        elif hasattr(p, "GraspCStart"):
+            return np.asarray(p.GraspCStart(), dtype=float).copy()
         warnings.warn(f"{type(p).__name__}: no rule for the native c; using the current "
                       f"initial guess of c")
         return np.asarray(p.prog.GetInitialGuess(p.c), dtype=float).copy()
