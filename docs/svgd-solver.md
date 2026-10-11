@@ -925,8 +925,45 @@ solved; redraws, clips and feasible particles over all 480 cells):
 
 **Cap check**: 0 cells at the step budget, 0 at the clock, on all eight rows.
 
+### R5: N = 16 and T = 10 (`n16`, `T10`), learned arm only, measured 2026-10-11
+
+**Jobs 5886397-400, 160 items, 0 error cells; `--variants ...,n16,T10`.** Each differs from `kq` in
+one setting (`svgd_n` 64 -> 16; `svgd_temperature` 1 -> 10).
+
+**Lead: both inert on success.** N = 16 solves 480 / 479 / 480 / 480, T = 10 480 / 480 / 479 / 480;
+each is +0 / -1 against `kq` on one row (a `constraint` stop at a violation of 1.0e-4, the gate
+itself, at 3 s and 30 s), and both carry `kq`'s verdicts against the IPOPT twin. Eight variants now
+sit within one cell of each other on every row.
+
+**What they change** (learned arm; cost / violation / wall medians over the cells all four solved;
+the rest over all 480):
+
+| row | cost IPOPT / kq / N=16 / T=10 | viol kq / N=16 / T=10 | wall kq / N=16 / T=10 | outer steps kq / N=16 / T=10 | feasible at stop kq / N=16 / T=10 | resampled / N kq / N=16 / T=10 |
+| --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | 4.14 / 8.32 / 10.27 / 11.83 | 4.7e-05 / 4.9e-05 / 6.6e-05 | 12.0 / 4.8 / 59.6 s | 24 / 31 / 116 | 6 / 2 / 1 | 0.33 / 0.62 / 0.07 |
+| grasp native | 4.52 / 8.58 / 10.38 / 10.80 | 4.4e-05 / 4.3e-05 / 6.7e-05 | 6.4 / 2.3 / 21.3 s | 13 / 15 / 42 | 13 / 3 / 2 | 0 / 0 / 0 |
+| pose paired | 6.51 / 5.62 / 7.55 / 9.34 | 3.5e-05 / 2.6e-05 / 7.1e-05 | 5.8 / 2.1 / 26.9 s | 13 / 14 / 61 | 21 / 5 / 1 | 0.74 / 0.75 / 0.22 |
+| pose native | 6.76 / 7.50 / 8.53 / 8.99 | 1.6e-05 / 1.6e-05 / 6.8e-05 | 5.7 / 1.9 / 23.5 s | 13 / 14 / 55 | 31 / 7 / 4 | 0.05 / 0.06 / 0.02 |
+
+- **N = 16** stops in the same 13-31 outer steps at a quarter of the step cost, so its wall is
+  2.5-3x lower than N = 64's (1.9-4.8 s, at or below IPOPT's learned wall on three rows), with the
+  same violation band, 2-7 feasible particles at stop, and a worse objective (the N ladder's cost
+  ordering is monotone: N = 256 < 64 < 16 on every row). On grasp paired it resamples 0.62 of its
+  swarm per cell against 0.33 at N = 64.
+- **T = 10 is read under the fielded metric, where the drive carries 1/T and the metric does not,
+  so it is a 0.1x Newton step as much as a hotter target** (the H / T option, `svgd_metric_temperature`,
+  exists since c61b7ce and is swept locally first). Measured: 3-5x more outer steps, 4-5x the wall
+  (59.6 s on grasp paired), the worst objective of any variant (11.8 / 10.8 / 9.3 / 9.0), a wider
+  violation band (7e-5), and 1-4 feasible particles at stop against 6-31. **The spread among the
+  feasible particles does not grow** (6.0 / 5.7 / 4.9 / 3.5 rad against 5.9 / 5.2 / 5.0 / 4.1), so
+  "temperature = coverage" did not show as coverage here; what showed is the smaller step and a
+  hotter swarm with fewer particles inside the gate. Resampling falls (0.07 against 0.33 on grasp
+  paired), consistent with the smaller step. All 480 stop `converged`.
+
+**Cap check**: 0 cells at the step budget, 0 at the clock, on all eight rows.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
-R5"*, extended to R6-R10): R5 (N = 16, T = 10), R6
+R5"*, extended to R6-R10): R6
 (lr = 0.1, K = 1, K = 100), R8 (N = 4, 32, 128), R9 (rho = 100, rho = 1e5, clip 1e6), R10 (paired
 init from the native draw). Their sections are appended as they land.
 
