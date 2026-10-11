@@ -1,9 +1,9 @@
 """`src/svgd/batched_program.py` against the Drake programs it replays.
 
-THE PROGRAM IS THE ORACLE. On all four rigid program classes x both arms -- Panda and iiwa,
-pose and grasp, learned (`n6` charts) and joint space -- eight programs built the way the
-benchmark builds them (hardened scenes, a grasp scene with the target mug welded by
-`GenerateDiagramWithMug`), this file pins:
+THE PROGRAM IS THE ORACLE. On four robots x both tasks x both arms -- Panda, iiwa, the screw
+arm `screw7_p050` and the soft PCS arm `soft12`, pose and grasp, learned (`n6` charts) and
+joint space -- sixteen programs built the way the benchmark builds them (hardened scenes, a
+grasp scene with the target mug welded by `GenerateDiagramWithMug`), this file pins:
 
   1. every entry of `drake_rows` against `prog.EvalBinding(all_constraints, x)` at B = 1 and
      B = 32 (the collision row BITWISE against the same Drake functional), the extra
@@ -14,7 +14,11 @@ benchmark builds them (hardened scenes, a grasp scene with the target mug welded
      (`EvalAllConstraints(InitializeAutoDiff(x))`), the collision row's gradient bitwise
      against the in-process row's stored Drake gradient on the joint-space arm (and one ulp from the
      program's chain, which scales through pydrake's `float * AutoDiffXd`), and
-     `jacobian_q` / `vjp_q` against autograd of `evaluate().q`;
+     `jacobian_q` / `vjp_q` against autograd of `evaluate().q`. On the soft PCS arm the plant
+     vector is NOT the configuration (231 floating-body positions from 12 strains): there the
+     collision row's configuration gradient is the stored plant gradient through the
+     program's own `config_jacobian` (forward mode), to 1e-12 relative, and the rows go
+     through the robot's `TorchConfigToPlantQ`, checked against `ConfigToPlantQ`;
   3. `init_from_q` against `SetStartFromQ` (c and z UNCLIPPED, q_c the clipped residual)
      and the round trip `evaluate(init_from_q(q)).q == q` to the flow's inverse floor;
   4. `to_drake_x` / `from_drake_x`, including through `benchmark.verify`;
@@ -27,9 +31,14 @@ in the rpy -> quaternion conversion into 1e-9..1e-7 in q, so the tolerance asser
 particles with |q|_inf >= 100 (the sibling `tests/test_batched_flow.py` documents this) and
 the figure over ALL particles is recorded; nothing may be NaN unless Drake's is.
 
+Which derivative path each program takes is asserted too: the Panda, the iiwa and the screw
+arm (`screw7`'s ScrewJoint replayed by the plant walker) have closed-form row Jacobians
+(`has_analytic_row_jacobians`), the soft PCS arm does not (autograd), and the GVS arm's
+`TorchConfigToPlantQ` refuses by name.
+
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__`
-driver. Needs both `n6` charts under `models/` and spawns collision workers, so run it as
-a script: `.venv/bin/python tests/test_batched_program.py`.
+driver. Needs the four `n6` charts under `models/`, so run it as a script, alone, under the
+memory scope: `.venv/bin/python tests/test_batched_program.py`.
 """
 
 import os
@@ -52,6 +61,10 @@ from src.iiwa_program import (Iiwa14IKProgram, Iiwa14IKProgramNumerical,    # no
                               IiwaMugProgram, IiwaMugProgramNumerical)
 from src.panda_program import (PandaIKProgram, PandaIKProgramNumerical,     # noqa: E402
                                PandaMugProgram, PandaMugProgramNumerical)
+from src.screw_arm_program import (ScrewArmIKProgram, ScrewArmIKProgramNumerical,  # noqa: E402
+                                   ScrewArmMugProgram, ScrewArmMugProgramNumerical)
+from src.soft_arm_program import (SoftArmIKProgram, SoftArmIKProgramNumerical,  # noqa: E402
+                                  SoftArmMugProgram, SoftArmMugProgramNumerical)
 from src.svgd.batched_program import (GENERIC_BINDING, REGULARIZER_COSTS,   # noqa: E402
                                       BatchedProgram, RowScaling)
 from src.target_screening import SceneFile                                  # noqa: E402
@@ -60,18 +73,31 @@ from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints, RepoDir  #
 CHECKPOINTS = {
     "panda": "models/panda/panda__n6__step620000.pkl",
     "iiwa": "models/iiwa14/iiwa14__n6__step620000.pkl",
+    "screw": "models/screw7_p050/screw7_p050__n6__step620000.pkl",
+    "soft": "models/soft12/soft12__n6__step620000.pkl",
 }
+## The names `LoadFlowSolver` and `SceneFile` know each robot by.
+ROBOT_NAMES = {"panda": "panda", "iiwa": "iiwa14", "screw": "screw7_p050", "soft": "soft12"}
+SCENE_NAMES = {"panda": "panda", "iiwa": "iiwa", "screw": "screw7_p050", "soft": "soft12"}
 LEARNED = {
     ("panda", "pose"): PandaIKProgram, ("panda", "mug"): PandaMugProgram,
     ("iiwa", "pose"): Iiwa14IKProgram, ("iiwa", "mug"): IiwaMugProgram,
+    ("screw", "pose"): ScrewArmIKProgram, ("screw", "mug"): ScrewArmMugProgram,
+    ("soft", "pose"): SoftArmIKProgram, ("soft", "mug"): SoftArmMugProgram,
 }
 NUMERICAL = {
     ("panda", "pose"): PandaIKProgramNumerical, ("panda", "mug"): PandaMugProgramNumerical,
     ("iiwa", "pose"): Iiwa14IKProgramNumerical, ("iiwa", "mug"): IiwaMugProgramNumerical,
+    ("screw", "pose"): ScrewArmIKProgramNumerical, ("screw", "mug"): ScrewArmMugProgramNumerical,
+    ("soft", "pose"): SoftArmIKProgramNumerical, ("soft", "mug"): SoftArmMugProgramNumerical,
 }
-KEYS = [(r, t, a) for r in ("panda", "iiwa") for t in ("pose", "mug") for a in ("learned", "numerical")]
-MUG_SEEDS = {"panda": 101, "iiwa": 202}
-POSE_SEEDS = {"panda": 11, "iiwa": 22}
+ROBOTS = ("panda", "iiwa", "screw", "soft")
+KEYS = [(r, t, a) for r in ROBOTS for t in ("pose", "mug") for a in ("learned", "numerical")]
+MUG_SEEDS = {"panda": 101, "iiwa": 202, "screw": 303, "soft": 404}
+POSE_SEEDS = {"panda": 11, "iiwa": 22, "screw": 33, "soft": 44}
+## Which derivative path each robot's batched program takes (closed-form row Jacobians, or
+## autograd through the kinematics), asserted so a regression is caught by name.
+ANALYTIC = {"panda": True, "iiwa": True, "screw": True, "soft": False}
 CUDA = torch.cuda.is_available()
 DEVICE = "cuda" if CUDA else "cpu"
 
@@ -85,9 +111,8 @@ _SOLVERS, _SCENES, _PROGRAMS, _BATCHED = {}, {}, {}, {}
 def _solver(robot):
     if robot not in _SOLVERS:
         with HiddenPrints():
-            _SOLVERS[robot] = LoadFlowSolver(
-                "iiwa14" if robot == "iiwa" else robot,
-                os.path.join(RepoDir(), CHECKPOINTS[robot]))
+            _SOLVERS[robot] = LoadFlowSolver(ROBOT_NAMES[robot],
+                                             os.path.join(RepoDir(), CHECKPOINTS[robot]))
     return _SOLVERS[robot]
 
 
@@ -113,7 +138,7 @@ def _scene(robot, task):
     key = (robot, task)
     if key in _SCENES:
         return _SCENES[key]
-    yaml = SceneFile(robot, task, "hardened")
+    yaml = SceneFile(SCENE_NAMES[robot], task, "hardened")
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=yaml)
         helper = NUMERICAL[key](diagram, options=_options(robot, task, "numerical"),
@@ -126,9 +151,14 @@ def _scene(robot, task):
         else:
             helper.create_prog()
             rng = np.random.default_rng(MUG_SEEDS[robot])
+            ## Uniform in the plant's own box where it is finite (the rigid arms: the draw the
+            ## Panda / iiwa fixtures have always used); in the CONFIGURATION box, mapped to the
+            ## plant, where it is not (the soft PCS arm's floating bodies are +-inf).
             lower, upper = helper.plant.GetPositionLowerLimits(), helper.plant.GetPositionUpperLimits()
+            finite = np.all(np.isfinite(lower)) and np.all(np.isfinite(upper))
             while True:
-                q = rng.uniform(lower, upper)
+                q = (rng.uniform(lower, upper) if finite
+                     else helper.ConfigToPlantQ(rng.uniform(*helper.ConfigLimits())))
                 if np.ravel(helper.collision_free_constraint_eval.Eval(q))[0] < 1.0:
                     break
             diagram_mug, mug = GenerateDiagramWithMug(q, helper, yaml, None)
@@ -258,14 +288,21 @@ def _check_rows(bp, X_np, label):
         same_functional = np.array([scale * np.ravel(p.collision_free_constraint_eval.Eval(q))[0]
                                     for q in Qp])
         assert np.array_equal(got, same_functional), label
-    if not bp.is_learned:
+    ## Joint space on a plant vector that IS the (padded) configuration: Drake's own
+    ## vector, so the row is the binding's bitwise. On the soft PCS arm the plant vector is
+    ## the torch map's, which differs from `ConfigToPlantQ`'s numpy by roundoff, exactly
+    ## as the learned arm's q does: bitwise at the batched vector (above), recorded vs Drake.
+    exact_plant = not bp.is_learned and bp.plant_q_is_padded_cfg
+    if exact_plant:
         assert np.array_equal(rows1[:, coll_row], rows[:, coll_row]), label
     fig["collision_B1_vs_BN"] = float(np.abs(rows1[:, coll_row] - rows[:, coll_row]).max())
     assert torch.equal(ev.collision_y * scale, ev.drake_rows[:, coll_row]) or \
         torch.allclose(ev.collision_y * scale, ev.drake_rows[:, coll_row], rtol=0, atol=1e-15)
     fig["collision_vs_drake_row"] = float(np.abs(rows[:, coll_row] - ref_rows[:, coll_row]).max())
-    if not bp.is_learned:
+    if exact_plant:
         assert np.array_equal(rows[:, coll_row], ref_rows[:, coll_row]), label
+    elif not bp.is_learned:
+        assert fig["collision_vs_drake_row"] <= 1e-10, (label, fig["collision_vs_drake_row"])
 
     ## Extra bindings, each against its own EvalBinding.
     by_desc = bindings_by_description(p)
@@ -386,7 +423,7 @@ def test_row_parity_all_programs():
         print(f"    {label:22s} cuda: non-collision rows B=1 {fig['noncoll_B1']:.2e}, B=32 "
               f"{fig['noncoll_BN']:.2e} ({fig['n_ordinary']}/32 ordinary; over all: "
               f"{fig['noncoll_B1_all']:.2e} / {fig['noncoll_BN_all']:.2e}, max |q|_inf "
-              f"{fig['max_q_inf']:.3g}); collision bitwise (vs Drake row "
+              f"{fig['max_q_inf']:.3g}); collision bitwise at its q_plant (vs Drake row "
               f"{fig['collision_vs_drake_row']:.1e}); extra rows {fig['extra_rows']:.1e}; "
               f"F rel {fig['F_rel']:.1e}, F_reported rel {fig['F_reported_rel']:.1e}")
     ## One program on the CPU (the joint-space arm needs no network, so the shared network
@@ -420,7 +457,7 @@ def test_row_parity_all_programs():
     for j, spec in enumerate(bp_s.g_spec):
         f = 3.0 if spec.group == "collision" else 1.0
         assert torch.allclose(ev_s.g[:, j], f * ev_ok.g[:, j], rtol=0, atol=1e-13)
-    print("PASS row parity on 8 programs (+ CPU), NaN propagation, need_collision=False, RowScaling")
+    print("PASS row parity on 16 programs (+ CPU), NaN propagation, need_collision=False, RowScaling")
 
 
 def test_gradients_match_autodiff():
@@ -448,7 +485,7 @@ def test_gradients_match_autodiff():
             worst = max(worst, float(np.abs(J[noncoll] - J_ref[noncoll]).max() / denom))
             dc = np.abs(J[coll_row] - J_ref[coll_row]).max() / max(1.0, np.abs(J_ref[coll_row]).max())
             worst_coll = max(worst_coll, float(dc))
-            if not bp.is_learned:
+            if not bp.is_learned and bp.plant_q_is_padded_cfg:
                 ## Bitwise against the in-process row's stored gradient, which is Drake's own
                 ## `ExtractGradient` scaled in numpy. The program's chain scales through
                 ## pydrake's `float * AutoDiffXd` operator instead, and THAT product is one
@@ -457,6 +494,16 @@ def test_gradients_match_autodiff():
                 _, g_pool = bp.collision.eval(p.ConfigToPlantQ(x_np)[None])
                 assert np.array_equal(J[coll_row], g_pool[0]), (robot, task, arm)
                 assert dc <= 1e-15, (robot, task, arm, dc)
+            elif not bp.is_learned:
+                ## The plant vector is the robot's map of the configuration: the row's
+                ## configuration gradient is the stored plant gradient through the map's
+                ## Jacobian (the program's own forward-mode `config_jacobian`, permuted into
+                ## the plant's slots), a different association of the same product.
+                _, g_pool = bp.collision.eval(p.ConfigToPlantQ(x_np)[None])
+                M, _ = p.config_jacobian(torch.tensor(x_np, dtype=torch.float64, device="cpu"))
+                ref = g_pool[0] @ M.detach().cpu().numpy()[p._plant_slots]
+                dm = np.abs(J[coll_row] - ref).max() / max(1.0, np.abs(ref).max())
+                assert dm <= 1e-12, (robot, task, arm, dm)
             ## jacobian_q / vjp_q against autograd of evaluate().q (the same graph).
             Jq = bp.jacobian_q(x[None])[0]
             Jq_ref = torch.autograd.functional.jacobian(
@@ -466,9 +513,10 @@ def test_gradients_match_autodiff():
             vjp = bp.vjp_q(x[None], R)
             assert torch.allclose(vjp, (R[0] @ Jq)[None], rtol=0, atol=1e-12)
         assert n_used == 4, (robot, task, arm, n_used)
+        assert bp.has_analytic_row_jacobians == ANALYTIC[robot], (robot, task, arm)
         tol = 1e-8 if bp.is_learned else 1e-12
         print(f"    {robot}/{task}/{arm:9s}: non-collision rows {worst:.2e}, collision row "
-              f"{worst_coll:.2e}{' (bitwise vs the in-process row)' if not bp.is_learned else ''}, "
+              f"{worst_coll:.2e}{' (bitwise vs the in-process row)' if not bp.is_learned and bp.plant_q_is_padded_cfg else ''}, "
               f"jacobian_q vs autograd {worst_jq:.1e}")
         assert worst <= tol, (robot, task, arm, worst)
         assert worst_coll <= max(tol, 1e-15), (robot, task, arm, worst_coll)
@@ -544,7 +592,9 @@ def test_to_drake_x_round_trips():
 def test_project():
     rng = np.random.default_rng(4)
     for robot, task, arm in (("panda", "mug", "learned"), ("iiwa", "pose", "learned"),
-                             ("iiwa", "mug", "numerical")):
+                             ("iiwa", "mug", "numerical"), ("screw", "mug", "learned"),
+                             ("screw", "pose", "numerical"), ("soft", "pose", "learned"),
+                             ("soft", "mug", "numerical")):
         bp = batched(robot, task, arm)
         lo, hi = (t.cpu().numpy() for t in bp.bounds)
         rlo, rhi = (t.cpu().numpy() for t in bp.regions)
@@ -610,7 +660,44 @@ def test_robot_hooks():
                      device=bp.device)
     a, b = bp.evaluate(X), hooked.evaluate(X)
     assert torch.equal(a.drake_rows, b.drake_rows) and torch.equal(a.F, b.F)
-    print("PASS robot hooks: default map checked against ConfigToPlantQ; passed hooks are used")
+
+    ## The soft PCS arm supplies its map through `TorchConfigToPlantQ`; a map that disagrees
+    ## with `ConfigToPlantQ` is refused at construction, naming the hook.
+    sbp = batched("soft", "pose", "numerical")
+    sp = sbp.program
+    assert not sbp.plant_q_is_padded_cfg and not sbp.has_analytic_row_jacobians
+    ## A float32 swarm (the fielded dtype) builds: the map is checked at float64 and used
+    ## at float32, and its rows agree with the float64 replay to float32's precision.
+    sbp32 = BatchedProgram.from_program(sp, dtype=torch.float32, device=DEVICE, collision=sbp.collision)
+    Xs = lumped_batch(sbp, np.random.default_rng(7), 8)
+    r64 = sbp.evaluate(torch.tensor(Xs, dtype=torch.float64, device=DEVICE)).drake_rows
+    r32 = sbp32.evaluate(torch.tensor(Xs, dtype=torch.float32, device=DEVICE)).drake_rows
+    d32 = float((r32.double() - r64).abs().max())
+    assert d32 <= 1e-4, d32
+    saved_hook = sp.TorchConfigToPlantQ
+
+    def off_by_a_nanometre(dtype, device):
+        exact = saved_hook(dtype=dtype, device=device)
+        return lambda cfg: exact(cfg) + 1e-9
+    sp.TorchConfigToPlantQ = off_by_a_nanometre
+    try:
+        BatchedProgram.from_program(sp, dtype=torch.float64, device=DEVICE, collision=sbp.collision)
+    except RuntimeError as e:
+        assert "TorchConfigToPlantQ" in str(e) and type(sp).__name__ in str(e), str(e)
+    else:
+        raise AssertionError("a robot map that disagrees with ConfigToPlantQ must be refused")
+    finally:
+        del sp.TorchConfigToPlantQ
+    ## The GVS arm's forward map is a JAX root-find: no torch map, refused by name.
+    from src.gvs_arm_program import GvsArmIKProgram
+    try:
+        GvsArmIKProgram.TorchConfigToPlantQ(None)
+    except NotImplementedError as e:
+        assert "JAX" in str(e)
+    else:
+        raise AssertionError("the GVS arm has no torch forward map")
+    print("PASS robot hooks: default map checked against ConfigToPlantQ; passed hooks are used; "
+          "the soft PCS map is checked and a wrong one refused; GVS refused")
 
 
 def test_timing():

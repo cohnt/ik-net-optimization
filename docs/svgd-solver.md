@@ -930,6 +930,70 @@ R5"*, extended to R6-R10): R5 (N = 16, T = 10), R6
 (lr = 0.1, K = 1, K = 100), R8 (N = 4, 32, 128), R9 (rho = 100, rho = 1e5, clip 1e6), R10 (paired
 init from the native draw). Their sections are appended as they land.
 
+## Other robots: screw and soft PCS plumbing (2026-10-11)
+
+`BatchedProgram.from_program` now takes all four programs of the screw arm (`screw7_p050`, chart
+`n6`) and of the soft PCS arm (`soft12`, chart `n6`). `tests/test_batched_program.py` runs the same
+oracle checks on them at the same tolerances: rows against `EvalBinding`, costs, gradients against
+the AutoDiffXd chain, `init_from_q` against `SetStartFromQ`, and `to_drake_x` through `verify()`.
+`tests/test_kinematics_from_plant.py` checks every body against `CalcRelativeTransform` on the
+screw pose and grasp scenes (the `ScrewJoint` asserted present) and on the soft PCS scene.
+
+- **Screw arm: the fielded path.** The plant walker replays the `ScrewJoint`, and `FrameChain`'s
+  closed-form row Jacobians carry its `pitch / 2pi` column. So the step is the compiled / graphed
+  split step, as on the Panda and the iiwa. One rule changed: its native grasp `c`
+  (`svgd_paired_init = native`, resampling) is now the program's own `GraspCStart()`. Before, it
+  was `[mug centre, 0, 0, 0]`, the rule from before the 2026-10-08 settings unification.
+- **The iiwa still uses that old rule.** `_compute_native_c` sets the iiwa's native grasp `c` to
+  the mug centre with zero rpy, while `IiwaMugProgram` seeds `GraspCStart()`. It is left unchanged
+  so the iiwa stays bit-identical, and flagged here.
+- **Soft PCS arm: the autograd / eager path.** Its 33 sub-links are `QuaternionFloatingJoint`s.
+  `KinematicTree` now replays those too (Drake normalises the quaternion, and so does the replay),
+  so the arm needs no provider of its own. The configuration-to-plant map is the program's
+  `TorchConfigToPlantQ`: the exact strain kinematics of `src/soft_arm/kinematics.py`, permuted into
+  the plant's slots. It is checked against `ConfigToPlantQ` in float64 at construction. Closed-form
+  frame Jacobians through a floating joint refuse by name, so `has_analytic_row_jacobians` is False
+  and the solver takes `_step_eager`.
+- **GVS** has no torch forward map. `GvsArmIKProgram.TorchConfigToPlantQ` raises by name.
+- **Recording.** `record["svgd"]` now carries `step_mode` and `derivative_mode`.
+
+**Smokes** (laptop, one process at a time under the 20G scope): the record's grid (`--targets 60
+--guesses 8 --seed 1`) restricted to `--cells 0:0,0:1`, paired, `--wall-time 20`, `svgd_n=16`,
+`svgd_kernel=q`, `svgd_compile`, `svgd_cuda_graph`, `flow_cuda_graph`, `--compile --config latent
+--set correction_cost_weight=10.0 --scene hardened --shelf-inset 0.1 --target-placement shelf`,
+and `--placement-point fingertips` on pose. Tags are `smoke_SVGDPLUMB_<robot>_n6_svgd-n16-graphed_<row>_2_20_paired`.
+
+The table uses these abbreviations:
+
+- **L / JS:** learned / joint space.
+- **ms / step:** the svgd log's swarm seconds divided by its inner steps.
+- **coll. share:** collision seconds over swarm seconds.
+
+| robot / row | step | L success | JS success | L n_feasible | JS n_feasible | L stop | JS stop | L ms / step | JS ms / step | L coll. share | JS coll. share |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| screw pose | graphed, closed form | 2/2 | 2/2 | 6, 7 | 1, 3 | converged x2 | converged x2 | 12.6, 7.8 | 11.3, 6.4 | 0.60, 0.67 | 0.79, 0.79 |
+| screw grasp | graphed, closed form | 2/2 | 0/2 | 3, 1 | 0, 0 | converged x2 | wall clock x2 | 14.8, 8.8 | 8.7, 7.5 | 0.51, 0.72 | 0.77, 0.82 |
+| soft PCS pose | eager, autograd | 2/2 | 1/2 | 2, 3 | 0, 13 | converged, wall clock | wall clock, converged | 114, 92 | 73, 70 | 0.62, 0.58 | 0.72, 0.72 |
+| soft PCS grasp | eager, autograd | 1/2 | 2/2 | 2, 0 | 10, 10 | wall clock x2 | wall clock, converged | 126, 124 | 93, 80 | 0.71, 0.74 | 0.83, 0.81 |
+
+**The soft PCS pose row was measured twice.** The first run was at load 21.8 with the laptop's
+memory 52 of 62 GB used by other applications. It read learned 0/2 and joint space 1/2, every cell
+at the wall clock, at 300-318 / 201-282 ms per step. The re-run at load 4.5 is the row above. A
+2-cell smoke shows that the plumbing runs; it says nothing about success.
+
+**What the soft PCS step costs.** One step is 70-126 ms at N = 16, against 6-15 ms graphed on the
+screw arm. The collision row is 58-83% of it. Most of the rest is the eager autograd path through
+231 plant positions.
+
+TODO (Thomas, 2026-10-11): rewrite the PCS and GVS forward steps in torch
+
+- **PCS:** the forward map is already a torch function (`src/soft_arm/kinematics.py`). What the
+  compiled svgd step lacks is closed-form row Jacobians through it, the analytic path that
+  `has_analytic_row_jacobians` and `fused`'s split step need.
+- **GVS:** the forward map is a JAX root-find with implicit differentiation
+  (`src/gvs_arm/model.py`). It needs a torch port, or a dlpack bridge, before `BatchedProgram`
+  can replay it.
+
 ## Selected variant
 
 **SUPERSEDED (2026-10-09)** with the section above: the selection below was of the removed solver;
