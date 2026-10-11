@@ -2890,6 +2890,11 @@ SVGD_ROUNDS = {
 #: The rounds' allotment base, (learned, joint space) seconds per cell -- an ASSUMPTION from the
 #: cluster smoke (pose paired, 4 cells, 60 s: learned 4-7 s, joint space 9-42 s), not a measurement.
 SVGD_ROUND_CELL_S = (5.0, 60.0)
+#: The rounds run the LEARNED arm only (Thomas, 2026-10-10 evening: "drop joint space ablation
+#: arm from R3, R4, R5"). Joint-space svgd is an ablation, measured at the default setting by
+#: R1 / R1K; with the kernel off it runs to the 180 s clock on most grasp cells, which tripled
+#: R1K's time and would have pushed the variant ladder past the 10-12 maintenance window.
+SVGD_ROUND_ARMS = "learned"
 SVGD_STAGES = SVGD_STAGES + tuple(SVGD_ROUNDS)
 SVGD_R2_SHARDS = 8
 SVGD_R1_SHARD_SCALE = 3
@@ -2970,6 +2975,8 @@ def _svgd_as_svgd(it, variant, wall=None, cells_token=None, stage=None):
     del a[i - 1:i + 1]
     if wall is not None:
         a[a.index("--wall-time") + 1] = str(float(wall))
+    if stage in SVGD_ROUNDS:
+        a[a.index("--arms") + 1] = SVGD_ROUND_ARMS
     a += SVGD_EXEC + SVGD_BUDGET + _svgd_method_sets(_svgd_variant_overrides(stage, variant))
     old = _svgd_flag(a, "--tag")
     head, tail = old.split("_ipopt_", 1)
@@ -2990,7 +2997,7 @@ def _svgd_seconds(stage, args):
     elif stage in SVGD_R1_SPLIT:
         per_cell = 2 * SVGD_R1_ASSUMED_ARM_CELL_S
     elif stage in SVGD_ROUNDS:
-        per_cell = sum(SVGD_ROUND_CELL_S)
+        per_cell = SVGD_ROUND_CELL_S[0]           # learned arm only
     else:                                         # the smoke: charged at the clock
         per_cell = 2 * float(_svgd_flag(args, "--wall-time"))
     return cells * per_cell + SVGD_ITEM_OVERHEAD_S
@@ -3039,8 +3046,8 @@ def svgd_allotment():
     print("  REMEASURE at PROCS=8 MPS=1 -- slightly pessimistic at PROCS=2).")
     print(f"  R1 base: ASSUMED {SVGD_R1_ASSUMED_ARM_CELL_S:g} s per cell per arm (both arms run "
           f"svgd); worst case every cell at the {STATUSQUO_WALL:g} s clock on both arms.")
-    print(f"  R3-R5 base: ASSUMED {SVGD_ROUND_CELL_S[0]:g} s learned + {SVGD_ROUND_CELL_S[1]:g} s joint "
-          f"space per cell (cluster smoke, pose paired: learned 4-7 s, joint space 9-42 s).")
+    print(f"  R3-R5 base: ASSUMED {SVGD_ROUND_CELL_S[0]:g} s per learned cell; the rounds run the "
+          f"learned arm only (SVGD_ROUND_ARMS). R1 measured 6-12 s median at N = 64.")
     print(f"  smoke: charged at the clock.")
     print(f"\n  {'manifest':<12}{'runs':>6}{'cells':>7}{'items':>7}{'solve-h':>9}{'node-h':>8}"
           f"{'h@' + str(SVGD_NODES):>7}{'max item h':>12}")
@@ -5008,7 +5015,9 @@ def selftest():
             t, g, wall = (SVGD_SMOKE_SHAPE if stage == "SVGD_SMOKE" else (60, 8, 180.0))
             for flag, want in (("--wall-time", str(float(wall))), ("--seed", "1"),
                                ("--scene", "hardened"), ("--shelf-inset", str(HARD_SHELF_INSET)),
-                               ("--target-placement", "shelf"), ("--arms", "learned,numerical"),
+                               ("--target-placement", "shelf"),
+                               ("--arms", SVGD_ROUND_ARMS if stage in SVGD_ROUNDS
+                                else "learned,numerical"),
                                ("--targets", str(t)), ("--guesses", str(g)),
                                ("--config", "latent")):
                 if _svgd_flag(a, flag) != want:
