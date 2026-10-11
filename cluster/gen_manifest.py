@@ -2879,13 +2879,31 @@ SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
 #: R1's variants, in claim order (the primary first). Each differs from `kq` in one setting.
 SVGD_VARIANTS = {"kq": [], "knone": ["--set", "svgd_kernel=none"]}
 #: The weekend single-factor rounds (the coordinator, 2026-10-10, after the cluster smoke passed):
-#: each is R1's four Panda rows at `kq` with ONE `--set` changed, as `variant: (sets, shards)`. An
-#: override of a SVGD_PINNED name REPLACES the pinned value in place (one --set per name), so
-#: `rho1e4` runs at svgd_rho=10000 and `lr1` at svgd_lr=1.0, nothing else moved.
+#: each is R1's Panda rows at `kq` with ONE `--set` changed, as `variant: (sets, shards, starts)`.
+#: An override of a SVGD_PINNED name REPLACES the pinned value in place (one --set per name), so
+#: `rho1e4` runs at svgd_rho=10000 and `lr1` at svgd_lr=1.0, nothing else moved. `starts` is the
+#: variant's row filter: both protocols (all four rows) unless the change cannot act on one --
+#: `initnative` changes only how the PAIRED swarm is drawn (the native rows already draw the
+#: native distribution, so a native item would be `kq`'s run again) and runs the paired rows only.
+#: R6-R10 (the coordinator and Thomas, 2026-10-11 overnight) continue the ladder's phase 2, each
+#: rung attributing one setting of the primary; there is no R7 (the seed control needs IPOPT twins
+#: on new grids and waits for Thomas).
+SVGD_BOTH = "paired,native"
 SVGD_ROUNDS = {
-    "SVGD_R3": {"n1": (["svgd_n=1"], 8), "n256": (["svgd_n=256"], 24)},
-    "SVGD_R4": {"rho1e4": (["svgd_rho=10000"], 24), "lr1": (["svgd_lr=1.0"], 24)},
-    "SVGD_R5": {"n16": (["svgd_n=16"], 16), "T10": (["svgd_temperature=10"], 24)},
+    "SVGD_R3": {"n1": (["svgd_n=1"], 8, SVGD_BOTH), "n256": (["svgd_n=256"], 24, SVGD_BOTH)},
+    "SVGD_R4": {"rho1e4": (["svgd_rho=10000"], 24, SVGD_BOTH),
+                "lr1": (["svgd_lr=1.0"], 24, SVGD_BOTH)},
+    "SVGD_R5": {"n16": (["svgd_n=16"], 16, SVGD_BOTH),
+                "T10": (["svgd_temperature=10"], 24, SVGD_BOTH)},
+    "SVGD_R6": {"lr0p1": (["svgd_lr=0.1"], 24, SVGD_BOTH),
+                "K1": (["svgd_inner_iters=1"], 24, SVGD_BOTH),
+                "K100": (["svgd_inner_iters=100"], 24, SVGD_BOTH)},
+    "SVGD_R8": {"n4": (["svgd_n=4"], 24, SVGD_BOTH), "n32": (["svgd_n=32"], 24, SVGD_BOTH),
+                "n128": (["svgd_n=128"], 24, SVGD_BOTH)},
+    "SVGD_R9": {"rho100": (["svgd_rho=100"], 24, SVGD_BOTH),
+                "rho1e5": (["svgd_rho=100000"], 24, SVGD_BOTH),
+                "clip1e6": (["svgd_multiplier_max=1000000"], 24, SVGD_BOTH)},
+    "SVGD_R10": {"initnative": (["svgd_paired_init=native"], 24, "paired")},
 }
 #: The rounds' allotment base, (learned, joint space) seconds per cell -- an ASSUMPTION from the
 #: cluster smoke (pose paired, 4 cells, 60 s: learned 4-7 s, joint space 9-42 s), not a measurement.
@@ -2910,7 +2928,11 @@ SVGD_ALLOWED_SETS = {
                  "svgd_outer_iters", "svgd_kernel", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
     **{r: {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
            "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_n", "svgd_temperature"}
-       for r in SVGD_ROUNDS},
+       for r in ("SVGD_R3", "SVGD_R4", "SVGD_R5")},
+    **{r: {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+           "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_n", "svgd_temperature",
+           "svgd_inner_iters", "svgd_multiplier_max", "svgd_paired_init"}
+       for r in ("SVGD_R6", "SVGD_R8", "SVGD_R9", "SVGD_R10")},
     "SVGD_SMOKE": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile",
                    "svgd_cuda_graph", "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
 }
@@ -3023,8 +3045,8 @@ def stage_SVGD(which):
         items = _svgd_r1_items((SVGD_R1_SPLIT[which],))
     elif which in SVGD_ROUNDS:
         items = []
-        for variant, (_, shards) in SVGD_ROUNDS[which].items():
-            for it in _svgd_rows(60, 8, shards, which):
+        for variant, (_, shards, starts) in SVGD_ROUNDS[which].items():
+            for it in _svgd_rows(60, 8, shards, which, starts=starts):
                 task = _svgd_flag(it["args"], "--task")
                 items.append(dict(_svgd_as_svgd(it, variant, stage=which),
                                   order=0 if task == "mug" else 1))
@@ -3046,7 +3068,7 @@ def svgd_allotment():
     print("  REMEASURE at PROCS=8 MPS=1 -- slightly pessimistic at PROCS=2).")
     print(f"  R1 base: ASSUMED {SVGD_R1_ASSUMED_ARM_CELL_S:g} s per cell per arm (both arms run "
           f"svgd); worst case every cell at the {STATUSQUO_WALL:g} s clock on both arms.")
-    print(f"  R3-R5 base: ASSUMED {SVGD_ROUND_CELL_S[0]:g} s per learned cell; the rounds run the "
+    print(f"  R3-R10 base: ASSUMED {SVGD_ROUND_CELL_S[0]:g} s per learned cell; the rounds run the "
           f"learned arm only (SVGD_ROUND_ARMS). R1 measured 6-12 s median at N = 64.")
     print(f"  smoke: charged at the clock.")
     print(f"\n  {'manifest':<12}{'runs':>6}{'cells':>7}{'items':>7}{'solve-h':>9}{'node-h':>8}"
@@ -4984,10 +5006,13 @@ def selftest():
     sv_expected = {"SVGD_SMOKE": (1, 1), "SVGD_R2": (4, 4 * SVGD_R2_SHARDS),
                    "SVGD_R1": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE),
                    "SVGD_R1K": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE),
-                   **{r: (8, sum(4 * sh for _, sh in v.values())) for r, v in SVGD_ROUNDS.items()}}
-    if {r: (8, n) for r, (_, n) in sv_expected.items() if r in SVGD_ROUNDS} != \
-            {"SVGD_R3": (8, 128), "SVGD_R4": (8, 192), "SVGD_R5": (8, 160)}:
-        sv_fails.append("rounds R3-R5 are not 8 runs / 128, 192, 160 items")
+                   **{r: (sum(2 * len(st.split(",")) for _, _, st in v.values()),
+                          sum(2 * len(st.split(",")) * sh for _, sh, st in v.values()))
+                      for r, v in SVGD_ROUNDS.items()}}
+    if {r: n for r, n in sv_expected.items() if r in SVGD_ROUNDS} != \
+            {"SVGD_R3": (8, 128), "SVGD_R4": (8, 192), "SVGD_R5": (8, 160), "SVGD_R6": (12, 288),
+             "SVGD_R8": (12, 288), "SVGD_R9": (12, 288), "SVGD_R10": (2, 48)}:
+        sv_fails.append("rounds R3-R10 are not 8/8/8/12/12/12/2 runs, 128/192/160/288/288/288/48 items")
     rm_panda = {it["id"].replace("sc_REMEASURE_", "", 1): it for it in stage_REMEASURE("REMEASURE")
                 if it["robot"] == "panda" and _svgd_flag(it["args"], "--solver") == "ipopt"}
     for stage, (want_runs, want_items) in sv_expected.items():
@@ -5065,6 +5090,9 @@ def selftest():
                     sv_fails.append(f"{stage}: {it['id']} method sets {got}, expected {want}")
                 if stage in SVGD_ROUNDS and len(_svgd_variant_overrides(stage, variant)) != 1:
                     sv_fails.append(f"{stage}: variant {variant} is not single-factor")
+                if stage in SVGD_ROUNDS and start not in SVGD_ROUNDS[stage][variant][2].split(","):
+                    sv_fails.append(f"{stage}: {it['id']} runs a {start} row; variant {variant} "
+                                    f"runs {SVGD_ROUNDS[stage][variant][2]} only")
                 ## R1 vs the IPOPT row it came from: identical but for the documented swap.
                 ipopt_tag = tag.rsplit("_", 1)[0].replace("_svgd_", "_ipopt_", 1)
                 if stage in SVGD_R1_SPLIT or stage in SVGD_ROUNDS:
@@ -5094,7 +5122,9 @@ def selftest():
             if t * g / shards * 2 * wall + SVGD_ITEM_OVERHEAD_S > 28800:
                 sv_fails.append(f"{stage}: {it['id']} can exceed ITEM_TIMEOUT at the clock")
         want_rows = ({("pose", "paired")} if stage == "SVGD_SMOKE" else
-                     {(tk, st) for tk in ("mug", "pose") for st in ("paired", "native")})
+                     {(tk, st) for tk in ("mug", "pose") for st in
+                      (set().union(*(v[2].split(",") for v in SVGD_ROUNDS[stage].values()))
+                       if stage in SVGD_ROUNDS else ("paired", "native"))})
         if rows_seen != want_rows:
             sv_fails.append(f"{stage}: rows {sorted(rows_seen)}, expected {sorted(want_rows)}")
         if stage in SVGD_R1_SPLIT and variants_seen != {SVGD_R1_SPLIT[stage]}:
@@ -5128,7 +5158,7 @@ def selftest():
         print(f"FAIL svgd stages: {msg}")
     fails += len(sv_fails)
     if not sv_fails:
-        print("ok   stages SVGD_SMOKE/R2/R1/R1K/R3/R4/R5: 1/4/4/4/8/8/8 logical runs, R2 = REMEASURE's Panda IPOPT "
+        print("ok   stages SVGD_SMOKE/R2/R1/R1K/R3/R4/R5/R6/R8/R9/R10: 1/4/4/4/8/8/8/12/12/12/2 logical runs, R2 = REMEASURE's Panda IPOPT "
               "items, R1 (kq) + R1K (knone) = those rows under svgd + graphed mode + lifted step "
               "budget, and together exactly stage R1")
 
@@ -5200,7 +5230,8 @@ def main():
                    help="Stage H only: the G_SETTINGS name to cross-test")
     p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
                                  "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
-                                 "SVGD_R3", "SVGD_R4", "SVGD_R5",
+                                 "SVGD_R3", "SVGD_R4", "SVGD_R5", "SVGD_R6", "SVGD_R8",
+                                 "SVGD_R9", "SVGD_R10",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -5352,6 +5383,10 @@ def main():
              "SVGD_R3": lambda: stage_SVGD("SVGD_R3"),
              "SVGD_R4": lambda: stage_SVGD("SVGD_R4"),
              "SVGD_R5": lambda: stage_SVGD("SVGD_R5"),
+             "SVGD_R6": lambda: stage_SVGD("SVGD_R6"),
+             "SVGD_R8": lambda: stage_SVGD("SVGD_R8"),
+             "SVGD_R9": lambda: stage_SVGD("SVGD_R9"),
+             "SVGD_R10": lambda: stage_SVGD("SVGD_R10"),
              "PAPER": lambda: stage_PAPER(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,

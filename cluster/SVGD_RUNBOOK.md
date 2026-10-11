@@ -273,6 +273,82 @@ PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R5.txt 4
 `submit_bench.sh` refuses any manifest that is not staged on the cluster. These three are new, so the
 staged tree must hold them first.
 
+## Rounds R6, R8, R9, R10
+
+These continue the ladder into phase 2, stripping out what is not important (the coordinator and
+Thomas, 2026-10-11 overnight: *"You can use local and cluster compute"*). Each rung attributes **one**
+setting of the primary `kq`. The conventions are those of R3-R5: learned arm only, `SVGD_PINNED`
+plus one override that replaces a pinned name in place, the record flags, graphed, the lifted step
+cap, and PROCS=2 with no MPS. There is no R7, because the seed control needs IPOPT twins on new
+grids and waits for Thomas.
+
+| manifest | variant | the one change against `kq` | what it attributes |
+| --- | --- | --- | --- |
+| `manifest_stageSVGD_R6.txt` | `lr0p1` | `svgd_lr=0.1` (replacing 0.3) | the step size, below the pin (R4's `lr1` is above it) |
+| | `K1` / `K100` | `svgd_inner_iters=1` / `=100` (default 10) | the dual-ascent / resample / stop-check period K |
+| `manifest_stageSVGD_R8.txt` | `n4` / `n32` / `n128` | `svgd_n=4` / `32` / `128` (default 64) | the particle count, filling in R3/R5's 1 / 16 / 256 |
+| `manifest_stageSVGD_R9.txt` | `rho100` / `rho1e5` | `svgd_rho=100` / `=100000` (replacing 1000) | the AL penalty, either side of R4's `rho1e4` |
+| | `clip1e6` | `svgd_multiplier_max=1000000` (default 1e4) | the multiplier box |
+| `manifest_stageSVGD_R10.txt` | `initnative` | `svgd_paired_init=native` (default `jitter`) | the paired swarm's draw: around the shared guess, or the arm's own distribution |
+
+**`initnative` runs the PAIRED rows only.** The native rows already draw the native distribution, so
+a native item would rerun `kq`. The row filter is the third field of each `SVGD_ROUNDS` entry
+(`starts`), and the selftest's expected counts and rows follow it.
+
+**The variant token is `lr0p1`, not `lr0.1`**, following the tree's tag convention (`mstep0p5`):
+no dot in a tag that names a results directory.
+
+**Under `K1` and `K100`, the `iterations` column is not comparable with `kq`'s.** It counts outer
+checks, and a check is every K steps. Compare these rungs on success and wall. The step cap
+(`svgd_outer_iters=1000000` checks) is 1e6 steps at K = 1. That binds within the 180 s clock only
+if a step takes under 0.18 ms, so read `hit_iteration_cap` anyway.
+
+**Shards.** Every variant uses 24 shards, as R4 does, `n128` included (R3's `n256` uses 24 too). Each
+item is 20 cells. With every cell at the clock, a learned-only item takes 1 h, far inside the 8 h
+`ITEM_TIMEOUT`.
+
+**Allotment.** `python cluster/gen_manifest.py --stage SVGD_R6 --allotment` prints these lines. They
+assume 5 s per learned cell, which is optimistic, since R1 measured a 6-12 s median at N = 64:
+
+```
+  manifest      runs  cells  items  solve-h  node-h    h@4  max item h
+  SVGD_R6         12   5760    288     22.4    11.2    2.8        0.08
+  SVGD_R8         12   5760    288     22.4    11.2    2.8        0.08
+  SVGD_R9         12   5760    288     22.4    11.2    2.8        0.08
+  SVGD_R10         2    960     48      3.7     1.9    0.5        0.08
+```
+
+Together that is about 35 node-hours, or about 9 h on 4 idle nodes, queued FIFO behind R3-R5. The
+Monday-evening maintenance window (2026-10-12 to 10-14) kills whatever is still running. After it,
+`--reclaim` and resubmit.
+
+**Staging the manifests.** `stage_code.sh` refuses while campaign jobs of the tree are queued or
+running, so it cannot restage the code for these. They need no new code, because every option they
+set is already in the staged tree's `ProgramOptions`. So copy the four manifests into the staged
+tree by hand:
+
+```bash
+scp $WT/cluster/manifest_stageSVGD_R{6,8,9,10}.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/
+```
+
+**Check before submitting:** confirm that the staged commit has `svgd_inner_iters`,
+`svgd_multiplier_max` and `svgd_paired_init` (with `native`). An unknown option name raises at
+options construction and turns every cell into an instant failure.
+
+```bash
+ssh tcohn@txe1-login.mit.edu 'grep -c "svgd_inner_iters\|svgd_multiplier_max\|svgd_paired_init" ~/learned-ik/repo/src/generic_program.py'
+```
+
+Then submit with no dependency flags:
+
+```bash
+cd $STAGE
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R6.txt 4
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R8.txt 4
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R9.txt 4
+PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R10.txt 4
+```
+
 ## Collect
 
 Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs and `results/`, and
@@ -281,7 +357,7 @@ Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs
 ```bash
 bash $WT/cluster/collect_results.sh --status
 bash $WT/cluster/collect_results.sh                  # rsync + merge shards, incremental
-bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R5) only once the queue is idle
+bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R10) only once the queue is idle
 ```
 
 Tags: `sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq`,
