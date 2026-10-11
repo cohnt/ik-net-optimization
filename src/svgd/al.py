@@ -37,16 +37,23 @@ from torch import Tensor
 
 @dataclass
 class ALState:
-    """Per-particle multipliers."""
+    """Per-particle multipliers, and the per-particle LIVE weight.
+
+    `live` is 1 for a particle in the swarm and 0 for one `svgd_resample = drop` / `keep` has
+    removed (`drop`): a static-shape stand-in for a shrinking swarm, so the compiled / captured
+    step never changes shape. Under `native` it stays all ones and the step never reads it
+    (`fused.StepConfig.live_weights` is False). `None` (a hand-built state) means all live."""
 
     lam: Tensor         # [N, m_e]  equality multipliers
     mu: Tensor          # [N, m_i]  inequality multipliers (>= 0)
+    live: Tensor = None  # [N]      1.0 live / 0.0 dropped, the swarm's dtype
 
     @staticmethod
     def init(N, m_e, m_i, dtype, device) -> "ALState":
-        """Zero multipliers on every particle."""
+        """Zero multipliers and every particle live."""
         kw = dict(dtype=dtype, device=device)
-        return ALState(lam=torch.zeros(N, m_e, **kw), mu=torch.zeros(N, m_i, **kw))
+        return ALState(lam=torch.zeros(N, m_e, **kw), mu=torch.zeros(N, m_i, **kw),
+                       live=torch.ones(N, **kw))
 
 
 def al_value(F: Tensor, h: Tensor, g: Tensor, S: ALState, rho) -> Tensor:
@@ -116,9 +123,19 @@ def reset(S: ALState, mask: Tensor) -> ALState:
                    mu=torch.where(m1, torch.zeros_like(S.mu), S.mu))
 
 
+def drop(S: ALState, mask: Tensor) -> ALState:
+    """Remove the masked particles from the swarm (`svgd_resample = drop` / `keep`): live
+    weight 0 and multipliers zeroed, for the rest of the solve."""
+    S = reset(S, mask)
+    live = S.live if S.live is not None else torch.ones(mask.shape[0], dtype=S.lam.dtype,
+                                                        device=S.lam.device)
+    return replace(S, live=torch.where(mask, torch.zeros_like(live), live))
+
+
 def resample_mask(q: Tensor, rows_finite: Tensor, q_max) -> Tensor:
-    """Particles to redraw, `[N]` bool: `||q||_inf > q_max`, any non-finite `q`, or a row
-    set the caller found non-finite (`rows_finite [N]`, True where every row is finite)."""
+    """Particles to redraw (or drop), `[N]` bool: `||q||_inf > q_max`, any non-finite `q`, or
+    a row set the caller found non-finite (`rows_finite [N]`, True where every row is finite).
+    `q_max = inf` leaves only the non-finite test (`svgd_resample = keep`)."""
     too_big = q.abs().amax(dim=1) > q_max
     nonfinite = ~torch.isfinite(q).all(dim=1)
     return too_big | nonfinite | ~rows_finite

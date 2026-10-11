@@ -255,7 +255,8 @@ def solver_diagnostics(result, solver):
 ## (it is also parsed from the log) so `summarise` can read the svgd step count off the
 ## same dict as the other svgd columns and report nan, not IPOPT majors, on a Drake arm.
 _SVGD_DETAIL_KEYS = ("method", "dtype", "n_particles", "iterations", "inner_steps",
-                     "map_evals", "n_feasible", "n_resampled", "selected_index",
+                     "map_evals", "n_feasible", "n_resampled", "resample_mode", "n_dropped",
+                     "n_live", "selected_index",
                      "solver_feasible", "drake_feasible", "phase_times", "collision_seconds",
                      "collision_backend", "collision_threads",
                      "stop_reason", "n_dual_updates", "lam_inf_median", "lam_inf_max",

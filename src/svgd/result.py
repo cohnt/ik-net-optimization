@@ -75,6 +75,10 @@ class SvgdSolverDetails:
     map_evals: int = 0             # batched passes through the map (N particles per pass)
     n_feasible: int = 0            # particles feasible on the batched rows at stop
     n_resampled: int = 0           # particles re-drawn for |q|_inf > cap or non-finite rows
+    resample_mode: str = "native"  # svgd_resample: native (redraw) | drop | keep
+    n_dropped: int = 0             # particles removed from the swarm (drop: runaway or non-finite;
+                                   # keep: non-finite only)
+    n_live: int = 0                # particles still in the swarm at stop (N under native)
     selected_index: int = -1       # which particle was returned; -1 if none
     phase_times: dict = field(default_factory=dict)
     timed_out: bool = False
@@ -85,7 +89,8 @@ class SvgdSolverDetails:
     collision_seconds: float = 0.0 # host time blocked in the collision backend (the exactness premium)
     collision_backend: str = "autodiff"  # which evaluator ran the row (`svgd_collision_backend`)
     collision_threads: int = 1     # Drake threads the row's call used (1: the serial autodiff loop)
-    stop_reason: str = ""          # why the SWARM stopped: converged | wall_clock | step_cap
+    stop_reason: str = ""          # why the SWARM stopped: converged | wall_clock | step_cap |
+                                   # all_dead (every particle dropped; scored infeasible)
     n_dual_updates: int = 0        # dual-ascent steps taken (each on every particle)
     lambda_max_median: float = None  # exact lambda_max of the GN Hessian (y coords) at the checks:
     lambda_max_max: float = None     # median over checks of the per-check median, and largest
@@ -165,6 +170,9 @@ LOG_LINES = (
     "SVGD map evals: {map_evals}",
     "SVGD feasible particles: {n_feasible}",
     "SVGD resampled particles: {n_resampled}",
+    "SVGD resample mode: {resample_mode}",
+    "SVGD dropped particles: {n_dropped}",
+    "SVGD live particles at stop: {n_live}",
     "SVGD selected index: {selected_index}",
     "SVGD dual updates: {n_dual_updates}",
     "SVGD |lam|_inf at stop: median {lam_inf_median} max {lam_inf_max}",
@@ -188,6 +196,8 @@ def write_log(path, details):
         "dtype": details.dtype, "iterations": details.iterations,
         "inner_steps": details.inner_steps, "map_evals": details.map_evals,
         "n_feasible": details.n_feasible, "n_resampled": details.n_resampled,
+        "resample_mode": details.resample_mode, "n_dropped": details.n_dropped,
+        "n_live": details.n_live,
         "selected_index": details.selected_index,
         "n_dual_updates": details.n_dual_updates,
         "lam_inf_median": details.lam_inf_median, "lam_inf_max": details.lam_inf_max,

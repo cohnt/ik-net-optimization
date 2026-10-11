@@ -300,6 +300,9 @@ def test_stage_tag_parsing_every_variant():
     assert seen == expected, (seen ^ expected)
     assert variants["knone"]["sets"]["svgd_kernel"] == "none"
     assert variants["rho1e4"]["sets"]["svgd_rho"] == 10000 and variants["kq"]["sets"]["svgd_rho"] == 1000
+    ## R11: the resample mode, the one change; the primary runs the default (native) unset.
+    assert variants["drop"]["sets"]["svgd_resample"] == "drop" and variants["drop"]["round"] == "R11"
+    assert variants["keep"]["sets"]["svgd_resample"] == "keep" and "svgd_resample" not in variants["kq"]["sets"]
     assert "max_iter" in variants[R.STAGE_TWIN]["sets"] and "max_iter" not in variants["kq"]["sets"]
     ## The arms are the manifest's: the twin and R1 run both, the rounds what SVGD_ROUND_ARMS says.
     assert variants[R.STAGE_TWIN]["arms"] == variants["kq"]["arms"] == R.ARMS

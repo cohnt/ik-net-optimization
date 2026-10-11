@@ -44,23 +44,41 @@ def pairwise_sqdist(y: Tensor) -> Tensor:
     return torch.where(eye, torch.zeros_like(d), d)
 
 
-def median_bandwidth(sqdist: Tensor, N: int, floor) -> Tensor:
+def median_bandwidth(sqdist: Tensor, N: int, floor, live: Tensor = None) -> Tensor:
     """Median heuristic: `h = max(floor^2, med(dist)^2 / log N)`, a scalar tensor.
 
     The median is over the N(N-1)/2 OFF-DIAGONAL pairs, at static shape: with the diagonal
     set to +inf the doubled pair list sorts as `p_1, p_1, p_2, p_2, ...`, so positions P and
     P + 1 (P = N(N-1)/2) hold the two values whose mean is the median. N = 1 has no pair (and
-    `log 1 = 0`): the bandwidth is `floor^2`, a branch on the static N."""
+    `log 1 = 0`): the bandwidth is `floor^2`, a branch on the static N.
+
+    `live [N]` bool (the dropped-particle swarm, `svgd_resample = drop` / `keep`): the median
+    over the pairs of LIVE particles only and `log n_live` for `log N`, still at static shape
+    (a sort and a gather at the data-dependent position); `floor^2` below two live particles.
+    With every particle live it returns exactly the unmasked value: the sorted positions hold
+    the same elements `kthvalue` returns, and the `log` correction is an exact 1.0."""
     kw = dict(dtype=sqdist.dtype, device=sqdist.device)
     floor_sq = torch.full((), float(floor) ** 2, **kw)     # a fill kernel: capturable
     if N < 2:
         return floor_sq
     dist = torch.sqrt(sqdist)
     eye = torch.eye(N, dtype=torch.bool, device=sqdist.device)
-    flat = torch.where(eye, torch.full_like(dist, float("inf")), dist).reshape(-1)
-    P = N * (N - 1) // 2
-    med = 0.5 * (torch.kthvalue(flat, P).values + torch.kthvalue(flat, P + 1).values)
-    return torch.maximum(med * med / math.log(N), floor_sq)
+    if live is None:
+        flat = torch.where(eye, torch.full_like(dist, float("inf")), dist).reshape(-1)
+        P = N * (N - 1) // 2
+        med = 0.5 * (torch.kthvalue(flat, P).values + torch.kthvalue(flat, P + 1).values)
+        return torch.maximum(med * med / math.log(N), floor_sq)
+    pair = live.unsqueeze(1) & live.unsqueeze(0) & ~eye
+    srt = torch.sort(torch.where(pair, dist, torch.full_like(dist, float("inf"))).reshape(-1)).values
+    n_live = live.sum()
+    P = n_live * (n_live - 1) // 2
+    lo = torch.clamp(P - 1, min=0).reshape(1)
+    hi = torch.clamp(P, max=N * N - 1).reshape(1)
+    med = 0.5 * (srt.index_select(0, lo) + srt.index_select(0, hi)).reshape(())
+    ratio = torch.where(n_live == N, torch.ones((), **kw),
+                        math.log(N) / torch.log(torch.clamp(n_live.to(sqdist.dtype), min=2.0)))
+    h = torch.maximum(med * med / math.log(N) * ratio, floor_sq)
+    return torch.where(n_live >= 2, h, floor_sq)
 
 
 def rbf_terms(y: Tensor, h):
@@ -72,16 +90,22 @@ def rbf_terms(y: Tensor, h):
 
 
 def stein_direction(K: Tensor, R_y: Tensor, gF_y: Tensor, gC_y: Tensor, T, inside=False,
-                    kernel=True) -> Tensor:
+                    kernel=True, avg_scale=None) -> Tensor:
     """`phi [N, n]` in the normalised coordinates `y` (module docstring).
 
     `K [N, N]` the kernel, `R_y [N, n]` its repulsion pulled back to `y`, `gF_y` the
     objective's gradient and `gC_y = grad_y (L - f)` the constraint part of the AL's, both
     `[N, n]`; `T` the temperature. `kernel=False` is the no-interaction control, `inside=True`
-    the literal form with the whole AL gradient under the kernel average."""
+    the literal form with the whole AL gradient under the kernel average. `avg_scale` (a
+    scalar tensor, the dropped-particle swarm) rescales the kernel average from `1/N` to
+    `1/n_live` -- exactly 1.0 when every particle is live."""
     if not kernel:
         return -(gF_y + gC_y) / T
     N = K.shape[0]
     if inside:
-        return (K @ (-(gF_y + gC_y) / T) + R_y) / N
-    return (K @ (-gF_y / T) + R_y) / N - gC_y / T
+        avg = (K @ (-(gF_y + gC_y) / T) + R_y) / N
+        return avg if avg_scale is None else avg * avg_scale
+    avg = (K @ (-gF_y / T) + R_y) / N
+    if avg_scale is not None:
+        avg = avg * avg_scale
+    return avg - gC_y / T

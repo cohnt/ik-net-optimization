@@ -35,13 +35,20 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
     unconditionally (`al.dual_update`: `lam_i += alpha h_i`, `mu_i = max(0, mu_i + alpha g_i)`,
     `alpha = svgd_dual_lr`, default `svgd_rho`, clipped to `+-svgd_multiplier_max`), and the
     exact `lambda_max(H_i)` recorded (an eager diagnostic).
- 6. At every check, particles with `|q|_inf > svgd_resample_q_max` or a non-finite row are
-    redrawn from the arm's NATIVE start distribution with zero multipliers (`n_resampled`).
+ 6. At every check, a RUNAWAY particle (`|q|_inf > svgd_resample_q_max`) or a NON-FINITE one
+    (a non-finite configuration or row) is handled by `svgd_resample`: `native` (fielded)
+    redraws both from the arm's NATIVE start distribution with zero multipliers
+    (`n_resampled`); `drop` removes both from the swarm for the rest of the solve (`n_dropped`);
+    `keep` lets a runaway keep stepping and drops a non-finite one (it cannot step: it would
+    poison the kernel average). A dropped particle is FROZEN, enters no other particle's kernel
+    average, repulsion or median bandwidth (the average is over the `n_live` live ones), and is
+    never feasible or selected -- a static-shape live weight in the AL state (`ALState.live`).
  7. Stop: the clock (`max_wall_time` less `svgd_time_reserve`), the outer-step cap
     (`svgd_outer_iters`, or `max_iter`), or -- once a particle is feasible at the gate --
     `svgd_stop_patience` consecutive checks at which the best feasible particle's objective
     improved by less than `svgd_stop_rel` (relative): `stop_reason` converged / wall_clock /
-    step_cap.
+    step_cap; or every particle dropped: `all_dead`, scored infeasible (the returned point is
+    NaN, so the harness scores the last recorded iterate under `recovered_*`).
  8. Select: the particles feasible on the batched rows, by objective; the top
     `svgd_recheck_topk` re-checked exactly in Drake (`prog.EvalBinding`, float64, same x);
     the first passer is returned, else the smallest Drake violation, scored infeasible.
@@ -131,9 +138,15 @@ class _TimedCollision:
         self.seconds = 0.0
         self.calls = 0
         self.configs = 0
+        self.dead = None          # [N] bool on the host: dropped particles, never sent to Drake
 
     def eval(self, Q, need_grad=True):
         t = time.perf_counter()
+        if self.dead is not None and np.shape(Q)[0] == self.dead.shape[0]:
+            ## A dropped particle's row is NaN by the evaluators' own contract for a
+            ## non-finite configuration; the step and the checks mask it out anyway.
+            Q = np.array(Q, dtype=np.float64)
+            Q[self.dead] = np.nan
         out = self.evaluator.eval(Q, need_grad=need_grad)
         self.seconds += time.perf_counter() - t
         self.calls += 1
@@ -417,16 +430,20 @@ class _Target:
     ## -- the per-outer-check trace -------------------------------------------------------
     TRACE_COLUMNS = ("min_infeas", "med_infeas", "n_feasible", "med_lam_inf", "max_lam_inf",
                      "med_mu_inf", "max_mu_inf", "min_F_feasible", "med_h_pos", "med_h_rot",
-                     "med_g_plus", "n_multiplier_clipped", "n_resampled", "bound_clip")
+                     "med_g_plus", "n_multiplier_clipped", "n_resampled", "bound_clip", "n_live")
 
-    def trace_row(self, ev, S, n_clipped, n_resampled, bound_clip):
+    def trace_row(self, ev, S, n_clipped, n_resampled, bound_clip, live=None):
         """One `[len(TRACE_COLUMNS)]` tensor of swarm statistics at a check, on the device
         (stacked and moved to the host ONCE at the end): the best and median scaled
         violation, the feasible count, the median and largest `|lam_i|_inf` and `|mu_i|_inf`
         after the dual step, the best objective among feasible particles, the median over
         particles of the worst position / rotation equality and of the worst violated
         inequality, how many multiplier entries the dual step clipped, the particles
-        redrawn, and the clamp distance onto the bounds since the last check."""
+        redrawn, the clamp distance onto the bounds since the last check, and the live
+        particles. `live [N]` bool (some particle dropped): every column is over the live
+        particles only (NaN where none is live)."""
+        if live is not None:
+            return self._trace_row_live(ev, S, n_clipped, n_resampled, bound_clip, live)
         kw = dict(dtype=self.dtype, device=self.device)
         nan = torch.full((), float("nan"), **kw)
         v = torch.nan_to_num(ev.infeas, nan=float("inf"))
@@ -451,7 +468,38 @@ class _Target:
             med_group(self.h_is_rot, self._n_rot),
             gpos.amax(dim=1).median() if gpos.shape[1] else nan,
             n_clipped.to(self.dtype), torch.full((), float(n_resampled), **kw),
-            bound_clip.to(self.dtype)])
+            bound_clip.to(self.dtype), torch.full((), float(v.shape[0]), **kw)])
+
+    def _trace_row_live(self, ev, S, n_clipped, n_resampled, bound_clip, live):
+        """`trace_row` over the live particles: a dropped particle's entries are NaN and every
+        statistic is NaN-aware (`nanmedian`, a NaN-skipping min / max)."""
+        kw = dict(dtype=self.dtype, device=self.device)
+        nan = torch.full((), float("nan"), **kw)
+        v = torch.nan_to_num(ev.infeas, nan=float("inf"))
+        feas = (v <= 1.0) & live
+        v = torch.where(live, v, torch.full_like(v, float("nan")))
+        habs = torch.nan_to_num((ev.out.h * self.th).detach().abs(), nan=float("inf"))
+        gpos = torch.nan_to_num(torch.clamp((ev.out.g * self.tg).detach(), min=0.0), nan=float("inf"))
+        nanmin = lambda t: torch.nan_to_num(t, nan=float("inf")).min()
+        nanmax = lambda t: torch.nan_to_num(t, nan=float("-inf")).max()
+        dead_nan = lambda t: torch.where(live, t, torch.full_like(t, float("nan")))
+
+        def med_group(mask, count):
+            return nan if count == 0 else torch.nanmedian(dead_nan(habs[:, mask].amax(dim=1)))
+        F = torch.nan_to_num(ev.F.detach(), nan=float("inf"))
+        minF = torch.where(feas, F, torch.full_like(F, float("inf"))).min()
+        minF = torch.where(torch.isfinite(minF), minF, nan)
+        lam = dead_nan(S.lam.abs().amax(dim=1) if S.lam.shape[1] else torch.zeros_like(v))
+        mu = dead_nan(S.mu.abs().amax(dim=1) if S.mu.shape[1] else torch.zeros_like(v))
+        finite_or_nan = lambda t: torch.where(torch.isfinite(t), t, nan)
+        return torch.stack([
+            finite_or_nan(nanmin(v)), torch.nanmedian(v), feas.sum().to(self.dtype),
+            torch.nanmedian(lam), finite_or_nan(nanmax(lam)), torch.nanmedian(mu),
+            finite_or_nan(nanmax(mu)), minF, med_group(~self.h_is_rot, self.m_e - self._n_rot),
+            med_group(self.h_is_rot, self._n_rot),
+            torch.nanmedian(dead_nan(gpos.amax(dim=1))) if gpos.shape[1] else nan,
+            n_clipped.to(self.dtype), torch.full((), float(n_resampled), **kw),
+            bound_clip.to(self.dtype), live.sum().to(self.dtype)])
 
     def _count(self, bucket):
         counts = getattr(self.bp.program, "eval_counts", None)
@@ -498,6 +546,7 @@ class SvgdSolver:
         self._spec = None
         self._rho = float(opts.svgd_rho)
         self._alpha = self._rho if opts.svgd_dual_lr is None else float(opts.svgd_dual_lr)
+        self._resample = str(getattr(opts, "svgd_resample", "native"))
 
     ## ----------------------------------- setup ----------------------------------------
     def _build(self):
@@ -651,12 +700,13 @@ class SvgdSolver:
         J_h, J_g = tg.row_jacobians_ev(ev, J_q)
         dFc, dFx = tg.cost_parts(ev)
         gF = (J_q.transpose(1, 2) @ dFc.unsqueeze(2)).squeeze(2) + dFx
-        K, R, kernel_on = fused.kernel_terms(sc, ev.cfg, ev.finite, X)
+        live = fused.live_mask(sc, S)
+        K, R, kernel_on = fused.kernel_terms(sc, ev.cfg, ev.finite, X, live)
         with torch.no_grad():
             phi, H, ratio = fused.direction_and_hessian(
                 tg, sc, X, gF.detach(), J_q, J_h.detach(), J_g.detach(), ev.h.detach(),
-                ev.g.detach(), ev.finite, K, R, kernel_on, S)
-            Xn, clip, n_clip = fused.step_from(tg, sc, X, phi, H)
+                ev.g.detach(), ev.finite, K, R, kernel_on, S, live)
+            Xn, clip, n_clip = fused.step_from(tg, sc, X, phi, H, live)
         lam, fro_ratio = self._diagnose(H, want_lam)
         return Xn, clip, n_clip, lam, fro_ratio, ratio
 
@@ -675,7 +725,7 @@ class SvgdSolver:
         tg = self._tg
         N = X.shape[0]
         step_fn = self._step_split if self._runner is not None else self._step_eager
-        stats = dict(outer=0, inner=0, n_resampled=0, n_dual_updates=0,
+        stats = dict(outer=0, inner=0, n_resampled=0, n_dropped=0, n_dual_updates=0,
                      n_multiplier_clipped=0, bound_clip=0.0, bound_clip_count=0,
                      best_history=[], trace=[], stop_reason="step_cap", lam_med=[], lam_max=[],
                      ratio=[], fro_ratio=[])
@@ -689,6 +739,12 @@ class SvgdSolver:
         best_seen = float("inf")
         stale = 0
         status = STATUS_STEP_CAP
+        ## `svgd_resample`: the runaway threshold (`keep` never treats a finite particle as
+        ## runaway) and the live set's host mirror (`n_live`; the device copy is `S.live`).
+        mode = self._resample
+        q_max = math.inf if mode == "keep" else float(opts.svgd_resample_q_max)
+        n_live = N
+        live_b = torch.ones(N, dtype=torch.bool, device=self.device)
         for t_outer in range(outer_iters):
             clip_check = torch.zeros((), dtype=self.dtype, device=self.device)
             for k in range(inner_iters):
@@ -707,20 +763,37 @@ class SvgdSolver:
             ## -- the check, at the current swarm: the dual step, unconditionally --
             with torch.no_grad():
                 ev = tg.evaluate(X, need_grad=False)
+            h_d, g_d = ev.h, ev.g
+            if n_live < N:
+                ## A dropped particle takes no dual step either: zero rows leave its (zeroed)
+                ## multipliers at zero and count no clip.
+                h_d = torch.where(live_b.unsqueeze(1), h_d, torch.zeros_like(h_d))
+                g_d = torch.where(live_b.unsqueeze(1), g_d, torch.zeros_like(g_d))
             S, n_clipped, (lam_rows, mu_rows) = al.dual_update(
-                ev.h, ev.g, S, self._alpha, float(opts.svgd_multiplier_max), by_row=True)
+                h_d, g_d, S, self._alpha, float(opts.svgd_multiplier_max), by_row=True)
             mclip_grp = (mclip_grp + al.by_group(lam_rows, h_grp, n_grp)
                          + al.by_group(mu_rows, g_grp, n_grp))
             stats["n_dual_updates"] += 1
-            mask = al.resample_mask(ev.cfg, ev.finite, float(opts.svgd_resample_q_max))
-            n_re = int(mask.sum().item())
+            mask = al.resample_mask(ev.cfg, ev.finite, q_max)
             v = torch.nan_to_num(ev.infeas, nan=float("inf"))
-            feas = (v <= 1.0) & ~mask
+            if mode == "native":
+                n_re, n_die = int(mask.sum().item()), 0
+                feas = (v <= 1.0) & ~mask
+            else:
+                ## `drop` / `keep`: the masked LIVE particles die at this check; nothing is
+                ## redrawn. The live set below is the one after the deaths.
+                die = mask & live_b
+                n_re, n_die = 0, int(die.sum().item())
+                live_b = live_b & ~die
+                feas = (v <= 1.0) & ~mask & live_b
+                v = torch.where(live_b, v, torch.full_like(v, float("inf")))
             F = torch.where(feas, torch.nan_to_num(ev.F, nan=float("inf")),
                             torch.full_like(ev.F, float("inf")))
-            i_best = int(torch.argmin(F).item()) if bool(feas.any()) else int(torch.argmin(v).item())
-            record(X[i_best])
-            stats["trace"].append(tg.trace_row(ev, S, n_clipped, n_re, clip_check))
+            if n_live - n_die > 0:
+                i_best = int(torch.argmin(F).item()) if bool(feas.any()) else int(torch.argmin(v).item())
+                record(X[i_best])
+            stats["trace"].append(tg.trace_row(ev, S, n_clipped, n_re, clip_check,
+                                               live=None if n_live - n_die == N else live_b))
             stats["n_multiplier_clipped"] += int(n_clipped.item())
             if n_re:
                 fresh, _ = self._draw_native(N, self._gen)
@@ -728,10 +801,19 @@ class SvgdSolver:
                 X = torch.where(mask.unsqueeze(1), fresh, X)
                 S = al.reset(S, mask)
                 stats["n_resampled"] += n_re
+            if n_die:
+                S = al.drop(S, die)
+                n_live -= n_die
+                stats["n_dropped"] += n_die
+                self._col.dead = (~live_b).cpu().numpy()
             stats["outer"] = t_outer + 1
             ## -- the stop rule: the best feasible particle's objective --
             f_best = float(F.min().item())
             stats["best_history"].append(f_best)
+            if n_live == 0:
+                status = STATUS_INFEASIBLE
+                stats["stop_reason"] = "all_dead"
+                break
             if math.isfinite(f_best):
                 if not math.isfinite(best_seen) or f_best < best_seen - float(opts.svgd_stop_rel) * abs(best_seen):
                     best_seen = f_best
@@ -748,6 +830,7 @@ class SvgdSolver:
                 status = STATUS_WALL_CLOCK
                 stats["stop_reason"] = "wall_clock"
                 break
+        stats["n_live"] = n_live
         stats["bound_clip"] = float(clip_tot.item())
         stats["bound_clip_count"] = int(nclip_tot.item())
         stats["multiplier_clips_by_group"] = dict(zip(
@@ -841,6 +924,11 @@ class SvgdSolver:
             evf = tg.evaluate(X, need_grad=False)
         v = torch.nan_to_num(evf.infeas, nan=float("inf")).cpu().double().numpy()
         Fv = torch.nan_to_num(evf.F, nan=float("inf")).cpu().double().numpy()
+        ## A dropped particle is never feasible and never selected (`svgd_resample`).
+        live_np = (S.live > 0).cpu().numpy() if S.live is not None else np.ones(N, dtype=bool)
+        n_live = int(live_np.sum())
+        if n_live < N:
+            v = np.where(live_np, v, np.inf)
         feas = v <= 1.0
         n_feasible = int(feas.sum())
         cfg_np = evf.cfg.detach().cpu().double().numpy()
@@ -853,14 +941,24 @@ class SvgdSolver:
         X_np = np.minimum(np.maximum(X32, lo64), hi64)
         extras["bound_rounding"] = float(np.nan_to_num(np.abs(X_np - X32), nan=0.0).max(initial=0.0))
         k = max(1, int(opts.svgd_recheck_topk))
-        if not np.isfinite(v).any():
+        if n_live == 0:
+            ## Every particle dropped: nothing to select. A NaN point, so `verify` scores it
+            ## `nan` and run_grid scores the last recorded iterate under `recovered_*`.
+            x_ret, status, drake_ok, solver_ok, selected, drake_viol, cands = (
+                np.full_like(x0_np, np.nan), STATUS_INFEASIBLE, False, False, -1, None, [])
+        elif not np.isfinite(v).any():
             x_ret, status, drake_ok, solver_ok, selected, drake_viol, cands = (
                 x0_np.copy(), STATUS_NAN, False, False, -1, None, [])
         else:
             if n_feasible:
                 order = [int(i) for i in np.argsort(np.where(feas, Fv, np.inf), kind="stable")[:min(k, n_feasible)]]
             else:
-                order = [int(i) for i in np.argsort(v, kind="stable")[:k]]
+                if n_live < N:
+                    ## Never re-check a dropped particle: it is never selected, and its x may
+                    ## be non-finite, which Drake's SetPositions aborts the interpreter on.
+                    order = [int(i) for i in np.argsort(v, kind="stable") if live_np[i]][:k]
+                else:
+                    order = [int(i) for i in np.argsort(v, kind="stable")[:k]]
             cands = order
             selected, drake_viol, drake_ok = None, np.inf, False
             for j in order:
@@ -897,7 +995,11 @@ class SvgdSolver:
         h_grp, g_grp, n_grp = self._row_group_index()
         grp_inf = (al.inf_norm_by_group(S.lam.detach(), h_grp, n_grp)
                    + al.inf_norm_by_group(S.mu.detach(), g_grp, n_grp))   # groups are disjoint
-        grp_med = np.median(grp_inf.cpu().double().numpy(), axis=0)   # as lam_inf_median
+        grp_inf = grp_inf.cpu().double().numpy()
+        if 0 < n_live < N:
+            ## The multiplier statistics are over the live particles (a dropped one's are zero).
+            lam_inf, mu_inf, grp_inf = lam_inf[live_np], mu_inf[live_np], grp_inf[live_np]
+        grp_med = np.median(grp_inf, axis=0)   # as lam_inf_median
         mult_inf_by_group = {name: float(grp_med[j]) for j, name in enumerate(bp.row_groups)}
         extras.update(dict(
             trace=trace, derivative_mode="analytic" if tg.analytic else "autograd",
@@ -907,7 +1009,7 @@ class SvgdSolver:
             total_steps=int(sstats.get("inner", 0)), eval_counts_delta={
                 key: int(counts.get(key, 0) - counts0.get(key, 0)) for key in counts},
             collision_calls=int(self._col.calls), collision_configs=int(self._col.configs),
-            candidates=cands,
+            candidates=cands, live_at_stop=[bool(x) for x in live_np],
             bound_clip_count=int(sstats.get("bound_clip_count", 0)),
             warmup_steps=int(warmup_steps)))
         details = SvgdSolverDetails(
@@ -915,6 +1017,7 @@ class SvgdSolver:
             n_particles=N, dtype=opts.svgd_dtype,
             iterations=int(sstats.get("outer", 0)), inner_steps=int(sstats.get("inner", 0)),
             map_evals=map_evals, n_feasible=n_feasible, n_resampled=int(sstats.get("n_resampled", 0)),
+            resample_mode=self._resample, n_dropped=int(sstats.get("n_dropped", 0)), n_live=n_live,
             selected_index=int(selected), phase_times=phase,
             timed_out=(stop == STATUS_WALL_CLOCK), hit_iteration_cap=(stop == STATUS_STEP_CAP),
             solver_feasible=bool(solver_ok), drake_feasible=bool(drake_ok),
@@ -967,6 +1070,7 @@ class SvgdSolver:
                                       dtype=float))
         X, _, _ = self._init_particles(x0)
         S = self._init_state(X)
+        self._col.dead = None
         self._make_runner()
         step_fn = self._step_split if self._runner is not None else self._step_eager
         for k in range(3):

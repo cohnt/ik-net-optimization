@@ -233,6 +233,7 @@ SVGD_ENUM_FIELDS = {
     "svgd_metric": ("gn", "identity"),
     "svgd_row_units": ("natural", "tolerance"),
     "svgd_collision_backend": ("autodiff", "clearances"),
+    "svgd_resample": ("native", "drop", "keep"),
 }
 
 
@@ -700,7 +701,8 @@ class ProgramOptions:
     svgd_multiplier_max: float = field(default=1e4, metadata={"help": "svgd: box on the magnitude of every multiplier; the clipped entries are counted"})
     svgd_inner_iters: int = field(default=10, metadata={"help": "svgd: K -- every K steps the unconditional dual-ascent step on every particle, runaway resampling, the stop rule and the wall clock"})
     svgd_outer_iters: int = field(default=300, metadata={"help": "svgd: cap on outer checks (the 'iterations' column); `max_iter`, when set, also binds"})
-    svgd_resample_q_max: float = field(default=10.0, metadata={"help": "svgd: |q|_inf (rad) above which a particle counts as runaway and is redrawn from the arm's native start at the next outer check (counted as n_resampled)"})
+    svgd_resample_q_max: float = field(default=10.0, metadata={"help": "svgd: |q|_inf (rad) above which a particle counts as runaway at the next outer check; what then happens to it is svgd_resample"})
+    svgd_resample: str = field(default="native", metadata={"help": "svgd: what happens at a check to a RUNAWAY particle (|q|_inf > svgd_resample_q_max) or a NON-FINITE one (a non-finite configuration or row) -- 'native' (fielded): both are redrawn from the arm's native start with zero multipliers (n_resampled); 'drop': both are removed from the swarm for the rest of the solve -- frozen, out of every other particle's kernel average, repulsion and median bandwidth, never feasible or selected (n_dropped; n_live at stop; every particle dropped stops the swarm, stop_reason all_dead, scored infeasible); 'keep': a runaway is NOT redrawn and keeps stepping, while a non-finite particle, which cannot keep stepping without poisoning the kernel average, is dropped exactly as under 'drop' (n_dropped)"})
     svgd_recheck_topk: int = field(default=10, metadata={"help": "svgd: how many particles feasible on the batched rows, in objective order, get the exact Drake `EvalBinding` re-check; the first passer is returned"})
     svgd_time_reserve: float = field(default=0.1, metadata={"help": "svgd: fraction of `max_wall_time` held back from the swarm for the selection and the Drake re-check"})
     svgd_stop_patience: int = field(default=5, metadata={"help": "svgd: once a particle is feasible at the gate, stop (converged) after this many consecutive outer checks at which the best feasible particle's objective improved by less than svgd_stop_rel"})

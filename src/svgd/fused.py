@@ -85,6 +85,10 @@ class StepConfig:
     rho: float                  # svgd_rho, the penalty: fixed, shared by every particle
     metric: str = "gn"          # svgd_metric: "gn" (Stein variational Newton) | "identity"
     gn_lm: float = 0.0          # svgd_gn_lm, the Levenberg damping delta of the GN metric
+    ## svgd_resample != "native": the step reads the AL state's live weight (`ALState.live`)
+    ## and leaves dropped particles out. False under `native`, whose stages are then exactly
+    ## the pre-2026-10-11 code (the live tensor is an input they never read).
+    live_weights: bool = False
 
     @staticmethod
     def from_options(opts):
@@ -93,7 +97,8 @@ class StepConfig:
                           inside=bool(opts.svgd_constraint_inside_kernel),
                           lr=float(opts.svgd_lr), T=float(opts.svgd_temperature),
                           rho=float(opts.svgd_rho), metric=str(opts.svgd_metric),
-                          gn_lm=float(opts.svgd_gn_lm))
+                          gn_lm=float(opts.svgd_gn_lm),
+                          live_weights=str(getattr(opts, "svgd_resample", "native")) != "native")
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -208,11 +213,14 @@ def _bmv(A, v):
     return (A @ v.unsqueeze(2)).squeeze(2)
 
 
-def kernel_terms(sc, cfg, finite, X):
+def kernel_terms(sc, cfg, finite, X, live=None):
     """`(K, R, kernel_on)`: the RBF kernel on the configuration and its repulsion in
     configuration space (`kernels.rbf_terms`, median bandwidth). Non-finite particles are
     isolated (their K row and column are the identity's, their R zero) so a NaN cannot
-    spread through the kernel average. `svgd_kernel = none` (or N = 1): `K = I`, `R = 0`."""
+    spread through the kernel average. `svgd_kernel = none` (or N = 1): `K = I`, `R = 0`.
+    `live [N]` bool (`svgd_resample = drop` / `keep`): dropped particles are isolated the
+    same way -- `K_ij = 0` for a dropped j, so they enter no other particle's average or
+    repulsion -- and left out of the median bandwidth."""
     N = X.shape[0]
     dtype, device = X.dtype, X.device
     if sc.kernel == "none" or N < 2:
@@ -220,8 +228,11 @@ def kernel_terms(sc, cfg, finite, X):
                 torch.zeros_like(cfg), sc.kernel != "none")
     y = cfg.detach()
     fin = finite & torch.isfinite(y).all(dim=1)
+    if live is not None:
+        fin = fin & live
     y0 = torch.where(fin.unsqueeze(1), y, torch.zeros_like(y))
-    hbw = kernels.median_bandwidth(kernels.pairwise_sqdist(y0), N, floor=sc.bandwidth_floor)
+    hbw = kernels.median_bandwidth(kernels.pairwise_sqdist(y0), N, floor=sc.bandwidth_floor,
+                                   live=live)
     K, _ = kernels.rbf_terms(y0, hbw)
     mask = fin.unsqueeze(1) & fin.unsqueeze(0)
     K = torch.where(mask, K, torch.eye(N, dtype=dtype, device=device))
@@ -247,12 +258,21 @@ def gn_hessian(s, w_cfg, H_fx, J_q, J_h, J_g, g, mu, rho):
     return 0.5 * (H + H.transpose(1, 2))
 
 
-def direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kernel_on, S):
+def direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kernel_on, S,
+                          live=None):
     """The SVGD direction `phi` in `y = X / s` (`kernels.stein_direction`, the Tabor-Hermans
     form) and the GN Hessian `H_y` (`gn_hessian`) at every particle, and the median over
     particles of `|repulsion| / |drive|` (the kernel's actual share of phi). Non-finite
-    particles get `phi = 0`, `H = I`."""
+    particles get `phi = 0`, `H = I`. `live [N]` bool: dropped particles are treated as
+    non-finite, and the kernel average is over the `n_live` live particles (`avg_scale =
+    N / n_live`, exactly 1.0 with every particle live)."""
     N, n = X.shape
+    avg_scale = None
+    if live is not None:
+        finite = finite & live
+        n_live = live.sum()
+        avg_scale = torch.where(n_live == N, torch.ones((), dtype=X.dtype, device=X.device),
+                                N / torch.clamp(n_live, min=1).to(X.dtype))
     ch, cg = al.al_constraint_grad_coefficients(h, g, S, sc.rho)
     gC = _bmv(J_h.transpose(1, 2), ch) + _bmv(J_g.transpose(1, 2), cg)
     R_x = _bmv(J_q.transpose(1, 2), R) if kernel_on else torch.zeros_like(X)
@@ -263,8 +283,11 @@ def direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kern
     gC_y = torch.where(fin, sv * gC, zero)
     R_y = torch.where(fin, sv * R_x, zero)
     use_kernel = sc.kernel != "none"
-    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside, kernel=use_kernel)
+    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside, kernel=use_kernel,
+                                  avg_scale=avg_scale)
     rep = R_y / N if use_kernel else zero
+    if use_kernel and avg_scale is not None:
+        rep = rep * avg_scale
     ratio = rep.norm(dim=1) / torch.clamp((phi - rep).norm(dim=1), min=torch.finfo(X.dtype).tiny)
     ratio = torch.nanmedian(torch.where(finite, ratio, torch.full_like(ratio, float("nan"))))
     H = gn_hessian(tg.s, tg.w_cfg, tg.H_fx, J_q, J_h, J_g, g, S.mu, sc.rho)
@@ -274,7 +297,7 @@ def direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kern
     return phi, H, ratio
 
 
-def step_from(tg, sc, X, phi, H):
+def step_from(tg, sc, X, phi, H, live=None):
     """The update in `y = X / s`, then the clamp onto the true bounds B:
 
         svgd_metric = "gn":       dy_i = svgd_lr (H_i + delta I)^-1 phi_i     (Stein variational
@@ -284,7 +307,8 @@ def step_from(tg, sc, X, phi, H):
                                   pure reduction, so the step stays graph-capturable)
 
     Returns `(X_new, clip [N], n_clip [N])`: the clamp's distance per particle in y and how
-    many coordinates it moved. A failed solve (or a non-finite step) is a zero step."""
+    many coordinates it moved. A failed solve (or a non-finite step) is a zero step. `live
+    [N]` bool: a dropped particle is FROZEN -- `X_new = X` exactly, no clamp, nothing counted."""
     n = X.shape[1]
     if sc.metric == "gn":
         eye = torch.eye(n, dtype=X.dtype, device=X.device).unsqueeze(0)
@@ -299,6 +323,10 @@ def step_from(tg, sc, X, phi, H):
     sv = tg.s.unsqueeze(0)
     Xn = X + sv * dy
     Xp, _ = tg.bp.project(Xn)
+    if live is not None:
+        l1 = live.unsqueeze(1)
+        Xp = torch.where(l1, Xp, X)
+        Xn = torch.where(l1, Xn, X)
     moved = (Xp != Xn) & torch.isfinite(Xn)
     clip = torch.where(moved, (Xp - Xn) / sv, torch.zeros_like(X)).norm(dim=1)
     return Xp.detach(), clip, moved.sum(dim=1)
@@ -313,6 +341,14 @@ def lambda_max(H):
         return torch.linalg.eigvalsh(H.double())[:, -1].to(H.dtype)
     except torch.linalg.LinAlgError:
         return torch.full(H.shape[:1], float("nan"), dtype=H.dtype, device=H.device)
+
+
+def live_mask(sc, S):
+    """The live set the step reads, `[N]` bool, or None -- always None under `native`
+    (`sc.live_weights` False), so that mode's stages never touch `S.live`."""
+    if not sc.live_weights or S.live is None:
+        return None
+    return S.live > 0
 
 
 def state_dict(S):
@@ -368,10 +404,11 @@ def stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S):
     dFc, dFx = bp.cost_gradient_parts(X, cfg)
     gF = _bmv(J_q.transpose(1, 2), dFc) + dFx
     J_h, J_g = tg.row_jacobians_out(out, X, J_q)
-    K, R, kernel_on = kernel_terms(sc, cfg, finite, X)
+    live = live_mask(sc, S)
+    K, R, kernel_on = kernel_terms(sc, cfg, finite, X, live)
     phi, H, ratio = direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R,
-                                          kernel_on, S)
-    Xn, clip, n_clip = step_from(tg, sc, X, phi, H)
+                                          kernel_on, S, live)
+    Xn, clip, n_clip = step_from(tg, sc, X, phi, H, live)
     return dict(X=Xn, clip=clip, n_clip=n_clip, H=H, ratio=ratio, h=h.detach(), g=g.detach(),
                 F=out.F.detach(), infeas=infeas, finite=finite)
 

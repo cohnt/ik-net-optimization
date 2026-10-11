@@ -512,6 +512,77 @@ def test_resample_mask():
     print("PASS resample_mask: runaway (|q| > q_max), nan, inf and non-finite rows")
 
 
+def test_live_weights_drop_particles_exactly():
+    """`svgd_resample = drop` / `keep`: the live mask. With every particle live the masked
+    bandwidth, kernel terms and direction are BIT-IDENTICAL to the unmasked ones (the native
+    path); with some dropped, the live particles' kernel, repulsion and direction are exactly
+    those of the swarm of live particles alone (bandwidth over the live pairs with log n_live,
+    average over n_live), and a dropped particle is isolated and frozen. `al.drop` zeroes its
+    multipliers and live weight."""
+    for dtype, device, tol in _targets():
+        gen = _gen(23, device)
+        N, d, n = 9, 7, 5
+        y = _randn(N, d, dtype=dtype, device=device, gen=gen)
+        sq = kernels.pairwise_sqdist(y)
+        all_live = torch.ones(N, dtype=torch.bool, device=device)
+        h_ref = kernels.median_bandwidth(sq, N, floor=0.05)
+        h_all = kernels.median_bandwidth(sq, N, floor=0.05, live=all_live)
+        assert torch.equal(h_ref, h_all), (h_ref, h_all)
+        live = all_live.clone()
+        live[[2, 5, 6]] = False
+        sub = y[live]
+        h_sub = kernels.median_bandwidth(kernels.pairwise_sqdist(sub), int(live.sum()), floor=0.05)
+        h_mask = kernels.median_bandwidth(sq, N, floor=0.05, live=live)
+        assert _maxabs(h_sub, h_mask) <= tol * float(h_sub), (h_sub, h_mask)
+        one = all_live.clone()
+        one[1:] = False
+        assert torch.equal(kernels.median_bandwidth(sq, N, floor=0.05, live=one),
+                           torch.full((), 0.05 ** 2, dtype=dtype, device=device))
+
+        sc = fused.StepConfig(kernel="q", bandwidth_floor=0.05, inside=False, lr=0.3, T=1.0,
+                              rho=10.0)
+        X = _randn(N, n, dtype=dtype, device=device, gen=gen)
+        finite = torch.ones(N, dtype=torch.bool, device=device)
+        K0, R0, _ = fused.kernel_terms(sc, y, finite, X)
+        K1, R1, _ = fused.kernel_terms(sc, y, finite, X, all_live)
+        assert torch.equal(K0, K1) and torch.equal(R0, R1)
+        gF = _randn(N, n, dtype=dtype, device=device, gen=gen)
+        gC = _randn(N, n, dtype=dtype, device=device, gen=gen)
+        R_y = _randn(N, n, dtype=dtype, device=device, gen=gen)
+        ones = torch.ones((), dtype=dtype, device=device)
+        for inside in (False, True):
+            p0 = kernels.stein_direction(K0, R_y, gF, gC, 1.0, inside=inside)
+            p1 = kernels.stein_direction(K0, R_y, gF, gC, 1.0, inside=inside, avg_scale=ones)
+            assert torch.equal(p0, p1)
+
+        Km, Rm, _ = fused.kernel_terms(sc, y, finite, X, live)
+        Xs = X[live]
+        Ks, Rs, _ = fused.kernel_terms(sc, sub, finite[live], Xs)
+        assert _maxabs(Km[live][:, live], Ks) <= tol and _maxabs(Rm[live], Rs) <= tol * 10
+        dead = ~live
+        assert bool((Km[dead][:, live] == 0).all()) and bool((Km[live][:, dead] == 0).all())
+        assert bool((Rm[dead] == 0).all())
+        ## The direction over n_live: the live rows of the masked swarm's phi are the sub-swarm's.
+        n_live = int(live.sum())
+        scale = torch.full((), N / n_live, dtype=dtype, device=device)
+        pm = kernels.stein_direction(Km, R_y * live.unsqueeze(1), gF * live.unsqueeze(1), gC, 1.0,
+                                     avg_scale=scale)
+        ps = kernels.stein_direction(Ks, R_y[live], gF[live], gC[live], 1.0)
+        assert _maxabs(pm[live], ps) <= tol * 10, _maxabs(pm[live], ps)
+
+        S = ALState.init(N, 3, 2, dtype=dtype, device=device)
+        S = ALState(lam=S.lam + 1.0, mu=S.mu + 2.0, live=S.live)
+        Sd = al.drop(S, dead)
+        assert bool((Sd.live[dead] == 0).all()) and bool((Sd.live[live] == 1).all())
+        assert bool((Sd.lam[dead] == 0).all()) and bool((Sd.mu[dead] == 0).all())
+        assert bool((Sd.lam[live] == 1).all()) and bool((Sd.mu[live] == 2).all())
+        assert fused.live_mask(sc, Sd) is None          # native step config never reads it
+        sc_l = fused.StepConfig(**{**sc.__dict__, "live_weights": True})
+        assert torch.equal(fused.live_mask(sc_l, Sd), live)
+    print("PASS live weights: all-live bit-identical to unmasked; dropped particles isolated, "
+          "the live ones exactly the sub-swarm's kernel, bandwidth and direction")
+
+
 ## --------------------------------------------------------------------------------------
 ## 5. Graph-friendliness
 ## --------------------------------------------------------------------------------------
@@ -633,6 +704,7 @@ if __name__ == "__main__":
     test_svn_step_lands_on_the_minimiser_of_a_quadratic()
     test_identity_metric_is_projected_gradient_descent_with_the_frobenius_step()
     test_resample_mask()
+    test_live_weights_drop_particles_exactly()
     test_no_host_synchronising_calls_in_the_modules()
     test_compiled_chain_matches_eager()
     print("ALL PASS")
