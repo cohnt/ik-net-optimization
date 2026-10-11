@@ -417,6 +417,11 @@ def provenance():
         ## between the 09-16 and 09-18 nightlies, which quarantined a whole verdict's numbers
         ## because nothing in the record said which build produced them.
         stamp = os.path.join(GetDrakePath(), "..", "doc", "drake", "VERSION.TXT")
+        if not os.path.exists(stamp):
+            ## A pip WHEEL (cluster venv-crc, DRAKE_ENV=crc) keeps it at pydrake/doc/drake, beside
+            ## a share/drake GetDrakePath, and has no pydrake.__version__; the tarball keeps the
+            ## path above, so its record is unchanged.
+            stamp = os.path.join(os.path.dirname(pydrake.__file__), "doc", "drake", "VERSION.TXT")
         if os.path.exists(stamp):
             with open(stamp) as fh:
                 out["drake_version_txt"] = fh.read().strip()

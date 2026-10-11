@@ -2904,6 +2904,19 @@ SVGD_EXEC = ["--set", "svgd_compile=True", "--set", "svgd_cuda_graph=True"]
 #: (42a5893) predates them -- its svgd_gn_lm default is 1e-2 -- and the tree cannot be restaged
 #: while stage PAPER runs. So every svgd item names all three; a later restage changes nothing.
 SVGD_PINNED = ["--set", "svgd_rho=1000", "--set", "svgd_gn_lm=10", "--set", "svgd_lr=0.3"]
+#: The batched clearance collision row (Thomas, 2026-10-11: "a strict improvement", and the rounds use
+#: it from now on). `clearances` evaluates the SAME functional as the default `autodiff` row from one
+#: batched, GIL-released, Drake-threaded `CollisionChecker.CalcRobotClearances` call -- values bitwise
+#: equal, gradients within 4.1e-14 of their largest entry (tests/test_collision_clearances.py) -- so,
+#: like (a), it is an EXECUTION setting rather than part of the method, and it is not counted as a
+#: round's one factor. Locally it is 7-10x per configuration and 3.5-4.6x lower end-to-end wall at
+#: identical success (docs/svgd-solver.md, "Batched clearance row"). It needs Thomas's Drake branch
+#: `calc-robot-clearances`, which only ~/learned-ik/venv-crc carries, so these stages are submitted
+#: with DRAKE_ENV=crc (cluster/run_items.sh; submit_bench.sh refuses either half without the other).
+#: Only rounds that had NOT run when it landed: R1-R10 and the IPOPT twins (R2, R7IPOPT) keep the
+#: default row and the tarball pin.
+SVGD_COLLISION = ["--set", "svgd_collision_backend=clearances"]
+SVGD_CLEARANCE_STAGES = ("SVGD_R11", "SVGD_R12", "SVGD_SMOKE_IIWA", "SVGD_R7")
 #: (b): the lifted step budget. ONE knob; the IPOPT `max_iter` is removed from svgd items.
 SVGD_STEP_CAP = 1000000
 SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
@@ -2974,10 +2987,13 @@ SVGD_ALLOWED_SETS = {
            "svgd_inner_iters", "svgd_multiplier_max", "svgd_paired_init"}
        for r in ("SVGD_R6", "SVGD_R8", "SVGD_R9", "SVGD_R10")},
     "SVGD_R11": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
-                 "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_resample"},
+                 "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_resample",
+                 "svgd_collision_backend"},
+    "SVGD_SMOKE": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                   "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
     **{r: {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
-           "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr"}
-       for r in ("SVGD_SMOKE", "SVGD_SMOKE_IIWA", "SVGD_R12", "SVGD_R7")},
+           "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend"}
+       for r in ("SVGD_SMOKE_IIWA", "SVGD_R12", "SVGD_R7")},
     "SVGD_R7IPOPT": {"correction_cost_weight", "flow_cuda_graph", "max_iter"},
 }
 #: ProgramOptions defaults the manifest RELIES ON rather than sets (checked from source text).
@@ -3058,9 +3074,9 @@ def _svgd_variant_overrides(stage, variant):
 
 
 def _svgd_as_svgd(it, variant, wall=None, cells_token=None, stage=None):
-    """An IPOPT row item turned into the svgd item: solver, budget, execution mode, the pinned
-    method values with the variant's overrides, and the tag
-    `..._svgd_<row>_<cells>_<cap>_<start>_<variant>`."""
+    """An IPOPT row item turned into the svgd item: solver, budget, execution mode (and, for
+    SVGD_CLEARANCE_STAGES, the clearance collision row), the pinned method values with the
+    variant's overrides, and the tag `..._svgd_<row>_<cells>_<cap>_<start>_<variant>`."""
     a = list(it["args"])
     a[a.index("--solver") + 1] = "svgd"
     i = a.index(f"max_iter={ITCAP_IPOPT_MAX_ITER}")
@@ -3070,7 +3086,8 @@ def _svgd_as_svgd(it, variant, wall=None, cells_token=None, stage=None):
         a[a.index("--wall-time") + 1] = str(float(wall))
     if stage in SVGD_ROUNDS:
         a[a.index("--arms") + 1] = SVGD_ROUND_ARMS
-    a += SVGD_EXEC + SVGD_BUDGET + _svgd_method_sets(_svgd_variant_overrides(stage, variant))
+    a += (SVGD_EXEC + (SVGD_COLLISION if stage in SVGD_CLEARANCE_STAGES else []) + SVGD_BUDGET
+          + _svgd_method_sets(_svgd_variant_overrides(stage, variant)))
     old = _svgd_flag(a, "--tag")
     head, tail = old.split("_ipopt_", 1)
     row, cells, cap, start = tail.split("_")
@@ -3131,7 +3148,7 @@ def stage_SVGD(which):
     elif which == "SVGD_SMOKE_IIWA":
         ## Every row, both arms: the joint-space arm seen to run on the iiwa before R12 is read.
         t, g, wall = SVGD_SMOKE_SHAPE
-        items = [_svgd_as_svgd(it, "kq", wall=wall)
+        items = [_svgd_as_svgd(it, "kq", wall=wall, stage=which)
                  for it in _svgd_stage_rows(which, t, g, 1, "SVGDSMOKE")]
     else:
         raise ValueError(f"unknown svgd stage {which!r}; one of {SVGD_STAGES}")
@@ -5076,6 +5093,13 @@ def selftest():
     sv_fails = []
     if "svgd" in SOLVER_CLASSES:
         sv_fails.append("svgd is in SOLVER_CLASSES; it is a separate family")
+    ## The clearance row: only stages that had not run when it landed, never an IPOPT twin, and a
+    ## value ProgramOptions accepts (read from source text, torch-free).
+    if not set(SVGD_CLEARANCE_STAGES) <= set(SVGD_STAGES) or \
+            set(SVGD_CLEARANCE_STAGES) & (set(SVGD_TWIN_STAGES) | {"SVGD_R1", "SVGD_R1K", "SVGD_R2"}
+                                          | {f"SVGD_R{k}" for k in (3, 4, 5, 6, 8, 9, 10)}):
+        sv_fails.append(f"SVGD_CLEARANCE_STAGES {SVGD_CLEARANCE_STAGES} names a twin, a run round "
+                        "or an unknown stage")
     gp_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "src", "generic_program.py")).read()
     for name, want in SVGD_RELIED_DEFAULTS.items():
@@ -5083,6 +5107,8 @@ def selftest():
         if not m or m.group(1) != want:
             sv_fails.append(f"ProgramOptions.{name} default is {m.group(1) if m else '?'}, the "
                             f"manifests rely on {want}: set it explicitly in SVGD_VARIANTS")
+    if not re.search(r'"svgd_collision_backend": \([^)]*"clearances"', gp_src):
+        sv_fails.append("ProgramOptions does not accept svgd_collision_backend='clearances'")
     sv_expected = {"SVGD_SMOKE": (1, 1), "SVGD_SMOKE_IIWA": (4, 4),
                    "SVGD_R2": (4, 4 * SVGD_R2_SHARDS), "SVGD_R7IPOPT": (4, 4 * SVGD_R2_SHARDS),
                    "SVGD_R1": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE),
@@ -5191,7 +5217,12 @@ def selftest():
                 want = dict(pinned)
                 want.update(dict(o.split("=", 1) for o in _svgd_variant_overrides(stage, variant)))
                 got = {k: v for k, v in sets.items() if k.startswith("svgd_") and k not in
-                       ("svgd_compile", "svgd_cuda_graph", "svgd_outer_iters")}
+                       ("svgd_compile", "svgd_cuda_graph", "svgd_outer_iters",
+                        "svgd_collision_backend")}
+                if sets.get("svgd_collision_backend") != \
+                        ("clearances" if stage in SVGD_CLEARANCE_STAGES else None):
+                    sv_fails.append(f"{stage}: {it['id']} svgd_collision_backend is "
+                                    f"{sets.get('svgd_collision_backend')}")
                 if got != want:
                     sv_fails.append(f"{stage}: {it['id']} method sets {got}, expected {want}")
                 ## A round changes ONE setting -- or none, when it is the primary itself carried
@@ -5299,6 +5330,9 @@ def selftest():
               "budget, and together exactly stage R1")
         print("ok   stages SVGD_R12/SMOKE_IIWA (iiwa n4, twin = stage PAPER's iiwa IPOPT items) and "
               "SVGD_R7IPOPT/R7 (seed 2, twin = SVGD_R2's items at seed 2): 4/4/4/4 logical runs")
+        print(f"ok   the clearance collision row (svgd_collision_backend=clearances) on exactly "
+              f"{'/'.join(SVGD_CLEARANCE_STAGES)}, every svgd item of each, none elsewhere "
+              f"(submit those with DRAKE_ENV=crc)")
 
     ## Stage PAPER: stage REMEASURE's primary items, identical args modulo the tag, minus GVS and
     ## minus Panda IPOPT (SVGD_R2 has those); 28 logical runs; no control, no NLopt; schedule.
