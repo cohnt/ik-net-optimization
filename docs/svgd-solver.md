@@ -607,7 +607,7 @@ so svgd still spends more correction than IPOPT does, by two orders, but nowhere
 | (3) | PASS | 0 disagreements between the solver's verdict, the Drake re-check and `verify()` |
 | (4) | PASS | 0 cells over cap + 1 s. Kill test PASSED 2026-10-11 (`tests/test_svgd_result.py::test_svgd_kill_keeps_the_iterate`): a solve killed on its 4th outer check leaves `last_iterate` at the swarm's best particle and the harness scores it into `recovered_*`. |
 | (5) | not read | no `--profile` given |
-| (6) | **FAIL as written** | see below |
+| (6) | **FAIL as written; read as GO for now** | see below. Thomas, 2026-10-11: the per-check / per-run wording is DEFERRED; err on the side of go until R11 (`svgd_resample` drop / keep) says what the quantity should be. |
 | (7) | not decidable | the re-smoke ran no `al1` |
 | (8) | manual | |
 
