@@ -547,7 +547,7 @@ so svgd still spends more correction than IPOPT does, by two orders, but nowhere
 | (1) | PASS on the summaries | 0 error records, 0 missing runs. The tests are run separately. |
 | (2) | PASS on all 4 rows | |
 | (3) | PASS | 0 disagreements between the solver's verdict, the Drake re-check and `verify()` |
-| (4) | PASS | 0 cells over cap + 1 s. The kill test is still owed. |
+| (4) | PASS | 0 cells over cap + 1 s. Kill test PASSED 2026-10-11 (`tests/test_svgd_result.py::test_svgd_kill_keeps_the_iterate`): a solve killed on its 4th outer check leaves `last_iterate` at the swarm's best particle and the harness scores it into `recovered_*`. |
 | (5) | not read | no `--profile` given |
 | (6) | **FAIL as written** | see below |
 | (7) | not decidable | the re-smoke ran no `al1` |
@@ -583,7 +583,7 @@ evidence only (the record's rung is `n4`, not local); the Panda rows pair agains
 row**, against the IPOPT twin's 10/9/9/10 (Panda grasp p/n, pose p/n) and 7/10/6/9 (iiwa) and the
 record's own 9/10/6/9 on the Panda cells. (3) PASS: 0 disagreements between the solver's verdict, the
 Drake re-check and `verify()` on 1,760 svgd cells. (4) PASS: 0 cells over cap + 1 s (the kill test
-is still owed). (5) PASS once compared per INNER step (the profiler times one fused step; an outer
+passed on 2026-10-11, see the table above). (5) PASS once compared per INNER step (the profiler times one fused step; an outer
 step holds `svgd_inner_iters` = 10): every Panda block is 0.83-1.37x its profile. (6) **FAIL as
 written, and the failure is informative**: `al_svgd` resamples 0.000 of N on every Panda cell and
 0.19-0.45 N (cumulative over the run) on a few iiwa cells; `tsvgd` redraws 2-6 N on the Panda and up
@@ -628,6 +628,73 @@ minimum-norm Gauss-Newton correction, which is cheapest in `q_c` under the unsca
 candidate fix is solver-internal and formulation-agnostic (weight the GN metric by the program's own
 cost Hessian, so the correction direction pays its `w_c = 10`), **not applied; Thomas's call**, and
 the smoke's numbers stand as the pre-fix measurement.
+
+## Stage SVGD_R1: the fielded method on the record's four Panda rows, 480 cells, 180 s
+
+**Measured 2026-10-10 on SuperCloud (jobs 5884549-52, svgd tip adf534c restaged; PROCS=2, no MPS,
+graphed), read by `scripts/report_svgd.py --stage SVGD --variants kq`.** The `kq` variant is the
+fielded configuration exactly as "Smoke results" registered it (natural units, Stein variational
+Newton with the Levenberg shift 10, rho = 1000, lr = 0.3, alpha = rho, K = 10, N = 64, T = 1, kernel on
+q). The IPOPT twin is stage SVGD_R2: the same items under IPOPT at paper conditions, on the same grids.
+Framing, per Thomas (2026-10-10): the learned arm is the question, joint space under svgd an ablation.
+
+**A first submission on the stale staged code (42a5893, jobs 5882597-5882601) is VOID and was moved
+aside on the cluster**: that code predates the `lambda_max` fix (7dec630), so the eigvalsh diagnostic
+raised inside the solve and the learned arm was scored `error` on 85-90% of grasp cells and 14-23% of
+pose cells. The re-run below has 0 error cells.
+
+**Lead: learned under svgd vs learned under IPOPT, same cells, exact McNemar.**
+
+| row | learned svgd | learned IPOPT | svgd-only / IPOPT-only | p | verdict |
+| --- | --- | --- | --- | --- | --- |
+| grasp paired | **480** / 480 | 479 | 1 / 0 | 1 | tie |
+| grasp native | **480** / 480 | 480 | 0 / 0 | 1 | tie |
+| pose paired | **480** / 480 | 395 | 85 / 0 | 5.2e-26 | **svgd** |
+| pose native | **480** / 480 | 458 | 22 / 0 | 4.8e-07 | **svgd** |
+
+The learned arm solves every cell on every row. The gain is on pose, where IPOPT loses 85 and 22
+cells from a bad start and the swarm loses none; on grasp both are at the ceiling.
+
+**What it costs** (mean wall over all cells, each clamped at the cap; svgd steps are OUTER steps of 10
+inner steps, not comparable to majors):
+
+| row | svgd wall | IPOPT wall | svgd outer steps (median) | ms / outer step | viol svgd | viol IPOPT | cost svgd / IPOPT (shared cells) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | 12.26 s | 5.01 s | 24 | 502 | 4.7e-05 | 1.5e-08 | 8.38 / 4.14 (338) |
+| grasp native | 7.14 s | 3.00 s | 13 | 492 | 4.4e-05 | 1.2e-08 | 8.41 / 4.51 (338) |
+| pose paired | 6.56 s | 2.02 s | 13 | 429 | 3.5e-05 | 1.3e-08 | 5.61 / 6.40 (451 / 170) |
+| pose native | 6.97 s | 0.77 s | 13 | 421 | 1.7e-05 | 9.0e-09 | 7.50 / 6.71 (451 / 189) |
+
+- **2.4-9x the wall of IPOPT**, and the step is the serial Drake collision row: 88-91% of the
+  learned arm's wall (94-95% of joint space's), ~44 of ~49 ms per inner step at N = 64 (64 configs
+  at ~690 us each on the node's cores). With Drake's batched CPU-parallel `CalcRobotClearances` the
+  step is ~6-7 ms (~7x), which puts the learned arm at or below IPOPT's wall on every row; a GPU
+  collision row would add only ~1.2-1.4x more because the flow then dominates (ruled not worth
+  building, 2026-10-10).
+- Solutions sit at a median violation of 2e-5 to 5e-5 against IPOPT's 1e-8, inside the 1e-4 / 1e-3
+  gates: the swarm stops at the first feasible check, IPOPT polishes.
+- The cost column is the shared objective on the cells both arms of THAT run solved (so the two
+  runs' cell sets differ); on grasp the returned particle is ~2x IPOPT's learned cost, on pose level.
+- Stop reasons: `converged` on 1919 of 1920 learned cells, one `wall_clock` (pose paired); 0 at the
+  iteration budget; `recovered_*` on 0 cells. Feasible particles at stop, median: 6 / 13 / 21 / 31 of
+  64 (grasp p/n, pose p/n), q-spread among them 4.1-5.9 rad.
+- Multiplier clips: 252k (grasp paired), 9.6k, 367k, 38k updates at the 1e4 clip on the learned
+  arm. Which row group hits it is not recorded (phase-2: per-group clip counters).
+
+**The joint-space ablation** (the swarm without the network; its own McNemar is against the
+joint-space IPOPT twin, and it is NOT a baseline): grasp 338 / 480 on both protocols (143 cells at the
+clock; IPOPT 449 / 448, p ~ 1e-22 to IPOPT), pose 451 / 480 on both (IPOPT 200, p = 6e-68 to svgd).
+Its multipliers pin at the clip (median |lam|_inf 1e4 on grasp, 8.7M clipped updates) and a
+grasp cell takes a median 660 inner steps at 468 ms per outer step. Joint space is bit-identical
+between the two protocols, as it must be (its native start is a random configuration).
+
+**Cap check**: learned 0 cells at the step budget on every row, 1 at the clock; the joint-space grasp
+rows are clock-bound (143 of 480) and carry the flag "a result at the fielded clock".
+
+**R1K (`knone`, the kernel-off control) is running**, and R3 (N = 1, N = 256), R4 (rho = 1e4,
+lr = 1.0) and R5 (N = 16, T = 10) follow, learned arm only (Thomas, 2026-10-10: the joint-space
+ablation at the default setting is what R1 / R1K measure; with the kernel off it runs to the clock
+on most grasp cells, tripling R1K's time). Their sections are appended as they land.
 
 ## Selected variant
 
