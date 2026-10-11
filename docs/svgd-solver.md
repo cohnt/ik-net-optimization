@@ -703,9 +703,11 @@ cells from a bad start and the swarm loses none; on grasp both are at the ceilin
 and the 1 grasp cell that the learned arm solves under svgd and not under IPOPT is an IPOPT
 `constraint` failure: converged, at a median 118 majors and 1.5-1.7 s, to a locally infeasible point
 with `max_violation` 0.25 (paired) / 0.06 (native), `timed_out` 0, no runaway (`|q|_inf` < 1000 on
-all 108). So the gain is basin coverage, not budget: a single interior-point trajectory from that
-start ends in the wrong basin, and the 64-particle swarm (6-31 feasible particles at stop) does not.
-The swarm spends a median 5.7 s on those cells against IPOPT's 1.6 s to fail.
+all 108). So the gain is not budget: a single interior-point trajectory from that start ends in the
+wrong basin. **It is not the swarm's coverage either -- R3 below shows N = 1 rescues the same 85 + 22
+cells**; what differs is the solver's dynamics from that start (the augmented-Lagrangian Newton step,
+and on the paired rows the redraw of a particle whose configuration blows up). The swarm spends a
+median 5.7 s on those cells against IPOPT's 1.6 s to fail.
 
 **What it costs** (mean wall over all cells, each clamped at the cap; svgd steps are OUTER steps of 10
 inner steps, not comparable to majors):
@@ -814,8 +816,62 @@ start distribution (64 latents) does on its own.
 fielded clock"; since every cell is solved the flag touches no verdict. 0 cells at the step budget on
 any row. `recovered_*` on 0 cells.
 
+### R3: N = 1 and N = 256 (`n1`, `n256`), learned arm only, measured 2026-10-11
+
+**Jobs 5886385-88, 128 items, 0 error cells; `scripts/report_svgd.py --stage SVGD --variants
+kq,knone,n1,n256`.** Each differs from `kq` in `svgd_n` alone.
+
+**Lead: N buys the learned arm no success.** N = 1 solves 480 / 480 / 478 / 480 (grasp paired,
+grasp native, pose paired, pose native), N = 256 480 on every row; against the IPOPT twin both carry
+`kq`'s verdicts (tie, tie, svgd, svgd), and **N = 1 rescues the same 85 + 22 pose cells** that N = 64
+does. The two N = 1 losses on pose paired are `constraint` stops at the clock (violation 1e-3 and
+1.2e-2 at 162 s, the cap less the polish reserve). Go/no-go (7), "N = 1 does not beat N = 64", holds
+as a tie (+0 / -2 on pose paired, +0 / -0 elsewhere).
+
+**So the pre-registered reading of R1 -- that the swarm rescues by basin coverage -- is refuted.**
+A single particle under the same augmented-Lagrangian Newton dynamics rescues the same cells. Two
+mechanisms are in play and the records separate them partly:
+
+- **The redraw.** A particle whose configuration passes 10 rad (or whose rows go non-finite) is
+  redrawn from the arm's native start distribution and counted (`n_resampled`). At N = 1 that redraw
+  is a restart of the one trajectory. On the paired rows it fires on most cells: the median N = 1
+  cell is redrawn once on grasp paired (391 of 480 cells) and pose paired (353 of 480), against 5 and
+  35 of 480 native. **Of the 85 pose-paired cells N = 1 rescues, 68 passed through a redraw; of the
+  22 pose-native rescues, 9 did.** So 17 + 13 rescues are the Newton dynamics from the given start
+  alone, and the rest are a redraw from the native draw after the paired start blew up. At N = 64 the
+  median paired cell redraws 21 (grasp) / 48 (pose) of its 64 particles over the run. **Whether a
+  redraw counts as the solver's own dynamics or as a restart is Thomas's call** (multi-start is out
+  of scope; the rule was fielded as a safety against the gain-ceiling runaway).
+- **The step.** On the native rows, where almost nothing is redrawn, N = 1 still ties N = 64 and beats
+  IPOPT on pose (480 against 458, 13 of the 22 rescues without any redraw): the damped
+  Gauss-Newton step on the augmented Lagrangian reaches a feasible point from starts where IPOPT's
+  interior-point trajectory converges to a locally infeasible one.
+
+**Cost, violation and wall on the cells all four solved** (learned arm, median):
+
+| row | n | cost IPOPT / N=64 / N=1 / N=256 | viol N=64 / N=1 / N=256 | wall N=64 / N=1 / N=256 | outer steps N=1 / N=256 (N=64) |
+| --- | --- | --- | --- | --- | --- |
+| grasp paired | 479 | 4.14 / 8.32 / 5.63 / 6.33 | 4.7e-05 / 2.2e-07 / 4.6e-05 | 12.0 / 19.0 / 39.4 s | 406 / 21 (24) |
+| grasp native | 480 | 4.52 / 8.58 / 5.60 / 7.22 | 4.4e-05 / 2.1e-07 / 4.0e-05 | 6.4 / 17.4 / 23.2 s | 376 / 12 (13) |
+| pose paired | 393 | 6.44 / 5.62 / 7.46 / 4.87 | 3.5e-05 / 6.4e-07 / 2.8e-05 | 5.8 / 6.7 / 20.6 s | 132 / 13 (13) |
+| pose native | 458 | 6.76 / 7.50 / 6.93 / 5.99 | 1.6e-05 / 6.9e-07 / 1.5e-05 | 5.7 / 3.3 / 22.4 s | 69 / 14 (13) |
+
+- N = 1 runs 70-400 outer steps at ~2 ms per inner step (collision share 0.14-0.17) and stops
+  `converged` on 1918 of 1920 cells, at a violation of 2e-7 (the single particle polishes, as the
+  kernel-off swarm did) and a cost between IPOPT's and N = 64's on grasp. Its wall is 1.5-3x N = 64's
+  on grasp and 0.6-1.2x on pose.
+- N = 256 stops in the same 12-21 outer steps as N = 64 at 3-4x the wall (~1.9 s per outer step,
+  collision share 0.95-0.96, the serial row again), returns 25-128 feasible particles, and its cost
+  is better than N = 64's on every row (6.3-7.2 against 8.3-8.6 on grasp, 4.9-6.0 against 5.6-7.5 on
+  pose) -- more particles, a better best.
+- Multiplier clips at N = 1: 7.9k / 94 / 7.2k / 883 (grasp p / n, pose p / n), so the clip is
+  reached on the paired rows even by one particle.
+
+**Cap check**: 0 cells at the step budget on every N = 1 and N = 256 row; 2 N = 1 cells at the clock
+(pose paired). The flag is not raised.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
-R5"*, extended to R6-R10): R3 (N = 1, N = 256), R4 (rho = 1e4, lr = 1.0), R5 (N = 16, T = 10), R6
+R5"*, extended to R6-R10): R4 (rho = 1e4, lr = 1.0), R5 (N = 16, T = 10), R6
 (lr = 0.1, K = 1, K = 100), R8 (N = 4, 32, 128), R9 (rho = 100, rho = 1e5, clip 1e6), R10 (paired
 init from the native draw). Their sections are appended as they land.
 
