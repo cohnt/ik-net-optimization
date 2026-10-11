@@ -764,10 +764,60 @@ between the two protocols, as it must be (its native start is a random configura
 **Cap check**: learned 0 cells at the step budget on every row, 1 at the clock; the joint-space grasp
 rows are clock-bound (143 of 480) and carry the flag "a result at the fielded clock".
 
-**R1K (`knone`, the kernel-off control) is running**, and R3 (N = 1, N = 256), R4 (rho = 1e4,
-lr = 1.0) and R5 (N = 16, T = 10) follow, learned arm only (Thomas, 2026-10-10: the joint-space
-ablation at the default setting is what R1 / R1K measure; with the kernel off it runs to the clock
-on most grasp cells, tripling R1K's time). Their sections are appended as they land.
+### R1K: the kernel off (`knone`), measured 2026-10-11
+
+**Jobs 5884553-56 on the restaged tip, the same four rows, both arms, `svgd_kernel=none` and nothing
+else changed; read by `scripts/report_svgd.py --stage SVGD --variants kq,knone`.** 0 error cells.
+The round took ~10 h on four nodes against R1's ~4 h, because the joint-space arm runs to the clock on
+most grasp cells with the kernel off (which is why R3 onward drop that arm).
+
+**Lead: the kernel buys the learned arm no success.** `knone` solves 480 / 480 on every row, +0 / -0
+against `kq` cell for cell, and carries the same verdicts against the IPOPT twin (tie, tie, svgd,
+svgd; the same 85 + 22 + 1 rescued cells).
+
+**What it changes is where the swarm stops.** On the cells all three solved (learned arm; IPOPT twin,
+`kq`, `knone`; median over those cells):
+
+| row | n | cost IPOPT / kq / knone | viol kq / knone | wall kq / knone | outer steps kq / knone | knone cells at the clock | knone cost better / worse than kq |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | 479 | 4.14 / 8.32 / **3.15** | 4.7e-05 / 2.0e-07 | 12.0 / 135.6 s | 24 / 281 | 215 | 475 / 4 |
+| grasp native | 480 | 4.52 / 8.58 / **3.25** | 4.4e-05 / 2.0e-07 | 6.4 / 93.7 s | 13 / 192 | 123 | 472 / 8 |
+| pose paired | 395 | 6.44 / 5.62 / **4.45** | 3.5e-05 / 6.2e-07 | 5.8 / 7.0 s | 13 / 15 | 0 | 326 / 33 |
+| pose native | 458 | 6.76 / 7.50 / **4.99** | 1.6e-05 / 6.2e-07 | 5.7 / 20.0 s | 13 / 46 | 0 | 381 / 67 |
+
+- With the kernel off the swarm keeps descending: the stop rule (the best feasible objective
+  unchanged over 5 checks) fires late on pose and on grasp mostly never (215 and 123 of 480 cells run
+  to the 180 s clock), and the returned particle is cheaper than the kernel-on one on 472-475 of 480
+  grasp cells and cheaper than IPOPT's (3.2 against 4.1-4.5 on grasp, 4.5-5.0 against 6.4-6.8 on
+  pose), at a violation two orders tighter (2e-7 against 5e-5). All 64 particles are feasible at stop
+  on grasp (48-62 on pose) against 6-31 with the kernel on; the q-spread among them is 2.4-4.5 rad
+  against 4.1-5.9.
+- With the kernel on the best particle stalls within 13-24 outer steps at ~2x IPOPT's cost. **So
+  the grasp cost premium in R1's table is where the kernel-on swarm stops, not a limit of the
+  formulation under this solver**: the same particles, left to descend without repulsion, pass
+  IPOPT's objective. Whether that is the repulsion holding the swarm at a worse objective or the
+  stall rule reading a repulsion-perturbed best particle as stalled is not separated here (K = 100
+  in R6 and lr in R4 / R6 bear on it).
+- Wall: the kernel-on swarm is 10-15x faster to stop on grasp and 1.2-3.5x on pose, for the same
+  success and a worse objective. Both are the same ~480 ms per outer step.
+
+**The joint-space ablation: the kernel is what gets the swarm without the network to feasibility on
+grasp.** Kernel off, grasp falls 338 -> **87** / 480 on both protocols (+6 / -257 against kernel on,
+p = 6e-68; 393 cells at the clock), with 0 feasible particles at stop on the median cell, a q-spread
+of 0.002 rad (the 64 particles collapse to one point), violation 0.4 and every multiplier at the
+1e4 clip (22M clipped updates). Pose is a tie, 457 against 451 (+16 / -10, p = 0.33). So on the
+learned arm the kernel is inert for success and on joint-space grasp it is worth 251 net cells: the
+repulsion keeps the swarm from collapsing into the same infeasible point, which the learned arm's
+start distribution (64 latents) does on its own.
+
+**Cap check**: learned `knone` is at the clock on 215 / 123 grasp cells, flagged "a result at the
+fielded clock"; since every cell is solved the flag touches no verdict. 0 cells at the step budget on
+any row. `recovered_*` on 0 cells.
+
+**Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
+R5"*, extended to R6-R10): R3 (N = 1, N = 256), R4 (rho = 1e4, lr = 1.0), R5 (N = 16, T = 10), R6
+(lr = 0.1, K = 1, K = 100), R8 (N = 4, 32, 128), R9 (rho = 100, rho = 1e5, clip 1e6), R10 (paired
+init from the native draw). Their sections are appended as they land.
 
 ## Selected variant
 
