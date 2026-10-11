@@ -166,6 +166,23 @@ class SoftArmIKProgram(IKFlowProgram):
         return K.config_to_plant_q(tensor, self.spec, device=_CPU).cpu().numpy()[
             self._plant_slots]
 
+    def TorchConfigToPlantQ(self, dtype=torch.float64, device=_CPU):
+        """`ConfigToPlantQ` as a batched, differentiable torch map `cfg [N, ndof] ->
+        q_plant [N, num_pos]` on `(dtype, device)`: the same exact strain kinematics,
+        permuted into this plant's slots. For a particle solver (`BatchedProgram`), which
+        checks it against `ConfigToPlantQ` at construction. The surrogate forward model is
+        closed (`--fk learned`) and has no batched path here."""
+        if self.fk_surrogate is not None:
+            raise NotImplementedError(
+                f"{type(self).__name__}: TorchConfigToPlantQ is the exact kinematics; the "
+                f"learned forward model (fk='learned') is closed and not replayed")
+        spec = self.spec
+        picks = torch.as_tensor(self._plant_slots, dtype=torch.long, device=device)
+
+        def config_to_plant(cfg):
+            return K.config_to_plant_q(cfg, spec, dtype=dtype, device=device)[:, picks]
+        return config_to_plant
+
     def VerificationQ(self, q):
         """Where `verify()` grades: always the exact kinematics.
 
