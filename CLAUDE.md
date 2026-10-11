@@ -846,6 +846,16 @@ optimizer selectable; no release carries it, and `local_optimizer_ftol_rel` is a
 artifacts **expire after 45 days (~2026-11-02)**, so **move the pin to 1.58.0 the moment it carries
 PR 25002** and restore the published-checksum path.
 
+**One stated exception, for the svgd rounds only (Thomas, 2026-10-11).** The batched collision row
+needs `CollisionChecker::CalcRobotClearances`, which no release carries, so a wheel built from his
+branch `calc-robot-clearances` (`0.0.20261011+crc.15a2c97`) lives in a SECOND cluster venv,
+`~/learned-ik/venv-crc`, selected per submission by `DRAKE_ENV=crc` (`cluster/run_items.sh`,
+`cluster/submit_bench.sh`; refused on a manifest without the clearance row and vice versa). The
+IPOPT / SNOPT / NLopt record stages and every svgd IPOPT twin stay on the pinned nightly; a run
+records which Drake it ran under (`drake_version_txt`). It is a strict speed improvement (the row is
+bitwise the same functional, 7-10x per configuration), not a second pin: when Drake ships the API,
+the wheel and the venv go.
+
 ### The grasp-containment lever is closed on both axes
 
 It was the standing "revisit whenever another knob moves" lever, because on the contained task joint
