@@ -119,9 +119,10 @@ formulation-specific information rigorously with SVGD. **Exact Drake collision, 
 collision row is the program's own Drake `MinimumDistanceLowerBoundConstraint`, evaluated IN
 PROCESS (Thomas, 2026-10-09: no process pool): a Python loop over the N particles calling it on
 AutoDiffXd (`Eval(InitializeAutoDiff(q))`, exactly the program's binding), returning value and
-gradient. It is serial and GIL-bound (pydrake holds the GIL in `Eval`); a batched C++
-clearance-with-Jacobians call that releases it is a Drake-side item for Thomas. Its seconds are
-reported as the collision row's share of the wall.
+gradient. It is serial and GIL-bound (pydrake holds the GIL in `Eval`). The batched C++
+clearance-with-Jacobians call that releases it now exists on a Drake branch and is the
+`clearances` backend ("Batched clearance row", below); the default stays this one. Its seconds
+are reported as the collision row's share of the wall.
 
 ### The options, one table
 
@@ -154,6 +155,7 @@ reported as the collision row's share of the wall.
 | `svgd_time_reserve` | 0.1 | 8: fraction of the cap kept for selection and re-check |
 | `svgd_warmup`, `svgd_warmup_iters`, `svgd_warmup_elite` | `none`, 10, 0.1 | 11: the CEM phase |
 | `svgd_compile`, `svgd_cuda_graph` | False, False | execution: the split step eager / compiled / graphed |
+| `svgd_collision_backend` | `autodiff` | execution: how the exact collision row is evaluated -- `autodiff` (the program's constraint on AutoDiffXd, one configuration at a time) or `clearances` (the same functional from one batched `CalcRobotClearances` call; needs Drake branch `calc-robot-clearances`, refused elsewhere). See "Batched clearance row" |
 
 **The step size.** Under `gn` the metric carries the scale, so `svgd_lr = 1` would be the full Newton step
 on the GN model of the AL; the fielded 0.3 is a damped fraction of it (screen, option table). Under `identity`, `svgd_lr / ||H_i||_F <= svgd_lr / lambda_max(H_i)`
@@ -165,6 +167,48 @@ measurements are in git, a9758e1.)
 **Memory.** No worker processes: the collision row runs in the solver's own process on the
 program's own scene. Local runs still go under `systemd-run --user --scope -p MemoryMax=...
 -p MemorySwapMax=0` (the smoke driver does this by default).
+
+### Batched clearance row (`svgd_collision_backend=clearances`), measured 2026-10-11
+
+Thomas's `CollisionChecker::CalcRobotClearances` (Drake branch `calc-robot-clearances`, commit
+15a2c97: batched `CalcRobotClearance`, GIL released, parallel over the checker's per-thread
+contexts) is **temporarily installed at `/home/tommy/opt/rlg/drake-build-crc`** and used by
+prepending `/home/tommy/opt/rlg/drake-build-crc/lib/python3.12/site-packages` to `PYTHONPATH`.
+**Neither this repo's default pydrake nor the cluster's Drake has it, so the default stays
+`autodiff`**, and `clearances` is refused at options construction where the binding is missing.
+
+`ClearanceEvaluator` (`src/svgd/collision_backend.py`, whose docstring has the formula) is the same
+functional: one `CalcRobotClearances(Q, bound + influence_distance_offset)` on an unpadded checker
+of the solve scene, then `MinimumValueLowerBoundConstraint`'s aggregation replicated in numpy
+float64 (quadratically smoothed hinge on `(d - v_infl) / (v_infl - bound)` for `d < v_infl`, scaled
+by `1 / phi(-1)`, `SoftOverMax` at alpha 100 padded with zeros to the scene's candidate count; the
+gradient through the checker's pair Jacobians). The pair sets are checked at construction (302
+pose, 342 grasp candidates on the Panda, identical). `tests/test_collision_clearances.py`, 64
+uniform draws per Panda scene (37 penetrating) plus NaN rows: **values bitwise equal** to the
+program's binding, **gradients within 4.1e-14 of their largest entry** (the two derivative paths,
+`CalcJacobianTranslationalVelocity` with the query's normal against `CalcJacobianPositionVector`
+with the witness-point difference, differ in roundoff), bitwise independent of thread count and of
+the batch.
+
+Row cost on this laptop (20 threads; `scripts/svgd/profile_clearances.py`, uniform draws, us per
+configuration; the cluster's cores are ~2x slower per configuration):
+
+| scene | N | autodiff | clearances, 20 threads | clearances, 1 thread |
+| --- | --- | --- | --- | --- |
+| pose | 64 / 256 / 1024 | 171 / 178 / 172 | 25.0 / 18.3 / 17.3 | 143 / 148 / 141 |
+| grasp | 64 / 256 / 1024 | 194 / 178 / 179 | 24.9 / 18.7 / 17.6 | 158 / 146 / 146 |
+
+7-10x at 20 threads; single-threaded it is 1.2x (no per-configuration AutoDiffXd). End to end,
+Panda, paired, learned arm only, the smoke's 10 cells, fielded defaults graphed, 60 s
+(`probe_CLR_<backend>_<task>`): **success 10/10 on both backends, both tasks**; 18 of 20 cells
+take identical outer steps with identical `max_violation`; the other two are pose 13:0, where
+autodiff stopped at the wall clock (235 steps, 54 s) and clearances at the 300-step cap (19 s),
+same selected particle and cost to 1e-6, and pose 13:1, same 17 steps but a slightly different
+returned particle (`max_violation` 1.8e-5 against 6.8e-6), float32 trajectories separated by
+the roundoff above. Median wall per cell 3.68 -> 1.04 s (pose) and 7.61 -> 1.65 s (grasp); the
+collision share of the wall 0.88 -> 0.26 and 0.91 -> 0.38. What remains of the row is mostly the
+per-result pybind conversion and the numpy aggregation (the Drake call is ~75-85% of it at N =
+64).
 
 ### Removed, 2026-10-09
 
