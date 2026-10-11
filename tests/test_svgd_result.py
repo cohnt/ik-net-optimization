@@ -216,14 +216,20 @@ def test_bad_svgd_set_is_refused_at_options():
 
 def test_option_guard():
     """The svgd option checks at ProgramOptions: `svgd_method` has one value; the removed
-    methods and kernel spaces are refused; a non-positive temperature, step size or initial
+    methods, unknown kernel spaces and metric-temperature forms are refused (the eight kernel
+    spaces of 2026-10-11 are accepted); a non-positive temperature, step size or initial
     penalty is refused; the CUDA-graph switch without the compile switch is refused."""
     print("\n--- svgd option checks ---")
     cases = [(dict(svgd_method="al_svgd"), False),
              (dict(svgd_method="tsvgd"), True),
              (dict(svgd_method="admm_svgd"), True),
-             (dict(svgd_kernel="x"), True),
+             (dict(svgd_kernel="x"), False),
+             (dict(svgd_kernel="cz"), False),
+             (dict(svgd_kernel="pose"), False),
+             (dict(svgd_kernel="rbf"), True),
              (dict(svgd_kernel="none"), False),
+             (dict(svgd_metric_temperature="on"), False),
+             (dict(svgd_metric_temperature="maybe"), True),
              (dict(svgd_temperature=0.0), True),
              (dict(svgd_lr=-1.0), True),
              (dict(svgd_rho=0.0), True),

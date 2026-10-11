@@ -71,6 +71,9 @@ latent ball are inequality ROWS, never bounds.
      diagnostic only, at the dual-update checks under both metrics, with the median ratio
      `||H||_F / lambda_max`.
 
+   `svgd_metric_temperature = on` puts `H_i / T` in place of `H_i` under either metric (options
+   table); `off` is the step above.
+
    Then `y_i <- clamp_B(y_i + dy_i)`; the clamp's distance in y is recorded (`bound_clip`). No
    momentum, no adaptation. The median ratio `|repulsion| / |drive|` within phi is recorded
    per solve (`repulsion_ratio_median`): the kernel's actual share of the step.
@@ -78,6 +81,8 @@ latent ball are inequality ROWS, never bounds.
    joint space), median bandwidth `h = med^2 / log N` floored at `svgd_bandwidth_floor`; the
    repulsion is pulled back to y through the flow's VJP. `svgd_kernel = none` drops both kernel
    terms (`phi_i = -(1/T) grad_y L_i`, N independent projected gradient descents, batched).
+   That is the fielded `q`; the other kernel spaces (`x`, `z`, `c`, `cz`, `qz`, `pose`) are
+   defined in the options table.
 6. **Dual ascent with step `svgd_dual_lr`, on a fixed cadence, rho fixed.** Every K =
    `svgd_inner_iters` steps, on EVERY particle and unconditionally (no feasibility gate of any
    kind): `lam_i <- lam_i + alpha h_i`, `mu_i <- max(0, mu_i + alpha g_i)`, `alpha =
@@ -119,8 +124,9 @@ What it **is not**: not multi-start (N particles inside ONE solve on ONE clock i
 restarting a solve is multi-start, ruled out of scope); not a re-sweep of the closed Drake classes
 (the IPOPT twin runs the adopted configuration plus `flow_cuda_graph=True`); and it uses **no
 formulation-specific information** (no latent prior, no assumption that the correction is
-zero-centred, no arm-specific kernel; the only structure used is that every arm has a q and that
-every variable block has a region). Recorded future work, not current scope: using
+zero-centred, no arm-specific kernel in the fielded configuration -- `svgd_kernel = z / c / cz /
+qz` are screen arms; the only structure used is that every arm has a q and that every variable
+block has a region). Recorded future work, not current scope: using
 formulation-specific information rigorously with SVGD. **Exact Drake collision, no proxy**: the
 collision row is the program's own Drake `MinimumDistanceLowerBoundConstraint`, evaluated IN
 PROCESS (Thomas, 2026-10-09: no process pool): a Python loop over the N particles calling it on
@@ -143,10 +149,11 @@ are reported as the collision row's share of the wall.
 | `svgd_temperature` | 1.0 | 2: T, fixed |
 | `svgd_lr` | 0.3 | 4: a fraction of the metric's step: `svgd_lr (H + delta I)^-1 phi` (gn) or `svgd_lr / \|\|H\|\|_F` (identity). Chosen 2026-10-10 by the screen at rho 1e3, delta 10 on 6 grasp + 6 pose Panda cells, most feasible cells with ties to the larger lr: lr 0.3 solved 24/24 (learned 12/12, joint space 12/12) resampling 0.07 of N per check, lr 1.0 solved 22/24 resampling 0.12 |
 | `svgd_metric` | `gn` | 4: `gn` (Stein variational Newton) or `identity` |
+| `svgd_metric_temperature` | `off` | 4: `off` (fielded): the metric is H, so the drive `-grad L / T` is not matched by it and the Newton step scales as 1/T. `on`: the metric is H / T, `dy_i = svgd_lr (H_i / T + delta I)^-1 phi_i`, so T sets only the repulsion-to-drive ratio; under `identity` the step bound becomes `\|\|H_i\|\|_F / T` (the analogue, not refused). Both are swept and neither is "the" definition (Thomas, 2026-10-11). `on` at T = 1 is `off` bit for bit |
 | `svgd_gn_lm` | 10 | 4: delta, the Levenberg damping of the GN metric. Chosen 2026-10-10 by the most feasible cells (learned + joint space) on 6 grasp + 6 pose Panda cells, ties to the larger: delta 1e-2 / 1 / 10 gave 2 / 3 / 6 (1e-4 diverged); then svgd_lr 1.0 / 0.3 / 0.1 at delta 10 gave 6 / 0 / 0 -- all at rho 10, and the 0.3 / 0.1 cells were mostly `error` records from the since-fixed eigvalsh crash, so that lr reading is void; `svgd_lr` was chosen later by the screen at rho 1e3 (its row) |
 | `svgd_row_units` | `natural` | 1: `natural` or `tolerance` (the control) |
 | `svgd_row_length_scale` | 1.0 | 1: metres per radian on the orientation-type rows |
-| `svgd_kernel` | `q` | 5: `q` or `none` |
+| `svgd_kernel` | `q` | 5: the RBF's space, median bandwidth per factor (floored by `svgd_bandwidth_floor` in that factor's units). `q` (fielded): the configuration, repulsion pulled back to y through the flow's VJP. `x`: all of y = x / s, one bandwidth, repulsion directly in y (on joint space: q over its half-range). `z` / `c`: the latent / conditioning-pose block of y alone, repulsion on that block only. `cz`: the product of the `c` and `z` RBFs, each its own bandwidth (an anisotropic RBF on [c; z]); repulsion the sum of the two blocks' terms. `qz`: the product of the `q` RBF (pulled back) and the `z` RBF (direct), each its own bandwidth. `pose`: the task frame's (`program.frame`) [position; quaternion wxyz, w >= 0], pulled back through d pose / d q -- `Jp`, and `1/2 [-v^T; w I - [v]x] Jw` for the quaternion -- then the VJP. `none`: no interaction. `z` / `c` / `cz` / `qz` are learned-only, refused on joint space at solver construction. Recorded per cell: `kernel`, `bandwidths` at the last step, `feasible_spread_kernel` (the feasible particles' median pairwise distance in the kernel's own space and units; a 2-list for `cz` / `qz`). `q` reproduces the previous step bit for bit (a 30-step solve, both tasks x both arms x eager / compiled / graphed, against arrays saved at 5f15f55, 2026-10-11) |
 | `svgd_bandwidth_floor` | 0.05 | 5: floor on the median bandwidth |
 | `svgd_constraint_inside_kernel` | False | 12: the literal form, an A/B |
 | `svgd_rho` | 1000 | 2, 4: the penalty -- one scalar, fixed, shared. Chosen 2026-10-10 on 6 grasp + 6 pose Panda cells at delta 10, lr 1: rho 10 / 1e3 / 1e4 / 1e5 solved 5 / 12 / 12 / 12 learned and 0 / 10 / 9 / 11 joint space; 1e3 is the smallest that works and resamples least (0.08-0.12 of N per check against 0.17-0.21 at 1e5). With the Newton metric a large rho no longer costs conditioning. At rho = 10 the repulsion was 0.97 of the step and swamped the drive (N = 1 solved grasp 6/6 where N = 64 solved 0/6) |

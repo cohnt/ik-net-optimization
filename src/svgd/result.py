@@ -109,6 +109,14 @@ class SvgdSolverDetails:
     multiplier_inf_median_by_group: dict = None  # per row group, |lam_i|_inf (h groups) or
                                    # |mu_i|_inf (g groups) over its rows, median over particles at stop
     feasible_q_spread: float = None  # median pairwise |q_a - q_b| among feasible particles at stop
+    kernel: str = "q"              # svgd_kernel: the kernel's space (none | q | x | z | c | cz | qz | pose)
+    metric_temperature: str = "off"  # svgd_metric_temperature: off (metric H) | on (metric H / T)
+    bandwidths: list = None        # the kernel's median bandwidth(s) h at the last step, one per
+                                   # factor (2 for cz / qz), in the kernel's own units; None under none
+    feasible_spread_kernel: object = None  # median pairwise distance among feasible particles at
+                                   # stop IN THE KERNEL'S SPACE and units (q: = feasible_q_spread;
+                                   # x / z / c: normalised y; pose: [pos; quat]); cz / qz: a 2-list
+                                   # [c or q, z]; None under none or with < 2 feasible
     extras: dict = field(default_factory=dict)
 
 
