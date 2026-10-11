@@ -968,6 +968,73 @@ the rest over all 480):
 
 **Cap check**: 0 cells at the step budget, 0 at the clock, on all eight rows.
 
+### R11: what happens to a runaway particle (`drop`, `keep`), learned arm only, measured 2026-10-11
+
+**Jobs 5892392-95, 192 items, 0 error cells; `--variants ...,drop,keep`. The first round on the
+batched clearance row under the clearances venv** (`drake_version_txt` `0.0.20261011+crc.15a2c97` on
+every record; `collision_threads` 40). Each differs from `kq` in `svgd_resample` only: `native` (the
+fielded redraw) -> `drop` (a runaway or non-finite particle leaves the swarm) or `keep` (a runaway
+keeps stepping; a non-finite particle is still dropped). The backend is a second difference against
+R1's `kq` in seconds and, through the clock, in success; it evaluates the same functional bitwise.
+
+| row | `kq` (R1) | `drop` | `keep` |
+| --- | --- | --- | --- |
+| grasp paired | 480 | **336** (143 swarms died) | **241** (239 at the clock) |
+| grasp native | 480 | 480 | 480 |
+| pose paired | 480 | **335** (145 died, 5 clock) | **208** (276 clock, 1 died) |
+| pose native | 480 | 479 | 479 |
+
+**Lead: the redraw is what carries the paired start, and nothing else moves.** On both native rows
+the three modes are within one cell (`drop` and `keep` 480 / 479, `kq` 480 / 480, the two lost pose
+cells sharing a target) and keep `kq`'s verdicts against the IPOPT twin (tie on grasp, win on pose).
+On both paired rows `drop` loses 144-145 cells and `keep` 239-272 against `kq` (+0/-144 and
++0/-239 on grasp, p < 1e-40), turning `kq`'s tie and win into losses against IPOPT (336 v 479;
+335 v 395 with 52 cells only svgd solved, 112 only IPOPT).
+
+**Mechanism, read from the records.** `kq` redraws on 458 / 480 grasp paired and 479 / 480 pose
+paired cells (median 21 and 48 of 64 particles over the solve), against 146 / 383 of the native
+cells at a median of 0 and 3. The paired swarm starts around a random configuration in a scene
+where most of the AL descent passes through the high-gain regions, so most particles run away at
+some point. Under `drop` the swarm empties: a median 46 (grasp) / 52 (pose) of 64 particles leave,
+the median solved cell ends with 18 / 12 live, and in 143 / 145 cells every particle is gone
+(`all_dead`; scored `fail_reason` "nan", no particle to return). Only 21 and 14 of those dead swarms
+had a feasible particle at their last recorded iterate, so the phase-2 change of returning that
+iterate would recover ~15% of them, not the gap. Under `keep` a runaway keeps stepping, drags its
+neighbours through the kernel-averaged objective gradient (the Tabor-Hermans form keeps the
+constraint gradient outside the kernel and the objective gradient inside), overflows to non-finite
+in float32 and is then dropped anyway (median 49 / 55 dropped), and the live remainder sits at the
+multiplier box (`|mu|_inf` median 1e4 on both paired rows, 8.8e7 and 1.0e8 clips against `kq`'s
+2.5e5) until the 180 s clock: every one of the 239 and 271 clock stops returned a particle at
+`|q|_inf` ~ 1e22 rad. The survivors converge on the same median outer-step count as `kq` (23 v 24
+grasp) -- the mode changes who survives, not how the survivors converge.
+
+**Cost and stop on the surviving cells.** `drop` returns median cost 11.5 / 9.3 (grasp / pose
+paired) against `kq`'s 8.4 / 6.6 on its own solved cells, from a swarm a third the size (feasible
+particles at stop median 2 / 5 against 6 / 21); pose paired takes 69 median outer steps against 13.
+On the native rows all three modes agree on steps (12-13), feasible particles (13 / 28-31) and cost
+(8.6 / 7.9 against 8.4 / 7.0), so the fielded `native` costs nothing where it does not fire.
+
+**The clearance row, measured on the cluster.** Outer step 80-83 ms against `kq`'s 502 ms on the
+autodiff row (6.1x); collision share of the solve 0.15-0.30 against ~0.9. On the native rows,
+where the solver's path is the same (same steps, same success), the per-cell wall ratio `kq` / this
+round on the 479-480 mutually converged cells is **4.8-5.7x** (mean wall grasp native 7.14 -> 1.40 s,
+pose native 6.97 -> 2.38 s). On pose paired `drop` the ratio is 1.0x because the thinned swarm takes
+5x the outer steps. `collision_threads` reads 40 per solve at PROCS=2, i.e. the job's `nproc` is
+80 hyperthreads, so two solves share 40 cores at 40 threads each; left as is for the rest of the
+chain (changing it mid-chain would add a third difference), and the share says it is not the
+bottleneck.
+
+**One more go/no-go (3) disagreement** (the reporter's BUG line): grasp paired `drop` cell (17, 4),
+`solver_feasible` True on the float32 rows, Drake float64 1.0648e-4 against the 1e-4 gate. Same
+mechanism as R5's two; now three in 7680 cells, all within 7% of the gate.
+
+**What it decides.** Against Thomas's two paper columns: for a constant-time multistart budget the
+resample is swarm dynamics and `native` stands; for the one-solve column `native` is also the only
+mode that holds the paired rows, and on the native rows the three modes are indistinguishable, so
+no column needs a different mode. `drop` is the honest "no redraw" control for the paper (a swarm
+that cannot refill solves 70% of the paired cells), `keep` the control that shows why the threshold
+exists.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
