@@ -1067,6 +1067,46 @@ learned arm under svgd is now faster than under IPOPT on three of four rows and 
 native, where under the autodiff row (R1) it was 2.5-8x slower on every row. The maximum cell is
 3.0-9.6 s; no cell is near the clock.
 
+### R6: lr = 0.1, K = 1, K = 100 (`lr0p1`, `K1`, `K100`), learned arm only, measured 2026-10-11
+
+**Jobs 5892407/09/10/11, 288 items, clearance row, 0 error cells; `--variants ...,lr0p1,K1,K100`.** Each
+differs from `kq` in one setting: `svgd_lr` 0.3 -> 0.1; `svgd_inner_iters` (the SVN steps per check,
+K) 10 -> 1 or 100. On the clearance row, so seconds are not R1's; the cleanest same-backend wall
+reference is R7's `kq@seed2` (2.10 / 1.21 / 1.30 / 1.43 s on another grid).
+
+| variant | success (gp / gn / pp / pn) | cost on shared cells | outer steps (median) | feasible particles | mean wall s |
+| --- | --- | --- | --- | --- | --- |
+| `kq` (R1, autodiff row) | 480 / 480 / 480 / 480 | 8.38 / 8.41 / 5.61 / 7.50 | 24 / 13 / 13 / 13 | 6 / 13 / 21 / 31 | 12.3 / 7.1 / 6.6 / 7.0 |
+| `lr0p1` | 480 / 480 / 480 / 480 | 8.77 / 8.19 / 6.93 / 7.92 | 43 / 18 / 21 / 21 | 2 / 17 / 5 / 24 | 3.66 / 1.63 / 2.06 / 2.44 |
+| `K1` | 480 / 480 / 480 / **479** | 7.96 / 8.78 / 6.71 / 8.15 | 34 / 36 / 38 / 46 (= inner steps) | **2 / 2 / 4 / 4** | **1.08 / 1.14 / 1.26 / 1.51** |
+| `K100` | 480 / 480 / 480 / 480 | 9.97 / 9.30 / 7.16 / 7.59 | 18 / 10 / 8 / 8 (x100 inner) | **30 / 35 / 40 / 55** | 11.6 / 7.9 / 6.1 / 8.3 |
+
+**Lead: all three tie `kq` on success** (the one `K1` loss is the fourth go/no-go (3) gate-edge
+disagreement, pose native cell (15, 2), Drake 1.0070e-4 against the 1e-4 gate) and carry its verdicts
+against the IPOPT twin. Eleven variants now sit within one cell of each other on every row.
+
+**K is the knob that trades swarm convergence for wall, and it is the strip-down question Thomas
+posed.** `K1` checks (dual update, resample, stop test, clock) after every SVN step: it converges in
+34-46 inner steps where `kq` takes 130-240 (13-24 outer x 10), at 28-30 ms per outer step (one SVN
+step plus the Drake check) against `kq`'s 82 ms on this row, so it is the fastest variant measured,
+1.1-1.5 s mean, max 2.3-3.6 s, every cell converged, and its cost is within -5% / +9% of `kq`'s.
+What it gives up is the swarm: the stall rule ("best feasible objective stalls for 5 checks") now
+fires after 5 single steps instead of 50, so it stops with 2-4 feasible particles of 64 where `kq`
+has 6-31 and `K100` 30-55. **For the one-solve column `K1` is a tie on success, cost and stop
+behaviour and the simpler method; for a constant-budget multistart column that wants several
+feasible particles per solve, the stall rule under K = 1 stops too early.** Stripping to one loop
+therefore also means re-expressing the stall window in inner steps (5 checks x K steps), not just
+K = 1 -- which is the same loop with a 50-step stall window. Thomas's call (he asked for R6 to
+decide this; proposal: strip the inner/outer distinction, keep the check every step, and make the
+stall window a step count). `K100` is the other end: the most feasible particles, the lowest
+violation (2.6e-6 to 3.0e-5), the worst grasp cost (9.3-10.0, the kernel-on stall having 100 steps
+to act between dual updates) and 5-8x the wall; it earns nothing on these rows.
+
+**lr = 0.1** is inert on success and slower: 1.5-1.8x the outer steps, cost within 10% either way,
+fewer feasible particles on the paired rows (2 / 5 against 6 / 21). With R4's `lr1` (fastest stop,
+worst grasp cost, most redraws) the step-size ladder reads 0.1 < 0.3 < 1.0 as wall-vs-cost with the
+fielded 0.3 in the middle; nothing moves success.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
