@@ -262,6 +262,13 @@ def arm_stats(summary, arm, other, clamp_wall=False):
     return out
 
 
+def name_width(columns, floor=12):
+    """The variant-name field's width: the floor, or wide enough that the longest column name
+    (`kczrho1e5@seed2`, `kczrho1e5initnative`) is still followed by a space and never runs into
+    the next field."""
+    return max([floor] + [len(c) + 1 for c in columns])
+
+
 def star(pair, lower_better=True, tie=False):
     """Format a (learned, joint) pair, `*`-marking the better. `tie` marks both."""
     l, j = pair
@@ -437,11 +444,12 @@ def ab_vs_primary(rep, matrix, columns, primary=M.PRIMARY, twin=M.IPOPT, legend=
     a column that cannot pair with the primary (stage mode: another grid seed) to why -- one note
     line each, no pairing attempted."""
     skip = skip or {}
+    W = name_width(columns)
     legend = M.variant_token(M.PRIMARY) if legend is None else legend
     print(f"\n{'=' * 100}\nA/B against the primary {primary} ({legend}): each "
           f"column differs from it in ONE setting; exact McNemar per arm on the same cells "
           f"(col+ = cells only that column solved)")
-    print(f"  {'row':<34}{'column':<12}{'arm':<13}{primary:>6}{'col':>6}{'col+':>6}{'prim+':>6}"
+    print(f"  {'row':<34}{'column':<{W}}{'arm':<13}{primary:>6}{'col':>6}{'col+':>6}{'prim+':>6}"
           f"{'p':>9}{'steps prim':>11}{'steps col':>10}{'wall prim':>10}{'wall col':>9}"
           f"{'feas prim':>10}{'feas col':>9}{'spread prim':>12}{'spread col':>11}")
     if not [c for c in columns if c not in (twin, primary)]:
@@ -458,15 +466,15 @@ def ab_vs_primary(rep, matrix, columns, primary=M.PRIMARY, twin=M.IPOPT, legend=
             b = rep.blocks.get((robot, row, start, column))
             for arm, key in (("learned", "L"), ("numerical", "J")):
                 if arms_of is not None and arm not in arms_of(column):
-                    print(f"  {label:<34}{column:<12}{ARM_NAME[arm]:<13}  not run "
+                    print(f"  {label:<34}{column:<{W}}{ARM_NAME[arm]:<13}  not run "
                           f"({arms_only(arms_of(column))})")
                     continue
                 if arms_of is not None and arm not in arms_of(primary):
-                    print(f"  {label:<34}{column:<12}{ARM_NAME[arm]:<13}  not run by the primary "
+                    print(f"  {label:<34}{column:<{W}}{ARM_NAME[arm]:<13}  not run by the primary "
                           f"({arms_only(arms_of(primary))})")
                     continue
                 if a is None or b is None:
-                    print(f"  {label:<34}{column:<12}{ARM_NAME[arm]:<13}  missing "
+                    print(f"  {label:<34}{column:<{W}}{ARM_NAME[arm]:<13}  missing "
                           f"({'primary' if a is None else column})")
                     continue
                 why = incomparable(a["run"], b["run"], must)
@@ -475,7 +483,7 @@ def ab_vs_primary(rep, matrix, columns, primary=M.PRIMARY, twin=M.IPOPT, legend=
                     continue
                 m = mcnemar_pair(b["run"], arm, a["run"], arm)
                 A, B = a[key], b[key]
-                print(f"  {label:<34}{column:<12}{ARM_NAME[arm]:<13}{A['succ']:>6}{B['succ']:>6}"
+                print(f"  {label:<34}{column:<{W}}{ARM_NAME[arm]:<13}{A['succ']:>6}{B['succ']:>6}"
                       f"{m['a_only']:>6}{m['b_only']:>6}{m['p']:>9.3g}{fmt(A['steps'], 11)}"
                       f"{fmt(B['steps'], 10)}{fmt(A['wall'], 10, 2)}{fmt(B['wall'], 9, 2)}"
                       f"{fmt(A.get('n_feasible'), 10, 1)}{fmt(B.get('n_feasible'), 9, 1)}"
@@ -885,12 +893,13 @@ def stage_print_row(rep, root, key, tags, runs, order, primary):
             ("numerical", 1, "ABLATION -- joint space under svgd vs joint space under IPOPT "
                              "(the swarm without the network; not a baseline)")):
         print(f"\n  {title}, same cells, exact McNemar (svgd+ / IPOPT+ = cells only that solver solved):")
-        print(f"    {'variant':<12}{'round':<7}{'svgd':>6}{'IPOPT':>7}{'svgd+':>7}{'IPOPT+':>8}"
+        W = name_width(order)
+        print(f"    {'variant':<{W}}{'round':<7}{'svgd':>6}{'IPOPT':>7}{'svgd+':>7}{'IPOPT+':>8}"
               f"{'p':>10}  verdict")
         for v in order:
             if is_twin(v) or v not in tags:
                 continue
-            head = f"    {v:<12}{runs[tags[v]]['round']:<7}"
+            head = f"    {v:<{W}}{runs[tags[v]]['round']:<7}"
             if arm not in arms_of(v):
                 print(f"{head}not run ({arms_only(arms_of(v))})")
                 continue
@@ -1008,10 +1017,11 @@ def stage_overview(rep, matrix, order, runs_by_row, runs=None):
           f"verdict: iteration-budget-bound; '-' not paired"
           + ("; '--' arm not run by that variant's manifest items" if partial else "") + ")")
     cols = [f"{M.ROW_NAME[r].split(' ')[0]} {s}" for _, r, s in matrix]
+    W = name_width(order)
     for arm, k, title in (("learned", "L", "learned under svgd -- the question"),
                           ("numerical", "J", "joint space under svgd -- the ablation")):
         print(f"\n  {title}")
-        print(f"    {'variant':<12}{'round':<7}" + "".join(f"{c:>16}" for c in cols)
+        print(f"    {'variant':<{W}}{'round':<7}" + "".join(f"{c:>16}" for c in cols)
               + ("     W/T/L vs IPOPT" if arm == "learned" else ""))
         for v in order:
             cells, tally, rnd = [], Counter(), None
@@ -1037,7 +1047,7 @@ def stage_overview(rep, matrix, order, runs_by_row, runs=None):
                 if vd:
                     tally[mark] += 1
                 cells.append(f"{b[k]['succ']} {mark}")
-            line = f"    {v:<12}{rnd or '':<7}" + "".join(f"{c:>16}" for c in cells)
+            line = f"    {v:<{W}}{rnd or '':<7}" + "".join(f"{c:>16}" for c in cells)
             if arm == "learned" and not is_twin(v):
                 line += f"     {tally['W']}/{tally['T']}/{tally['L']}"
             print(line)
@@ -1062,7 +1072,8 @@ def stage_pairwise(rep, matrix, order):
                 print(f"\n  {title}, {label}: {len(landed)} variant(s) landed -- nothing to pair")
                 continue
             print(f"\n  {title}, {label}")
-            print(f"    {'A vs B':<10}" + "".join(f"{v:>18}" for v in landed[1:]))
+            WA, WB = name_width(landed, 10), name_width(landed, 18)
+            print(f"    {'A vs B':<{WA}}" + "".join(f"{v:>{WB}}" for v in landed[1:]))
             for i, a in enumerate(landed[:-1]):
                 ra = rep.blocks[key + (a,)]["run"]
                 cells = []
@@ -1078,7 +1089,7 @@ def stage_pairwise(rep, matrix, order):
                         continue
                     m = mcnemar_pair(ra, arm, rb, arm)
                     cells.append(f"+{m['a_only']}/-{m['b_only']} p={m['p']:.2g}")
-                print(f"    {a:<10}" + "".join(f"{c:>18}" for c in cells))
+                print(f"    {a:<{WA}}" + "".join(f"{c:>{WB}}" for c in cells))
 
 
 def stage_main(args):
@@ -1139,7 +1150,8 @@ def stage_main(args):
                 what += f"; grid seed {info['seed']} -- pairs only with {twin_of(v)}, never with seed-1 runs"
             if set(info["arms"]) != set(ARMS):
                 what += f"; {arms_only(info['arms'])} (--arms {','.join(info['arms'])})"
-            print(f"    {v:<12}{info['round'] + ' ':<4}{info['manifest']:<10}  {what}\n"
+            W = name_width(order)
+            print(f"    {v:<{W}}{info['round'] + ' ':<4}{info['manifest']:<10}  {what}\n"
                   f"    {'':<24}--set {' '.join(f'{k}={val!r}' for k, val in info['sets'].items())}")
         for key in matrix:
             stage_print_row(rep, args.root, key, runs_by_row[key], runs, order, primary)

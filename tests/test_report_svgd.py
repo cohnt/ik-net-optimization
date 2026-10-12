@@ -35,7 +35,11 @@ And the stage mode (`--stage SVGD`, the cluster's `sc_SVGD_*` family):
     against stage PAPER's IPOPT run on that robot, and `--rows` accepts those robots;
   - R17 / R17S carry the Panda's `kcz` / `kczrho1e5` settings to the iiwa and the screw arm as
     columns of those robots' blocks, and R18's three-factor stacks are Panda columns, the
-    `initnative` one on the paired rows only.
+    `initnative` one on the paired rows only;
+  - R19 (the candidate `kczrho1e5` on R7's seed-2 grids) is the Panda column `kczrho1e5@seed2`,
+    R14's settings exactly, paired with R7IPOPT's twin `ipopt@seed2` and never with a seed-1 run,
+    and `--rows panda --variants kq,kczrho1e5` resolves it as `kq@seed2` resolves; R17P carries
+    `kcz` / `kczrho1e5` to the soft PCS arm.
 The stage fixtures keep gen_manifest's real tags but are 16-cell runs: the catalogue's cell count
 is patched to the fixture's, which is the one thing the 480-cell tag cannot carry.
 """
@@ -627,8 +631,9 @@ def test_stage_seed2_pairs_its_own_twin_only():
 
 ## ------------------------------------------- R13 / R14 and the screw / soft PCS arms --
 OTHER_ROBOTS = {"screw7_p050": ("n6", "SVGD_R15"), "soft12": ("n6", "SVGD_R16")}
-## The rounds after the primary on each of those robots: R17S's kernel-space variants on the screw arm.
-OTHER_ROBOT_ROUNDS = {"screw7_p050": {"kcz": "SVGD_R17S", "kczrho1e5": "SVGD_R17S"}, "soft12": {}}
+## The rounds after the primary on each of those robots: R17S's / R17P's kernel-space variants.
+OTHER_ROBOT_ROUNDS = {"screw7_p050": {"kcz": "SVGD_R17S", "kczrho1e5": "SVGD_R17S"},
+                      "soft12": {"kcz": "SVGD_R17P", "kczrho1e5": "SVGD_R17P"}}
 
 
 def test_stage_kernel_and_two_factor_rounds():
@@ -692,7 +697,8 @@ def test_stage_kernel_transfer_and_three_factor_rounds():
     paired rows only; every new tag resolves through parse_stage_tag and `--variants`."""
     runs, variants = R.stage_catalogue()
     _, panda, _ = _stage_tags("panda")
-    for robot, rung, rnd in (("iiwa", "n4", "R17"), ("screw7_p050", "n6", "R17S")):
+    for robot, rung, rnd in (("iiwa", "n4", "R17"), ("screw7_p050", "n6", "R17S"),
+                             ("soft12", "n6", "R17P")):
         _, cols, by = _stage_tags(robot)
         for v in ("kcz", "kczrho1e5"):
             assert cols[v]["round"] == rnd and cols[v]["sets"] == panda[v]["sets"], (robot, v)
@@ -711,9 +717,9 @@ def test_stage_kernel_transfer_and_three_factor_rounds():
     assert starts == {"kczrho1e5n128": {"paired", "native"}, "kczrho1e5initnative": {"paired"}}, starts
     assert "svgd_n=128 (primary" not in R.setting_diff(panda, "kczrho1e5n128", "kq") and \
         "svgd_n=128" in R.setting_diff(panda, "kczrho1e5n128", "kq")
-    ## `--rows <robot> --variants kq,kcz,kczrho1e5` resolves on both robots: nothing on disk, so
+    ## `--rows <robot> --variants kq,kcz,kczrho1e5` resolves on every robot: nothing on disk, so
     ## every run is MISSING (not fatal), and the robot's block carries the three columns.
-    for robot, rnd in (("iiwa", "R17"), ("screw7_p050", "R17S")):
+    for robot, rnd in (("iiwa", "R17"), ("screw7_p050", "R17S"), ("soft12", "R17P")):
         row = (robot, "mugshelf", "paired")
         _, _, by = _stage_tags(robot)
         with tempfile.TemporaryDirectory() as root:
@@ -722,6 +728,79 @@ def test_stage_kernel_transfer_and_three_factor_rounds():
             for v in ("kq", "kcz", "kczrho1e5"):
                 assert by[row + (v,)] in rep.missing, (robot, v)
             assert f"robot {robot}" in text and "robot panda" not in text
+
+
+def test_stage_seed2_replication_of_the_candidate():
+    """R19: the candidate `kczrho1e5` on R7's seed-2 grids. It is the Panda column
+    `kczrho1e5@seed2` -- R14's settings exactly, its own round and manifest, learned arm only --
+    and pairs with R7IPOPT's twin `ipopt@seed2`, never with R2's seed-1 twin or any seed-1 run.
+    `--rows panda --variants kq,kczrho1e5` resolves it exactly as it resolves `kq@seed2`."""
+    runs, _ = R.stage_catalogue()
+    _, panda, by = _stage_tags("panda")
+    col = "kczrho1e5@seed2"
+    assert (panda[col]["round"], panda[col]["manifest"], panda[col]["seed"]) == ("R19", "SVGD_R19", 2)
+    assert panda[col]["sets"] == panda["kczrho1e5"]["sets"] and panda[col]["arms"] == ("learned",)
+    assert panda["kczrho1e5"]["round"] == "R14" and panda["kczrho1e5"]["seed"] == 1
+    assert R.twin_of(col) == R.twin_of("kq@seed2") == "ipopt@seed2"
+    assert by[STAGE_ROW + (col,)] == "sc_SVGD_R19_panda_n6_svgd_mugshelf_480_180_paired_kczrho1e5"
+    assert {(t["row"], t["start"]) for t in runs.values() if t["column"] == col} == \
+        {(r, s) for r in M.TASK_ROWS for s in M.STARTS}
+    ## The seed-2 columns sit after the seed-1 pair and R7's pair, R19's after R7's primary.
+    order = list(panda)
+    assert order[:4] == [R.STAGE_TWIN, "kq", "ipopt@seed2", "kq@seed2"] and col in order[4:], order
+    with tempfile.TemporaryDirectory() as root:
+        ## Nothing on disk: both seeds' twin, primary and candidate are MISSING, nothing else of
+        ## the Panda's prints, and the variant header names the seed-2 twin as its only pairing.
+        rep, text = _stage_run(root, extra=["--variants", "kq,kczrho1e5"], row=("panda",))
+        assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+        want = {R.STAGE_TWIN, "kq", "kczrho1e5", "ipopt@seed2", "kq@seed2", col}
+        got = {runs[t]["column"] for t in rep.missing if runs[t]["robot"] == "panda"}
+        assert got == want, got ^ want
+        assert len([t for t in rep.missing if runs[t]["robot"] == "panda"]) == 4 * len(want)
+        assert f"grid seed 2 -- pairs only with ipopt@seed2, never with seed-1 runs" in text
+        hdr = next(l for l in text.splitlines() if l.strip().startswith(col))
+        assert hdr.split()[:3] == [col, "R19", "SVGD_R19"], hdr
+    with tempfile.TemporaryDirectory() as root:
+        ## Both twins and R14's / R7's / R19's runs on disk: R19 pairs with the seed-2 twin only
+        ## (2 cells only it solved there), R14's with the seed-1 twin; the A/B against the seed-1
+        ## primary skips R19, and the seed-2 variant-vs-variant table pairs R19 with R7's kq.
+        _stage_twin(root)
+        _stage_twin(root, grid=GRID2, column="ipopt@seed2")
+        _stage_write(root, "kq", [_rec(i, i < 14, 1.0) for i in range(N_CELLS)],
+                     [_rec(i, i < 10, 2.0) for i in range(N_CELLS)])
+        _stage_write(root, "kczrho1e5", [_rec(i, i < 11, 1.0) for i in range(N_CELLS)], None)
+        _stage_write(root, "kq@seed2", [_rec(i, i < 12, 1.0) for i in range(N_CELLS)], None,
+                     grid=GRID2)
+        _stage_write(root, col, [_rec(i, i < 12, 0.8) for i in range(N_CELLS)], None, grid=GRID2)
+        rep, text = _stage_run(root, extra=["--variants", "kq,kczrho1e5"])
+        assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+        assert rep.blocks[STAGE_ROW + (col,)]["vs_twin"]["learned"]["a_only"] == 2
+        assert rep.blocks[STAGE_ROW + ("kczrho1e5",)]["vs_twin"]["learned"]["a_only"] == 1
+        lead = text[text.index("LEAD -- learned under svgd"):text.index("ABLATION -- joint space")]
+        line = next(l.split() for l in lead.splitlines() if l.strip().startswith(col))
+        assert line[1:6] == ["R19", "12", "10", "2", "0"], line
+        ab = text[text.index("A/B against the primary kq"):text.index("VARIANTS ACROSS ROUNDS")]
+        assert f"{col}: not paired with the primary -- grid seed 2" in ab
+        pw = text[text.index("VARIANT vs VARIANT"):]
+        g2 = pw[pw.index("(grid seed2)"):]
+        hdr, first = g2.splitlines()[1].split(), g2.splitlines()[2].split()
+        assert hdr == ["A", "vs", "B", col] and first[:2] == ["kq@seed2", "+0/-0"], g2[:300]
+    with tempfile.TemporaryDirectory() as root:
+        ## R19's run carrying the seed-1 grid (R2's hash) is refused against the seed-2 twin, and
+        ## one made at seed 1 is not the run its tag names -- it never pairs with seed-1 runs.
+        _stage_twin(root)
+        _stage_twin(root, grid=GRID2, column="ipopt@seed2")
+        _stage_write(root, col, [_rec(i, i < 12, 1.0) for i in range(N_CELLS)], None, grid=GRID)
+        rep, _ = _stage_run(root)
+        assert any("grid_hash " + GRID + " != " + GRID2 in m for m in rep.refused), rep.refused
+        assert rep.blocks[STAGE_ROW + (col,)]["vs_twin"] == {} and rep.status == 2
+    with tempfile.TemporaryDirectory() as root:
+        _stage_twin(root)
+        tag = _stage_write(root, col, [_rec(i, i < 12, 1.0) for i in range(N_CELLS)], None,
+                           seed=1)
+        rep, _ = _stage_run(root)
+        assert any(tag in m and "seed 1 != the manifest's 2" in m for m in rep.refused), rep.refused
+        assert STAGE_ROW + (col,) not in rep.blocks and rep.status == 2
 
 
 def main():

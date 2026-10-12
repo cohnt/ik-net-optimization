@@ -830,6 +830,116 @@ iiwa (latent width 8) and the screw arm it runs for the first time in R17 / R17S
 solver construction would fail every cell of the item. `_abort_on_dead_arm` then fails the job
 within its first three cells, so read the first collected shard of each before trusting the round.
 
+## R19 and R17P (queued 2026-10-12, the cluster still idle until the maintenance)
+
+After R13 / R14 / R17 / R17S / R18 the candidate fielded pin is `kczrho1e5`: `svgd_kernel=cz` plus
+`svgd_rho=100000`, a declared two-factor variant. Two measurements of it are missing, and the
+cluster is idle until the 10-12 evening maintenance, so both are queued now (Thomas: *"we don't
+want to waste GPU time"*). The conventions are R17 / R17S's exactly:
+
+- `SVGD_PINNED` plus the variant's overrides, the record flags, graphed mode, the lifted step cap.
+- Learned arm only, 24 shards per 480-cell run, PROCS=2 with no MPS.
+- **Every svgd item carries the clearance row**, so both manifests go in with `DRAKE_ENV=crc`.
+- `kczrho1e5` is declared two-factor in both rounds exactly as in R14 / R17 / R17S, and the selftest
+  holds the token to one setting in every round that runs it.
+
+### R19 (Panda, grid seed 2): the seed replication of the candidate
+
+`SVGD_R19` runs on R7's context, the Panda `n6` at **`--seed 2`**: `kczrho1e5` on the four rows.
+It is read against R7's `kq` (the primary on the same seed-2 grids) and twinned with
+**SVGD_R7IPOPT**, already collected, so there is no new twin manifest. The selftest holds R19, R7 and
+R7IPOPT to one second-seed context.
+
+Tags are `sc_SVGD_R19_panda_n6_svgd_<row>_480_180_<start>_kczrho1e5`. The reporter prints it as the
+column **`kczrho1e5@seed2`** beside R14's seed-1 `kczrho1e5`. It pairs only with `ipopt@seed2`, and
+`metadata.seed` is in both the provenance check and every pairing's must-match list, so it is
+**refused** against R2's seed-1 twin and never pairs with a seed-1 run. The A/B against the seed-1
+primary skips it with a note line. The seed-2 block of the variant-vs-variant table pairs it with
+`kq@seed2` (R7) on the same cells, which is the kernel-and-rho effect on the second grid.
+
+### R17P (soft PCS arm): the kernel space on the fourth robot
+
+`SVGD_R17P` runs on R16's context, the soft PCS arm `soft12` at `n6`, with R17 / R17S's two
+variants on its four rows:
+
+| variant | factors | read against |
+| --- | --- | --- |
+| `kcz` | `svgd_kernel=cz` (one factor, R13's) | R16's `kq` |
+| `kczrho1e5` | `svgd_kernel=cz` + `svgd_rho=100000` (declared two, exactly R14's entry) | `kcz` for rho, `kq` only as the combination |
+
+Tags are `sc_SVGD_R17P_soft12_n6_svgd_<row>_480_180_<start>_<variant>`. The IPOPT twins are the ones
+R16 already pairs with, stage PAPER's soft12 runs, collected.
+
+**This round takes hours, not the allotment's 2 h.** This robot's svgd step is the EAGER path
+(`SoftArmIKProgram.TorchConfigToPlantQ` under autograd, no analytic row Jacobians): about 800 ms per
+outer step against 82 ms on the rigid arms. R16 measured a mean wall of 10-26 s per cell, so the
+allotment's assumed 5 s is far too low here. At R16's walls an item is 20 cells x 10-26 s + ~180 s
+overhead, 0.11-0.19 h, and the round is about 10-19 node-h, **about 2.5-4.7 h on 4 idle nodes**.
+It is queued after R19 and may be cut by the maintenance window (Mon 2026-10-12 evening to Wed 10-14
+morning). If so, `--reclaim` it after the window and resubmit.
+
+**Not exercised before the cluster: the `cz` kernel on the soft PCS arm.** It has run on the Panda
+(R13 / R14 / R18), the iiwa (R17) and the screw arm (R17S), never on this robot's eager step or its
+12-wide latent. A refusal at solver construction would fail every cell of an item, and
+`_abort_on_dead_arm` then fails the job within its first three cells. Read the first collected shard
+before trusting the round.
+
+### Allotment
+
+`python cluster/gen_manifest.py --stage SVGD_R19 --allotment` prints these lines (the base is the
+assumed 5 s per learned cell):
+
+```
+  manifest          runs  cells  items  solve-h  node-h    h@4  max item h
+  SVGD_R19             4   1920     96      7.5     3.7    0.9        0.08
+  SVGD_R17P            8   3840    192     14.9     7.5    1.9        0.08
+```
+
+R19's line should hold: R14's `kczrho1e5` ran 1.1-2.7 s mean per cell on the Panda. R17P's should
+not (see above). In the worst case every cell is at the clock, each item 20 cells x 180 s = 1 h:
+96 + 192 = 288 node-h at PROCS=2 over 4 nodes, about 36 h.
+
+### Staging: copy the two manifests, no restage
+
+The staged tree is still **7ca45a4**, and these manifests need no restage. Since 7ca45a4 the code
+has changed only in `scripts/report_svgd.py`, which runs locally (`git diff 7ca45a4 <this commit> --
+src/ scripts/ cluster/*.sh`). And 7ca45a4 already carries every option these manifests set:
+`svgd_kernel` with `cz` in `SVGD_ENUM_FIELDS`, `svgd_rho`, and
+`svgd_collision_backend=clearances`. R14 ran `kczrho1e5` there, R7 the seed-2 Panda grids and R16
+the soft PCS arm. So copy the manifests in by hand, as for R17, and check:
+
+```bash
+scp $WT/cluster/manifest_stageSVGD_{R19,R17P}.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/
+ssh tcohn@txe1-login.mit.edu 'cat ~/learned-ik/repo/.staged-commit'          # must print 7ca45a4...
+ssh tcohn@txe1-login.mit.edu 'grep -c "\"svgd_kernel\": (\"q\", \"none\", \"x\", \"z\", \"c\", \"cz\", \"qz\", \"pose\")" ~/learned-ik/repo/src/generic_program.py'   # must print 1
+```
+
+### Submit
+
+Submit from the worktree `$WT`, as for R17: `submit_bench.sh` reads the manifest from the checkout it
+lives in. The order is R19, then R17P, in FIFO with no dependency, so the short Panda round lands
+before the long soft PCS one. There is no smoke: R7 ran the seed-2 Panda grids and SMOKE_SOFT / R16
+ran this scene with the clearance row.
+
+```bash
+cd $WT
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R19.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R17P.txt 4
+```
+
+### Read
+
+```bash
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows panda --variants kq,kczrho1e5      # R19 (kczrho1e5@seed2) beside R14 and R7
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows soft12 --variants kq,kcz,kczrho1e5 # R17P against R16 and PAPER
+```
+
+The reporter takes both rounds from `gen_manifest.py` with no edit to its pairing. Its variant-name
+fields now widen to the longest column, so `kczrho1e5@seed2` and R18's `kczrho1e5initnative` no
+longer run into the round token. Promote as for R7 / R16:
+`cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
+`<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
+
 ## Collect, promote and report R12, SMOKE_IIWA and R7
 
 These follow the Collect section below:
@@ -858,13 +968,13 @@ Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs
 ```bash
 bash $WT/cluster/collect_results.sh --status
 bash $WT/cluster/collect_results.sh                  # rsync + merge shards, incremental
-bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R18, _R17S, the smokes) only once the queue is idle
+bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R19, _R17S, _R17P, the smokes) only once the queue is idle
 ```
 
 Tags: `sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq`,
 `sc_SVGD_R2_panda_n6_ipopt_<row>_480_180_<start>` and
-`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`; R12, SMOKE_IIWA, R7, R13-R18 and the
-screw / soft PCS smokes are listed in their own sections above.
+`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`; R12, SMOKE_IIWA, R7, R13-R19, R17S, R17P and
+the screw / soft PCS smokes are listed in their own sections above.
 
 - R2 pairs cell for cell with the record's `sc_REMEASURE_panda_n6_ipopt_*`: same grid, same scene,
   same args.
