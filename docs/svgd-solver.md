@@ -1095,10 +1095,12 @@ fires after 5 single steps instead of 50, so it stops with 2-4 feasible particle
 has 6-31 and `K100` 30-55. **For the one-solve column `K1` is a tie on success, cost and stop
 behaviour and the simpler method; for a constant-budget multistart column that wants several
 feasible particles per solve, the stall rule under K = 1 stops too early.** Stripping to one loop
-therefore also means re-expressing the stall window in inner steps (5 checks x K steps), not just
-K = 1 -- which is the same loop with a 50-step stall window. Thomas's call (he asked for R6 to
-decide this; proposal: strip the inner/outer distinction, keep the check every step, and make the
-stall window a step count). `K100` is the other end: the most feasible particles, the lowest
+would also mean re-expressing the stall window in inner steps (5 checks x K steps), not just
+K = 1 -- which is the same loop with a 50-step stall window. **RULED (Thomas, 2026-10-11 evening):
+K stays a separate parameter, fielded at 10, and the inner/outer structure is kept** -- *"I want to
+better understand its effects as we start doing more complicated things. The balance of inner to
+outer steps in AL seems like something we need to handle delicately."* The one-loop strip-down is
+not done. `K100` is the other end: the most feasible particles, the lowest
 violation (2.6e-6 to 3.0e-5), the worst grasp cost (9.3-10.0, the kernel-on stall having 100 steps
 to act between dual updates) and 5-8x the wall; it earns nothing on these rows.
 
