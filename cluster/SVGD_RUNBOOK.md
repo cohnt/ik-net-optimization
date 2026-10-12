@@ -564,7 +564,7 @@ tuple, read from the source text, so a value outside it fails the selftest rathe
 ### R14: declared two-factor combinations
 
 The same Panda rows. This is the one round allowed more than one factor.
-`SVGD_TWO_FACTOR_ROUNDS` in `cluster/gen_manifest.py` declares each variant's two factors. The
+`SVGD_TWO_FACTOR_ROUNDS` (since R18, `SVGD_DECLARED_FACTORS`) in `cluster/gen_manifest.py` declares each variant's two factors. The
 selftest holds every R14 item to **exactly** those overrides, with nothing missing and nothing
 extra. It still holds every other round to one factor, or zero for the primary carried into a new
 context.
@@ -703,6 +703,133 @@ robots the stage builds, not just smoke.py's. Collected runs land in
 `results/screw_arm/benchmark/` and `results/soft12/benchmark/`. Promote them the way the R12
 section does: `cp -r <STAGING>/results/<dir>/benchmark/sc_SVGD_R1{5,6}_*` and `sc_SVGDSMOKE_*`.
 
+## R17, R17S and R18 (queued 2026-10-12, the cluster idle until the maintenance)
+
+R13 and R14 found that the kernel space `cz` and rho = 1e5 add: `kczrho1e5` is 480/480 on all four
+Panda rows with grasp cost below IPOPT's learned arm. Two questions remain, and the cluster is idle
+until the 10-12 maintenance, so they are queued now (Thomas, 2026-10-11: *"Launch them all, we
+don't want to waste GPU time"*). The conventions are R13 / R14's exactly:
+
+- `SVGD_PINNED` plus each variant's overrides, the record flags, graphed mode, the lifted step cap.
+- Learned arm only, 24 shards per 480-cell run, PROCS=2 with no MPS.
+- **Every svgd item carries the clearance row**, so every manifest goes in with `DRAKE_ENV=crc`.
+
+### R17 (iiwa) and R17S (screw arm): does the kernel-space gain transfer?
+
+One context per stage, as before. `SVGD_R17` runs on R12's context (the iiwa at `n4`), `SVGD_R17S`
+on R15's (the screw arm `screw7_p050` at `n6`). Each runs the robot's four rows with two variants:
+
+| variant | factors | read against |
+| --- | --- | --- |
+| `kcz` | `svgd_kernel=cz` (one factor, R13's) | that robot's `kq` (R12 / R15) |
+| `kczrho1e5` | `svgd_kernel=cz` + `svgd_rho=100000` (declared two, exactly R14's entry) | `kcz` for rho, `kq` only as the combination |
+
+Tags are `sc_SVGD_R17_iiwa_n4_svgd_<row>_480_180_<start>_<variant>` and
+`sc_SVGD_R17S_screw7_p050_n6_svgd_<row>_480_180_<start>_<variant>`. The IPOPT twins are the ones R12
+and R15 already pair with: stage PAPER's runs on each robot, collected, so no new twin manifest.
+
+**A variant token now means one setting everywhere.** The selftest checks that a token carries the
+same overrides in every round that runs it. So `kcz` on the iiwa is R13's `kcz` carried there, and
+the reporter's per-robot columns line up with the Panda's.
+
+### R18 (Panda): declared three-factor stacks
+
+The Panda `n6`, default context. Both variants stack a third factor on `kczrho1e5`:
+
+| variant | factors | rows |
+| --- | --- | --- |
+| `kczrho1e5n128` | `svgd_kernel=cz` + `svgd_rho=100000` + `svgd_n=128` (R8's / R14's N lever) | all four |
+| `kczrho1e5initnative` | `svgd_kernel=cz` + `svgd_rho=100000` + `svgd_paired_init=native` (R10's) | paired only |
+
+`initnative` changes only how the paired swarm is drawn. A native item would be `kczrho1e5`'s run
+again, so it runs the paired rows only, as R10's `initnative` does. Read each against R14's
+`kczrho1e5` for the third factor.
+
+### The declared-factor rule, generalised
+
+`SVGD_TWO_FACTOR_ROUNDS` became `SVGD_DECLARED_FACTORS`: round -> {variant: its factors}. A variant's
+factor count is the length of its declaration, so a round can declare three. The selftest:
+
+- holds every declared variant's overrides to **exactly** its declared factors, as before;
+- pins each declared variant's factor count: R14's four at two (unchanged), R17 / R17S's
+  `kczrho1e5` at two, and R18's two at three;
+- holds every undeclared variant of every round to one factor, or zero for the primary carried into
+  a non-default context.
+
+A round may now mix the two kinds. R17 / R17S's `kcz` is undeclared and one factor, while
+`kczrho1e5` is declared two, and that is allowed in a non-default context exactly as in the default
+one. R14's check is unchanged: all four of its variants are still declared, at two.
+
+### Allotment
+
+`python cluster/gen_manifest.py --stage SVGD_R17 --allotment` prints these lines (the base is the
+assumed 5 s per learned cell; R18's `kczrho1e5n128` runs N = 128, where R8 found wall flat to 128):
+
+```
+  manifest          runs  cells  items  solve-h  node-h    h@4  max item h
+  SVGD_R17             8   3840    192     14.9     7.5    1.9        0.08
+  SVGD_R17S            8   3840    192     14.9     7.5    1.9        0.08
+  SVGD_R18             6   2880    144     11.2     5.6    1.4        0.08
+```
+
+At the assumption that is about 21 node-hours, or about 5 h on 4 idle nodes. In the worst case every
+cell is at the clock, each item 20 cells x 180 s = 1 h: 192 + 192 + 144 = 528 node-h at PROCS=2
+over 4 nodes is about 66 h. That cannot finish before the maintenance window (Mon 2026-10-12 evening
+to Wed 10-14 morning). Whatever is still running then is killed: `--reclaim` each manifest and
+resubmit after it.
+
+### Staging: copy the three manifests, no restage
+
+The staged tree is still **7ca45a4**, and these manifests need no restage. Since 7ca45a4 the code
+has changed only in `scripts/report_svgd.py`, which runs locally (`git diff 7ca45a4 <this commit> --
+src/ scripts/ cluster/*.sh`). And 7ca45a4 already carries every option these manifests set:
+
+- `svgd_kernel` with `cz` and `svgd_paired_init` with `native`, in `SVGD_ENUM_FIELDS`;
+- `svgd_rho`, `svgd_n` and `svgd_collision_backend=clearances`.
+
+R10 ran `svgd_paired_init=native` there, R14 `svgd_n=128` and `kczrho1e5`, and R12 / R15 ran the
+iiwa and the screw arm. So copy the manifests in by hand, as for R13-R16, and check:
+
+```bash
+scp $WT/cluster/manifest_stageSVGD_{R17,R17S,R18}.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/
+ssh tcohn@txe1-login.mit.edu 'cat ~/learned-ik/repo/.staged-commit'          # must print 7ca45a4...
+ssh tcohn@txe1-login.mit.edu 'grep -c "\"svgd_paired_init\": (\"jitter\", \"native\")\|\"svgd_kernel\": (\"q\", \"none\", \"x\", \"z\", \"c\", \"cz\", \"qz\", \"pose\")" ~/learned-ik/repo/src/generic_program.py'   # must print 2
+```
+
+### Submit
+
+Submit from the worktree `$WT`, as for R13-R16: `submit_bench.sh` reads the manifest from the
+checkout it lives in. The order is R17, R17S, R18, in FIFO with no dependency. There is no smoke:
+SMOKE_IIWA and SMOKE_SCREW already ran both arms on these scenes with the clearance row, and R12 /
+R15 ran the learned arm.
+
+```bash
+cd $WT
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R17.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R17S.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R18.txt 4
+```
+
+### Read
+
+```bash
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows iiwa --variants kq,kcz,kczrho1e5          # R17 against R12 and PAPER
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows screw7_p050 --variants kq,kcz,kczrho1e5   # R17S against R15 and PAPER
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows panda --variants kcz,kczrho1e5,kczrho1e5n128,kczrho1e5initnative,n128,initnative
+```
+
+The reporter takes the new rounds from `gen_manifest.py` with no edit. The A/B table's header says
+each column differs from `kq` in one setting. For the declared variants that is not so: read
+`kczrho1e5` against `kcz`, and R18's against `kczrho1e5`, in the variant-vs-variant table. Promote
+as for R12 / R15: `cp -r <STAGING>/results/iiwa/benchmark/sc_SVGD_R17_*`,
+`<STAGING>/results/screw_arm/benchmark/sc_SVGD_R17S_*` and
+`<STAGING>/results/panda/benchmark/sc_SVGD_R18_*`.
+
+**Not exercised before the cluster.** The `cz` kernel has run only on the Panda (R13 / R14). On the
+iiwa (latent width 8) and the screw arm it runs for the first time in R17 / R17S. A refusal at
+solver construction would fail every cell of the item. `_abort_on_dead_arm` then fails the job
+within its first three cells, so read the first collected shard of each before trusting the round.
+
 ## Collect, promote and report R12, SMOKE_IIWA and R7
 
 These follow the Collect section below:
@@ -731,12 +858,12 @@ Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs
 ```bash
 bash $WT/cluster/collect_results.sh --status
 bash $WT/cluster/collect_results.sh                  # rsync + merge shards, incremental
-bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R16, the smokes) only once the queue is idle
+bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R18, _R17S, the smokes) only once the queue is idle
 ```
 
 Tags: `sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq`,
 `sc_SVGD_R2_panda_n6_ipopt_<row>_480_180_<start>` and
-`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`; R12, SMOKE_IIWA, R7, R13-R16 and the
+`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`; R12, SMOKE_IIWA, R7, R13-R18 and the
 screw / soft PCS smokes are listed in their own sections above.
 
 - R2 pairs cell for cell with the record's `sc_REMEASURE_panda_n6_ipopt_*`: same grid, same scene,

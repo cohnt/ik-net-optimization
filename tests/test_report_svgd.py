@@ -32,7 +32,10 @@ And the stage mode (`--stage SVGD`, the cluster's `sc_SVGD_*` family):
     the wrong seed is REFUSED as not the run its tag names, and a twin on another grid is refused;
   - R13's kernel variants carry exactly their one override and R14's exactly their declared
     factors; the screw arm's R15 and the soft PCS arm's R16 are their own blocks, each paired
-    against stage PAPER's IPOPT run on that robot, and `--rows` accepts those robots.
+    against stage PAPER's IPOPT run on that robot, and `--rows` accepts those robots;
+  - R17 / R17S carry the Panda's `kcz` / `kczrho1e5` settings to the iiwa and the screw arm as
+    columns of those robots' blocks, and R18's three-factor stacks are Panda columns, the
+    `initnative` one on the paired rows only.
 The stage fixtures keep gen_manifest's real tags but are 16-cell runs: the catalogue's cell count
 is patched to the fixture's, which is the one thing the 480-cell tag cannot carry.
 """
@@ -497,10 +500,11 @@ def test_stage_catalogue_robots_and_seeds():
     runs, _ = R.stage_catalogue()
     _, panda, by = _stage_tags("panda")
     _, iiwa, _ = _stage_tags("iiwa")
-    ## The iiwa: its twin (stage PAPER's IPOPT run, the record's rows at paper conditions) and the
-    ## primary, learned arm only, on the n4 chart at seed 1.
-    assert list(iiwa) == [R.STAGE_TWIN, "kq"], list(iiwa)
+    ## The iiwa: its twin (stage PAPER's IPOPT run, the record's rows at paper conditions), the
+    ## primary, then R17's kernel-space variants, learned arm only, on the n4 chart at seed 1.
+    assert list(iiwa) == [R.STAGE_TWIN, "kq", "kcz", "kczrho1e5"], list(iiwa)
     assert iiwa[R.STAGE_TWIN]["manifest"] == "PAPER" and iiwa["kq"]["manifest"] == "SVGD_R12"
+    assert iiwa["kcz"]["manifest"] == iiwa["kczrho1e5"]["manifest"] == "SVGD_R17"
     assert iiwa["kq"]["arms"] == ("learned",) and iiwa[R.STAGE_TWIN]["arms"] == R.ARMS
     ## R12 is the primary's settings exactly, plus the clearance collision row (an execution
     ## setting: the same functional, batched; gen_manifest's SVGD_CLEARANCE_STAGES).
@@ -562,7 +566,8 @@ def test_stage_iiwa_block_after_the_panda():
         assert next(l for l in lead.splitlines() if l.strip().startswith("kq")).split()[1:6] == \
             ["R12", "13", "10", "3", "0"]
         assert rep.verdicts[(IIWA_ROW, "kq", "learned")] == "tie"
-        assert "no column but the primary kq on these rows" in text
+        ## R17's columns have not landed: the A/B against kq prints them as missing, not fatal.
+        assert "missing (kcz)" in text and "missing (kczrho1e5)" in text
     with tempfile.TemporaryDirectory() as root:
         ## A PAPER run whose overrides are not the PAPER item's (its budget unlifted) is REFUSED,
         ## exactly as an R2 twin would be -- so R12 has nothing to pair with.
@@ -622,6 +627,8 @@ def test_stage_seed2_pairs_its_own_twin_only():
 
 ## ------------------------------------------- R13 / R14 and the screw / soft PCS arms --
 OTHER_ROBOTS = {"screw7_p050": ("n6", "SVGD_R15"), "soft12": ("n6", "SVGD_R16")}
+## The rounds after the primary on each of those robots: R17S's kernel-space variants on the screw arm.
+OTHER_ROBOT_ROUNDS = {"screw7_p050": {"kcz": "SVGD_R17S", "kczrho1e5": "SVGD_R17S"}, "soft12": {}}
 
 
 def test_stage_kernel_and_two_factor_rounds():
@@ -650,8 +657,10 @@ def test_stage_screw_and_soft_blocks():
     assert list(variants)[:2] == ["panda", "iiwa"] and set(OTHER_ROBOTS) <= set(variants)
     for robot, (rung, stage) in OTHER_ROBOTS.items():
         _, cols, by = _stage_tags(robot)
-        assert list(cols) == [R.STAGE_TWIN, "kq"], (robot, list(cols))
+        assert list(cols) == [R.STAGE_TWIN, "kq"] + list(OTHER_ROBOT_ROUNDS[robot]), (robot, list(cols))
         assert cols[R.STAGE_TWIN]["manifest"] == "PAPER" and cols["kq"]["manifest"] == stage
+        for v, st in OTHER_ROBOT_ROUNDS[robot].items():
+            assert cols[v]["manifest"] == st and cols[v]["arms"] == ("learned",), (robot, v)
         assert cols["kq"]["arms"] == ("learned",) and cols[R.STAGE_TWIN]["arms"] == R.ARMS
         assert cols["kq"]["sets"] == {**panda["kq"]["sets"], **CLR}, robot
         row = (robot, "mugshelf", "paired")
@@ -675,6 +684,44 @@ def test_stage_screw_and_soft_blocks():
             b = rep.blocks[row + ("kq",)]
             assert (b["vs_twin"]["learned"]["a_only"], b["vs_twin"]["learned"]["b_only"]) == (3, 0)
             assert f"IPOPT twin (PAPER): {twin}" in text
+
+
+def test_stage_kernel_transfer_and_three_factor_rounds():
+    """R17 (iiwa) / R17S (screw arm): R13's `kcz` and R14's `kczrho1e5` carried to each robot with
+    exactly the Panda's settings; R18 (Panda): the declared three-factor stacks, `initnative` on the
+    paired rows only; every new tag resolves through parse_stage_tag and `--variants`."""
+    runs, variants = R.stage_catalogue()
+    _, panda, _ = _stage_tags("panda")
+    for robot, rung, rnd in (("iiwa", "n4", "R17"), ("screw7_p050", "n6", "R17S")):
+        _, cols, by = _stage_tags(robot)
+        for v in ("kcz", "kczrho1e5"):
+            assert cols[v]["round"] == rnd and cols[v]["sets"] == panda[v]["sets"], (robot, v)
+            assert cols[v]["arms"] == ("learned",)
+            for row in (("mugshelf", "paired"), ("posetip", "native")):
+                tag = by[(robot,) + row + (v,)]
+                assert tag == f"sc_SVGD_{rnd}_{robot}_{rung}_svgd_{row[0]}_480_180_{row[1]}_{v}", tag
+                t = R.parse_stage_tag(tag)
+                assert (t["round"], t["robot"], t["rung"], t["variant"]) == (rnd, robot, rung, v)
+    kczrho = panda["kczrho1e5"]["sets"]
+    assert panda["kczrho1e5n128"]["round"] == panda["kczrho1e5initnative"]["round"] == "R18"
+    assert panda["kczrho1e5n128"]["sets"] == {**kczrho, "svgd_n": 128}
+    assert panda["kczrho1e5initnative"]["sets"] == {**kczrho, "svgd_paired_init": "native"}
+    starts = {v: {t["start"] for t in runs.values() if t["robot"] == "panda" and t["column"] == v}
+              for v in ("kczrho1e5n128", "kczrho1e5initnative")}
+    assert starts == {"kczrho1e5n128": {"paired", "native"}, "kczrho1e5initnative": {"paired"}}, starts
+    assert "svgd_n=128 (primary" not in R.setting_diff(panda, "kczrho1e5n128", "kq") and \
+        "svgd_n=128" in R.setting_diff(panda, "kczrho1e5n128", "kq")
+    ## `--rows <robot> --variants kq,kcz,kczrho1e5` resolves on both robots: nothing on disk, so
+    ## every run is MISSING (not fatal), and the robot's block carries the three columns.
+    for robot, rnd in (("iiwa", "R17"), ("screw7_p050", "R17S")):
+        row = (robot, "mugshelf", "paired")
+        _, _, by = _stage_tags(robot)
+        with tempfile.TemporaryDirectory() as root:
+            rep, text = _stage_run(root, extra=["--variants", "kq,kcz,kczrho1e5"], row=row)
+            assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+            for v in ("kq", "kcz", "kczrho1e5"):
+                assert by[row + (v,)] in rep.missing, (robot, v)
+            assert f"robot {robot}" in text and "robot panda" not in text
 
 
 def main():
