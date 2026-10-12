@@ -1244,6 +1244,32 @@ iiwa IPOPT learned arm is slow on grasp paired, 6.3 s) and above it only on pose
 against 0.67). The iiwa's runaway population (the gain-ceiling finding of the record) did not
 surface: the per-particle redraw handles it as on the Panda, and no row needed the clock.
 
+### R15: the screw arm (`screw7_p050`, `n6`), the primary `kq` in a third context, measured 2026-10-12
+
+**Jobs 5895118-21, 96 items, clearance row, 0 error cells; `--rows screw7_p050`.** Zero overrides, the
+four rows at 480 cells, paired against stage PAPER's screw IPOPT learned arm. The smoke
+(SVGD_SMOKE_SCREW, 4 cells per row, 60 s, both arms) ran first: learned 4 / 4 everywhere, joint space
+1 / 1 / 4 / 4 (its grasp cells at the 60 s clock, the ablation's known weakness), no error cells.
+
+| row | learned svgd | learned IPOPT (PAPER) | verdict | cost (svgd / IPOPT) | outer steps | feasible | mean wall s (svgd / IPOPT) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | 480 | 473 (joint space 442) | **svgd** +7 / -0, p = 0.016 | 10.5 / 9.5 | 16 | 3 | 1.54 / 11.11 |
+| grasp native | 480 | 475 (442) | tie, +5 / -0, p = 0.06 | 12.2 / 9.0 | 13 | 10 | 1.38 / 6.93 |
+| pose paired | 480 | 429 (320) | **svgd** +51 / -0, p = 9e-16 | **4.2** / 13.1 | 14 | 28 | 1.44 / 1.95 |
+| pose native | 480 | 459 (320) | **svgd** +21 / -0, p = 1e-6 | **7.6** / 11.5 | 15 | 30 | 1.59 / 1.10 |
+
+**Lead: the robot no algebraic method can chart is where the swarm wins most.** 480 / 480 on all
+four rows; three wins and a near-win against the IPOPT learned arm, none of the Panda's and iiwa's
+grasp ties, because the screw arm's IPOPT learned column is the record's slowest (398 majors and
+11 s mean on grasp paired, 6 cells at the clock) while the swarm converges in 13-16 outer steps and
+1.4-1.6 s on every row. Cost: the grasp premium is 1.1-1.35x as on the iiwa; on pose svgd returns a
+third to two thirds of IPOPT's cost (4.2 against 13.1 on paired). The paired grasp swarm is thin
+(3 feasible of 64, redraws 0.38 per particle, the Panda's pattern) and the pose swarms full
+(28-30). Every cell converged on the stop rule; no clock, no iteration cap, no gate-edge cell.
+Wall is below the IPOPT twin on three rows and 1.4x above it on pose native (1.59 against 1.10).
+The gain-ceiling runaway of this robot's `p025` chart is not at issue here (`p050` has none); the
+per-particle redraw rate is the Panda's.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
