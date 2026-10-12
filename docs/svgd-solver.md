@@ -1488,6 +1488,35 @@ within 3-5% of seed 1 on every row and below the seed-2 IPOPT learned arm on thr
 wall 1.1-2.6 s against the twin's 1.3-4.5 s. The one-cell reproducibility band the record quotes
 for cap-bound rows does not apply here: nothing is cap-bound.
 
+### R17P: the kernel space on the soft PCS arm (`kcz`, `kczrho1e5` on `soft12 n6`), measured 2026-10-12
+
+**Jobs 5896069-72, 192 items, clearance row, 0 error cells; `--rows soft12 --variants kq,kcz,kczrho1e5`.**
+The c x z kernel's first runs on a width-12 latent and on the eager forward step (R16).
+
+| variant | success | cost on shared cells (gp / gn / pp / pn) | outer steps | feasible particles | mean wall s | clock stops |
+| --- | --- | --- | --- | --- | --- | --- |
+| `kq` (R16) | 480 x 4 | 2.03 / 2.67 / 2.33 / 2.52 | 20 / 11 / 12 / 11 | 12 / 19 / 21 / 24 | 16.4 / 9.6 / 26.4 / 10.1 | 0 / 0 / 24 / 0 |
+| `kcz` | 480 x 4 | 1.02 / 1.78 / 1.58 / 1.77 | 20 / 8 / 11 / 10 | 60 / 58 / 43 / 60 | 18.2 / 7.5 / 37.7 / 9.5 | 3 / 0 / 43 / 0 |
+| `kczrho1e5` | 480 x 4 | **0.90 / 1.48 / 1.36 / 1.58** | **9 / 8 / 9 / 9** | **61 / 58 / 59 / 59** | **10.1 / 8.6 / 7.5 / 8.6** | **0 / 0 / 0 / 0** |
+| IPOPT learned (PAPER) | 477 / 480 / 437 / 477 | 0.70 / 0.63 / 0.99 / 1.37 | | | 6.1 / 1.2 / 8.7 / 0.6 | |
+
+**Lead: transfers on the fourth robot, and here it also fixes the clock.** 480 / 480 on every row
+for both variants with R16's verdicts (three ties at IPOPT's ceiling, +43 on pose paired). Cost
+against `kq`: c x z alone -50% / -33% / -32% / -30%, with rho = 1e5 -56% / -45% / -42% / -37%; the
+combination sits at 1.1-1.5x the IPOPT learned arm (0.90 against 0.70, 1.48 against 0.63, 1.36
+against 0.99, 1.58 against 1.37), down from `kq`'s 1.8-4.3x, with 58-61 of 64 particles feasible on
+every row. **The combination halves the outer steps (9 / 8 / 9 / 9 against 20 / 11 / 12 / 11) and
+with them the wall**: 7.5-10.1 s against `kq`'s 9.6-26.4 s, and R16's 24 clock stops on pose paired
+are gone (c x z alone has 43 there -- the fuller swarm improving slowly under the stall rule, the
+stage A interaction, which rho = 1e5 removes by converging in 9 steps). The per-step cost is
+unchanged at 780-850 ms (the eager forward map), so this robot's remaining wall premium over IPOPT
+(1.2-7x by row) is entirely the torch-rewrite TODO.
+
+**Four robots, sixteen rows, one setting change (c x z + rho = 1e5): 480 / 480 everywhere, every
+cell converged, cost below the IPOPT learned arm on 11 of 16 rows and within 1.5x on the other five
+(Panda grasp native 1.06x, the four soft PCS rows 1.1-1.5x), wall 1-3 s on the rigid arms and
+7.5-10 s on the soft PCS arm.**
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
