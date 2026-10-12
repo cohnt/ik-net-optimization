@@ -2851,7 +2851,7 @@ def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RU
 ##                     carries no verdict (docs/svgd-solver.md, "the cap rule"). Drop it by
 ##                     emptying SVGD_BUDGET if the PI rules otherwise.
 ##                 (c) svgd_rho=1000, svgd_gn_lm=10, svgd_lr=0.3: the local probe's choice, pinned
-##                     because the staged cluster code (42a5893) predates it (SVGD_PINNED).
+##                     because the staged cluster code (42a5893) predates it (SVGD_PINNED_V1).
 ##               Within each manifest, grasp before pose.
 ##               Sharded 3x the IPOPT rows (24): the treatment STATUSQUO_SHARD_SCALE gives a
 ##               column that runs to the clock. Worst case, every cell at the clock on both arms,
@@ -2859,8 +2859,16 @@ def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RU
 ##               ITEM_TIMEOUT, and a maintenance kill loses at most that.
 ## `svgd_n` is NOT set: it defaults to 64, and the selftest reads that default out of
 ## src/generic_program.py's TEXT (torch-free) and fails if it moves, so a changed default
-## cannot silently change N. `svgd_paired_init` is not set either (default `jitter`, held the
-## same way).
+## cannot silently change N. `svgd_paired_init` was not set either (then default `jitter`).
+##
+## THE PIN MOVED, 2026-10-12 (Thomas: "Agree re 1 and 2. Native draw is the method and paired is
+## the ablation."). ProgramOptions' defaults are now c x z + rho = 1e5 + the H / T metric + the
+## native-draw paired swarm. Every stage above, R1 through R19 / R17P and the smokes, ran the OLD
+## pin -- rho / gn_lm / lr NAMED (SVGD_PINNED_V1), kernel q / metric off / init jitter UNNAMED,
+## through the then-defaults (SVGD_HISTORICAL_DEFAULTS) -- and its manifest is byte-identical
+## after the move: the manifests never named the unnamed three, and the code they ran is the
+## staged tree's. A stage from R20 on takes SVGD_PINNED_V2, which names all four moved settings
+## explicitly, so no stage of either version relies on a default that moved (selftest).
 ##
 ## OTHER ROBOTS AND OTHER GRIDS (2026-10-11). The block above is the Panda `n6` at the record's
 ## seed 1, and that stays every stage's default CONTEXT (SVGD_ROBOT, SVGD_RUNG, SVGD_SEED). A stage
@@ -2952,7 +2960,32 @@ SVGD_EXEC = ["--set", "svgd_compile=True", "--set", "svgd_cuda_graph=True"]
 #: probe chose svgd_rho = 1000, svgd_gn_lm = 10, svgd_lr = 0.3, but the code staged on the cluster
 #: (42a5893) predates them -- its svgd_gn_lm default is 1e-2 -- and the tree cannot be restaged
 #: while stage PAPER runs. So every svgd item names all three; a later restage changes nothing.
-SVGD_PINNED = ["--set", "svgd_rho=1000", "--set", "svgd_gn_lm=10", "--set", "svgd_lr=0.3"]
+SVGD_PINNED_V1 = ["--set", "svgd_rho=1000", "--set", "svgd_gn_lm=10", "--set", "svgd_lr=0.3"]
+#: The pin fielded 2026-10-12 (Thomas: "Agree re 1 and 2. Native draw is the method and paired is the
+#: ablation."): c x z + rho = 1e5 (R14 / R17 / R17S / R17P / R18 / R19), the H / T metric form
+#: (bit-identical at T = 1), the native-draw paired swarm (R10 / R18), gn_lm and lr unchanged. Every
+#: setting that moved is NAMED, so a v2 item does not depend on ProgramOptions' defaults either.
+SVGD_PINNED_V2 = ["--set", "svgd_kernel=cz", "--set", "svgd_rho=100000",
+                  "--set", "svgd_metric_temperature=on", "--set", "svgd_paired_init=native",
+                  "--set", "svgd_gn_lm=10", "--set", "svgd_lr=0.3"]
+#: The stages that ran (and regenerate byte-identically under) the OLD pin, SVGD_PINNED_V1: every svgd
+#: stage that existed when the pin moved. A stage not named here -- R20 on -- takes SVGD_PINNED_V2.
+#: (SVGD_SMOKE and R1 / R1K are built with no stage argument, which also means v1.)
+SVGD_PIN_V1_STAGES = frozenset({
+    "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "SVGD_R3", "SVGD_R4", "SVGD_R5", "SVGD_R6",
+    "SVGD_R7", "SVGD_R7IPOPT", "SVGD_R8", "SVGD_R9", "SVGD_R10", "SVGD_R11", "SVGD_R12",
+    "SVGD_R13", "SVGD_R14", "SVGD_R15", "SVGD_R16", "SVGD_R17", "SVGD_R17S", "SVGD_R17P",
+    "SVGD_R18", "SVGD_R19", "SVGD_SMOKE_IIWA", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT"})
+
+
+def svgd_pin_version(stage):
+    """1 for the stages that ran the old pin (and for the stage-less R1 / SMOKE builders), else 2."""
+    return 1 if stage is None or stage in SVGD_PIN_V1_STAGES else 2
+
+
+def svgd_pinned(stage):
+    """The pinned `--set` list a stage's svgd items carry: SVGD_PINNED_V1 or SVGD_PINNED_V2."""
+    return SVGD_PINNED_V1 if svgd_pin_version(stage) == 1 else SVGD_PINNED_V2
 #: The batched clearance collision row (Thomas, 2026-10-11: "a strict improvement", and the rounds use
 #: it from now on). `clearances` evaluates the SAME functional as the default `autodiff` row from one
 #: batched, GIL-released, Drake-threaded `CollisionChecker.CalcRobotClearances` call -- values bitwise
@@ -2979,7 +3012,7 @@ SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
 SVGD_VARIANTS = {"kq": [], "knone": ["--set", "svgd_kernel=none"]}
 #: The weekend single-factor rounds (the coordinator, 2026-10-10, after the cluster smoke passed):
 #: each is R1's Panda rows at `kq` with ONE `--set` changed, as `variant: (sets, shards, starts)`.
-#: An override of a SVGD_PINNED name REPLACES the pinned value in place (one --set per name), so
+#: An override of a pinned name (svgd_pinned) REPLACES the pinned value in place (one --set per name), so
 #: `rho1e4` runs at svgd_rho=10000 and `lr1` at svgd_lr=1.0, nothing else moved. `starts` is the
 #: variant's row filter: both protocols (all four rows) unless the change cannot act on one --
 #: `initnative` changes only how the PAIRED swarm is drawn (the native rows already draw the
@@ -3138,10 +3171,30 @@ SVGD_ALLOWED_SETS = {
                  "svgd_n", "svgd_paired_init", "svgd_collision_backend"},
     "SVGD_R7IPOPT": {"correction_cost_weight", "flow_cuda_graph", "max_iter"},
 }
-#: ProgramOptions defaults the manifest RELIES ON rather than sets (checked from source text).
-SVGD_RELIED_DEFAULTS = {"svgd_n": "64", "svgd_paired_init": '"jitter"', "svgd_kernel": '"q"',
+#: ProgramOptions defaults, as source text, that the manifests RELY ON rather than set (checked from
+#: src/generic_program.py's text, torch-free). The current defaults, the 2026-10-12 pin's; the four
+#: that pin moved are also NAMED by SVGD_PINNED_V2, so only svgd_n, svgd_compile, svgd_cuda_graph and
+#: svgd_temperature are relied on by a v2 stage.
+SVGD_RELIED_DEFAULTS = {"svgd_n": "64", "svgd_paired_init": '"native"', "svgd_kernel": '"cz"',
                         "svgd_compile": "False", "svgd_cuda_graph": "False",
-                        "svgd_metric_temperature": '"off"', "svgd_temperature": "1.0"}
+                        "svgd_metric_temperature": '"on"', "svgd_temperature": "1.0"}
+#: What the v1 stages (SVGD_PIN_V1_STAGES) ran for the settings their manifests did NOT name -- the
+#: ProgramOptions defaults until 2026-10-12, in the same source-text form. Their items carry no
+#: `--set` for these, so their meaning is recorded here and nowhere else in the manifests:
+#: scripts/report_svgd.py reads it (svgd_unnamed_settings) so that the primary `kq` of a v1 round
+#: reads as kernel q, metric off, init jitter -- not as today's defaults. The selftest holds it to
+#: exactly the relied-on defaults that moved, and SVGD_PINNED_V2 to naming each of them.
+SVGD_HISTORICAL_DEFAULTS = {"svgd_kernel": '"q"', "svgd_metric_temperature": '"off"',
+                            "svgd_paired_init": '"jitter"'}
+
+
+def svgd_unnamed_settings(stage):
+    """The svgd settings a stage's items ran WITHOUT naming them, typed as the benchmark's
+    `apply_overrides` types a `--set` (strings): SVGD_HISTORICAL_DEFAULTS for a v1 stage, {} for a v2
+    stage (SVGD_PINNED_V2 names every setting that moved)."""
+    if svgd_pin_version(stage) != 1:
+        return {}
+    return {k: v.strip('"') for k, v in SVGD_HISTORICAL_DEFAULTS.items()}
 #: Allotment bases. R2: the record's Panda IPOPT mean wall per cell over ALL cells, learned /
 #: joint space (docs/status-quo-tables.md Table 3, stage REMEASURE at PROCS=8 under MPS; at
 #: PROCS=2 the learned arm should be ~1.12-1.19x faster, so this is slightly pessimistic).
@@ -3200,13 +3253,13 @@ def _svgd_flag(args, flag):
     return args[args.index(flag) + 1]
 
 
-def _svgd_method_sets(overrides):
-    """SVGD_PINNED with `overrides` (NAME=VALUE strings) applied: a pinned name is REPLACED in
-    place, any other name appended after -- exactly one --set per name."""
+def _svgd_method_sets(overrides, stage=None):
+    """The stage's pin (svgd_pinned) with `overrides` (NAME=VALUE strings) applied: a pinned name is
+    REPLACED in place, any other name appended after -- exactly one --set per name."""
     by_name = {o.split("=", 1)[0]: o for o in overrides}
     assert len(by_name) == len(overrides), f"two overrides of one name in {overrides}"
     out, used = [], set()
-    for p in SVGD_PINNED[1::2]:
+    for p in svgd_pinned(stage)[1::2]:
         name = p.split("=", 1)[0]
         out += ["--set", by_name.get(name, p)]
         used.add(name)
@@ -3217,7 +3270,7 @@ def _svgd_method_sets(overrides):
 
 
 def _svgd_variant_overrides(stage, variant):
-    """The NAME=VALUE overrides a variant carries on top of SVGD_PINNED."""
+    """The NAME=VALUE overrides a variant carries on top of its stage's pin (svgd_pinned)."""
     if stage in SVGD_ROUNDS:
         return list(SVGD_ROUNDS[stage][variant][0])
     return list(SVGD_VARIANTS[variant][1::2])
@@ -3237,7 +3290,7 @@ def _svgd_as_svgd(it, variant, wall=None, cells_token=None, stage=None):
     if stage in SVGD_ROUNDS:
         a[a.index("--arms") + 1] = SVGD_ROUND_ARMS
     a += (SVGD_EXEC + (SVGD_COLLISION if stage in SVGD_CLEARANCE_STAGES else []) + SVGD_BUDGET
-          + _svgd_method_sets(_svgd_variant_overrides(stage, variant)))
+          + _svgd_method_sets(_svgd_variant_overrides(stage, variant), stage))
     old = _svgd_flag(a, "--tag")
     head, tail = old.split("_ipopt_", 1)
     row, cells, cap, start = tail.split("_")
@@ -5259,6 +5312,26 @@ def selftest():
         if not m or m.group(1) != want:
             sv_fails.append(f"ProgramOptions.{name} default is {m.group(1) if m else '?'}, the "
                             f"manifests rely on {want}: set it explicitly in SVGD_VARIANTS")
+    ## The pin's move (2026-10-12): every svgd stage that exists is a v1 stage (it ran the old pin and
+    ## must regenerate byte-identically); SVGD_HISTORICAL_DEFAULTS names exactly the relied-on
+    ## defaults that moved; SVGD_PINNED_V2 names each of them, so no v2 stage relies on a moved one.
+    if set(SVGD_STAGES) - SVGD_PIN_V1_STAGES or SVGD_PIN_V1_STAGES - set(SVGD_STAGES):
+        sv_fails.append(f"SVGD_PIN_V1_STAGES is not exactly the stages that ran the old pin: "
+                        f"{sorted(set(SVGD_STAGES) ^ SVGD_PIN_V1_STAGES)} (a new stage takes v2; "
+                        f"never move an existing one)")
+    moved = {k for k in SVGD_RELIED_DEFAULTS if SVGD_HISTORICAL_DEFAULTS.get(k, SVGD_RELIED_DEFAULTS[k])
+             != SVGD_RELIED_DEFAULTS[k]}
+    if moved != set(SVGD_HISTORICAL_DEFAULTS):
+        sv_fails.append(f"SVGD_HISTORICAL_DEFAULTS {sorted(SVGD_HISTORICAL_DEFAULTS)} is not exactly "
+                        f"the relied-on defaults that moved, {sorted(moved)}")
+    v2_named = {x.split("=", 1)[0] for x in SVGD_PINNED_V2[1::2]}
+    if not set(SVGD_HISTORICAL_DEFAULTS) <= v2_named:
+        sv_fails.append(f"SVGD_PINNED_V2 does not name {sorted(set(SVGD_HISTORICAL_DEFAULTS) - v2_named)}")
+    if svgd_unnamed_settings("SVGD_R1") != {"svgd_kernel": "q", "svgd_metric_temperature": "off",
+                                            "svgd_paired_init": "jitter"} \
+            or svgd_unnamed_settings("SVGD_R20") != {}:
+        sv_fails.append("svgd_unnamed_settings does not read v1 rounds as kernel q / metric off / "
+                        "init jitter, or reads a v2 stage as relying on a default")
     if not re.search(r'"svgd_collision_backend": \([^)]*"clearances"', gp_src):
         sv_fails.append("ProgramOptions does not accept svgd_collision_backend='clearances'")
     ## Every round override of a CHOICE option names a value ProgramOptions lists for it (read from
@@ -5412,9 +5485,14 @@ def selftest():
                         sets.get("svgd_outer_iters")) != ("True", "True", str(SVGD_STEP_CAP)) \
                         or "max_iter" in sets:
                     sv_fails.append(f"{stage}: {it['id']} not graphed / budget not svgd's own")
-                pinned = dict(x.split("=", 1) for x in SVGD_PINNED[1::2])
-                if pinned != {"svgd_rho": "1000", "svgd_gn_lm": "10", "svgd_lr": "0.3"}:
-                    sv_fails.append(f"SVGD_PINNED is {pinned}, not the probe-chosen values")
+                pinned = dict(x.split("=", 1) for x in svgd_pinned(stage)[1::2])
+                if pinned != ({"svgd_rho": "1000", "svgd_gn_lm": "10", "svgd_lr": "0.3"}
+                              if svgd_pin_version(stage) == 1 else
+                              {"svgd_kernel": "cz", "svgd_rho": "100000",
+                               "svgd_metric_temperature": "on", "svgd_paired_init": "native",
+                               "svgd_gn_lm": "10", "svgd_lr": "0.3"}):
+                    sv_fails.append(f"{stage}: pin {pinned} is not its version's "
+                                    f"(v{svgd_pin_version(stage)})")
                 variant = tag.rsplit("_", 1)[1]
                 variants_seen.add(variant)
                 known = SVGD_ROUNDS[stage] if stage in SVGD_ROUNDS else SVGD_VARIANTS

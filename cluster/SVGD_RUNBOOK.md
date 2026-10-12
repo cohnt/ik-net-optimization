@@ -52,10 +52,13 @@ the stage's item set.
 - `svgd_rho=1000 svgd_gn_lm=10 svgd_lr=0.3`, pinned explicitly on every svgd item (SMOKE, R1,
   R1K). These are the values the local probe chose. The code staged on the cluster (42a5893)
   predates them: its `svgd_gn_lm` default is 1e-2. The tree cannot be restaged while PAPER runs, so
-  the manifests carry them (`SVGD_PINNED`), and the selftest fails if any svgd item lacks them.
+  the manifests carry them (`SVGD_PINNED_V1`; a stage from R20 on takes `SVGD_PINNED_V2`, the 2026-10-12 pin), and the selftest fails if any svgd item lacks them.
 - **Nothing else.** `svgd_n`, `svgd_paired_init` and every other svgd option stay at their defaults.
-  The selftest reads `svgd_n = 64` and `svgd_paired_init = "jitter"` out of
-  `src/generic_program.py`'s text, and fails if either default moves.
+  The selftest reads the relied-on defaults out of `src/generic_program.py`'s text, and fails if
+  one moves. (2026-10-12: the defaults moved to the new pin -- kernel cz, rho 1e5, metric on, init
+  native. The v1 stages' unnamed kernel q / metric off / init jitter are recorded in
+  `SVGD_HISTORICAL_DEFAULTS`; their manifests are unchanged, and a stage from R20 on names every
+  moved setting through `SVGD_PINNED_V2`.)
 
 **Maintenance: compute is down Mon 2026-10-12 evening to Wed 10-14 morning.** Running jobs are
 killed and queued jobs do not survive. Everything must finish before Monday evening. If the window
@@ -229,7 +232,7 @@ both arms and was cancelled unrun; the learned-only manifests were resubmitted a
 **Shared settings.** All items use the record flags and PROCS=2 with no MPS. They are graphed and
 carry the lifted step cap.
 
-**Pinned values.** Each item carries `svgd_rho=1000 svgd_gn_lm=10 svgd_lr=0.3` (`SVGD_PINNED`), plus
+**Pinned values.** Each item carries `svgd_rho=1000 svgd_gn_lm=10 svgd_lr=0.3` (`SVGD_PINNED_V1`; a stage from R20 on takes `SVGD_PINNED_V2`, the 2026-10-12 pin), plus
 **one** `--set` per variant. An override of a pinned name **replaces** that value in place, so every
 item names each option exactly once. The selftest holds this, along with:
 
@@ -277,7 +280,7 @@ staged tree must hold them first.
 
 These continue the ladder into phase 2, stripping out what is not important (the coordinator and
 Thomas, 2026-10-11 overnight: *"You can use local and cluster compute"*). Each rung attributes **one**
-setting of the primary `kq`. The conventions are those of R3-R5: learned arm only, `SVGD_PINNED`
+setting of the primary `kq`. The conventions are those of R3-R5: learned arm only, `SVGD_PINNED_V1`
 plus one override that replaces a pinned name in place, the record flags, graphed, the lifted step
 cap, and PROCS=2 with no MPS. R7, the seed control, needed IPOPT twins on a new grid and waited for
 Thomas. He approved it on 2026-10-11, and it has its own section below.
@@ -409,7 +412,7 @@ different Drake build. Record metadata says which: `drake_version_txt` reads
 
 R11 attributes the primary's handling of a runaway (`|q|_inf > svgd_resample_q_max`) or non-finite
 particle, `svgd_resample` (2026-10-11). The conventions are R4's: the four Panda rows, learned arm
-only, N = 64, `SVGD_PINNED` plus the one override, 24 shards, both protocols, PROCS=2 with no MPS.
+only, N = 64, `SVGD_PINNED_V1` plus the one override, 24 shards, both protocols, PROCS=2 with no MPS.
 
 | manifest | variant | the one change against `kq` | what it attributes |
 | --- | --- | --- | --- |
@@ -537,7 +540,7 @@ variant-vs-variant tables do not pair across grids. They print a note line inste
 Thomas approved three new rounds together: *"Launch them all, we don't want to waste GPU time."*
 All of them follow the R11 / R12 / SMOKE_IIWA / R6-R10 conventions:
 
-- `SVGD_PINNED` plus each variant's overrides. An override of a pinned name replaces it in place.
+- `SVGD_PINNED_V1` plus each variant's overrides. An override of a pinned name replaces it in place.
 - The record flags, graphed mode and the lifted step cap.
 - 24 shards for every 480-cell row, and PROCS=2 with no MPS.
 - **Every svgd item carries the clearance row** (`svgd_collision_backend=clearances`). So every one
@@ -710,7 +713,7 @@ Panda rows with grasp cost below IPOPT's learned arm. Two questions remain, and 
 until the 10-12 maintenance, so they are queued now (Thomas, 2026-10-11: *"Launch them all, we
 don't want to waste GPU time"*). The conventions are R13 / R14's exactly:
 
-- `SVGD_PINNED` plus each variant's overrides, the record flags, graphed mode, the lifted step cap.
+- `SVGD_PINNED_V1` plus each variant's overrides, the record flags, graphed mode, the lifted step cap.
 - Learned arm only, 24 shards per 480-cell run, PROCS=2 with no MPS.
 - **Every svgd item carries the clearance row**, so every manifest goes in with `DRAKE_ENV=crc`.
 
@@ -837,7 +840,7 @@ After R13 / R14 / R17 / R17S / R18 the candidate fielded pin is `kczrho1e5`: `sv
 cluster is idle until the 10-12 evening maintenance, so both are queued now (Thomas: *"we don't
 want to waste GPU time"*). The conventions are R17 / R17S's exactly:
 
-- `SVGD_PINNED` plus the variant's overrides, the record flags, graphed mode, the lifted step cap.
+- `SVGD_PINNED_V1` plus the variant's overrides, the record flags, graphed mode, the lifted step cap.
 - Learned arm only, 24 shards per 480-cell run, PROCS=2 with no MPS.
 - **Every svgd item carries the clearance row**, so both manifests go in with `DRAKE_ENV=crc`.
 - `kczrho1e5` is declared two-factor in both rounds exactly as in R14 / R17 / R17S, and the selftest

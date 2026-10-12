@@ -732,16 +732,22 @@ def stage_catalogue(family="SVGD"):
                 elif stage in G.SVGD_ROUNDS:
                     assert t["variant"] in G.SVGD_ROUNDS[stage], f"{tag}: not a variant of {stage}"
             sets = manifest_sets(a)
+            ## What the run RAN, not only what it named: a v1 stage (the old pin) left kernel q,
+            ## metric off and init jitter to the then-defaults, which have since moved
+            ## (gen_manifest's SVGD_HISTORICAL_DEFAULTS); the IPOPT twins carry no svgd setting.
+            settings = (sets if t["solver"] != "svgd" else
+                        {**G.svgd_unnamed_settings(stage), **sets})
             arms = tuple(_flag(a, "--arms").split(","))
             assert arms and set(arms) <= set(ARMS), f"{tag}: --arms {_flag(a, '--arms')}"
             column = t["variant"] + ("" if seed == G.SVGD_SEED else f"{SEED_SEP}{seed}")
-            info = dict(t, manifest=stage, sets=sets, arms=arms, seed=seed, column=column)
+            info = dict(t, manifest=stage, sets=sets, settings=settings, arms=arms, seed=seed,
+                        column=column)
             prev = runs.get(tag)                  # shards of one run share its base tag
             assert prev is None or prev == info, f"{tag}: two items disagree about the run"
             runs[tag] = info
             v = variants.setdefault(t["robot"], {}).setdefault(
-                column, dict(round=t["round"], manifest=stage, sets=sets, arms=arms, seed=seed,
-                             variant=t["variant"]))
+                column, dict(round=t["round"], manifest=stage, sets=sets, settings=settings,
+                             arms=arms, seed=seed, variant=t["variant"]))
             assert (v["manifest"], v["sets"], v["arms"]) == (stage, sets, arms), \
                 f"{t['robot']} {column} runs different settings or arms in {v['manifest']} and {stage}"
     ## Every svgd run pairs with an IPOPT twin on ITS OWN grid: same robot, rung, row, start, seed.
@@ -777,10 +783,13 @@ def stage_primary():
 
 
 def setting_diff(variants, variant, primary):
-    """What `variant` sets differently from `primary`, named in full."""
+    """What `variant` RAN differently from `primary`, named in full: its `settings` -- the `--set`s
+    plus, on a v1 stage, the then-defaults it did not name (gen_manifest's svgd_unnamed_settings), so
+    a v1 round's `kq` reads as kernel q / metric off / init jitter whatever today's defaults are."""
     if variant == primary:
         return "the primary"
-    p, s = variants[primary]["sets"], variants[variant]["sets"]
+    pick = lambda v: variants[v].get("settings", variants[v]["sets"])
+    p, s = pick(primary), pick(variant)
     out = [f"{k}={s[k]!r}" + (f" (primary {p[k]!r})" if k in p else "")
            for k in s if k not in p or p[k] != s[k]]
     out += [f"{k} unset (primary {p[k]!r})" for k in p if k not in s]

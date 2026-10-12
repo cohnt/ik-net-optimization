@@ -144,19 +144,19 @@ are reported as the collision row's share of the wall.
 | `svgd_n` | 64 | N particles (1 = the single-particle control) |
 | `svgd_dtype` | `float32` | swarm precision (`float64` a control) |
 | `svgd_seed` | 0 | particle draws, mixed with a CRC of the initial guess |
-| `svgd_paired_init` | `jitter` | 11: `jitter` or `native` |
+| `svgd_paired_init` | `native` (fielded 2026-10-12; was `jitter`) | 11: `jitter` or `native`; particle 0 is the shared guess exactly under either |
 | `svgd_jitter` | 0.1 | 11: jitter sigma in the normalised coordinates |
 | `svgd_temperature` | 1.0 | 2: T, fixed |
 | `svgd_lr` | 0.3 | 4: a fraction of the metric's step: `svgd_lr (H + delta I)^-1 phi` (gn) or `svgd_lr / \|\|H\|\|_F` (identity). Chosen 2026-10-10 by the screen at rho 1e3, delta 10 on 6 grasp + 6 pose Panda cells, most feasible cells with ties to the larger lr: lr 0.3 solved 24/24 (learned 12/12, joint space 12/12) resampling 0.07 of N per check, lr 1.0 solved 22/24 resampling 0.12 |
 | `svgd_metric` | `gn` | 4: `gn` (Stein variational Newton) or `identity` |
-| `svgd_metric_temperature` | `off` | 4: `off` (fielded): the metric is H, so the drive `-grad L / T` is not matched by it and the Newton step scales as 1/T. `on`: the metric is H / T, `dy_i = svgd_lr (H_i / T + delta I)^-1 phi_i`, so T sets only the repulsion-to-drive ratio; under `identity` the step bound becomes `\|\|H_i\|\|_F / T` (the analogue, not refused). Both are swept and neither is "the" definition (Thomas, 2026-10-11). `on` at T = 1 is `off` bit for bit |
+| `svgd_metric_temperature` | `on` (fielded 2026-10-12; was `off`) | 4: `off`: the metric is H, so the drive `-grad L / T` is not matched by it and the Newton step scales as 1/T. `on`: the metric is H / T, `dy_i = svgd_lr (H_i / T + delta I)^-1 phi_i`, so T sets only the repulsion-to-drive ratio; under `identity` the step bound becomes `\|\|H_i\|\|_F / T` (the analogue, not refused). Both are swept and neither is "the" definition (Thomas, 2026-10-11). `on` at T = 1 is `off` bit for bit |
 | `svgd_gn_lm` | 10 | 4: delta, the Levenberg damping of the GN metric. Chosen 2026-10-10 by the most feasible cells (learned + joint space) on 6 grasp + 6 pose Panda cells, ties to the larger: delta 1e-2 / 1 / 10 gave 2 / 3 / 6 (1e-4 diverged); then svgd_lr 1.0 / 0.3 / 0.1 at delta 10 gave 6 / 0 / 0 -- all at rho 10, and the 0.3 / 0.1 cells were mostly `error` records from the since-fixed eigvalsh crash, so that lr reading is void; `svgd_lr` was chosen later by the screen at rho 1e3 (its row) |
 | `svgd_row_units` | `natural` | 1: `natural` or `tolerance` (the control) |
 | `svgd_row_length_scale` | 1.0 | 1: metres per radian on the orientation-type rows |
-| `svgd_kernel` | `q` | 5: the RBF's space, median bandwidth per factor (floored by `svgd_bandwidth_floor` in that factor's units). `q` (fielded): the configuration, repulsion pulled back to y through the flow's VJP. `x`: all of y = x / s, one bandwidth, repulsion directly in y (on joint space: q over its half-range). `z` / `c`: the latent / conditioning-pose block of y alone, repulsion on that block only. `cz`: the product of the `c` and `z` RBFs, each its own bandwidth (an anisotropic RBF on [c; z]); repulsion the sum of the two blocks' terms. `qz`: the product of the `q` RBF (pulled back) and the `z` RBF (direct), each its own bandwidth. `pose`: the task frame's (`program.frame`) [position; quaternion wxyz, w >= 0], pulled back through d pose / d q -- `Jp`, and `1/2 [-v^T; w I - [v]x] Jw` for the quaternion -- then the VJP. `none`: no interaction. `z` / `c` / `cz` / `qz` are learned-only, refused on joint space at solver construction. Recorded per cell: `kernel`, `bandwidths` at the last step, `feasible_spread_kernel` (the feasible particles' median pairwise distance in the kernel's own space and units; a 2-list for `cz` / `qz`). `q` reproduces the previous step bit for bit (a 30-step solve, both tasks x both arms x eager / compiled / graphed, against arrays saved at 5f15f55, 2026-10-11) |
+| `svgd_kernel` | `cz` (fielded 2026-10-12; was `q`) | 5: the RBF's space, median bandwidth per factor (floored by `svgd_bandwidth_floor` in that factor's units). `q`: the configuration, repulsion pulled back to y through the flow's VJP. `x`: all of y = x / s, one bandwidth, repulsion directly in y (on joint space: q over its half-range). `z` / `c`: the latent / conditioning-pose block of y alone, repulsion on that block only. `cz`: the product of the `c` and `z` RBFs, each its own bandwidth (an anisotropic RBF on [c; z]); repulsion the sum of the two blocks' terms. `qz`: the product of the `q` RBF (pulled back) and the `z` RBF (direct), each its own bandwidth. `pose`: the task frame's (`program.frame`) [position; quaternion wxyz, w >= 0], pulled back through d pose / d q -- `Jp`, and `1/2 [-v^T; w I - [v]x] Jw` for the quaternion -- then the VJP. `none`: no interaction. `z` / `c` / `cz` / `qz` are learned-only, refused on joint space at solver construction. Recorded per cell: `kernel`, `bandwidths` at the last step, `feasible_spread_kernel` (the feasible particles' median pairwise distance in the kernel's own space and units; a 2-list for `cz` / `qz`). `q` reproduces the previous step bit for bit (a 30-step solve, both tasks x both arms x eager / compiled / graphed, against arrays saved at 5f15f55, 2026-10-11) |
 | `svgd_bandwidth_floor` | 0.05 | 5: floor on the median bandwidth |
 | `svgd_constraint_inside_kernel` | False | 12: the literal form, an A/B |
-| `svgd_rho` | 1000 | 2, 4: the penalty -- one scalar, fixed, shared. Chosen 2026-10-10 on 6 grasp + 6 pose Panda cells at delta 10, lr 1: rho 10 / 1e3 / 1e4 / 1e5 solved 5 / 12 / 12 / 12 learned and 0 / 10 / 9 / 11 joint space; 1e3 is the smallest that works and resamples least (0.08-0.12 of N per check against 0.17-0.21 at 1e5). With the Newton metric a large rho no longer costs conditioning. At rho = 10 the repulsion was 0.97 of the step and swamped the drive (N = 1 solved grasp 6/6 where N = 64 solved 0/6) |
+| `svgd_rho` | 1e5 (fielded 2026-10-12 with `cz`, R14-R19; was 1000) | 2, 4: the penalty -- one scalar, fixed, shared. The 1000 was chosen 2026-10-10 on 6 grasp + 6 pose Panda cells at delta 10, lr 1: rho 10 / 1e3 / 1e4 / 1e5 solved 5 / 12 / 12 / 12 learned and 0 / 10 / 9 / 11 joint space; 1e3 is the smallest that works and resamples least (0.08-0.12 of N per check against 0.17-0.21 at 1e5). With the Newton metric a large rho no longer costs conditioning. At rho = 10 the repulsion was 0.97 of the step and swamped the drive (N = 1 solved grasp 6/6 where N = 64 solved 0/6) |
 | `svgd_dual_lr` | None (= `svgd_rho`) | 6: alpha, the dual-ascent step; 0 = pure quadratic penalty. The default is pending the alpha ladder |
 | `svgd_multiplier_max` | 1e4 | 6: multiplier clip |
 | `svgd_inner_iters` | 10 | 6, 7, 8: K, the cadence of the dual step, resampling and the stop rule |
@@ -165,7 +165,7 @@ are reported as the collision row's share of the wall.
 | `svgd_resample` | `native` | 7: a runaway or non-finite particle is redrawn (`native`), dropped (`drop`), or, if a finite runaway, kept stepping (`keep`, which still drops a non-finite particle). Dropping is a static-shape live weight in the AL state. Round R11 |
 | `svgd_stop_patience` | 5 | 8 |
 | `svgd_stop_rel` | 1e-3 | 8 |
-| `svgd_recheck_topk` | 10 | 9 |
+| `svgd_recheck_topk` | 10 | 9; the same float64 re-check gates a stall stop (the gate-edge rule, below RULINGS 2026-10-12) |
 | `svgd_time_reserve` | 0.1 | 8: fraction of the cap kept for selection and re-check |
 | `svgd_warmup`, `svgd_warmup_iters`, `svgd_warmup_elite` | `none`, 10, 0.1 | 11: the CEM phase |
 | `svgd_compile`, `svgd_cuda_graph` | False, False | execution: the split step eager / compiled / graphed |
@@ -1538,6 +1538,43 @@ as they land. **Wall from these rounds is not comparable to R1-R5's**, and a var
 `kq` carries the collision backend as a second difference (seconds, and through the clock possibly
 success); the clearance row evaluates the same functional bitwise, so success differences at the
 clock are the only channel.
+
+### Gate-edge rule (2026-10-12)
+
+Thomas, on the proposal: *"Yes, I like the proposed fix."* **A stall stop stands only once the
+float64 Drake re-check passes.** When the stop rule would stop with reason `converged`, the solver
+runs the end selection's own re-check there and then (`SvgdSolver._select`: the top
+`svgd_recheck_topk` particles feasible on the batched rows, by objective, each through
+`prog.EvalBinding` in float64). If a candidate passes, the swarm stops and that selection IS the
+end selection -- one re-check, as before, never two. If none passes, the swarm does not stop: the
+stall counter resets, the solve's internal feasibility level `feas_level` -- the per-row test
+`v <= feas_level`, 1.0 at the start, used by the stop rule, the trace and the selection's mask
+alike -- is multiplied by 0.9 (0.9, 0.81, ...), the failure is recorded, and the swarm continues
+to the next stall, where the re-check runs again. The wall-clock, step-cap and `all_dead` stops are
+unchanged (select at the end, at the current level). Recorded per cell: `n_recheck_failures`,
+`feas_level` at stop (both in `_SVGD_DETAIL_KEYS`), `solver_feasible` / `drake_feasible` as
+before, and each refused stop in `extras["recheck_failures"]`.
+
+**Why.** Five cells in 11,520 stopped converged on a float32 particle inside the 1e-4 gate that
+float64 Drake read just outside it, and each had exactly ONE float32-feasible particle, so the
+re-check had nothing else to pass. A fixed margin (a 0.9999e-4 gate inside the swarm) covers none
+of them: the float32-vs-float64 gap is the network's float32 error amplified by the chart's gain,
+0.05-6.5% of the gate, not a rounding constant. Continuing the swarm at a tighter level lets it
+fill in particles that pass. **No per-iteration cost** (Thomas: *"This is something that has
+happened 5 times in 11,520 -- incredibly rare! And we're going to add a 1 ms cost to every outer
+iteration?"*): nothing float64 runs except at a stop event, and a cell whose first re-check passes
+is bit-identical to the pre-rule solver (`tests/test_svgd_pin_and_gate.py`, against arrays captured
+at d200121; a forced first failure continues, records one failure, stops at level 0.9 and returns
+a Drake-feasible point).
+
+**The pin moved with it** (items 1 and 2 of the ruling): `ProgramOptions` defaults are now
+`svgd_kernel=cz`, `svgd_rho=1e5`, `svgd_metric_temperature=on`, `svgd_paired_init=native` (N = 64,
+T = 1, lr = 0.3, delta = 10, K = 10, resample `native` and the stop rule unchanged). `cz` is
+learned-only, so a joint-space svgd solve must now name its kernel (e.g. `q`). Every existing
+manifest (R1-R19, the smokes) ran the old pin, regenerates byte-identically
+(`SVGD_PINNED_V1`; kernel q / metric off / init jitter were never named, and
+`SVGD_HISTORICAL_DEFAULTS` records them for the reporter), and a stage from R20 on takes
+`SVGD_PINNED_V2`, which names all four moved settings.
 
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
