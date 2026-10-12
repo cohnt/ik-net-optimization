@@ -105,7 +105,11 @@ STARTS = ("paired", "native")
 ## form (the whole AL gradient inside the kernel average), the native swarm init, and the CEM
 ## warm-up.
 PRIMARY = "al64"
-_BASE = dict(svgd_n=64, svgd_kernel="q", svgd_constraint_inside_kernel=False, svgd_warmup="none")
+## rho and the metric form are named too since the defaults moved to the 2026-10-12 pin (rho 1e5,
+## H / T): this matrix is the 2026-10-10 smoke's, and its tags (which do not carry them) must keep
+## meaning what they meant. The paired init is `--paired-init`, named in every tag.
+_BASE = dict(svgd_n=64, svgd_kernel="q", svgd_constraint_inside_kernel=False, svgd_warmup="none",
+             svgd_rho=1000.0, svgd_metric_temperature="off")
 SVGD_BASES = {
     "al1": dict(_BASE, svgd_n=1),
     "al64none": dict(_BASE, svgd_kernel="none"),

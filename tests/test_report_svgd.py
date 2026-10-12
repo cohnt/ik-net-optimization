@@ -652,6 +652,19 @@ def test_stage_kernel_and_two_factor_rounds():
         assert panda[v]["round"] == "R14" and panda[v]["sets"] == {**kq, **CLR, **over}, v
     assert "svgd_metric_temperature='on'" in R.setting_diff(panda, "kzHonT0p1", "kq")
     assert "svgd_rho=100000 (primary 1000)" in R.setting_diff(panda, "kzrho1e5", "kq")
+    ## The pin moved on 2026-10-12 (defaults now cz / H/T / native init), but every round here is a v1
+    ## stage: what it did not name, it ran at the THEN-defaults (gen_manifest's
+    ## SVGD_HISTORICAL_DEFAULTS), and the diff must say so -- `kq` is kernel q, metric off, init jitter.
+    assert {k: panda["kq"]["settings"][k] for k in ("svgd_kernel", "svgd_metric_temperature",
+                                                    "svgd_paired_init")} == \
+        {"svgd_kernel": "q", "svgd_metric_temperature": "off", "svgd_paired_init": "jitter"}
+    assert "svgd_kernel" not in panda["kq"]["sets"], "the manifests never named kernel q"
+    assert "svgd_kernel='cz' (primary 'q')" in R.setting_diff(panda, "kcz", "kq")
+    assert "svgd_metric_temperature='on' (primary 'off')" in R.setting_diff(panda, "kzHonT0p1", "kq")
+    assert "svgd_paired_init='native' (primary 'jitter')" in \
+        R.setting_diff(panda, "kczrho1e5initnative", "kq")
+    assert "svgd_kernel" not in R.setting_diff(panda, "kzrho1e5", "kz"), "both z: no kernel diff"
+    assert all("settings" in v for v in panda.values())
 
 
 def test_stage_screw_and_soft_blocks():
