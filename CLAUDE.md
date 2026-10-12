@@ -895,8 +895,16 @@ clearances venv, the one stated exception to ONE DRAKE):**
   equal cost (R18). **This is the fielding candidate; fielding is Thomas's decision.**
 - **Runtime on the clearance row is 1-3 s mean per cell on the rigid arms** against IPOPT's 1-11 s,
   below IPOPT on most rows; joint-space IPOPT restarts within svgd's own wall solve 55-65% of grasp
-  and ~90% of pose cells. **The soft PCS arm is the exception** (10-26 s, eager forward step, 10x
-  per step): TODO, rewrite the PCS and GVS forward steps in torch.
+  and ~90% of pose cells. **The soft PCS arm was the exception** (10-26 s on R16/R17P: its rows
+  went through autograd, eager). **Since 2026-10-12 it takes the split step** (merge a2a5569):
+  its row Jacobians are taken w.r.t. the configuration by forward mode through the exact strain
+  map (`BatchedProgram._kinematics_cfg_jacobians`, one vmapped `jvp` per coordinate), the
+  collision gradient pulled back through `d q_plant / d cfg`; parity with autograd 1e-15
+  (float64), the rigid arms' step bitwise unchanged, compiled and graphed. On the laptop the
+  non-collision part of a step fell 31-34 ms -> 1.7-2.4 ms (13-18x) and the whole step 1.45-1.71x,
+  because the local autodiff collision row is then 95-99% of it; the cluster number (clearance
+  row) comes from R20. In eager mode the new step is slower than autograd (dispatch-bound), so it
+  pays only compiled.
 - **Mechanisms settled**: the kernel-off swarm keeps descending to the clock (R1K); the q-space
   kernel spreads particles OFF the manifold (few feasible, 2x cost) where a latent kernel keeps them
   on it; the paired-start penalty is the jittered swarm (drawing the paired swarm from the native
@@ -930,11 +938,11 @@ the selection) is tightened x0.9, and it re-tests at the next stall. Recorded pe
 step for a 0.04% event) and a fixed margin.
 
 **Still open**: R20, the record rows at the fielded pin (four robots x two tasks x two protocols,
-learned arm; joint-space svgd ablation at kernel q), after the 2026-10-12..14 maintenance; the
-soft PCS fast step (branch `svgd-pcs`: configuration-space Jacobians by forward mode through the
-exact strain map, the collision pullback through the plant Jacobian); the GVS arm under svgd is
-DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU, and a dlpack bridge would
-not remove the batched root-find's cost; what to do with R14's combinations.
+learned arm; joint-space svgd ablation at kernel q), after the 2026-10-12..14 maintenance, on a
+RESTAGED tree (the staged 7ca45a4 predates the pin, the gate-edge rule and the soft PCS step);
+the GVS arm under svgd is DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU,
+and a dlpack bridge would not remove the batched root-find's cost; what to do with R14's
+combinations.
 
 ## Results: the campaign of record
 
