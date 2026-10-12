@@ -12,6 +12,11 @@ the only host work -- Drake's exact collision row, in this process -- between th
                     the GN solve `solve_ex` (capturable under the cuSOLVER pin) or
                     svgd_lr / ||H||_F -- and the clamp onto the true bounds (`step_from`)
 
+On a robot whose plant vector is not the padded configuration (the soft PCS arm, since
+2026-10-12) stage 2's kinematics are `BatchedProgram._kinematics_cfg_jacobians`: the frame
+Jacobians and `J_plant = d q_plant / d cfg` by forward mode through the robot's exact torch
+map, and stage 3 pulls the collision row's plant gradient back through `J_plant`.
+
 Stage 2 does not depend on the collision row, so it is launched before the Drake loop runs;
 on the GPU it executes while the host is in Drake (asynchronously in graphed mode). Nothing
 eigen-related is in the step: the exact lambda_max(H) is a diagnostic the solver takes eagerly
@@ -570,7 +575,7 @@ def stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S):
     live = live_mask(sc, S)
     pose = pose_jac = None
     if sc.kernel == "pose":
-        (quat, pos), (Jp, Jw) = kin[1], kin[3]
+        (quat, pos), (Jp, Jw) = kin[1], kin[3][:2]
         pose, pose_jac = pose_and_jacobian(quat, pos, Jp, Jw, bp.ndof)
     K, R, kernel_on, bw = kernel_terms(sc, cfg, finite, X, live, tg=tg, pose=pose,
                                        pose_jac=pose_jac)
