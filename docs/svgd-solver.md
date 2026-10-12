@@ -1437,6 +1437,36 @@ arm as on the others, and nothing in success or stop behaviour pays for it. **Th
 rows, one setting change (c x z + rho = 1e5): 480 / 480 everywhere, cost below the IPOPT learned arm
 on 11 of 12 rows** (the twelfth, Panda grasp native, 1.06x).
 
+### R18: a third factor on the candidate pin (`kczrho1e5n128`, `kczrho1e5initnative`), measured 2026-10-12
+
+**Jobs 5895831-34, 144 items, clearance row, 0 error cells.** Declared three-factor stacks on the
+Panda: c x z + rho = 1e5 + N = 128 (four rows) and c x z + rho = 1e5 + the native-draw paired init
+(paired rows only, as R10).
+
+| variant | success | cost on shared cells (gp / gn / pp / pn) | outer steps | feasible particles | redraws / N (gp / pp) | mean wall s |
+| --- | --- | --- | --- | --- | --- | --- |
+| `kczrho1e5` (R14) | 480 x 4 | 3.39 / 4.93 / 4.62 / 5.14 | 21 / 13 / 10 / 12 | 57 / 54 / 47 / 47 of 64 | 1.06 / 1.06 | 2.66 / 1.95 / 1.06 / 1.31 |
+| `kczrho1e5n128` | 480 x 4 | 3.26 / 4.55 / 4.46 / 4.89 | 27 / 13 / 10 / 12 | 120 / 111 / 100 / 101 of 128 | 1.06 / 1.06 | 4.61 / 2.71 / 1.39 / 1.81 |
+| `kczrho1e5initnative` | 480 / -- / 480 / -- | 3.37 / -- / 4.63 / -- | 19 / -- / 9 / -- | 58 / -- / 47 / -- | **0.05 / 0.08** | 2.51 / -- / 0.98 / -- |
+
+**Lead: neither third factor moves success, and they separate on what they cost.** N = 128 buys
+4-8% of cost for 1.4-1.7x the wall -- the same verdict as R14's z + N = 128: once the latent kernel
+fills the swarm (94% of particles feasible at either N), a bigger swarm only costs steps. **The
+native-draw paired init buys nothing in cost (3.37 against 3.39) and removes the churn**: redraws
+fall from 1.06 to 0.05 per particle on grasp paired and from 1.06 to 0.08 on pose paired, outer
+steps 21 -> 19 and 10 -> 9, wall 2.66 -> 2.51 and 1.06 -> 0.98 s, feasible count unchanged (58 / 47).
+So rho = 1e5's one visible price under the candidate pin -- every particle redrawn about once per
+paired cell -- is entirely the jittered start, and the R10 reading holds under the new kernel: the
+paired protocol's swarm should be drawn from the native distribution with particle 0 at the shared
+guess. Both stacks converged on every cell.
+
+**Where this leaves the pin.** The candidate is c x z + rho = 1e5 at N = 64, with the native-draw
+paired init as the paired protocol's swarm; H / T as the metric form is a definition change that is
+bit-identical at T = 1 and leaves T = 1 in the pin. Measured on three robots and twelve rows at
+480 / 480 with cost below the IPOPT learned arm on eleven. Open: the soft PCS arm has not run the
+new kernel; a seed-2 replication of the candidate has not run; and fielding is Thomas's decision,
+after which the record rows are re-run at the new pin.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
