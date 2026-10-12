@@ -1186,6 +1186,64 @@ conditioning commit's reasoning). It is a candidate for the fielded pin once it 
 kernel space -- the stall it shortens is the q-kernel's, and under a latent kernel the swarm already
 converges (stage A); the round should carry rho as a factor rather than assume the two add.
 
+### R10: the paired swarm drawn from the native distribution (`initnative`), paired rows only, measured 2026-10-11
+
+**Jobs 5892420-23, 48 items, clearance row, 0 error cells; `--variants ...,initnative`.** One change:
+`svgd_paired_init` `jitter` -> `native`: particle 0 still sits exactly at the shared `q_init` in the
+arm's own variables, but the other 63 are drawn from the arm's native start distribution (`c` at the
+target pose, `z ~ N(0, I)`, `q_c = 0`) instead of jittered around the guess. The native rows are
+unchanged by construction and were not run.
+
+| row | success | cost on shared cells (`kq` / `initnative`) | outer steps | feasible particles | redraws / N | mean wall s |
+| --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | 480 | 8.38 / **5.78** | 24 / **10** | 6 / **17** | 0.33 / **0.00** | 12.3 (autodiff) / **1.00** |
+| pose paired | 480 | 5.61 / **4.87** | 13 / **10** | 21 / **31** | 0.75 / **0.02** | 6.6 (autodiff) / **1.05** |
+
+**Lead: the paired-start penalty on the learned arm is the jittered swarm, and the native draw
+removes it.** Success is a tie (480 / 480 either way, the same verdicts against the IPOPT twin), but
+every other column moves to the native rows' values or better: grasp paired cost 8.4 -> 5.8 (the
+native row's `kq` is 8.4; this is the lowest grasp cost of any single-factor variant, below
+`rho1e5`'s 5.9), outer steps 24 -> 10, feasible particles 6 -> 17, and the redraw rate from a third
+of the swarm per cell to zero. The whole R11 story -- the paired swarm running away and surviving
+only by the redraw -- is a property of the 63 jittered particles, which start where the shared guess
+is (a random configuration, far from any grasp) and run into the high-gain regions together; drawn
+from the native distribution they start where the flow puts a grasp of this mug and almost never
+run away. Particle 0 keeps the protocol honest: the shared guess is in the swarm, exactly, and the
+record says how often it was the particle returned (`selected idx`).
+
+**What it means for the two paper columns.** The paired protocol asks each arm to start from the
+same configuration; under a particle method "the same start" is one particle. `initnative` is the
+natural reading of the paired protocol for a swarm, and it costs nothing on success. Fielding it
+would make the two protocols nearly identical for the learned arm under svgd (10 / 10 outer steps,
+1.0 / 1.0 s, 17 / 13 feasible), so the paired row would stop carrying information of its own --
+which is itself the finding: the formulation-plus-swarm does not depend on the start. Thomas's
+call whether the fielded paired init becomes `native` (phase 2).
+
+### R12: the iiwa (`n4`), the primary `kq` in a second context, measured 2026-10-11
+
+**Jobs 5892397-400, 96 items, clearance row, 0 error cells; `scripts/report_svgd.py --stage SVGD --rows
+iiwa`.** The fielded method with zero overrides on the iiwa14 at its adopted chart `n4`, the four
+rows at 480 cells, paired against the record's IPOPT learned arm from stage PAPER (the iiwa's
+twin, same cells and scene). The joint-space smoke (SVGD_SMOKE_IIWA, 4 cells per row, 60 s) ran
+first: learned 4 / 4 everywhere, joint space 3 / 3 / 4 / 4, no error cells.
+
+| row | learned svgd | learned IPOPT (PAPER) | verdict | cost (svgd / IPOPT) | outer steps | feasible | mean wall s (svgd / IPOPT) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | 480 | 479 (joint space 453) | tie | 8.6 / 7.6 | 19 | 6 | 1.46 / 6.27 |
+| grasp native | 480 | 480 (453) | tie | 10.9 / 8.0 | 13 | 12 | 1.03 / 2.68 |
+| pose paired | 480 | 406 (312) | **svgd** +74 / -0, p = 1e-22 | **5.4** / 9.0 | 14 | 25 | 1.07 / 1.61 |
+| pose native | 480 | 462 (312) | **svgd** +18 / -0, p = 8e-6 | **7.3** / 9.0 | 14 | 28 | 1.27 / 0.67 |
+
+**Lead: the Panda picture transfers to the iiwa unchanged.** 480 / 480 on all four rows, ties on
+grasp (the IPOPT twin is at 479-480 there) and wins on pose where IPOPT leaves 18-74 cells. The
+grasp cost premium is smaller than the Panda's (1.1-1.4x against 2x) and on pose svgd is cheaper
+than IPOPT by 20-40%. Outer steps (13-19), feasible particles (6-28) and redraw rates (0.02-0.94
+per particle, highest on pose paired) are the Panda's numbers within noise; every cell converged on
+its own stop rule. Wall on the clearance row is 1.0-1.5 s, below the IPOPT twin on three rows (the
+iiwa IPOPT learned arm is slow on grasp paired, 6.3 s) and above it only on pose native (1.27
+against 0.67). The iiwa's runaway population (the gain-ceiling finding of the record) did not
+surface: the per-particle redraw handles it as on the Panda, and no row needed the clock.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
