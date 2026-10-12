@@ -71,8 +71,12 @@ DERIVATIVES: THE ONLY BACKWARD IS THROUGH THE FLOW. On the fielded robots
 configuration is closed form -- the task rows from the frame's geometric Jacobian, the
 collision row from the evaluator's own stored gradient, the joint-limit rows the identity, the
 region rows and the costs in `x` directly -- and the flow's `J_q` is one vmapped `jacrev`.
-A robot behind its own `BodyPoseProvider` falls back to autograd through its kinematics
-(`_Target.analytic = False`, `_step_eager`).
+The soft PCS arm, whose plant vector is not its configuration, takes the same path with its
+task-row and plant Jacobians taken w.r.t. the configuration by forward mode through its exact
+strain map, the collision gradient pulled back through `d q_plant / d cfg`
+(`BatchedProgram._kinematics_cfg_jacobians`, 2026-10-12). A robot behind its own
+`BodyPoseProvider` falls back to autograd through its kinematics (`_Target.analytic = False`,
+`_step_eager`).
 
 THE INIT PROTOCOL cannot be read off the program (the harness called `SetStartFromQ` or
 `SetNativeStart` before `Solve()`), so particle 0 is ALWAYS the program's initial guess,
