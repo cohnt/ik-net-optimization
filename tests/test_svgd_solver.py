@@ -55,6 +55,14 @@ import test_batched_program as T                                        # noqa: 
 
 WALL = 20.0
 N_SWEEP = 64
+#: The pin these tests were written against -- every svgd round through R19 ran it (kernel q,
+#: metric off and init jitter through the then-defaults, rho 1000 named by the manifests). The
+#: defaults moved to c x z + rho 1e5 + H / T + the native-draw paired swarm on 2026-10-12, and
+#: `cz` is learned-only, so every solve here names the old pin explicitly: what each test pins
+#: is unchanged, and tests/test_svgd_pin_and_gate.py holds the old pin to the pre-change solver
+#: bit for bit and exercises the new one.
+LEGACY_PIN = dict(svgd_kernel="q", svgd_rho=1000.0, svgd_metric_temperature="off",
+                  svgd_paired_init="jitter")
 CONFIGS = [
     ("al_svgd N=1 kernel=q", dict(svgd_n=1, svgd_kernel="q")),
     ("al_svgd N=64 kernel=none", dict(svgd_n=64, svgd_kernel="none")),
@@ -132,7 +140,7 @@ def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet
     arm = "learned" if hasattr(p, "z") else "numerical"
     opts = replace(p.options, which_solver="svgd", max_wall_time=wall, acceptable_constr_viol_tol=1e-4,
                    file_print_name=os.path.join(RepoDir(), "results", f"_test_svgd_{task}_{arm}.log"),
-                   **overrides)
+                   **{**LEGACY_PIN, **overrides})
     os.makedirs(os.path.dirname(opts.file_print_name), exist_ok=True)
     p.options = opts
     rng = np.random.default_rng(seed)
@@ -297,7 +305,7 @@ def test_wall_clock_stop():
     cell."""
     print("\n--- wall-clock stop: max_wall_time=3, N=64 ---")
     p = pose_program("learned")
-    p.options = replace(p.options, which_solver="svgd", svgd_n=64, svgd_kernel="q")
+    p.options = replace(p.options, which_solver="svgd", **dict(LEGACY_PIN, svgd_n=64))
     SvgdSolver(p).warm_up()
     t0 = time.time()
     ## Both budgets lifted explicitly: `run_cell` builds on `p.options`, which an earlier
@@ -320,7 +328,7 @@ def test_nan_injection():
     counted, and the solve returns normally."""
     print("\n--- NaN injection via particles_override ---")
     p = pose_program("learned")
-    p.options = replace(p.options, which_solver="svgd", svgd_n=16, svgd_kernel="q",
+    p.options = replace(p.options, which_solver="svgd", **dict(LEGACY_PIN, svgd_n=16),
                         svgd_outer_iters=3, max_wall_time=20.0, acceptable_constr_viol_tol=1e-4,
                         file_print_name="")
     rng = np.random.default_rng(3)
@@ -364,6 +372,8 @@ def test_benchmark_subprocess():
     cmd = [sys.executable, os.path.join(RepoDir(), "scripts", "panda", "panda_benchmark.py"),
            "--task", "pose", "--targets", "1", "--guesses", "1", "--wall-time", "20",
            "--solver", "svgd", "--arms", "learned,numerical", "--config", "latent", "--tag", tag]
+    for k, v in LEGACY_PIN.items():             # cz, the new default kernel, is learned-only
+        cmd += ["--set", f"{k}={v}"]
     t0 = time.time()
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     print(f"    exit {proc.returncode} in {time.time() - t0:.0f} s")
@@ -525,9 +535,10 @@ def test_step_with_kernel_off_is_pgd_on_the_programs_L():
     from dataclasses import replace as dc_replace
     for arm in ("learned", "numerical"):
         p = pose_program(arm)
-        p.options = replace(p.options, which_solver="svgd", svgd_n=8, svgd_kernel="none",
-                            svgd_dtype="float64", svgd_compile=False, svgd_cuda_graph=False,
-                            svgd_lr=0.7, svgd_temperature=0.5, svgd_rho=37.0,
+        p.options = replace(p.options, which_solver="svgd",
+                            **dict(LEGACY_PIN, svgd_kernel="none", svgd_rho=37.0),
+                            svgd_n=8, svgd_dtype="float64", svgd_compile=False, svgd_cuda_graph=False,
+                            svgd_lr=0.7, svgd_temperature=0.5,
                             svgd_metric="identity", acceptable_constr_viol_tol=1e-4)
         rng = np.random.default_rng(4)
         with HiddenPrints():
@@ -558,9 +569,9 @@ def test_step_with_kernel_off_is_pgd_on_the_programs_L():
         print(f"    {arm}: |x_step - x_PGD|_inf / |x_PGD - x|_inf = {rel:.2e}")
         check(f"pgd/{arm}: the kernel-off identity step is PGD on the program's L_rho / T",
               rel < 1e-8, f"{rel}")
-        p.options = replace(p.options, svgd_kernel="q", svgd_dtype="float32", svgd_n=64,
+        p.options = replace(p.options, **LEGACY_PIN, svgd_dtype="float32", svgd_n=64,
                             svgd_lr=ProgramOptions().svgd_lr, svgd_temperature=1.0,
-                            svgd_rho=ProgramOptions().svgd_rho, svgd_metric=ProgramOptions().svgd_metric)
+                            svgd_metric=ProgramOptions().svgd_metric)
 
 
 def test_graph_replay_is_bitwise():
@@ -576,7 +587,7 @@ def test_graph_replay_is_bitwise():
     from src.svgd import fused
     for arm in ("learned", "numerical"):
         p = pose_program(arm)
-        p.options = replace(p.options, which_solver="svgd", svgd_n=16, svgd_kernel="q",
+        p.options = replace(p.options, which_solver="svgd", **dict(LEGACY_PIN, svgd_n=16),
                             svgd_compile=True, svgd_cuda_graph=True, acceptable_constr_viol_tol=1e-4)
         rng = np.random.default_rng(9)
         with HiddenPrints():
@@ -689,7 +700,7 @@ def profile(Ns=(64, 256)):
     print("\n--- PROFILE: al_svgd step time, learned pose, float32 ---")
     p = pose_program("learned")
     for N in Ns:
-        p.options = replace(p.options, which_solver="svgd", svgd_n=N, svgd_kernel="q",
+        p.options = replace(p.options, which_solver="svgd", **dict(LEGACY_PIN, svgd_n=N),
                             max_wall_time=60.0, acceptable_constr_viol_tol=1e-4, file_print_name="")
         rng = np.random.default_rng(7)
         with HiddenPrints():

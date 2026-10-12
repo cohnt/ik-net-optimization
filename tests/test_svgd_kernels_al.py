@@ -9,7 +9,7 @@ equality-constrained quadratic, one per particle; the RBF repulsion against auto
 SVGD on a 2-D standard Gaussian matching the target's mean and covariance; the GN Hessian of
 the penalty against autograd on linear rows; one Stein variational Newton step landing on a
 quadratic's minimiser; and the identity metric being projected gradient descent with the
-per-particle step `svgd_lr / ||H_i||_F`. The kernel spaces (`svgd_kernel`: the fielded `q`
+per-particle step `svgd_lr / ||H_i||_F`. The kernel spaces (`svgd_kernel`: the `q` fielded until 2026-10-12
 reproducing the previous step bit for bit, and x, z, c, cz, qz, pose against autograd) and the
 metric's temperature (`svgd_metric_temperature`) close it.
 """
@@ -840,7 +840,8 @@ def _new_chain(tg, sc, X, cfg, gF, J_q, J_h, J_g, h, g, finite, lam, mu, live=No
 
 
 def test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise():
-    """(a) `svgd_kernel = q` with `svgd_metric_temperature = off` -- the fielded step -- gives
+    """(a) `svgd_kernel = q` with `svgd_metric_temperature = off` -- the step fielded until
+    2026-10-12, which every svgd round through R19 ran (the pin is now c x z with H / T) -- gives
     the kernel, repulsion, direction, Hessian, ratio and step of the pre-2026-10-11 code
     (`_head_*`, verbatim) BIT FOR BIT, under both metrics, with and without a dropped particle
     and a non-finite one; eager on every target, and compiled on CUDA (the compiled new chain
@@ -873,7 +874,7 @@ def test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise():
             for a, b in zip(ref, new):
                 assert torch.equal(a, b), "compiled"
             print(f"     compiled CUDA {dtype}: bit-identical")
-    print("PASS svgd_kernel=q, svgd_metric_temperature=off: the previous step bit for bit")
+    print("PASS svgd_kernel=q, svgd_metric_temperature=off (the pre-2026-10-12 pin): the previous step bit for bit")
 
 
 def test_metric_temperature():
@@ -923,7 +924,10 @@ def test_metric_temperature():
         assert _maxabs(Xoff, Xn) > 1e-3, "on and off must differ at T = 0.1"
     o = ProgramOptions(which_solver="svgd", svgd_metric_temperature="on")
     assert fused.StepConfig.from_options(o).metric_temperature is True
-    assert fused.StepConfig.from_options(ProgramOptions()).metric_temperature is False
+    ## The default is `on` since 2026-10-12 (the fielded pin); `off` must be named.
+    assert fused.StepConfig.from_options(ProgramOptions()).metric_temperature is True
+    assert fused.StepConfig.from_options(
+        ProgramOptions(svgd_metric_temperature="off")).metric_temperature is False
     try:
         ProgramOptions(svgd_metric_temperature="maybe")
         raise AssertionError("svgd_metric_temperature='maybe' was accepted")

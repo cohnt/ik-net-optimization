@@ -49,6 +49,13 @@ def check(name, condition, detail=""):
         FAILURES.append(name)
 
 
+#: The pre-2026-10-12 pin (kernel q, rho 1000, metric off, init jitter). The solves here are on the
+#: JOINT-SPACE arm, which cannot run the new default kernel `cz` (learned-only), so they name the
+#: pin they were written against.
+LEGACY_PIN = dict(svgd_kernel="q", svgd_rho=1000.0, svgd_metric_temperature="off",
+                  svgd_paired_init="jitter")
+
+
 def a_reachable_target():
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
@@ -67,7 +74,7 @@ def test_svgd_result_duck_type():
     os.makedirs(os.path.dirname(log), exist_ok=True)
     target, sampler = a_reachable_target()
     opts = ProgramOptions(which_solver="svgd", max_wall_time=5.0, file_print_name=log,
-                          collision_avoidance=True)
+                          collision_avoidance=True, **LEGACY_PIN)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
         p = PandaIKProgramNumerical(diagram, options=opts)
@@ -176,6 +183,15 @@ def test_svgd_result_duck_type():
           str(block))
     check("the svgd block carries phase_times as a dict",
           isinstance(block.get("phase_times"), dict), str(block))
+    ## The gate-edge rule's record (2026-10-12): refused stall stops and the feasibility level at stop.
+    check("the svgd block carries n_recheck_failures (int) and feas_level (float, <= 1)",
+          isinstance(block.get("n_recheck_failures"), int) and isinstance(block.get("feas_level"), float)
+          and 0.0 < block["feas_level"] <= 1.0
+          and block["n_recheck_failures"] == details.n_recheck_failures
+          and block["feas_level"] == details.feas_level, str(block))
+    with open(log) as f:
+        check("the log records the gate re-check failures and the level",
+              "SVGD gate re-check failures: " in f.read())
 
     emitted = getattr(p, "emitted_solver_options", None)
     check("emitted_solver_options records every svgd_* field under 'svgd'",
@@ -269,7 +285,7 @@ def test_svgd_kill_keeps_the_iterate():
     log = os.path.join(REPO, "results/_test_svgd_kill.log")
     target, sampler = a_reachable_target()
     opts = ProgramOptions(which_solver="svgd", max_wall_time=60.0, file_print_name=log,
-                          collision_avoidance=True)
+                          collision_avoidance=True, **LEGACY_PIN)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
         p = PandaIKProgramNumerical(diagram, options=opts)
@@ -348,7 +364,7 @@ def _solve_capture(p, q0, overrides, X_override=None, warm=False):
     from src.svgd.solver import SvgdSolver
     p.options = replace(p.options, which_solver="svgd", max_wall_time=600.0,
                         acceptable_constr_viol_tol=1e-4, file_print_name="",
-                        svgd_stop_patience=10 ** 6, **overrides)
+                        svgd_stop_patience=10 ** 6, **{**LEGACY_PIN, **overrides})
     with HiddenPrints():
         p.SetStartFromQ(q0)
     solver = SvgdSolver(p, particles_override=X_override)
