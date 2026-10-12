@@ -1736,14 +1736,58 @@ screw pose and grasp scenes (the `ScrewJoint` asserted present) and on the soft 
   different `c` than `IiwaMugProgram` seeds. The Panda and soft PCS values are unchanged bit for
   bit. `tests/test_batched_program.py` pins `native_c()` and the solver's native draw against
   `SetNativeStart` on every learned program, to 1e-12.
-- **Soft PCS arm: the autograd / eager path.** Its 33 sub-links are `QuaternionFloatingJoint`s.
-  `KinematicTree` now replays those too (Drake normalises the quaternion, and so does the replay),
-  so the arm needs no provider of its own. The configuration-to-plant map is the program's
-  `TorchConfigToPlantQ`: the exact strain kinematics of `src/soft_arm/kinematics.py`, permuted into
-  the plant's slots. It is checked against `ConfigToPlantQ` in float64 at construction. Closed-form
-  frame Jacobians through a floating joint refuse by name, so `has_analytic_row_jacobians` is False
-  and the solver takes `_step_eager`.
-- **GVS** has no torch forward map. `GvsArmIKProgram.TorchConfigToPlantQ` raises by name.
+- **Soft PCS arm: the split step since 2026-10-12** (the autograd / eager path before). Its 33
+  sub-links are `QuaternionFloatingJoint`s. `KinematicTree` now replays those too (Drake normalises
+  the quaternion, and so does the replay), so the arm needs no provider of its own. The
+  configuration-to-plant map is the program's `TorchConfigToPlantQ`: the exact strain kinematics
+  of `src/soft_arm/kinematics.py`, permuted into the plant's slots. It is checked against
+  `ConfigToPlantQ` in float64 at construction. `FrameChain`'s closed-form Jacobians through a
+  floating joint still refuse by name; the row Jacobians are instead taken w.r.t. the
+  configuration (next paragraph), so `has_analytic_row_jacobians` is True and the solver takes
+  the split step in all three modes (eager, compiled, graphed).
+- **GVS** has no torch forward map. `GvsArmIKProgram.TorchConfigToPlantQ` raises by name, so
+  `BatchedProgram.from_program` refuses the arm and it never reaches either step. Its torch port
+  is deferred (Thomas, 2026-10-12).
+
+**How the soft PCS arm's split step gets its derivatives (2026-10-12).** The rigid arms' plant
+vector is the padded configuration, so a plant-space Jacobian is a configuration-space one by a
+slice. The soft PCS arm's is 231 floating-body positions from 12 strains, so the Jacobians are
+taken w.r.t. the configuration directly (`BatchedProgram._kinematics_cfg_jacobians`). The
+composite `cfg -> TorchConfigToPlantQ -> FrameChain.poses` (pure forward tensor ops) is pushed
+forward along the 12 coordinate directions in one vmapped `torch.func.jvp`. That gives
+`J_plant = d q_plant / d cfg` (231 x 12), the task frame's `Jp` and, from the quaternion's
+tangent, the world angular velocity's `Jw = 2 [-v, w I + [v]x] d quat / d cfg`. Stage 3 pulls
+the collision row's plant gradient back through `J_plant`. The joint-limit rows and the
+joint-centering cost are on the configuration already. The rigid arms do not enter this path.
+`tests/test_svgd_soft_fastpath.py` pins it:
+
+- On the screw arm and the Panda the forward-mode `Jp` / `Jw` equal `FrameChain`'s closed form to
+  1.9e-15, so the `Jw` convention is the one the rigid step uses.
+- On the soft PCS pose and grasp programs at B = 1 and 64, float64: rows identical to the old path
+  (0.0), row Jacobians against autograd of the same rows 3.3e-16 to 1.0e-15 relative, the
+  collision pullback 2.6e-18 to 4.4e-16, the cost gradient 0.0. On the learned arm the solver's
+  `J_h` / `J_g` agree with the autograd target to 2.6e-16 to 3.2e-15. Frame Jacobians against
+  central differences 1.5e-10 to 1.8e-10.
+- float32 (reported): task-row Jacobians 2.3e-7 to 8.6e-7 relative. The collision pullback is 1.6e-9 to 1.9e-6
+  on three batches and 4.4e-3 on one grasp batch of 64, where the float32 and float64 plant
+  vectors sit on two sides of a Drake gradient switch.
+- Steps, from the same native-draw swarm at the fielded pin (N = 16, c x z, rho 1e5, H / T): the
+  split step against the old autograd step differs by 9.2e-12 to 1.6e-11 after one step in
+  float64 and by 5.1e-4 to 1.5e-2 in float32. After 30 steps the differences are 2.3e-10 to
+  8.7e-7 (float64) and 0.11 to 0.32 (float32). Every figure is within 3x of the old path's own
+  sensitivity: the old path against itself from a start one ulp away moves by 1.2e-10 to 1.9e-10
+  after one step and 3.2e-10 to 5.1e-7 after 30 (float64), 2.7e-2 to 0.11 and 0.10 to 0.19
+  (float32). In float32 one GN solve at rho = 1e5 turns rounding into 1e-4 to 1e-1.
+- Compiled and graphed: the three stages capture, the replay is bitwise equal to the compiled
+  stages, and compiled agrees with eager to 4.2e-7 relative.
+- EAGER mode is slower than the old path. The vmapped `jvp` is dispatch-bound on the GPU, so the
+  eager split step takes 112-119 ms against the autograd step's 92-95 ms (N = 16, float64, the
+  step test above, load < 6). The gain is in compiled and graphed mode, which the smokes run.
+
+The rigid arms' split step is unchanged bit for bit. Thirty steps from the same swarm on six
+rigid programs (Panda pose learned and joint space, Panda grasp learned `cz`, screw grasp learned
+`pose`, screw pose joint space `pose`, iiwa grasp learned), each in eager and graphed mode,
+return bitwise-identical swarms before and after the change.
 - **Recording.** `record["svgd"]` now carries `step_mode` and `derivative_mode`.
 
 **Smokes** (laptop, one process at a time under the 20G scope): the record's grid (`--targets 60
@@ -1774,14 +1818,58 @@ at the wall clock, at 300-318 / 201-282 ms per step. The re-run at load 4.5 is t
 screw arm. The collision row is 58-83% of it. Most of the rest is the eager autograd path through
 231 plant positions.
 
+**The soft PCS smokes on the split step (2026-10-12).** The same two rows, same grid (`grid_hash`
+and `scene_fingerprint` equal to the SVGDPLUMB runs), same settings, after the change. Tags are
+`smoke_SVGDPCS_soft12_n6_svgd-n16-graphed_<row>_2_20_paired`. Load 3.5-6.4 throughout.
+
+| robot / row | step | L success | JS success | L n_feasible | JS n_feasible | L stop | JS stop | L ms / step | JS ms / step | L coll. share | JS coll. share |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| soft PCS pose (2026-10-11) | eager, autograd | 2/2 | 1/2 | 2, 3 | 0, 13 | converged, wall clock | wall clock, converged | 114, 92 | 73, 70 | 0.62, 0.58 | 0.72, 0.72 |
+| soft PCS pose (2026-10-12) | graphed, forward mode | 2/2 | 1/2 | 4, 7 | 0, 13 | converged, wall clock | wall clock, converged | 70.7, 53.7 | 51.0, 49.1 | 0.95, 0.95 | 0.97, 0.97 |
+| soft PCS grasp (2026-10-11) | eager, autograd | 1/2 | 2/2 | 2, 0 | 10, 10 | wall clock x2 | wall clock, converged | 126, 124 | 93, 80 | 0.71, 0.74 | 0.83, 0.81 |
+| soft PCS grasp (2026-10-12) | graphed, forward mode | 2/2 | 2/2 | 3, 1 | 11, 11 | converged x2 | converged x2 | 87.1, 85.0 | 74.1, 69.9 | 0.97, 0.95 | 0.98, 0.98 |
+
+A step is 1.45-1.71x faster on the learned arm and 1.14-1.43x on joint space (different swarms
+per cell, so per-cell ratios are indicative). The collision row is now 95-98% of a step, so it
+bounds the gain at this backend. The rest of a step went from 32-43 ms to 2.6-4.3 ms on the
+learned arm and from 15-20 ms to 1.4-1.5 ms on joint space. A same-process timing on the learned arm separates the two
+(`svgd_compile`, `svgd_cuda_graph`, 10 steps x 3 repeats from the initial swarm, the in-process
+autodiff collision row on both paths):
+
+| N | row | graphed split step: total / collision / rest, ms | eager autograd step: total / collision / rest, ms |
+| --- | --- | --- | --- |
+| 16 | pose | 126.3 / 124.6 / 1.7 | 149.5 / 117.7 / 31.8 |
+| 16 | grasp | 71.3 / 69.5 / 1.8 | 104.0 / 70.6 / 33.3 |
+| 64 | pose | 521.4 / 519.0 / 2.4 | 540.4 / 506.4 / 34.0 |
+| 64 | grasp | 320.0 / 317.7 / 2.4 | 335.8 / 305.1 / 30.8 |
+
+The part of the step that is not the collision row falls 13-18x, from 31-34 ms to 1.7-2.4 ms.
+
+**At the branch defaults (N = 64, `svgd_kernel = q`, rho 1e3; the N / kernel overrides dropped,
+tags `..._svgd-default-graphed_...`).** These are an outer step of 2.1-3.8 s on the learned arm
+(1.8-3.5 s on joint space), 98-99% of it the collision row:
+
+| row | L success | JS success | L n_feasible | JS n_feasible | L stop | JS stop | L ms / outer step | JS ms / outer step | L coll. share |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| pose | 2/2 | 1/2 | 21, 5 | 0, 43 | wall clock x2 | wall clock x2 | 2590, 2131 | 1837, 1893 | 0.99, 0.98 |
+| grasp | 0/2 | 2/2 | 0, 0 | 1, 42 | wall clock x2 | wall clock x2 | 3098, 3764 | 3466, 2873 | 0.99, 0.99 |
+
+These outer steps cannot be set against the cluster's 800-835 ms. The cluster rounds run the
+batched clearance row. The laptop's pydrake has no `CalcRobotClearances`
+(`tests/test_collision_clearances.py` skips), so these runs use the serial autodiff row, which is
+4.3-8.1 ms per particle here. What carries over is the non-collision part: 31-34 ms per step
+eagerly against 2.4 ms graphed at N = 64, i.e. about 0.3 s of each outer step at K = 10 against
+0.024 s. A
+cluster figure needs a cluster run of the clearance row. The success counts here are 2-cell
+smokes at a 20 s clock and say nothing about success.
+
 TODO (Thomas, 2026-10-11): rewrite the PCS and GVS forward steps in torch
 
-- **PCS:** the forward map is already a torch function (`src/soft_arm/kinematics.py`). What the
-  compiled svgd step lacks is closed-form row Jacobians through it, the analytic path that
-  `has_analytic_row_jacobians` and `fused`'s split step need.
-- **GVS:** the forward map is a JAX root-find with implicit differentiation
-  (`src/gvs_arm/model.py`). It needs a torch port, or a dlpack bridge, before `BatchedProgram`
-  can replay it.
+- **PCS: done 2026-10-12.** Configuration-space Jacobians by forward mode through the exact
+  strain map (above); the arm takes the split step.
+- **GVS: deferred (Thomas, 2026-10-12).** The forward map is a JAX root-find with implicit
+  differentiation (`src/gvs_arm/model.py`). It needs a torch port, or a dlpack bridge, before
+  `BatchedProgram` can replay it.
 
 ## Selected variant
 
