@@ -1316,6 +1316,36 @@ IPOPT's own learned cost on top of that. With the latent kernel the learned arm 
 grasp solutions within 15% of IPOPT's learned cost on the paired start and 40-60% above on native,
 and cheaper than IPOPT on pose, at 480 / 480 success and 1-3 s wall.
 
+### R16: the soft PCS arm (`soft12`, `n6`), the primary `kq` in a fourth context, measured 2026-10-12
+
+**Jobs 5895122-25, 96 items, clearance row, 0 error cells; `--rows soft12`.** Zero overrides, the four
+rows at 480 cells, paired against stage PAPER's soft PCS IPOPT learned arm. The smoke (SVGD_SMOKE_SOFT)
+ran first: learned 4 / 4 everywhere, joint space 4 / 4 / 4 / 3, no error cells. **This robot's svgd
+step is the EAGER path**: `SoftArmIKProgram.TorchConfigToPlantQ` runs under autograd with no analytic
+row Jacobians (`has_analytic_row_jacobians` False), so an outer step costs 800-835 ms against 82 ms
+on the rigid arms -- the "rewrite the PCS and GVS forward steps in torch" TODO is what this row
+measures the price of.
+
+| row | learned svgd | learned IPOPT (PAPER) | verdict | cost (svgd / IPOPT) | outer steps | feasible | mean wall s (svgd / IPOPT) | clock stops |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp paired | 480 | 477 (joint space 472) | tie, +3 / -0 | 2.03 / 0.70 | 20 | 12 | 16.4 / 6.1 | 0 |
+| grasp native | 480 | 480 (472) | tie | 2.67 / 0.63 | 11 | 19 | 9.6 / 1.2 | 0 |
+| pose paired | 480 | 437 (334) | **svgd** +43 / -0, p = 2e-13 | 2.33 / 0.99 | 12 | 21 | 26.4 / 8.7 | **24** (all solved) |
+| pose native | 480 | 477 (334) | tie, +3 / -0 | 2.52 / 1.37 | 11 | 24 | 10.1 / 0.6 | 0 |
+
+**Lead: success transfers (480 / 480 on all four rows, the one row where IPOPT is not at the
+ceiling is a +43 win), but this is the robot where the swarm pays most in cost and wall.** Cost is
+2-4x IPOPT's learned cost on every row (absolute values are small on this arm: 2.0-2.7 against
+0.6-1.4), where the rigid arms were 1.1-2x on grasp and cheaper on pose. Wall is 10-26 s against
+IPOPT's 0.6-8.7 s, the first context where svgd is slower than IPOPT on every row, and pose paired
+has 24 cells at the 180 s clock (all 24 feasible when the clock fired; the reporter marks the row
+clock-bound). Outer steps (11-20) and feasible counts (12-24) are the rigid arms' numbers, so the
+swarm's dynamics are unchanged: the premium is the 10x step cost of the eager forward map and
+nothing else. **The fix is the TODO, not the method**: a compiled torch PCS forward step with
+analytic row Jacobians (the rigid arms' path) should return this robot to the 1-3 s band. Until
+then the soft PCS row is reported at this cost and the comparison stays on success and iterations,
+where it is the Panda's picture.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
