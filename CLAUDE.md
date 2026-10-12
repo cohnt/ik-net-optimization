@@ -879,32 +879,37 @@ learned arm under IPOPT on the same cells; joint-space svgd is an ablation, not 
 information inside the solver (kernel SPACE is the one deliberate exception, swept); AL is the
 formulation and SVGD the optimizer, one dynamics; `--solver svgd`.
 
-**The record so far (Panda n6, 480 cells x 4 rows, 180 s, seed 1 and 2; iiwa n4, screw p050 n6,
-soft12 n6 at the fielded pin; all rounds R6 on run the batched clearance collision row under the
-clearances venv, the one stated exception to ONE DRAKE):**
-- **Success: 480 / 480 on every row of every robot at the fielded pin**, ties against IPOPT learned
-  on grasp (IPOPT at 473-480) and wins on pose (IPOPT 386-462); the screw arm adds a grasp paired
-  win. Nineteen single-factor variants on the Panda sit within one cell of each other: N (1 to 256),
-  rho (1e2 to 1e5), lr, K, T, kernel on/off, resample mode on native rows, the kernel space -- **no
-  setting moves success**; they move cost, the feasible count at stop, and wall.
-- **Cost is the axis settings move**, and two levers ADD: the kernel SPACE (q -> c x z: grasp paired
-  8.4 -> 4.7) and rho (1e3 -> 1e5: 8.4 -> 5.9); together (`kczrho1e5`, R14/R17/R17S/R17P/R18/R19)
-  **480 / 480 on all sixteen rows of four robots, every cell converged, cost below the IPOPT learned
-  arm on 11 of 16 and within 1.5x on the rest, replicated to the digit on a second grid.** N does not
-  add to the latent kernel (R18); the native-draw paired init removes rho = 1e5's redraw churn at
-  equal cost (R18). **This is the fielding candidate; fielding is Thomas's decision.**
-- **Runtime on the clearance row is 1-3 s mean per cell on the rigid arms** against IPOPT's 1-11 s,
-  below IPOPT on most rows; joint-space IPOPT restarts within svgd's own wall solve 55-65% of grasp
-  and ~90% of pose cells. **The soft PCS arm was the exception** (10-26 s on R16/R17P: its rows
-  went through autograd, eager). **Since 2026-10-12 it takes the split step** (merge a2a5569):
-  its row Jacobians are taken w.r.t. the configuration by forward mode through the exact strain
-  map (`BatchedProgram._kinematics_cfg_jacobians`, one vmapped `jvp` per coordinate), the
-  collision gradient pulled back through `d q_plant / d cfg`; parity with autograd 1e-15
-  (float64), the rigid arms' step bitwise unchanged, compiled and graphed. On the laptop the
-  non-collision part of a step fell 31-34 ms -> 1.7-2.4 ms (13-18x) and the whole step 1.45-1.71x,
-  because the local autodiff collision row is then 95-99% of it; the cluster number (clearance
-  row) comes from R20. In eager mode the new step is slower than autograd (dispatch-bound), so it
-  pays only compiled.
+**THE SVGD RECORD IS STAGE R20 (2026-10-12): the record's sixteen rows at the fielded pin**
+(`SVGD_PINNED_V2`; four robots x grasp / pose x native / paired, 480 cells, 180 s, seed 1, one
+solve per GPU, the clearance row under the clearances venv -- the one stated exception to ONE
+DRAKE; `scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2[,pin2kq]`;
+`docs/svgd-solver.md` "R20"). Ran in 6 node-hours.
+- **Learned under svgd: 480 / 480 on all sixteen rows, 8 wins / 8 ties / 0 losses against learned
+  under IPOPT on the same cells** (wins: every pose paired row, Panda / iiwa / screw pose native,
+  screw grasp paired; IPOPT at 395-480). Zero clock or step-cap stops anywhere; every cell converged;
+  the gate-edge re-check never failed on 9600 cells. Success is identical cell for cell to the V1
+  rounds (R1 / R12 / R15 / R16, `kq`): **the pin moves cost and wall, never cells.** Nineteen
+  single-factor variants on the Panda had already sat within one cell of each other (N 1-256, rho
+  1e2-1e5, lr, K, T, kernel on/off, resample mode, kernel space).
+- **Cost (cells shared with the twin): below the IPOPT learned arm on all twelve rigid-arm rows**
+  (Panda 0.55-0.81x, iiwa 0.43-0.45x, screw 0.28-0.36x), above it on three soft PCS rows
+  (1.26-1.45x), level on soft PCS pose native. The two levers that bought it ADD: the kernel SPACE
+  (q -> c x z) and rho (1e3 -> 1e5); N does not add to the latent kernel; the native-draw paired
+  init removes the redraw churn at equal cost; the H / T metric is bit-identical at T = 1.
+- **Wall (cap-clamped mean) 0.9-2.6 s on every row**, below IPOPT learned on all eight paired rows
+  and three of four grasp-native rows, above it on pose native (IPOPT 0.6-1.1 s). Residual at stop
+  4e-6 to 3e-5 against IPOPT's 1e-8, gate 1e-3.
+- **The soft PCS arm takes the split step since 2026-10-12** (merge a2a5569): row Jacobians w.r.t.
+  the configuration by forward mode through the exact strain map (`_kinematics_cfg_jacobians`),
+  collision gradient pulled back through `d q_plant / d cfg`; parity with autograd 1e-15, rigid
+  arms bitwise unchanged, pays only compiled (eager it is dispatch-bound and slower). **Cluster:
+  780-850 -> 174-214 ms per outer step (3.7-4.8x), wall 7.5-10.1 -> 1.5-2.6 s, same cells, same
+  step counts** (R17P -> R20). It now sits at 2.4-3.2x the rigid arms per outer step, from 10x.
+- **The joint-space ablation at the pin (Panda, kernel q, `pin2kq`): 480 / 480 on all four rows**
+  against joint-space IPOPT's 448 / 449 / 200 / 200 (p <= 5e-10), zero clock stops where the V1 pin
+  had 143 on grasp, 0.8-1.5 s a cell; grasp cost 1.5x IPOPT joint space's, pose 0.6x; median 4
+  feasible particles of 64 (learned 58) and 30-40x the learned arm's multiplier clips. Not a
+  baseline; which pin factor did it is not separated.
 - **Mechanisms settled**: the kernel-off swarm keeps descending to the clock (R1K); the q-space
   kernel spreads particles OFF the manifold (few feasible, 2x cost) where a latent kernel keeps them
   on it; the paired-start penalty is the jittered swarm (drawing the paired swarm from the native
@@ -937,12 +942,11 @@ the selection) is tightened x0.9, and it re-tests at the next stall. Recorded pe
 `n_recheck_failures` and `feas_level`. Rejected on the way: a per-step float64 check (1 ms per outer
 step for a 0.04% event) and a fixed margin.
 
-**Still open**: R20, the record rows at the fielded pin (four robots x two tasks x two protocols,
-learned arm; joint-space svgd ablation at kernel q), after the 2026-10-12..14 maintenance, on a
-RESTAGED tree (the staged 7ca45a4 predates the pin, the gate-edge rule and the soft PCS step);
+**Still open**: the paper tables from R20 (`report_svgd` stage mode; the multistart column via
+`scratchpad/runtime_vs_js.py`; Thomas writes every word -- numbers and verdicts only from here);
 the GVS arm under svgd is DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU,
 and a dlpack bridge would not remove the batched root-find's cost; what to do with R14's
-combinations.
+combinations. The staged cluster tree is 86efbb0.
 
 ## Results: the campaign of record
 
