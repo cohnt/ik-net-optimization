@@ -1670,6 +1670,71 @@ rows against 0.9e4 and 1.2e4 on the learned arm's, so the swarm without the netw
 clip where the learned arm does not. Which of rho 1e5, the H / T metric and the native init did this
 is not separated (the ablation ran the pin as a block, by design).
 
+### R21: the joint-space ablation at the pin on the other three robots (`pin2kq`), measured 2026-10-12
+
+**Ran 2026-10-12 16:18-17:54 EDT** (Thomas, on R20's Panda ablation: *"Run the joint-space svgd
+ablation on the other three robots"*), stage `SVGD_R21`, jobs 5900901 / 5900902 / 5900909 / 5900910,
+four nodes, `DRAKE_ENV=crc PROCS=2`, the staged 86efbb0 (no restage; the manifest scp'd and
+md5-checked). 12 runs / 288 items, the iiwa `n4`, the screw arm `p050 n6` and the soft PCS arm
+`soft12 n6`, grasp / pose x native / paired, joint space at the pin with `svgd_kernel=q`, its own
+items. Same token, pin and overrides as R20's Panda column, so every robot now has `pin2` (learned)
+and `pin2kq` (joint space) at the pin on the same grid as its IPOPT twin.
+
+**Joint space under svgd against joint space under IPOPT, same cells** (not a baseline; `clock` =
+cells whose swarm stopped at the 180 s clock, `feas` = median feasible particles of 64 at stop):
+
+| row | JS svgd | JS IPOPT | J+ / I+ | p | cost svgd / IPOPT | wall s svgd / IPOPT | outer | clock | feas |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda grasp native / paired (R20) | 480 / 480 | 448 / 449 | 32 / 0, 31 / 0 | 5e-10 | 3.39 / 2.25 | 1.49 / 6.07 | 20 | 0 | 4 |
+| Panda pose native / paired (R20) | 480 / 480 | 200 / 200 | 280 / 0 | 1e-84 | 4.42 / 7.71 | 0.83 / 0.53 | 14 | 0 | 16 |
+| iiwa grasp native / paired | 480 / 480 | 453 / 453 | 27 / 0 | 1.5e-8 | 3.49 / 2.91 | 1.93 / 1.02 | 27 | 0 | 5 |
+| iiwa pose native / paired | 480 / 480 | 312 / 312 | 168 / 0 | 5e-51 | 3.37 / 9.20 | 1.08 / 0.09 | 16 | 0 | 28 |
+| screw grasp native | 463 | 442 | 34 / 13 | 3.1e-3 | 3.16 / 1.82 | 7.47 / 1.08 | 24 | 17 | 4 |
+| screw grasp paired | 460 | 442 | 32 / 14 | 0.011 | 3.17 / 1.82 | 8.54 / 1.08 | 24 | 20 | 4 |
+| screw pose native / paired | 477 / 477 | 320 / 320 | 157 / 0 | 1e-47 | 2.56 / 12.38 | 2.24 / 0.12 | 18 | 3 | 27 |
+| soft PCS grasp native / paired | 480 / 480 | 472 / 472 | 8 / 0 | 0.008 | 0.83 / 0.24 | 3.95 / 3.19 | 12 | 0 | 13 |
+| soft PCS pose native / paired | 480 / 480 | 334 / 334 | 146 / 0 | 2e-44 | 0.79 / 0.55 | 2.74 / 0.34 | 12 | 0 | 43 |
+
+- **Joint space under svgd at the pin beats joint space under IPOPT on all sixteen rows**, 480 / 480
+  on twelve of them. The screw arm is the one robot where it does not solve everything: 17 / 20 grasp
+  cells and 3 / 3 pose cells per protocol run to the clock still infeasible (`constraint`, median
+  `max_violation` 0.06-0.10 on grasp, 0.025 on pose; no resample, no re-check failure), fewer than
+  the 24-cell cap threshold, so a result at the fielded clock. Those cells are also what lifts the
+  screw arm's mean wall to 7.5-8.5 s (median 1.5 s, p90 3.0 s).
+- **Joint space's svgd solutions are dearer than its IPOPT solutions on every grasp row** (1.2x iiwa,
+  1.5x Panda, 1.7x screw, 3.5x soft PCS) and cheaper on every rigid-arm pose row (0.2-0.6x); on soft
+  PCS pose 1.4x dearer.
+- **The V1-pin picture is gone**: at kernel q / rho 1e3 / jitter (R1) joint-space svgd was 338 / 480
+  on Panda grasp with 143 clock stops; at the pin the only clock stops anywhere are the screw arm's.
+  Which of rho 1e5, the H / T metric and the native init did it is not separated.
+
+**Learned under svgd against joint space under svgd, same cells** -- the comparison inside the
+method, now on every robot (cost = median on the cells BOTH svgd arms and the IPOPT joint-space arm
+solved):
+
+| row | learned | joint space | L+ / J+ | p | cost L / JS | wall s L / JS | feas L / JS |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda grasp native / paired | 480 | 480 | 0 / 0 | 1 | 3.37 / 3.39 | 2.47 / 1.49 | 58 / 4 |
+| Panda pose native / paired | 480 | 480 | 0 / 0 | 1 | 4.51 / 4.42 | 1.01 / 0.83 | -- / 16 |
+| iiwa grasp native / paired | 480 | 480 | 0 / 0 | 1 | 3.44 / 3.49 | 1.44 / 1.93 | -- / 5 |
+| iiwa pose native / paired | 480 | 480 | 0 / 0 | 1 | 3.87 / 3.37 | 0.89 / 1.08 | -- / 28 |
+| screw grasp native | 480 | 463 | 17 / 0 | **1.5e-5, learned** | 3.21 / 3.16 | 1.76 / 7.47 | -- / 4 |
+| screw grasp paired | 480 | 460 | 20 / 0 | **1.9e-6, learned** | 3.21 / 3.17 | 1.95 / 8.54 | -- / 4 |
+| screw pose native / paired | 480 | 477 | 3 / 0 | 0.25, tie | 3.58 / 2.56 | 1.28 / 2.24 | -- / 27 |
+| soft PCS grasp native / paired | 480 | 480 | 0 / 0 | 1 | 0.90 / 0.83 | 2.58 / 3.95 | -- / 13 |
+| soft PCS pose native / paired | 480 | 480 | 0 / 0 | 1 | 1.37 / 0.79 | 1.51 / 2.74 | -- / 43 |
+
+- **Inside svgd: the learned arm wins 2 rows (screw grasp, both protocols), ties 14, loses 0.** The
+  two wins are the cells the joint-space swarm leaves at the clock; the learned swarm has none.
+- **Cost inside svgd is level on grasp** (within 0.07 on every rigid row; soft PCS 0.90 v 0.83) and
+  favours joint space on pose (iiwa 3.87 v 3.37, screw 3.58 v 2.56, soft PCS 1.37 v 0.79; Panda level).
+- **Wall inside svgd**: the learned arm is slower on the Panda (2.5 v 1.5 s grasp, 1.0 v 0.8 pose)
+  and faster on the iiwa grasp, the screw arm and the soft PCS arm (where joint space's step is the
+  231-position plant replay for both arms).
+- **The joint-space swarm keeps 4-5 feasible particles of 64 at stop on the rigid grasp rows against
+  the learned arm's 58** (Panda): the q-space kernel spreads a joint-space swarm off the manifold
+  the way it did the learned arm's in R13, and the latent kernel is learned-only.
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each
