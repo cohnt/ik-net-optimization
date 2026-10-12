@@ -887,9 +887,12 @@ clearances venv, the one stated exception to ONE DRAKE):**
   win. Nineteen single-factor variants on the Panda sit within one cell of each other: N (1 to 256),
   rho (1e2 to 1e5), lr, K, T, kernel on/off, resample mode on native rows, the kernel space -- **no
   setting moves success**; they move cost, the feasible count at stop, and wall.
-- **Cost is the axis settings move**, and three levers each cut it: the kernel SPACE (q -> c x z or
-  z: grasp paired 8.4 -> 4.7, from 2.0x to 1.14x IPOPT's learned cost), rho (1e3 -> 1e5: 8.4 -> 5.9),
-  N (64 -> 128: 8.4 -> 7.5, wall flat to 128). Whether they add is round R14.
+- **Cost is the axis settings move**, and two levers ADD: the kernel SPACE (q -> c x z: grasp paired
+  8.4 -> 4.7) and rho (1e3 -> 1e5: 8.4 -> 5.9); together (`kczrho1e5`, R14/R17/R17S/R17P/R18/R19)
+  **480 / 480 on all sixteen rows of four robots, every cell converged, cost below the IPOPT learned
+  arm on 11 of 16 and within 1.5x on the rest, replicated to the digit on a second grid.** N does not
+  add to the latent kernel (R18); the native-draw paired init removes rho = 1e5's redraw churn at
+  equal cost (R18). **This is the fielding candidate; fielding is Thomas's decision.**
 - **Runtime on the clearance row is 1-3 s mean per cell on the rigid arms** against IPOPT's 1-11 s,
   below IPOPT on most rows; joint-space IPOPT restarts within svgd's own wall solve 55-65% of grasp
   and ~90% of pose cells. **The soft PCS arm is the exception** (10-26 s, eager forward step, 10x
@@ -906,8 +909,9 @@ clearances venv, the one stated exception to ONE DRAKE):**
 seems like something we need to handle delicately"*) -- do not re-propose the one-loop strip-down.
 "Resample" is the term. The clearances wheel is a strict improvement and every svgd round uses it.
 Compute footprint (GPU + 40 threads vs one core) is a paper explanation, not a fairness worry.
-**Open for Thomas**: field c x z (or z) as the kernel space; field H / T as the metric form (bit-identical
-at T = 1); field the native-draw paired init; the gate-edge disagreements (5 cells in 11,520: a
+**Open for Thomas**: field c x z + rho = 1e5 (N = 64, T = 1) as the pin, with the native-draw paired
+init; field H / T as the metric form (bit-identical at T = 1); then re-run the record rows at the new
+pin; the gate-edge disagreements (5 cells in 11,520: a
 float32 particle inside the 1e-4 gate that float64 Drake reads 0.05-7% outside; margin or float64
 polish before the verdict); what to do with R14's combinations.
 
