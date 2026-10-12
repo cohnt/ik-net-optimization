@@ -1349,7 +1349,7 @@ where it is the Panda's picture.
 ### R14: do the levers add? Declared two-factor combinations, learned arm only, measured 2026-10-12
 
 **Jobs 5895130-34, 384 items, clearance row, 0 error cells; `--variants kq,rho1e5,n128,kz,kcz,kzHonT0p1,kzrho1e5,kzn128,kczrho1e5`.**
-The first declared two-factor round (`SVGD_TWO_FACTOR_ROUNDS`; the selftest holds each variant to
+The first declared two-factor round (`SVGD_DECLARED_FACTORS`; the selftest holds each variant to
 exactly its two factors): the latent kernel z with the H / T metric at T = 0.1 (one factor: at T = 1
 the two metric forms coincide), z with rho = 1e5, z with N = 128, and c x z with rho = 1e5.
 
