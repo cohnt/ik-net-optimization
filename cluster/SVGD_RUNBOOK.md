@@ -357,8 +357,8 @@ DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R10.txt 4
 
 Thomas, 2026-10-11: the batched clearance row (`svgd_collision_backend=clearances`,
 `src/svgd/collision_backend.py`) is a strict improvement and the svgd rounds use it from now on.
-**Every svgd item of R6, R8, R9, R10, R11, R12, SMOKE_IIWA and R7 carries
-`--set svgd_collision_backend=clearances`** (`SVGD_COLLISION` / `SVGD_CLEARANCE_STAGES` in
+**Every svgd item of R6, R8, R9, R10, R11, R12, SMOKE_IIWA and R7 (and of R13-R16, SMOKE_SCREW and
+SMOKE_SOFT, their own section below) carries `--set svgd_collision_backend=clearances`** (`SVGD_COLLISION` / `SVGD_CLEARANCE_STAGES` in
 `cluster/gen_manifest.py`); nothing else changed in those manifests, and every other manifest
 regenerates byte-identical. R1-R5 finished on the default `autodiff` row and keep it; **the IPOPT twins (R2, R7IPOPT, and stage PAPER for the iiwa) stay on
 the tarball pin** and never carry it. The selftest holds all of that, plus the value being one
@@ -532,6 +532,177 @@ pairing's must-match list, beside `grid_hash`. So R7 is **refused** against R2's
 run that carries a seed-1 grid is refused too. The A/B against the seed-1 primary and the
 variant-vs-variant tables do not pair across grids. They print a note line instead.
 
+## R13-R16 and two robot smokes (Thomas, 2026-10-11 ~23:35)
+
+Thomas approved three new rounds together: *"Launch them all, we don't want to waste GPU time."*
+All of them follow the R11 / R12 / SMOKE_IIWA / R6-R10 conventions:
+
+- `SVGD_PINNED` plus each variant's overrides. An override of a pinned name replaces it in place.
+- The record flags, graphed mode and the lifted step cap.
+- 24 shards for every 480-cell row, and PROCS=2 with no MPS.
+- **Every svgd item carries the clearance row** (`svgd_collision_backend=clearances`). So every one
+  of these manifests is submitted with `DRAKE_ENV=crc`.
+- The rounds run the learned arm only. Only the smokes run both arms.
+
+### R13: the kernel space, single factor
+
+The Panda `n6` and its four rows, one override of `svgd_kernel` per variant. `kq` (the kernel on
+q, the default, unset) is the reference.
+
+| variant | the one change against `kq` | the repulsion acts on |
+| --- | --- | --- |
+| `kz` | `svgd_kernel=z` | the latent block of y alone |
+| `kcz` | `svgd_kernel=cz` | the product of the conditioning-pose RBF and the latent RBF, each with its own bandwidth |
+| `kqz` | `svgd_kernel=qz` | the product of the q RBF (pulled back through the flow) and the latent RBF (direct) |
+| `kx` | `svgd_kernel=x` | the whole normalised decision vector y = x / s |
+
+The four are `z / cz / qz / x` in `SVGD_ENUM_FIELDS["svgd_kernel"]` (`src/generic_program.py`).
+`z`, `cz` and `qz` are refused on the joint-space arm at solver construction, which a learned-only
+round never reaches. The selftest now checks every round override of a choice option against that
+tuple, read from the source text, so a value outside it fails the selftest rather than every cell.
+
+### R14: declared two-factor combinations
+
+The same Panda rows. This is the one round allowed more than one factor.
+`SVGD_TWO_FACTOR_ROUNDS` in `cluster/gen_manifest.py` declares each variant's two factors. The
+selftest holds every R14 item to **exactly** those overrides, with nothing missing and nothing
+extra. It still holds every other round to one factor, or zero for the primary carried into a new
+context.
+
+| variant | factor 1 | factor 2 |
+| --- | --- | --- |
+| `kzHonT0p1` | `svgd_kernel=z` | `svgd_metric_temperature=on` + `svgd_temperature=0.1`, which together are one factor: the temperature under the H/T metric |
+| `kzrho1e5` | `svgd_kernel=z` | `svgd_rho=100000`, replacing the pinned 1000 (R9's cost lever) |
+| `kzn128` | `svgd_kernel=z` | `svgd_n=128` (R8's) |
+| `kczrho1e5` | `svgd_kernel=cz` | `svgd_rho=100000` |
+
+**Why the temperature pair is one factor.** At T = 1 the H/T metric is H, so the metric form cannot
+be varied on its own: switching `svgd_metric_temperature` on changes nothing until T moves. A
+temperature under the default metric is a different factor (R5's `T10`). Read `kzHonT0p1` against
+`kz` for the effect of the temperature, and against `kq` only as the combination.
+
+### R15 (screw arm) and R16 (soft PCS arm), with SVGD_SMOKE_SCREW / SVGD_SMOKE_SOFT
+
+These copy R12's shape onto the two other robots of the record. Each runs the primary `kq` with
+**zero overrides** on the robot's four rows: learned arm only, 480 cells, 180 s, 24 shards.
+
+- **R15** is the screw arm `screw7_p050` at its fielded `n6`
+  (`models/screw7_p050/screw7_p050__n6__step620000.pkl`, `scripts/screw_arm/screw_arm_benchmark.py`).
+  Tags are `sc_SVGD_R15_screw7_p050_n6_svgd_<row>_480_180_<start>_kq`.
+- **R16** is the soft PCS arm `soft12` at its fielded `n6`
+  (`models/soft12/soft12__n6__step620000.pkl`, `scripts/soft_arm/soft_arm_benchmark.py`).
+  Tags are `sc_SVGD_R16_soft12_n6_svgd_<row>_480_180_<start>_kq`.
+- **Two rounds, not one.** `SVGD_STAGE_CONTEXT` gives each stage one context.
+- **Their IPOPT twins are stage PAPER's runs on each robot**, as R12's is for the iiwa:
+  `sc_PAPER_screw7_p050_n6_ipopt_<row>_480_180_<start>` and `sc_PAPER_soft12_n6_ipopt_...`. Both
+  are collected, so there is no new twin manifest.
+  - Neither robot is in `ADOPTED_RUNGS`, so their rows come from `stage_SCREW` / `stage_SOFT12`,
+    as stage REMEASURE and PAPER build them. `SVGD_RUNGS` maps each svgd chart to its builder.
+  - The selftest holds each robot's IPOPT rows, built at PAPER's 8 shards under PAPER's tag, equal
+    to PAPER's items (ids, scripts, args).
+  - The checkpoint paths are therefore the ones PAPER already ran on `~/learned-ik`.
+- **The two smokes** have SMOKE_IIWA's shape: one 2 x 2 item per row (4 items), 60 s, `--arms
+  learned,numerical`, `kq`. Tags are `sc_SVGDSMOKE_<robot>_n6_svgd_<row>_4_60_<start>_kq`. They
+  exist so the joint-space arm, and the clearance row on these two scenes, are seen to run before
+  the learned-only rounds are read. They are not results.
+
+**Which svgd path each arm takes.** These come from the local plumbing smoke (`docs/svgd-solver.md`,
+"Other robots"). The screw arm runs the compiled / graphed split step, as the rigid arms do. The
+soft PCS arm has no closed-form row Jacobians through its floating joints, so it takes the eager
+autograd step. Locally that cost 70-126 ms per step at N = 16, against 6-15 ms on the screw arm.
+**Expect R16 to run far above the 5 s per learned cell assumption**, and possibly to the clock.
+With every cell at the clock, an item is 20 cells x 180 s = 1 h, still far inside `ITEM_TIMEOUT`.
+
+**Never exercised: the clearance row on these two scenes.** venv-crc's verification and
+`tests/test_collision_clearances.py` cover the Panda (and the iiwa through R12 / SMOKE_IIWA). The
+local plumbing smoke ran the default `autodiff` row. `ClearanceEvaluator` refuses at construction
+when the checker's pair set is not the constraint's. The soft PCS arm's 33 floating sub-links make
+that the case to watch. A refusal fails every cell of the arm. `_abort_on_dead_arm` then fails the
+smoke job, and `afterok` holds its round. **That is what the smokes are for.**
+
+### Allotment
+
+`python cluster/gen_manifest.py --stage SVGD_R13 --allotment` prints these lines. The rounds assume
+5 s per learned cell, which is optimistic: R1 measured a 6-12 s median at N = 64, and `kzn128`
+runs N = 128. The smokes are charged at the clock on both arms.
+
+```
+  manifest          runs  cells  items  solve-h  node-h    h@4  max item h
+  SVGD_R13            16   7680    384     29.9    14.9    3.7        0.08
+  SVGD_R14            16   7680    384     29.9    14.9    3.7        0.08
+  SVGD_R15             4   1920     96      7.5     3.7    0.9        0.08
+  SVGD_R16             4   1920     96      7.5     3.7    0.9        0.08
+  SVGD_SMOKE_SCREW     4     16      4      0.7     0.4    0.1        0.18
+  SVGD_SMOKE_SOFT      4     16      4      0.7     0.4    0.1        0.18
+```
+
+At the assumption that is about 38 node-hours, or about 9.5 h on 4 idle nodes. The worst case puts
+every cell at the clock: 384 items x 1 h for each of R13 and R14 (192 node-h each) and 96 x 1 h for
+each of R15 and R16 (48 node-h each), about 120 h on 4 nodes. That cannot finish before the
+maintenance window (Mon 2026-10-12 evening to Wed 10-14 morning). Whatever is still running then is
+killed: `--reclaim` each manifest and resubmit after it.
+
+### Staging: copy the six manifests, no restage
+
+The staged tree is **7ca45a4** (`R6-R10 on the clearance row ...`). The code needs no restage:
+`git diff 7ca45a4 <this commit> -- src/ scripts/ cluster/*.sh` changes only
+`scripts/report_svgd.py`, which runs locally. Since 7ca45a4 the staged tree has carried every
+option these manifests set:
+
+- `svgd_kernel` with `z / cz / qz / x` and `svgd_metric_temperature` with `on / off`, in
+  `SVGD_ENUM_FIELDS`;
+- `svgd_temperature`, `svgd_n`, `svgd_rho` and `svgd_collision_backend=clearances`;
+- the screw and soft PCS support in `src/svgd/batched_program.py` and
+  `src/svgd/kinematics_from_plant.py` (f26cfaa, an ancestor of 7ca45a4);
+- `--solver svgd` in both robots' benchmark scripts.
+
+So copy the manifests into the staged tree by hand, as for R6-R10, and check it:
+
+```bash
+scp $WT/cluster/manifest_stageSVGD_{R13,R14,R15,R16,SMOKE_SCREW,SMOKE_SOFT}.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/
+ssh tcohn@txe1-login.mit.edu 'cat ~/learned-ik/repo/.staged-commit'          # must print 7ca45a4...
+ssh tcohn@txe1-login.mit.edu 'grep -c "\"svgd_metric_temperature\": (\"off\", \"on\")\|\"svgd_kernel\": (\"q\", \"none\", \"x\", \"z\", \"c\", \"cz\", \"qz\", \"pose\")" ~/learned-ik/repo/src/generic_program.py'   # must print 2
+ssh tcohn@txe1-login.mit.edu 'grep -c "TorchConfigToPlantQ" ~/learned-ik/repo/src/svgd/batched_program.py'   # must be >= 1
+ssh tcohn@txe1-login.mit.edu 'ls -l ~/learned-ik/repo/models/screw7_p050/screw7_p050__n6__step620000.{pkl,arch.json} ~/learned-ik/repo/models/soft12/soft12__n6__step620000.{pkl,arch.json}'
+```
+
+### Submit
+
+Submit from the worktree `$WT`. `submit_bench.sh` reads the manifest from the checkout it lives in,
+and the staging clone `$STAGE` (at 7ca45a4) does not have these six. Its scripts are unchanged
+since 7ca45a4. The smokes go first, each robot round `afterok` on its own smoke, and R13 then R14
+in FIFO with no dependency. The unchained submissions check at submit time that their checkpoints
+exist on the cluster. The chained ones check at job start.
+
+```bash
+cd $WT
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_SMOKE_SCREW.txt 1   # -> <SMOKE_SCREW>
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_SMOKE_SOFT.txt 1    # -> <SMOKE_SOFT>
+DEPENDENCY=afterok:<SMOKE_SCREW> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R15.txt 4
+DEPENDENCY=afterok:<SMOKE_SOFT> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R16.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R13.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R14.txt 4
+```
+
+`afterok` gates on the smoke job's exit status, not on its numbers, as with SMOKE_IIWA. Before
+reading R15 or R16, read the smoke's four `summary.json` files against the same checklist as
+SMOKE_IIWA's: zero `error` records on both arms, `metadata.svgd_warmup_seconds` present for both
+arms, solver / Drake / `verify()` feasibility agreeing, and wall <= cap + 1 s.
+
+### Read
+
+```bash
+.venv/bin/python scripts/report_svgd.py --stage SVGD --variants kz,kcz,kqz,kx              # R13 beside kq
+.venv/bin/python scripts/report_svgd.py --stage SVGD --variants kz,kzHonT0p1,kzrho1e5,kzn128,kcz,kczrho1e5,rho1e5,n128
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows screw7_p050                     # R15 against PAPER
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows soft12                          # R16 against PAPER
+```
+
+The reporter takes the new rounds and robots from `gen_manifest.py`. `--rows` now also accepts the
+robots the stage builds, not just smoke.py's. Collected runs land in
+`results/screw_arm/benchmark/` and `results/soft12/benchmark/`. Promote them the way the R12
+section does: `cp -r <STAGING>/results/<dir>/benchmark/sc_SVGD_R1{5,6}_*` and `sc_SVGDSMOKE_*`.
+
 ## Collect, promote and report R12, SMOKE_IIWA and R7
 
 These follow the Collect section below:
@@ -560,13 +731,13 @@ Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs
 ```bash
 bash $WT/cluster/collect_results.sh --status
 bash $WT/cluster/collect_results.sh                  # rsync + merge shards, incremental
-bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R11) only once the queue is idle
+bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R16, the smokes) only once the queue is idle
 ```
 
 Tags: `sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq`,
 `sc_SVGD_R2_panda_n6_ipopt_<row>_480_180_<start>` and
-`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`; R12, SMOKE_IIWA and R7 are listed in
-their own sections above.
+`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`; R12, SMOKE_IIWA, R7, R13-R16 and the
+screw / soft PCS smokes are listed in their own sections above.
 
 - R2 pairs cell for cell with the record's `sc_REMEASURE_panda_n6_ipopt_*`: same grid, same scene,
   same args.

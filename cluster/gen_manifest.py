@@ -2877,6 +2877,18 @@ def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RU
 ##                    (the flag both benchmark scripts draw the grid from, and which `grid_hash`
 ##                    hashes), re-tagged sc_SVGD_R7_.
 ##   SVGD_R7          the primary `kq` on those seed-2 grids, learned arm only, 24 shards.
+##   SVGD_R15         the screw arm `screw7_p050` at its fielded `n6`, and
+##   SVGD_R16         the soft PCS arm `soft12` at its fielded `n6` (Thomas, 2026-10-11 ~23:35:
+##                    "Launch them all, we don't want to waste GPU time"): each R12's shape exactly
+##                    -- the primary `kq`, zero overrides, the four rows, learned arm only, 24
+##                    shards -- and each twinned with stage PAPER's four IPOPT runs on that robot.
+##                    Neither robot is in ADOPTED_RUNGS (the status quo's two rigid arms), so their
+##                    record rows come from stage_SCREW / stage_SOFT12, exactly as stage REMEASURE
+##                    and PAPER build them (SVGD_RUNGS); the selftest holds them equal to PAPER's.
+##   SVGD_SMOKE_SCREW / SVGD_SMOKE_SOFT  SVGD_SMOKE_IIWA's shape on those two robots: one 2 x 2
+##                    item per row, BOTH arms, `kq`, 60 s, so the joint-space arm is seen to run
+##                    before the learned-only R15 / R16 are read. Not results.
+## One context per stage: a stage holds one robot, so the two robots are two rounds.
 ## SVGD_TWIN_OF names, per context, the manifest that holds its IPOPT twin; scripts/report_svgd.py
 ## reads it to pair every svgd row with the twin on its own grid.
 
@@ -2885,16 +2897,30 @@ SVGD_STAGES = ("SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K")
 #: Stages that are NOT the Panda n6 at seed 1: stage -> the context fields they change.
 SVGD_STAGE_CONTEXT = {"SVGD_R12": dict(robot="iiwa", rung="n4"),
                       "SVGD_SMOKE_IIWA": dict(robot="iiwa", rung="n4"),
-                      "SVGD_R7": dict(seed=2), "SVGD_R7IPOPT": dict(seed=2)}
+                      "SVGD_R7": dict(seed=2), "SVGD_R7IPOPT": dict(seed=2),
+                      "SVGD_R15": dict(robot=SCREW_PRIMARY, rung=SCREW_ADOPTED[0]),
+                      "SVGD_SMOKE_SCREW": dict(robot=SCREW_PRIMARY, rung=SCREW_ADOPTED[0]),
+                      "SVGD_R16": dict(robot="soft12", rung=SOFT_ADOPTED["soft12"][0]),
+                      "SVGD_SMOKE_SOFT": dict(robot="soft12", rung=SOFT_ADOPTED["soft12"][0])}
+#: Every chart an svgd context may run on: (robot, rung) -> (checkpoint, the builder of its record
+#: IPOPT rows). The status quo's two adopted rungs (stage_STATUSQUO), plus the screw arm's and the
+#: soft PCS arm's fielded rungs, whose record rows stage REMEASURE / PAPER build from stage_SCREW /
+#: stage_SOFT12 -- they are deliberately not in ADOPTED_RUNGS (see those stages).
+SVGD_RUNGS = {**{(r, label): (ck, "STATUSQUO") for r, label, ck in ADOPTED_RUNGS},
+              (SCREW_PRIMARY, SCREW_ADOPTED[0]): (SCREW_ADOPTED[1], "SCREW"),
+              ("soft12", SOFT_ADOPTED["soft12"][0]): (SOFT_ADOPTED["soft12"][1], "SOFT12")}
 #: The IPOPT-twin manifests built by stage_SVGD, stage -> the tag family (round token) it carries.
 SVGD_TWIN_STAGES = {"SVGD_R2": "SVGD_R2", "SVGD_R7IPOPT": "SVGD_R7"}
 #: Each context's IPOPT twin: (robot, rung, seed) -> the stage whose items are those rows under
 #: IPOPT at paper conditions (PROCS=2, no MPS). `PAPER` is not an svgd stage: svgd_twin_items reads
 #: its iiwa IPOPT items out of stage_PAPER.
 SVGD_TWIN_OF = {("panda", "n6", 1): "SVGD_R2", ("panda", "n6", 2): "SVGD_R7IPOPT",
-                ("iiwa", "n4", 1): "PAPER"}
-#: The cluster smokes: tiny grids that pair with nothing.
-SVGD_SMOKES = ("SVGD_SMOKE", "SVGD_SMOKE_IIWA")
+                ("iiwa", "n4", 1): "PAPER", (SCREW_PRIMARY, SCREW_ADOPTED[0], 1): "PAPER",
+                ("soft12", SOFT_ADOPTED["soft12"][0], 1): "PAPER"}
+#: The cluster smokes: tiny grids that pair with nothing. The per-robot ones (every row, both arms,
+#: in their SVGD_STAGE_CONTEXT) are SVGD_ROBOT_SMOKES.
+SVGD_ROBOT_SMOKES = ("SVGD_SMOKE_IIWA", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT")
+SVGD_SMOKES = ("SVGD_SMOKE",) + SVGD_ROBOT_SMOKES
 #: R1 is split by variant into two manifests: stage name -> the variant it carries.
 SVGD_R1_SPLIT = {"SVGD_R1": "kq", "SVGD_R1K": "knone"}
 #: (a): the `graphed` mode of scripts/svgd/smoke.py's MODES, verbatim.
@@ -2919,7 +2945,9 @@ SVGD_PINNED = ["--set", "svgd_rho=1000", "--set", "svgd_gn_lm=10", "--set", "svg
 #: 288 items, voided on the cluster as void_oldrow_R6_*) and regenerated on this row.
 SVGD_COLLISION = ["--set", "svgd_collision_backend=clearances"]
 SVGD_CLEARANCE_STAGES = ("SVGD_R11", "SVGD_R12", "SVGD_SMOKE_IIWA", "SVGD_R7",
-                         "SVGD_R6", "SVGD_R8", "SVGD_R9", "SVGD_R10")
+                         "SVGD_R6", "SVGD_R8", "SVGD_R9", "SVGD_R10",
+                         "SVGD_R13", "SVGD_R14", "SVGD_R15", "SVGD_R16",
+                         "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT")
 #: (b): the lifted step budget. ONE knob; the IPOPT `max_iter` is removed from svgd items.
 SVGD_STEP_CAP = 1000000
 SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
@@ -2960,6 +2988,39 @@ SVGD_ROUNDS = {
     ## round entry allowed none, and only where the context is not the default's.
     "SVGD_R12": {"kq": ([], 24, SVGD_BOTH)},           # the iiwa n4 (Thomas, 2026-10-11)
     "SVGD_R7": {"kq": ([], 24, SVGD_BOTH)},            # grid seed 2 (Thomas, 2026-10-11)
+    ## R13-R16 (Thomas, 2026-10-11 ~23:35: "Launch them all, we don't want to waste GPU time").
+    ## R13, the kernel space, single factor against `kq` (kernel on q): the latent block alone, the
+    ## product of the conditioning-pose and latent RBFs, the product of the q and z RBFs, and the
+    ## whole normalised decision vector y (ProgramOptions.svgd_kernel's help says what each is).
+    "SVGD_R13": {"kz": (["svgd_kernel=z"], 24, SVGD_BOTH),
+                 "kcz": (["svgd_kernel=cz"], 24, SVGD_BOTH),
+                 "kqz": (["svgd_kernel=qz"], 24, SVGD_BOTH),
+                 "kx": (["svgd_kernel=x"], 24, SVGD_BOTH)},
+    ## R14, DECLARED two-factor combinations (SVGD_TWO_FACTOR_ROUNDS names each variant's factors):
+    ## the latent kernel crossed with the temperature under the H/T metric, rho = 1e5 (R9's cost
+    ## lever) and N = 128 (R8's), and the c-z product kernel crossed with rho = 1e5.
+    "SVGD_R14": {"kzHonT0p1": (["svgd_kernel=z", "svgd_metric_temperature=on",
+                                "svgd_temperature=0.1"], 24, SVGD_BOTH),
+                 "kzrho1e5": (["svgd_kernel=z", "svgd_rho=100000"], 24, SVGD_BOTH),
+                 "kzn128": (["svgd_kernel=z", "svgd_n=128"], 24, SVGD_BOTH),
+                 "kczrho1e5": (["svgd_kernel=cz", "svgd_rho=100000"], 24, SVGD_BOTH)},
+    "SVGD_R15": {"kq": ([], 24, SVGD_BOTH)},           # the screw arm screw7_p050 n6
+    "SVGD_R16": {"kq": ([], 24, SVGD_BOTH)},           # the soft PCS arm soft12 n6
+}
+#: Rounds allowed MORE than one factor, each variant DECLARED as its factors, each factor the
+#: overrides that make it up. The selftest holds every such variant's overrides to EXACTLY its
+#: declared factors' (nothing missing, nothing extra) and every other round to one factor.
+#: `svgd_metric_temperature=on` + `svgd_temperature=0.1` is ONE logical factor, "the temperature
+#: under the H/T metric": at T = 1 the H/T metric IS H, so the metric form cannot be varied alone --
+#: switching it on changes nothing until T moves, and T under the default metric is a different
+#: factor (R5's `T10`). The pair is one factor, and R14 declares it as one.
+SVGD_TWO_FACTOR_ROUNDS = {
+    "SVGD_R14": {
+        "kzHonT0p1": (("svgd_kernel=z",), ("svgd_metric_temperature=on", "svgd_temperature=0.1")),
+        "kzrho1e5": (("svgd_kernel=z",), ("svgd_rho=100000",)),
+        "kzn128": (("svgd_kernel=z",), ("svgd_n=128",)),
+        "kczrho1e5": (("svgd_kernel=cz",), ("svgd_rho=100000",)),
+    },
 }
 #: The rounds' allotment base, (learned, joint space) seconds per cell -- an ASSUMPTION from the
 #: cluster smoke (pose paired, 4 cells, 60 s: learned 4-7 s, joint space 9-42 s), not a measurement.
@@ -2969,7 +3030,7 @@ SVGD_ROUND_CELL_S = (5.0, 60.0)
 #: R1 / R1K; with the kernel off it runs to the 180 s clock on most grasp cells, which tripled
 #: R1K's time and would have pushed the variant ladder past the 10-12 maintenance window.
 SVGD_ROUND_ARMS = "learned"
-SVGD_STAGES = SVGD_STAGES + tuple(SVGD_ROUNDS) + ("SVGD_R7IPOPT", "SVGD_SMOKE_IIWA")
+SVGD_STAGES = SVGD_STAGES + tuple(SVGD_ROUNDS) + ("SVGD_R7IPOPT",) + SVGD_ROBOT_SMOKES
 SVGD_R2_SHARDS = 8
 SVGD_R1_SHARD_SCALE = 3
 SVGD_SMOKE_SHAPE = (2, 2, 60.0)          # targets, guesses, cap -- 4 cells
@@ -2997,12 +3058,21 @@ SVGD_ALLOWED_SETS = {
                    "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr"},
     **{r: {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
            "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend"}
-       for r in ("SVGD_SMOKE_IIWA", "SVGD_R12", "SVGD_R7")},
+       for r in ("SVGD_SMOKE_IIWA", "SVGD_R12", "SVGD_R7", "SVGD_R15", "SVGD_R16",
+                 "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT")},
+    "SVGD_R13": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                 "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_kernel",
+                 "svgd_collision_backend"},
+    "SVGD_R14": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                 "svgd_outer_iters", "svgd_rho", "svgd_gn_lm", "svgd_lr", "svgd_kernel",
+                 "svgd_metric_temperature", "svgd_temperature", "svgd_n",
+                 "svgd_collision_backend"},
     "SVGD_R7IPOPT": {"correction_cost_weight", "flow_cuda_graph", "max_iter"},
 }
 #: ProgramOptions defaults the manifest RELIES ON rather than sets (checked from source text).
 SVGD_RELIED_DEFAULTS = {"svgd_n": "64", "svgd_paired_init": '"jitter"', "svgd_kernel": '"q"',
-                        "svgd_compile": "False", "svgd_cuda_graph": "False"}
+                        "svgd_compile": "False", "svgd_cuda_graph": "False",
+                        "svgd_metric_temperature": '"off"', "svgd_temperature": "1.0"}
 #: Allotment bases. R2: the record's Panda IPOPT mean wall per cell over ALL cells, learned /
 #: joint space (docs/status-quo-tables.md Table 3, stage REMEASURE at PROCS=8 under MPS; at
 #: PROCS=2 the learned arm should be ~1.12-1.19x faster, so this is slightly pessimistic).
@@ -3023,13 +3093,20 @@ def svgd_context(stage):
 
 def _svgd_rows(targets, guesses, shards, tag, starts="paired,native", robot=SVGD_ROBOT,
                rung=SVGD_RUNG, seed=SVGD_SEED):
-    """The record's IPOPT rows of one adopted rung (the Panda n6 by default): stage_STATUSQUO's
-    items plus stage REMEASURE's additions (the graph switch and the lifted IPOPT budget), at any
-    grid shape, shard count and grid seed."""
+    """The record's IPOPT rows of one SVGD_RUNGS chart (the Panda n6 by default): its builder's
+    items (stage_STATUSQUO for the adopted rungs, stage_SCREW / stage_SOFT12 for the screw and soft
+    PCS arms, as stage REMEASURE builds them) plus stage REMEASURE's additions (the graph switch and
+    the lifted IPOPT budget), at any grid shape, shard count and grid seed."""
+    _, builder = SVGD_RUNGS[(robot, rung)]
+    kw = dict(solvers="ipopt", starts=starts, tag=tag, seed=seed)
+    if builder == "STATUSQUO":
+        rows = stage_STATUSQUO(STATUSQUO_WALL, targets, guesses, shards, only=f"{robot}:{rung}", **kw)
+    elif builder == "SCREW":
+        rows = stage_SCREW(STATUSQUO_WALL, targets, guesses, shards, only=robot, **kw)
+    else:
+        rows = stage_SOFT12(STATUSQUO_WALL, targets, guesses, shards, only=robot, **kw)
     return [dict(it, args=list(it["args"]) + REMEASURE_GRAPH + _itcap_extra("ipopt")[1])
-            for it in stage_STATUSQUO(STATUSQUO_WALL, targets, guesses, shards,
-                                      only=f"{robot}:{rung}", solvers="ipopt",
-                                      starts=starts, tag=tag, seed=seed)]
+            for it in rows]
 
 
 def _svgd_stage_rows(stage, targets, guesses, shards, tag, starts="paired,native"):
@@ -3045,7 +3122,7 @@ def svgd_twin_items(stage):
     if stage != "PAPER":
         return stage_SVGD(stage)
     want = {(r, g) for (r, g, s), st in SVGD_TWIN_OF.items() if st == "PAPER"}
-    rung_of = {robot: label for robot, label, _ in ADOPTED_RUNGS}
+    rung_of = {robot: label for robot, label in SVGD_RUNGS}
     return [it for it in stage_PAPER() if _svgd_flag(it["args"], "--solver") == "ipopt"
             and (it["robot"], rung_of.get(it["robot"])) in want]
 
@@ -3129,7 +3206,7 @@ def _svgd_r1_items(variants=tuple(SVGD_VARIANTS)):
 
 
 def stage_SVGD(which):
-    """The svgd branch's cluster stages: SVGD_SMOKE / SVGD_SMOKE_IIWA, the IPOPT twins SVGD_R2 /
+    """The svgd branch's cluster stages: SVGD_SMOKE / SVGD_ROBOT_SMOKES, the IPOPT twins SVGD_R2 /
     SVGD_R7IPOPT, SVGD_R1 / SVGD_R1K (svgd, the `kq` and `knone` halves of one stage) and the
     learned-only rounds SVGD_ROUNDS, each in its SVGD_STAGE_CONTEXT."""
     if which in SVGD_TWIN_STAGES:
@@ -3149,8 +3226,9 @@ def stage_SVGD(which):
         items = [_svgd_as_svgd(it, "kq", wall=wall)
                  for it in _svgd_rows(t, g, 1, "SVGDSMOKE", starts="paired")
                  if _svgd_flag(it["args"], "--task") == "pose"]
-    elif which == "SVGD_SMOKE_IIWA":
-        ## Every row, both arms: the joint-space arm seen to run on the iiwa before R12 is read.
+    elif which in SVGD_ROBOT_SMOKES:
+        ## Every row, both arms: the joint-space arm seen to run on the robot before its
+        ## learned-only round (R12 the iiwa, R15 the screw arm, R16 the soft PCS arm) is read.
         t, g, wall = SVGD_SMOKE_SHAPE
         items = [_svgd_as_svgd(it, "kq", wall=wall, stage=which)
                  for it in _svgd_stage_rows(which, t, g, 1, "SVGDSMOKE")]
@@ -3167,7 +3245,7 @@ def svgd_allotment():
     print("  REMEASURE at PROCS=8 MPS=1 -- slightly pessimistic at PROCS=2).")
     print(f"  R1 base: ASSUMED {SVGD_R1_ASSUMED_ARM_CELL_S:g} s per cell per arm (both arms run "
           f"svgd); worst case every cell at the {STATUSQUO_WALL:g} s clock on both arms.")
-    print(f"  R3-R12 base: ASSUMED {SVGD_ROUND_CELL_S[0]:g} s per learned cell; the rounds run the "
+    print(f"  R3-R16 base: ASSUMED {SVGD_ROUND_CELL_S[0]:g} s per learned cell; the rounds run the "
           f"learned arm only (SVGD_ROUND_ARMS). R1 measured 6-12 s median at N = 64.")
     print(f"  smoke: charged at the clock.")
     print(f"\n  {'manifest':<16}{'runs':>6}{'cells':>7}{'items':>7}{'solve-h':>9}{'node-h':>8}"
@@ -5114,7 +5192,18 @@ def selftest():
                             f"manifests rely on {want}: set it explicitly in SVGD_VARIANTS")
     if not re.search(r'"svgd_collision_backend": \([^)]*"clearances"', gp_src):
         sv_fails.append("ProgramOptions does not accept svgd_collision_backend='clearances'")
-    sv_expected = {"SVGD_SMOKE": (1, 1), "SVGD_SMOKE_IIWA": (4, 4),
+    ## Every round override of a CHOICE option names a value ProgramOptions lists for it (read from
+    ## the same source text): an unknown value raises at options construction, and every cell of
+    ## the item would fail instantly.
+    for r, variants in SVGD_ROUNDS.items():
+        for v, (overrides, _, _) in variants.items():
+            for o in overrides:
+                name, value = o.split("=", 1)
+                m = re.search(rf'"{name}": \(([^)]*)\)', gp_src)
+                if m and f'"{value}"' not in m.group(1):
+                    sv_fails.append(f"{r}: variant {v} sets {o}; ProgramOptions accepts "
+                                    f"{name} in ({m.group(1)}) only")
+    sv_expected = {"SVGD_SMOKE": (1, 1), **{s: (4, 4) for s in SVGD_ROBOT_SMOKES},
                    "SVGD_R2": (4, 4 * SVGD_R2_SHARDS), "SVGD_R7IPOPT": (4, 4 * SVGD_R2_SHARDS),
                    "SVGD_R1": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE),
                    "SVGD_R1K": (4, 4 * SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE),
@@ -5126,17 +5215,38 @@ def selftest():
     if {r: n for r, n in sv_expected.items() if r in SVGD_ROUNDS} != \
             {"SVGD_R3": (8, 128), "SVGD_R4": (8, 192), "SVGD_R5": (8, 160), "SVGD_R6": (12, 288),
              "SVGD_R8": (12, 288), "SVGD_R9": (12, 288), "SVGD_R10": (2, 48),
-             "SVGD_R11": (8, 192), "SVGD_R12": (4, 96), "SVGD_R7": (4, 96)}:
-        sv_fails.append("rounds R3-R12 are not 8/8/8/12/12/12/2/8/4/4 runs, "
-                        "128/192/160/288/288/288/48/192/96/96 items")
+             "SVGD_R11": (8, 192), "SVGD_R12": (4, 96), "SVGD_R7": (4, 96),
+             "SVGD_R13": (16, 384), "SVGD_R14": (16, 384), "SVGD_R15": (4, 96),
+             "SVGD_R16": (4, 96)}:
+        sv_fails.append("rounds R3-R16 are not 8/8/8/12/12/12/2/8/4/4/16/16/4/4 runs, "
+                        "128/192/160/288/288/288/48/192/96/96/384/384/96/96 items")
+    ## The declared multi-factor rounds: each variant's overrides are EXACTLY its declared
+    ## factors' (as a multiset, so nothing missing and nothing extra), each variant has two
+    ## factors on disjoint option names, and the declaration covers the round's variants exactly.
+    for r, decl in SVGD_TWO_FACTOR_ROUNDS.items():
+        if r not in SVGD_ROUNDS or set(decl) != set(SVGD_ROUNDS[r]):
+            sv_fails.append(f"SVGD_TWO_FACTOR_ROUNDS[{r}] does not declare exactly its variants")
+            continue
+        for v, factors in decl.items():
+            flat = [o for f in factors for o in f]
+            names = [o.split("=", 1)[0] for o in flat]
+            if len(factors) != 2 or not all(factors) or len(set(names)) != len(names) or \
+                    sorted(flat) != sorted(SVGD_ROUNDS[r][v][0]):
+                sv_fails.append(f"{r}: variant {v} overrides {SVGD_ROUNDS[r][v][0]}, declared "
+                                f"two factors {factors}")
     ## Contexts: each is an adopted rung (so the chart is the record's), and every context an svgd
     ## row runs on names its IPOPT twin, which runs on that same context.
     default_ctx = (SVGD_ROBOT, SVGD_RUNG, SVGD_SEED)
-    rung_ckpt = {(r, label): ck for r, label, ck in ADOPTED_RUNGS}
+    rung_ckpt = {key: ck for key, (ck, _) in SVGD_RUNGS.items()}
+    if any(rung_ckpt.get((r, label)) != ck for r, label, ck in ADOPTED_RUNGS) or \
+            rung_ckpt.get((SCREW_PRIMARY, SCREW_ADOPTED[0])) != SCREW_ADOPTED[1] or \
+            rung_ckpt.get(("soft12", SOFT_ADOPTED["soft12"][0])) != SOFT_ADOPTED["soft12"][1]:
+        sv_fails.append("SVGD_RUNGS is not the adopted rungs plus the screw and soft PCS arms' "
+                        "fielded charts")
     for stage in SVGD_STAGES:
         ctx = svgd_context(stage)
         if ctx[:2] not in rung_ckpt:
-            sv_fails.append(f"{stage}: context {ctx} is not an adopted rung")
+            sv_fails.append(f"{stage}: context {ctx} is not a fielded rung (SVGD_RUNGS)")
         if stage not in SVGD_SMOKES and ctx not in SVGD_TWIN_OF:
             sv_fails.append(f"{stage}: context {ctx} has no IPOPT twin in SVGD_TWIN_OF")
     for ctx, st in SVGD_TWIN_OF.items():
@@ -5159,7 +5269,7 @@ def selftest():
         if (len(runs), len(items)) != (want_runs, want_items):
             sv_fails.append(f"{stage}: {len(runs)} runs / {len(items)} items, expected "
                             f"{want_runs} / {want_items}")
-        prefix = {"SVGD_SMOKE": "sc_SVGDSMOKE_", "SVGD_SMOKE_IIWA": "sc_SVGDSMOKE_",
+        prefix = {**{s: "sc_SVGDSMOKE_" for s in SVGD_SMOKES},
                   "SVGD_R1K": "sc_SVGD_R1_",
                   **{s: f"sc_{fam}_" for s, fam in SVGD_TWIN_STAGES.items()}}.get(stage, f"sc_{stage}_")
         variants_seen, rows_seen = set(), set()
@@ -5231,9 +5341,14 @@ def selftest():
                 if got != want:
                     sv_fails.append(f"{stage}: {it['id']} method sets {got}, expected {want}")
                 ## A round changes ONE setting -- or none, when it is the primary itself carried
-                ## into a context that is not the default (R12 the iiwa, R7 the second seed).
+                ## into a context that is not the default (R12 the iiwa, R7 the second seed, R15
+                ## the screw arm, R16 the soft PCS arm) -- unless SVGD_TWO_FACTOR_ROUNDS declares
+                ## the variant's factors, in which case it carries exactly those (checked above).
                 n_over = len(_svgd_variant_overrides(stage, variant))
-                if stage in SVGD_ROUNDS and n_over != 1 and not (
+                if stage in SVGD_TWO_FACTOR_ROUNDS:
+                    if variant not in SVGD_TWO_FACTOR_ROUNDS[stage]:
+                        sv_fails.append(f"{stage}: variant {variant} has no declared factors")
+                elif stage in SVGD_ROUNDS and n_over != 1 and not (
                         n_over == 0 and variant == next(iter(SVGD_VARIANTS))
                         and svgd_context(stage) != default_ctx):
                     sv_fails.append(f"{stage}: variant {variant} is not single-factor")
@@ -5270,7 +5385,7 @@ def selftest():
                             sv_fails.append(f"{stage}: {it['id']} is not SVGD_R2's item at seed {seed}")
             rows_seen.add((task, start))
             shards = int(_svgd_flag(a, "--shard").split("/")[1]) if "--shard" in a else 1
-            want_sh = ({"SVGD_SMOKE": 1, "SVGD_SMOKE_IIWA": 1, "SVGD_R2": SVGD_R2_SHARDS,
+            want_sh = ({**{s: 1 for s in SVGD_SMOKES}, "SVGD_R2": SVGD_R2_SHARDS,
                         "SVGD_R7IPOPT": SVGD_R2_SHARDS,
                         "SVGD_R1": SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE,
                         "SVGD_R1K": SVGD_R2_SHARDS * SVGD_R1_SHARD_SCALE}.get(stage)
@@ -5335,6 +5450,10 @@ def selftest():
               "budget, and together exactly stage R1")
         print("ok   stages SVGD_R12/SMOKE_IIWA (iiwa n4, twin = stage PAPER's iiwa IPOPT items) and "
               "SVGD_R7IPOPT/R7 (seed 2, twin = SVGD_R2's items at seed 2): 4/4/4/4 logical runs")
+        print("ok   stages SVGD_R13 (kernel space, single factor) / R14 (declared two-factor, "
+              "exactly the declared overrides): 16/16 logical runs, Panda n6")
+        print("ok   stages SVGD_R15/SMOKE_SCREW (screw7_p050 n6) and SVGD_R16/SMOKE_SOFT (soft12 n6), "
+              "twin = stage PAPER's IPOPT items on each robot: 4/4/4/4 logical runs")
         print(f"ok   the clearance collision row (svgd_collision_backend=clearances) on exactly "
               f"{'/'.join(SVGD_CLEARANCE_STAGES)}, every svgd item of each, none elsewhere "
               f"(submit those with DRAKE_ENV=crc)")
@@ -5409,7 +5528,8 @@ def main():
                                  "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
                                  "SVGD_R3", "SVGD_R4", "SVGD_R5", "SVGD_R6", "SVGD_R8",
                                  "SVGD_R9", "SVGD_R10", "SVGD_R11", "SVGD_R12", "SVGD_R7",
-                                 "SVGD_R7IPOPT", "SVGD_SMOKE_IIWA",
+                                 "SVGD_R7IPOPT", "SVGD_SMOKE_IIWA", "SVGD_R13", "SVGD_R14",
+                                 "SVGD_R15", "SVGD_R16", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
