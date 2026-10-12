@@ -1080,6 +1080,57 @@ as they land. **Wall from these rounds is not comparable to R1-R5's**, and a var
 success); the clearance row evaluates the same functional bitwise, so success differences at the
 clock are the only channel.
 
+## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
+
+`scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each
+Panda task, paired start, 20 s, N = 64, learned arm only, the fielded configuration except the kernel
+space (`svgd_kernel`), autodiff collision row, laptop GPU. Every variant solves 12 / 12, so the screen
+separates on the swarm, not on success. Columns: feasible particles at stop (median of 6 cells), q-spread
+among them, outer steps, median wall, cumulative redraws per cell, median reported cost on the solved
+cells (the same 6 cells for every row), median max violation.
+
+```
+space   task  feas  spr_q  outer  wall   redraw  cost   viol     stop
+q       mug    7.0  6.300    14    4.1    30     7.75   4.3e-05  converged 6      <- the fielded kernel
+q       pose  29.5  5.022    12    3.0    50     4.58   2.4e-05  converged 6
+z       mug   33.5  4.771    14    4.2    64     3.53   1.2e-05  converged 6
+z       pose  30.5  4.525    11    2.9    64     3.51   1.5e-05  converged 6
+x       mug   29.0  4.541    14    4.2    64     3.79   5.3e-06  converged 6
+x       pose  27.5  4.584    10    2.7    64     3.56   7.4e-06  converged 6
+c       mug    4.5  5.259    16    5.2    64     4.81   3.1e-05  converged 6
+c       pose  16.5  4.759    17    4.6    64     7.79   4.9e-05  converged 6
+cz      mug   56.5  4.544    16    5.4    64     3.33   1.7e-05  converged 5, clock 1
+cz      pose  42.5  4.520     9    2.6    64     3.63   1.7e-05  converged 6
+qz      mug   22.0  4.716    13    4.0    31     4.31   7.3e-06  converged 6
+qz      pose  38.0  4.558     9    2.4    64     4.13   7.4e-06  converged 6
+pose    mug    2.0  4.873    17    5.5   139     4.54   6.9e-05  converged 6      (task-space kernel, grasp only)
+none    mug   63.5  4.514    58   18.1    52     3.39   4.5e-07  clock 6          <- R1K's kernel-off
+none    pose  53.5  4.559    10    2.6    42     4.15   1.3e-06  converged 6
+```
+
+**What it says, at 12 cells.** (i) The fielded q-space kernel is the odd one out: it spreads the
+swarm in configuration space (q-spread 6.3 against 4.5-4.8 for every other space and for no kernel
+at all), leaves 7 of 64 particles feasible on grasp and returns the worst cost of the table (7.75,
+~2x IPOPT's ~4 on these rows) -- R1K's "kernel-on stall" is a property of WHERE the kernel acts, not
+of having one. (ii) Repulsion in the flow's own variables -- the latent `z`, the product `c x z`, and
+`x` (the whole decision vector, dominated by `z`) -- converges most of the swarm onto the feasible set
+(28-57 of 64) at a cost of 3.3-3.8, below IPOPT's and equal to kernel-off's 3.39, **while stopping in
+9-16 outer steps where kernel-off runs to the clock on every grasp cell** (58 steps, 18 s). The
+feasible q-spread under `z` is the same 4.5-4.8 rad as with no kernel: the swarm's coverage of
+distinct configurations comes from the start distribution and the flow's multimodality, and the
+latent kernel preserves it without pushing particles off the manifold. (iii) `c` alone is the worst
+space on the pose task (cost 7.8, 17 feasible): repulsion in the conditioning pose pushes particles
+away from the one pose they must all condition on. (iv) The task-space kernel on grasp redraws 139
+particles per cell (2x N) and keeps 2 feasible -- repulsion along the mug's free orientation drives
+particles into the runaway regions. (v) `c x z` has the most feasible particles (57 / 43) and one
+grasp cell at the clock: a swarm that keeps most particles feasible has more of them improving the
+best objective, so the stall rule fires later -- the stop rule and the kernel space interact, which is
+the interaction Thomas asked not to be assumed away. Stage B (temperature 1e-1 / 1e-2 / 1e-4 under
+the fielded metric H and the swept H/T form, for q, z, x, cz, qz) follows; a cluster round on the
+480-cell rows for the spaces that separate comes after it. **A kernel in `z` or `c` exists only on
+the learned arm**; the joint-space svgd ablation can run the q kernel only, so the kernel space is a
+setting of the learned formulation's solver, not a shared one.
+
 ## Other robots: screw and soft PCS plumbing (2026-10-11)
 
 `BatchedProgram.from_program` now takes all four programs of the screw arm (`screw7_p050`, chart
