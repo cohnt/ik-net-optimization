@@ -1576,6 +1576,25 @@ manifest (R1-R19, the smokes) ran the old pin, regenerates byte-identically
 `SVGD_HISTORICAL_DEFAULTS` records them for the reporter), and a stage from R20 on takes
 `SVGD_PINNED_V2`, which names all four moved settings.
 
+### R20 (queued): the record rows at the fielded pin
+
+**Queued for after the 2026-10-12..14 maintenance; `cluster/SVGD_RUNBOOK.md`, "R20".** The first stage
+on `SVGD_PINNED_V2` (c x z, rho 1e5, H / T, the native-draw paired swarm, gn_lm 10, lr 0.3, every one
+named), and the source of the single-start table. It covers the record's sixteen rows, four robots x
+grasp / pose x native / paired, 480 cells at 180 s on seed 1, at the pin with no further overrides
+(`pin2`). The learned arm is the question, read against the same IPOPT twins the earlier rounds paired
+with: SVGD_R2 on the Panda, stage PAPER on the iiwa, the screw arm and the soft PCS arm. **Native is
+the primary row and paired its ablation**, per the ruling above. Beside it sits the joint-space
+ablation on the Panda's four rows (`pin2kq`: the pin with `svgd_kernel=q`, since `cz` is
+learned-only), in its own items. It is the swarm without the network at the new pin, never a
+baseline. A smoke of both arms at these settings (SVGD_SMOKE_R20) runs first, because joint space has
+never run at rho 1e5 / H / T / native init or on the clearance row. Everything R1-R19 measured ran
+`SVGD_PINNED_V1` with the kernel, metric and init unnamed (`SVGD_HISTORICAL_DEFAULTS`). R20's
+settings therefore differ from the seed-1 `kczrho1e5` runs (R14 / R17 / R17S / R17P) in three things
+only: the H / T form (bit-identical at T = 1), the paired swarm's draw (R18: equal cost, no churn)
+and the gate-edge rule (b4666d7, the one solver change since the staged 7ca45a4, which is why R20
+needs a restage).
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each

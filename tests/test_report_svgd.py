@@ -39,7 +39,11 @@ And the stage mode (`--stage SVGD`, the cluster's `sc_SVGD_*` family):
   - R19 (the candidate `kczrho1e5` on R7's seed-2 grids) is the Panda column `kczrho1e5@seed2`,
     R14's settings exactly, paired with R7IPOPT's twin `ipopt@seed2` and never with a seed-1 run,
     and `--rows panda --variants kq,kczrho1e5` resolves it as `kq@seed2` resolves; R17P carries
-    `kcz` / `kczrho1e5` to the soft PCS arm.
+    `kcz` / `kczrho1e5` to the soft PCS arm;
+  - R20 (the record rows at the fielded pin, SVGD_PINNED_V2) is ONE stage across four robots: `pin2`
+    is a column of every robot's block with the same settings, each paired with that robot's twin,
+    and `pin2kq` (the joint-space ablation, `--arms numerical`) a Panda column whose LEAD is `not run`
+    and whose ABLATION pairs against the twin's joint-space arm.
 The stage fixtures keep gen_manifest's real tags but are 16-cell runs: the catalogue's cell count
 is patched to the fixture's, which is the one thing the 480-cell tag cannot carry.
 """
@@ -248,7 +252,8 @@ def _stage_meta(info, grid=GRID, overrides=None, seed=None):
 
 def _stage_write(root, variant, learned, numerical, grid=GRID, overrides=None, row=None,
                  seed=None):
-    """`numerical=None` writes a learned-only run, as a round's `--arms learned` item does.
+    """`numerical=None` writes a learned-only run, as a round's `--arms learned` item does, and
+    `learned=None` a joint-space-only one, as R20's `pin2kq` (`--arms numerical`) does.
     `variant` is the report's column (`kq`, `kq@seed2`, `ipopt@seed2`); `row` defaults to
     STAGE_ROW; `seed` overrides the metadata's (default: the manifest item's)."""
     row = STAGE_ROW if row is None else row
@@ -256,8 +261,7 @@ def _stage_write(root, variant, learned, numerical, grid=GRID, overrides=None, r
     tag = by[row + (variant,)]
     d = os.path.join(root, row[0], "benchmark", tag)
     os.makedirs(d, exist_ok=True)
-    records = {"learned": learned} if numerical is None else {"learned": learned,
-                                                              "numerical": numerical}
+    records = {a: r for a, r in (("learned", learned), ("numerical", numerical)) if r is not None}
     arms = [bm.Arm(a, None) for a in records]
     payload = dict(metadata=_stage_meta(runs[tag], grid, overrides, seed), n_targets=T,
                    n_guesses=G, summary=bm.summarise(records, arms, T, G), records=records)
@@ -293,10 +297,13 @@ def _stage_twin(root, grid=GRID, column=R.STAGE_TWIN, row=None, overrides=None):
 
 def test_stage_tag_parsing_every_variant():
     runs, variants, _ = _stage_tags()
-    ## The Panda's seed-1 columns: the twin, R1's and every Panda seed-1 round's variants.
-    panda1 = [r for r in GM.SVGD_ROUNDS if GM.svgd_context(r) == ("panda", "n6", 1)]
+    ## The Panda's seed-1 columns: the twin, R1's and every variant a round runs on the Panda at
+    ## seed 1 (a round's one context, or -- R20 -- the variant's own scope among several).
+    P1 = ("panda", "n6", 1)
+    panda1 = [r for r in GM.SVGD_ROUNDS if any(P1 in GM.svgd_variant_contexts(r, v)
+                                               for v in GM.SVGD_ROUNDS[r])]
     named = ({R.STAGE_TWIN} | set(GM.SVGD_VARIANTS)
-             | {v for r in panda1 for v in GM.SVGD_ROUNDS[r]})
+             | {v for r in panda1 for v in GM.SVGD_ROUNDS[r] if P1 in GM.svgd_variant_contexts(r, v)})
     assert {c for c in variants if not R.seed_suffix(c)} == named, (sorted(variants), sorted(named))
     assert next(iter(variants)) == R.STAGE_TWIN and list(variants)[1] == R.stage_primary() == "kq"
     seen = set()
@@ -333,12 +340,15 @@ def test_stage_tag_parsing_every_variant():
     assert variants["drop"]["sets"]["svgd_resample"] == "drop" and variants["drop"]["round"] == "R11"
     assert variants["keep"]["sets"]["svgd_resample"] == "keep" and "svgd_resample" not in variants["kq"]["sets"]
     assert "max_iter" in variants[R.STAGE_TWIN]["sets"] and "max_iter" not in variants["kq"]["sets"]
-    ## The arms are the manifest's: the twin and R1 run both, the rounds what SVGD_ROUND_ARMS says.
+    ## The arms are the manifest's: the twin and R1 run both, the rounds what SVGD_ROUND_ARMS says
+    ## -- but for a variant that names its own (R20's joint-space ablation, `pin2kq`).
     assert variants[R.STAGE_TWIN]["arms"] == variants["kq"]["arms"] == R.ARMS
-    round_arms = tuple(GM.SVGD_ROUND_ARMS.split(","))
     for r in panda1:
         for v in GM.SVGD_ROUNDS[r]:
-            assert variants[v]["arms"] == round_arms, (v, variants[v]["arms"])
+            want = tuple(GM.svgd_variant_arms(r, v).split(","))
+            assert variants[v]["arms"] == want, (v, variants[v]["arms"])
+            assert want == (("numerical",) if (r, v) == ("SVGD_R20", "pin2kq")
+                            else tuple(GM.SVGD_ROUND_ARMS.split(","))), (r, v, want)
     ## Not stage tags: the smoke's, the cluster smoke's, the record's, a twin with a variant token.
     for bad in (M.make_tag("panda", "mugshelf", "paired", "al64", 10, 20),
                 "sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq",
@@ -506,7 +516,7 @@ def test_stage_catalogue_robots_and_seeds():
     _, iiwa, _ = _stage_tags("iiwa")
     ## The iiwa: its twin (stage PAPER's IPOPT run, the record's rows at paper conditions), the
     ## primary, then R17's kernel-space variants, learned arm only, on the n4 chart at seed 1.
-    assert list(iiwa) == [R.STAGE_TWIN, "kq", "kcz", "kczrho1e5"], list(iiwa)
+    assert list(iiwa) == [R.STAGE_TWIN, "kq", "kcz", "kczrho1e5", "pin2"], list(iiwa)
     assert iiwa[R.STAGE_TWIN]["manifest"] == "PAPER" and iiwa["kq"]["manifest"] == "SVGD_R12"
     assert iiwa["kcz"]["manifest"] == iiwa["kczrho1e5"]["manifest"] == "SVGD_R17"
     assert iiwa["kq"]["arms"] == ("learned",) and iiwa[R.STAGE_TWIN]["arms"] == R.ARMS
@@ -632,8 +642,9 @@ def test_stage_seed2_pairs_its_own_twin_only():
 ## ------------------------------------------- R13 / R14 and the screw / soft PCS arms --
 OTHER_ROBOTS = {"screw7_p050": ("n6", "SVGD_R15"), "soft12": ("n6", "SVGD_R16")}
 ## The rounds after the primary on each of those robots: R17S's / R17P's kernel-space variants.
-OTHER_ROBOT_ROUNDS = {"screw7_p050": {"kcz": "SVGD_R17S", "kczrho1e5": "SVGD_R17S"},
-                      "soft12": {"kcz": "SVGD_R17P", "kczrho1e5": "SVGD_R17P"}}
+OTHER_ROBOT_ROUNDS = {"screw7_p050": {"kcz": "SVGD_R17S", "kczrho1e5": "SVGD_R17S",
+                                      "pin2": "SVGD_R20"},
+                      "soft12": {"kcz": "SVGD_R17P", "kczrho1e5": "SVGD_R17P", "pin2": "SVGD_R20"}}
 
 
 def test_stage_kernel_and_two_factor_rounds():
@@ -814,6 +825,80 @@ def test_stage_seed2_replication_of_the_candidate():
         rep, _ = _stage_run(root)
         assert any(tag in m and "seed 1 != the manifest's 2" in m for m in rep.refused), rep.refused
         assert STAGE_ROW + (col,) not in rep.blocks and rep.status == 2
+
+
+def test_stage_r20_record_rows_at_the_pin():
+    """R20, the record rows at the fielded pin (SVGD_PINNED_V2), ONE stage across four robots:
+    `pin2` (the pin, zero overrides, learned arm) is a column of every robot's block with the same
+    settings on each, paired with that robot's twin (R2 for the Panda, stage PAPER for the others);
+    `pin2kq` (the joint-space ablation, kernel q, `--arms numerical`, its own items) only the
+    Panda's, its LEAD `not run` and its ABLATION paired against the twin's joint-space arm. Both are
+    v2 settings named in full, so the diff against a v1 `kq` names every moved one."""
+    runs, variants = R.stage_catalogue()
+    PIN = dict(svgd_kernel="cz", svgd_rho=100000, svgd_metric_temperature="on",
+               svgd_paired_init="native", svgd_gn_lm=10, svgd_lr=0.3)
+    EXEC = dict(correction_cost_weight=10.0, flow_cuda_graph=True, svgd_compile=True,
+                svgd_cuda_graph=True, svgd_collision_backend="clearances", svgd_outer_iters=1000000)
+    robots = {"panda": ("n6", "SVGD_R2"), "iiwa": ("n4", "PAPER"), "screw7_p050": ("n6", "PAPER"),
+              "soft12": ("n6", "PAPER")}
+    for robot, (rung, twin_stage) in robots.items():
+        cols = variants[robot]
+        assert cols["pin2"]["round"] == "R20" and cols["pin2"]["manifest"] == "SVGD_R20", robot
+        assert cols["pin2"]["sets"] == {**EXEC, **PIN} and cols["pin2"]["arms"] == ("learned",), robot
+        assert cols["pin2"]["settings"] == cols["pin2"]["sets"], "a v2 stage relies on no default"
+        assert ("pin2kq" in cols) == (robot == "panda"), (robot, list(cols))
+        for row in M.TASK_ROWS:
+            for start in M.STARTS:
+                tag = f"sc_SVGD_R20_{robot}_{rung}_svgd_{row}_480_180_{start}_pin2"
+                assert runs[tag]["column"] == "pin2" and runs[tag]["seed"] == 1, tag
+                tw = [t for t, i in runs.items() if i["variant"] == R.STAGE_TWIN and i["seed"] == 1
+                      and (i["robot"], i["row"], i["start"]) == (robot, row, start)]
+                assert len(tw) == 1 and runs[tw[0]]["manifest"] == twin_stage, (tag, tw)
+    panda = variants["panda"]
+    assert panda["pin2kq"]["sets"] == {**EXEC, **PIN, "svgd_kernel": "q"}
+    assert panda["pin2kq"]["arms"] == ("numerical",) and panda["pin2kq"]["round"] == "R20"
+    assert {(t["row"], t["start"]) for t in runs.values() if t["column"] == "pin2kq"} == \
+        {(r, s) for r in M.TASK_ROWS for s in M.STARTS}
+    ## The diff against the v1 primary `kq` (R1: kernel q, metric off, init jitter unnamed, rho 1e3,
+    ## the autodiff row) names the four moved settings and the clearance row; pin2kq's has no kernel.
+    d = R.setting_diff(panda, "pin2", "kq")
+    for s in ("svgd_kernel='cz' (primary 'q')", "svgd_rho=100000 (primary 1000)",
+              "svgd_metric_temperature='on' (primary 'off')",
+              "svgd_paired_init='native' (primary 'jitter')", "svgd_collision_backend='clearances'"):
+        assert s in d, (s, d)
+    assert "svgd_kernel" not in R.setting_diff(panda, "pin2kq", "kq")
+    ## Nothing on disk: `--rows <robot> --variants pin2,pin2kq` resolves on every robot, every R20
+    ## run MISSING and not fatal.
+    for robot in robots:
+        row = (robot, "mugshelf", "native")
+        with tempfile.TemporaryDirectory() as root:
+            rep, text = _stage_run(root, extra=["--variants", "pin2,pin2kq"], row=row)
+            assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+            want = {f"sc_SVGD_R20_{robot}_{robots[robot][0]}_svgd_mugshelf_480_180_native_{v}"
+                    for v in (("pin2", "pin2kq") if robot == "panda" else ("pin2",))}
+            assert want <= set(rep.missing), (robot, rep.missing)
+            assert f"robot {robot}" in text
+    ## On disk: the Panda twin, R20's pin2 (learned) and pin2kq (joint space) on one row.
+    with tempfile.TemporaryDirectory() as root:
+        row = ("panda", "mugshelf", "native")
+        _stage_twin(root, row=row)                 # learned 0..9, joint space 0..9
+        _stage_write(root, "pin2", [_rec(i, i < 13, 1.0) for i in range(N_CELLS)], None, row=row)
+        tag = _stage_write(root, "pin2kq", None, [_rec(i, i < 8 or i == 12, 2.0)
+                                                  for i in range(N_CELLS)], row=row)
+        rep, text = _stage_run(root, extra=["--variants", "pin2,pin2kq"], row=row)
+        assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+        assert tag not in rep.missing
+        b = rep.blocks[row + ("pin2",)]
+        assert (b["vs_twin"]["learned"]["a_only"], b["vs_twin"]["learned"]["b_only"]) == (3, 0)
+        k = rep.blocks[row + ("pin2kq",)]
+        assert set(k["vs_twin"]) == {"numerical"} and k["L"] is None
+        assert (k["vs_twin"]["numerical"]["a_only"], k["vs_twin"]["numerical"]["b_only"]) == (1, 2)
+        lead = text[text.index("LEAD -- learned under svgd"):text.index("ABLATION -- joint space")]
+        line = next(l for l in lead.splitlines() if l.strip().startswith("pin2kq"))
+        assert "not run (joint space arm only)" in line, line
+        abl = text[text.index("ABLATION -- joint space"):text.index("[ipopt] round")]
+        line = next(l for l in abl.splitlines() if l.strip().startswith("pin2kq"))
+        assert line.split()[1:6] == ["R20", "9", "10", "1", "2"], line
 
 
 def main():
