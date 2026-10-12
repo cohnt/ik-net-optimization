@@ -67,6 +67,13 @@ its own block, the Panda's first: the iiwa's round R12 pairs with stage PAPER's 
 twin on its own seed (`ipopt@seed2`, stage SVGD_R7IPOPT); the seed is part of the provenance
 check and of every pairing's must-match list, so R7 never pairs with R2, and the A/B and
 variant-vs-variant tables pair only columns on one grid.
+
+ONE stage spans robots: R20, the record rows at the fielded pin (gen_manifest's SVGD_STAGE_CONTEXTS).
+Its `pin2` column (the pin, zero overrides, learned arm) appears in each of the four robots' blocks,
+paired with that robot's twin (R2 for the Panda, stage PAPER for the others); its `pin2kq` column
+(the joint-space ablation, kernel q, `--arms numerical`) only in the Panda's, its LEAD line `not run`
+and its ABLATION line paired against the twin's joint-space arm. R20 is a v2 stage, so its setting
+diff against a v1 `kq` names every moved setting (`svgd_unnamed_settings` fills in kq's).
 """
 import argparse
 import ast
@@ -726,7 +733,10 @@ def stage_catalogue(family="SVGD"):
                 assert t["variant"] == STAGE_TWIN, f"{tag}: {stage} must be the IPOPT twin"
                 assert G.SVGD_TWIN_OF.get(ctx) == stage, f"{tag}: {stage} is not the twin of {ctx}"
             else:
-                assert G.svgd_context(stage) == ctx, f"{tag}: runs {ctx}, {stage} runs {G.svgd_context(stage)}"
+                ## A stage's contexts (one, or R20's four), narrowed to the variant's own scope.
+                ctxs = (G.svgd_variant_contexts(stage, t["variant"]) if stage in G.SVGD_ROUNDS
+                        and t["variant"] in G.SVGD_ROUNDS[stage] else G.svgd_contexts(stage))
+                assert ctx in ctxs, f"{tag}: runs {ctx}, {stage} runs {ctxs}"
                 if stage in G.SVGD_R1_SPLIT:
                     assert t["variant"] == G.SVGD_R1_SPLIT[stage], f"{tag}: {stage} carries {G.SVGD_R1_SPLIT[stage]}"
                 elif stage in G.SVGD_ROUNDS:

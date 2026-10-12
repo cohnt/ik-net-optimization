@@ -943,6 +943,143 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R20 (after the 2026-10-12..14 maintenance)
+
+**The record rows at the fielded pin.** Thomas, 2026-10-12: *"Agree re 1 and 2. Native draw is the
+method and paired is the ablation."* The pin is `SVGD_PINNED_V2`: kernel `cz`, rho 1e5, the H / T
+metric, the native-draw paired swarm, gn_lm 10, lr 0.3, all six NAMED on every item. R20 is the first
+v2 stage, and with its smoke the only one; R1-R19 keep `SVGD_PINNED_V1` and regenerate
+byte-identical. Joint-space svgd is an ablation, not a baseline. The conventions are the rounds':
+
+- 480 cells, 180 s, seed 1, the record flags, graphed mode, the lifted step cap.
+- 24 shards per 480-cell run, PROCS=2 with no MPS, one solve per GPU.
+- **Every svgd item carries the clearance row**, so both manifests go in with `DRAKE_ENV=crc`.
+
+| manifest | variant | arm | robots | settings | runs / items |
+| --- | --- | --- | --- | --- | --- |
+| `manifest_stageSVGD_R20.txt` | `pin2` | learned (`--arms learned`) | Panda `n6`, iiwa `n4`, `screw7_p050` `n6`, `soft12` `n6` | the pin, zero overrides | 16 / 384 |
+| | `pin2kq` | joint space (`--arms numerical`) | Panda `n6` only | the pin + `svgd_kernel=q` | 4 / 96 |
+| `manifest_stageSVGD_SMOKE_R20.txt` | `pin2`, `pin2kq` | each its own | Panda `n6` | as R20, 2 x 2 cells at 60 s | 8 / 8 |
+
+- **One stage, four robots.** `SVGD_STAGE_CONTEXTS` holds R20's four contexts, each exactly the
+  context its single-robot rounds ran. So each row pairs with the IPOPT twin those did: **SVGD_R2**
+  for the Panda, **stage PAPER** for the iiwa, the screw arm and the soft PCS arm. All are collected,
+  so there is no new twin manifest.
+- **The two arms are separate items.** A joint-space grasp cell can run to the 180 s clock, and in a
+  shared item it would hold the learned shard. The joint-space items queue after every learned item
+  (`order` 2 / 3 against 0 / 1), so the LEAD rows land first.
+- **`pin2kq` names its kernel.** `cz` is learned-only and is refused on joint space at warm-up, and
+  `q` is joint space's own kernel.
+- **New tokens, on purpose.** `kq` meant zero overrides on the V1 pin. The selftest holds a token to
+  the same overrides on the same pin in every round, so neither `kq` nor `kczrho1e5` could name these
+  rows. `SVGD_DECLARED_FACTORS` declares `pin2` at zero factors and `pin2kq` at one (the kernel).
+- **Tags.** The learned rows are `sc_SVGD_R20_<robot>_<rung>_svgd_<row>_480_180_<start>_pin2`, the
+  ablation `sc_SVGD_R20_panda_n6_svgd_<row>_480_180_<start>_pin2kq`, and the smoke
+  `sc_SVGDSMOKE_panda_n6_svgd_<row>_4_60_<start>_<pin2|pin2kq>`.
+- **This is the single-start table's source.** Native is the primary row, paired its ablation.
+
+**Why a smoke.** Joint space has never run under svgd at rho 1e5, the H / T metric or the native
+init, nor on the clearance row: R1 / R1K ran it on the V1 pin and the autodiff row. A dead
+joint-space column would otherwise surface only in the 480-cell rows. The smoke runs both arms at the
+R20 settings, as SEPARATE items, on the Panda's four rows.
+
+### Allotment
+
+`python cluster/gen_manifest.py --stage SVGD_R20 --allotment` prints these lines:
+
+```
+  manifest          runs  cells  items  solve-h  node-h    h@4  max item h
+  SVGD_R20            20   9600    480     49.9    25.0    6.2        0.38
+  SVGD_SMOKE_R20       8     32      8      0.9     0.5    0.1        0.12
+  SVGD_R20 WORST CASE (every cell at the clock, one arm per item): 504.0 solve-h, 252.0 node-h,
+  63.0 h on 4 idle nodes; longest item 1.05 h.
+```
+
+Each item is charged 20 cells x the mean wall per cell, plus the usual 180 s of item overhead. That is
+480 cells per run, 2 processes per node, on 4 nodes.
+
+- **The learned arm, MEASURED (`SVGD_R20_MEAN_WALL`).** The base is `kczrho1e5`'s mean wall per cell
+  (the pin's two method factors, clearance row, PROCS=2) from R19 (Panda), R17 (iiwa), R17S (screw
+  arm) and R17P (soft PCS arm). That is 1.0-2.6 s on the rigid arms and 7.5-10.1 s on the soft PCS
+  arm. Per robot this gives 2.9 / 2.8 / 2.9 / 4.7 node-h (Panda / iiwa / screw / soft PCS), or 13.2
+  node-h together, **about 3.3 h on 4 idle nodes**. The 180 s overhead is most of a rigid-arm item.
+- **The soft PCS rows run on the EAGER forward step**, about 800 ms per outer step against ~80 ms on
+  the rigid arms. The fast step pending on branch `svgd-pcs` would cut that. It is not in this
+  manifest's code: R20 runs whatever the restaged tree carries.
+- **The joint-space ablation is ASSUMED (`SVGD_R20_JS_CELL_S`)**: 60 s per grasp cell and 10 s per
+  pose cell. On R1's autodiff row 143 of 480 grasp cells per protocol ran to the clock. That gives
+  11.7 node-h, **about 2.9 h on 4 nodes**, after the learned items.
+- **Together: 25.0 node-h, about 6.2 h on 4 idle nodes.** The worst case puts every cell at the clock
+  and costs 252 node-h, about 63 h. Every item stays inside `ITEM_TIMEOUT` even then.
+- **The smoke takes at most ~30 min on one node** (0.5 node-h): 8 items of 4 cells, charged with
+  every cell at the 60 s clock, plus process start and warm-up.
+
+### Staging: RESTAGE first
+
+**R20 needs a code restage.** The solver changed after 7ca45a4 (the staged tree): b4666d7 fielded the
+pin's defaults and **the gate-edge rule** in `src/svgd/solver.py`, with `n_recheck_failures` and
+`feas_level` in the records. The difference is not a refusal. 7ca45a4 already accepts every option
+these manifests set, since R14 / R18 ran `cz`, rho 1e5, H / T and the native init there. So an
+unrestaged tree would run R20 **silently on the old solver**, without the gate-edge rule. Commit, then
+stage from the clone as in "Stage the code from the svgd tip". `stage_code.sh` refuses while campaign
+jobs are queued or running, so restage once the queue is idle. The maintenance window empties it.
+Then check the staged tree:
+
+```bash
+git -C $WT status --porcelain --untracked-files=no   # must be empty
+python $WT/cluster/gen_manifest.py --selftest        # must end "selftest OK"
+bash $WT/cluster/make_staging_clone.sh "$STAGE"      # refreshes the clone to the svgd tip
+git -C $STAGE log -1 --oneline                       # must be the commit you mean to stage
+bash $STAGE/cluster/stage_code.sh                    # refuses while a job of this tree runs
+ssh tcohn@txe1-login.mit.edu 'cat ~/learned-ik/repo/.staged-commit'          # must print that commit
+ssh tcohn@txe1-login.mit.edu 'grep -c n_recheck_failures ~/learned-ik/repo/src/svgd/result.py'   # must be >= 1
+```
+
+The four checkpoints are already on `~/learned-ik`, because R12 / R17 (iiwa `n4`), R15 / R17S (screw
+arm) and R16 / R17P (soft PCS arm) ran from there. `stage_code.sh` protects
+`models/*/*__step*.pkl` from `--delete`, and `submit_bench.sh` refuses a manifest whose checkpoint
+is missing on the cluster.
+
+### Submit
+
+Submit from `$STAGE`, as after any restage. The smoke goes first and R20 `afterok` on it:
+
+```bash
+cd $STAGE
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_SMOKE_R20.txt 1   # -> <SMOKE_R20>
+DEPENDENCY=afterok:<SMOKE_R20> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R20.txt 4
+```
+
+As with every smoke, **`afterok` gates on the smoke JOB's exit status, not on its numbers.** A crash
+fails the job. So does a refusal at solver construction (a joint-space kernel the arm cannot take,
+say): it fails every cell of the item, and `_abort_on_dead_arm` then fails the job within its first
+three cells. A smoke that runs and solves nothing still releases R20. To gate R20 on the
+numbers too, hold it (`scontrol hold`), read the smoke, then `scontrol release`. Read the smoke's
+eight `summary.json` files:
+
+- zero `error` records, on the `pin2kq` (joint-space) items above all;
+- `metadata.overrides` naming `svgd_kernel='q'` on the `pin2kq` items and `'cz'` on the `pin2` ones;
+- `metadata.svgd_warmup_seconds` present;
+- `n_recheck_failures` and `feas_level` in the svgd records, which shows the restaged solver ran;
+- solver / Drake / `verify()` feasibility agreeing;
+- wall <= cap + 1 s.
+
+### Read
+
+```bash
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows panda --variants pin2,pin2kq   # LEAD + the joint-space ablation
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows iiwa --variants pin2           # and screw7_p050, soft12
+```
+
+The reporter takes R20 from `gen_manifest.py`. `pin2` is a column of each robot's block, paired with
+that robot's twin. `pin2kq` is a Panda column: its LEAD line reads `not run (joint space arm only)`,
+and its ABLATION line pairs it with the twin's joint-space arm. The setting diff against a robot's
+`kq` names the four moved settings (kernel, rho, metric, paired init), plus the clearance row against
+the Panda's R1. Promote as for the earlier rounds:
+`cp -r <STAGING>/results/<robot>/benchmark/sc_SVGD_R20_* results/<robot>/benchmark/` for `panda`,
+`iiwa`, `screw7_p050` and `soft12`, and
+`<STAGING>/results/panda/benchmark/sc_SVGDSMOKE_panda_n6_svgd_*_pin2*` for the smoke.
+
 ## Collect, promote and report R12, SMOKE_IIWA and R7
 
 These follow the Collect section below:
@@ -971,13 +1108,13 @@ Run collection from the svgd worktree `$WT`. It has the `.venv` the merger needs
 ```bash
 bash $WT/cluster/collect_results.sh --status
 bash $WT/cluster/collect_results.sh                  # rsync + merge shards, incremental
-bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R19, _R17S, _R17P, the smokes) only once the queue is idle
+bash $WT/cluster/collect_results.sh --reclaim manifest_stageSVGD_R1   # (and _R1K, PAPER, _R3-_R19, _R17S, _R17P, _R20, the smokes) only once the queue is idle
 ```
 
 Tags: `sc_SVGDSMOKE_panda_n6_svgd_posetip_4_60_paired_kq`,
 `sc_SVGD_R2_panda_n6_ipopt_<row>_480_180_<start>` and
-`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`; R12, SMOKE_IIWA, R7, R13-R19, R17S, R17P and
-the screw / soft PCS smokes are listed in their own sections above.
+`sc_SVGD_R1_panda_n6_svgd_<row>_480_180_<start>_<kq|knone>`; R12, SMOKE_IIWA, R7, R13-R19, R17S, R17P,
+R20, SMOKE_R20 and the screw / soft PCS smokes are listed in their own sections above.
 
 - R2 pairs cell for cell with the record's `sc_REMEASURE_panda_n6_ipopt_*`: same grid, same scene,
   same args.
