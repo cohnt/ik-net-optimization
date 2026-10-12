@@ -943,6 +943,18 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R21 (submitted 2026-10-12 16:18 EDT): the joint-space ablation at the pin on the other three robots
+
+Thomas, after R20's Panda ablation came in 480 / 480: *"Run the joint-space svgd ablation on the other
+three robots."* Stage `SVGD_R21` = R20's `pin2kq` (the pin with `svgd_kernel=q`, `--arms numerical`,
+its own items) on the iiwa `n4`, `screw7_p050` `n6` and `soft12` `n6` contexts: 12 runs / 288 items,
+`manifest_stageSVGD_R21.txt`, no restage (the staged 86efbb0 runs it; the manifest was scp'd and
+md5-checked), jobs 5900901 / 5900902 / 5900909 / 5900910, `DRAKE_ENV=crc PROCS=2`, four nodes.
+Allotment 8.2 node-h at the Panda's measured 1.5 s per grasp cell and 0.9 s per pose cell
+(`SVGD_R21_JS_CELL_S`); worst case every cell at the clock. Same token in two rounds: the selftest
+holds `pin2kq` to one (pin, overrides) across R20 and R21, and the reporter reads it as each robot's
+own column (`--variants pin2,pin2kq` on every robot). Maintenance may cut it: `--reclaim` after.
+
 ## R20 (ran 2026-10-12 13:02-14:52 EDT, before the maintenance)
 
 **Done.** Restaged 86efbb0, smoke job 5897146 then R20 jobs 5897148-51 `afterok`, collected into staging
