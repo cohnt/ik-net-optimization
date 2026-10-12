@@ -1146,6 +1146,46 @@ latent kernel is expected to raise the feasible count further.
 that float64 Drake reads 0.05-7% outside it: the phase-2 fix (a stop-rule margin inside the gate, or
 the float64 polish before the verdict) is a one-line change of policy, Thomas's call.
 
+### R9: rho = 100, rho = 1e5, multiplier clip 1e6 (`rho100`, `rho1e5`, `clip1e6`), learned arm only, measured 2026-10-11
+
+**Jobs 5892416-19, 288 items, clearance row, 0 error cells; `--variants ...,rho100,rho1e5,clip1e6`.** With
+R4's `rho1e4` the penalty ladder is 1e2 / 1e3 / 1e4 / 1e5; `clip1e6` lifts the multiplier box from
+1e4 to 1e6 at the fielded rho.
+
+| variant | success | cost on shared cells (gp / gn / pp / pn) | outer steps | feasible particles | redraws / N (gp) | mean wall s |
+| --- | --- | --- | --- | --- | --- | --- |
+| `rho100` | 480 x 4 | 10.9 / 10.6 / 8.7 / 8.6 | 52 / 19 / 24 / 20 | 2 / 3 / 5 / 19 | 0.28 | 4.5 / 1.8 / 2.4 / 2.5 |
+| `kq` (rho 1e3, autodiff row) | 480 x 4 | 8.4 / 8.4 / 5.6 / 7.5 | 24 / 13 / 13 / 13 | 6 / 13 / 21 / 31 | 0.33 | 12.3 / 7.1 / 6.6 / 7.0 |
+| `rho1e4` (R4, autodiff row) | 480 x 4 | 6.2 / 7.5 / 5.3 / 6.9 | 16 / 13 / 12 / 13 | -- | 1.0 | -- |
+| `rho1e5` | 480 x 4 | **5.9 / 7.0 / 5.2 / 6.2** | **12 / 14 / 12 / 13** | 16 / 16 / 29 / 31 | 1.05 | **1.1 / 1.3 / 1.2 / 1.3** |
+| `clip1e6` | 480 x 4 | 7.9 / 8.6 / 5.8 / 7.4 | 23 / 13 / 13 / 13 | 8 / 13 / 24 / 29 | 0.48 | 2.1 / 1.3 / 1.3 / 1.4 |
+
+**Lead: all three tie `kq` on success** (480 / 480 on all twelve rows, no gate-edge cell this time) and
+carry its verdicts against the IPOPT twin. Fourteen variants now sit within one cell of each other on
+every row. **rho is the cost lever, monotonically, and it costs nothing in wall**: on the shared
+cells grasp paired cost reads 10.9 -> 8.4 -> 6.2 -> 5.9 over rho = 1e2 / 1e3 / 1e4 / 1e5, every row in
+the same order, with outer steps falling 52 -> 24 -> 16 -> 12 and the feasible count rising 2 -> 6 ->
+16. At rho = 1e5 the swarm converges in the fewest outer steps of any variant that keeps a swarm
+(12-14, where `K1` takes 34-46 single steps) and returns the lowest grasp cost of the rho ladder,
+within 1.5x of IPOPT's 4.1 against `kq`'s 2x -- so a large share of R1K's "kernel-on stall" premium
+is the penalty being too soft, not the kernel. The price is the redraw rate: at rho = 1e5 the median
+cell redraws every particle about once (1.05 per particle against 0.33 at 1e3), and the multiplier
+clips at the 1e4 box ten times as often; neither moves success. rho = 100 is the other end: the
+penalty too weak to pull the swarm onto the manifold (2-3 feasible particles on grasp), 2x the
+steps, the worst cost of the ladder.
+
+**The multiplier box is a stated limit and not the stall's cause.** Lifting it to 1e6 ties `kq` on
+steps (23 / 13 / 13 / 13), lands cost between `kq` and `rho1e4` (7.9 / 8.6 / 5.8 / 7.4), and the
+`|mu|_inf` maximum does reach 1e6 on every row, so the 1e4 box binds on some particles without
+deciding anything. This closes the phase-2 question from the smoke ("JS multipliers at the clip"):
+on the learned arm the clip is a bystander.
+
+**Toward the kernel-space round.** rho = 1e5 is the one single-factor change in the ladder that
+lowers cost on every row at `kq`'s wall or less; the SVN metric makes a large rho free (the
+conditioning commit's reasoning). It is a candidate for the fielded pin once it is seen beside the
+kernel space -- the stall it shortens is the q-kernel's, and under a latent kernel the swarm already
+converges (stage A); the round should carry rho as a factor rather than assume the two add.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
