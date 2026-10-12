@@ -863,6 +863,54 @@ space needs 970 median iterations against 48 on the free one. Under SNOPT it nev
 *toward* the learned arm and flips one away from it. Step rejection was the remaining candidate and is
 refuted too, so the containment verdicts stand as measured under IPOPT.
 
+## The fourth method class: AL-SVGD on the fixed programs (branch `svgd`, 2026-10-08 to 10-12)
+
+**Evidence lives in `docs/svgd-solver.md`** (pre-registration, every round's section, the kernel
+screens); operations in `cluster/SVGD_RUNBOOK.md`; reader `scripts/report_svgd.py --stage SVGD`.
+This file keeps the verdicts and the rulings.
+
+**What it is.** Thomas reopened the closed solver axis for a fourth METHOD CLASS: a batch-parallel
+particle method on exactly the existing programs. The fielded method is plain augmented-Lagrangian
+SVGD (PHR merit, Tabor-Hermans form, SVN block-diagonal Gauss-Newton metric, N = 64, float32 swarm,
+K = 10 inner steps per check, rho = 1e3, lr = 0.3, the runaway RESAMPLE from the native draw, stop =
+best feasible objective stalls 5 checks). **The goal is the LEARNED arm under svgd against the
+learned arm under IPOPT on the same cells; joint-space svgd is an ablation, not a baseline** (Thomas,
+2026-10-10). Rulings: SVGD-style only; exact Drake collision, no proxy; no formulation-specific
+information inside the solver (kernel SPACE is the one deliberate exception, swept); AL is the
+formulation and SVGD the optimizer, one dynamics; `--solver svgd`.
+
+**The record so far (Panda n6, 480 cells x 4 rows, 180 s, seed 1 and 2; iiwa n4, screw p050 n6,
+soft12 n6 at the fielded pin; all rounds R6 on run the batched clearance collision row under the
+clearances venv, the one stated exception to ONE DRAKE):**
+- **Success: 480 / 480 on every row of every robot at the fielded pin**, ties against IPOPT learned
+  on grasp (IPOPT at 473-480) and wins on pose (IPOPT 386-462); the screw arm adds a grasp paired
+  win. Nineteen single-factor variants on the Panda sit within one cell of each other: N (1 to 256),
+  rho (1e2 to 1e5), lr, K, T, kernel on/off, resample mode on native rows, the kernel space -- **no
+  setting moves success**; they move cost, the feasible count at stop, and wall.
+- **Cost is the axis settings move**, and three levers each cut it: the kernel SPACE (q -> c x z or
+  z: grasp paired 8.4 -> 4.7, from 2.0x to 1.14x IPOPT's learned cost), rho (1e3 -> 1e5: 8.4 -> 5.9),
+  N (64 -> 128: 8.4 -> 7.5, wall flat to 128). Whether they add is round R14.
+- **Runtime on the clearance row is 1-3 s mean per cell on the rigid arms** against IPOPT's 1-11 s,
+  below IPOPT on most rows; joint-space IPOPT restarts within svgd's own wall solve 55-65% of grasp
+  and ~90% of pose cells. **The soft PCS arm is the exception** (10-26 s, eager forward step, 10x
+  per step): TODO, rewrite the PCS and GVS forward steps in torch.
+- **Mechanisms settled**: the kernel-off swarm keeps descending to the clock (R1K); the q-space
+  kernel spreads particles OFF the manifold (few feasible, 2x cost) where a latent kernel keeps them
+  on it; the paired-start penalty is the jittered swarm (drawing the paired swarm from the native
+  distribution removes it, R10); the resample carries the paired start (drop / keep lose 30-57% of
+  paired cells, R11); under the fielded metric H the temperature is a step multiplier (T < 1
+  diverges), under H / T it is a well-posed knob inert over two decades; the multiplier box is a
+  bystander (R9); K trades swarm convergence for wall (R6).
+
+**Rulings, 2026-10-11.** K stays a separate parameter (*"The balance of inner to outer steps in AL
+seems like something we need to handle delicately"*) -- do not re-propose the one-loop strip-down.
+"Resample" is the term. The clearances wheel is a strict improvement and every svgd round uses it.
+Compute footprint (GPU + 40 threads vs one core) is a paper explanation, not a fairness worry.
+**Open for Thomas**: field c x z (or z) as the kernel space; field H / T as the metric form (bit-identical
+at T = 1); field the native-draw paired init; the gate-edge disagreements (5 cells in 11,520: a
+float32 particle inside the 1e-4 gate that float64 Drake reads 0.05-7% outside; margin or float64
+polish before the verdict); what to do with R14's combinations.
+
 ## Results: the campaign of record
 
 **Stage REMEASURE, measured 2026-10-09 and accepted by Thomas 2026-10-09.** It re-measured the whole
