@@ -47,7 +47,9 @@ here -- every body checked against `CalcRelativeTransform` like any other scene.
 a robot supplies is the configuration -> plant map (`BatchedProgram.from_program`'s
 `config_to_plant_q`); the closed-form geometric Jacobians (`FrameChain.poses(...,
 jacobians=True)`) are defined for one-coordinate joints only and refuse a floating
-ancestor by name, so that robot's rows are differentiated by autograd.
+ancestor by name. Such a robot's row Jacobians are instead taken w.r.t. its CONFIGURATION,
+by forward mode through the map and `FrameChain.poses(..., jacobians=False)`
+(`BatchedProgram._kinematics_cfg_jacobians`, 2026-10-12).
 """
 
 import math
@@ -519,7 +521,8 @@ class FrameChain:
             raise NotImplementedError(
                 f"closed-form frame Jacobians are defined for one-coordinate joints; a frame's "
                 f"root path crosses the floating joint(s) {floating}. Differentiate these "
-                f"poses by autograd.")
+                f"poses w.r.t. the configuration instead (forward mode through the map: "
+                f"BatchedProgram._kinematics_cfg_jacobians).")
         q = torch.as_tensor(q, dtype=fk.dtype, device=fk.device)
         if q.dim() != 2 or q.shape[1] != self.num_positions:
             raise ValueError(f"expected q of shape [B, {self.num_positions}], got {tuple(q.shape)}")

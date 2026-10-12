@@ -35,8 +35,10 @@ the figure over ALL particles is recorded; nothing may be NaN unless Drake's is.
 
 Which derivative path each program takes is asserted too: the Panda, the iiwa and the screw
 arm (`screw7`'s ScrewJoint replayed by the plant walker) have closed-form row Jacobians
-(`has_analytic_row_jacobians`), the soft PCS arm does not (autograd), and the GVS arm's
-`TorchConfigToPlantQ` refuses by name.
+(`has_analytic_row_jacobians`) from `FrameChain`; the soft PCS arm has them too since
+2026-10-12, taken w.r.t. its configuration by forward mode through its exact map
+(`_cfg_jacobians`; pinned against autograd in `tests/test_svgd_soft_fastpath.py`); and the
+GVS arm's `TorchConfigToPlantQ` refuses by name.
 
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__`
 driver. Needs the four `n6` charts under `models/`, so run it as a script, alone, under the
@@ -99,7 +101,7 @@ MUG_SEEDS = {"panda": 101, "iiwa": 202, "screw": 303, "soft": 404}
 POSE_SEEDS = {"panda": 11, "iiwa": 22, "screw": 33, "soft": 44}
 ## Which derivative path each robot's batched program takes (closed-form row Jacobians, or
 ## autograd through the kinematics), asserted so a regression is caught by name.
-ANALYTIC = {"panda": True, "iiwa": True, "screw": True, "soft": False}
+ANALYTIC = {"panda": True, "iiwa": True, "screw": True, "soft": True}
 CUDA = torch.cuda.is_available()
 DEVICE = "cuda" if CUDA else "cpu"
 
@@ -731,7 +733,10 @@ def test_robot_hooks():
     ## with `ConfigToPlantQ` is refused at construction, naming the hook.
     sbp = batched("soft", "pose", "numerical")
     sp = sbp.program
-    assert not sbp.plant_q_is_padded_cfg and not sbp.has_analytic_row_jacobians
+    ## Not the padded configuration, so its closed-form row Jacobians are the configuration-
+    ## space ones (forward mode through the map), not FrameChain's plant-space closed form.
+    assert not sbp.plant_q_is_padded_cfg and sbp._cfg_jacobians and sbp.has_analytic_row_jacobians
+    assert not sbp._frame_chain.has_jacobians
     ## A float32 swarm (the fielded dtype) builds: the map is checked at float64 and used
     ## at float32, and its rows agree with the float64 replay to float32's precision.
     sbp32 = BatchedProgram.from_program(sp, dtype=torch.float32, device=DEVICE, collision=sbp.collision)

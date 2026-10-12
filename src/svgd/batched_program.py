@@ -47,8 +47,20 @@ defines one (the soft PCS arm: its exact strain kinematics in torch, permuted in
 plant's slots), else the rigid arms' `PadQ` (gripper joints at 0.04). Any map not passed
 explicitly is CHECKED against `program.ConfigToPlantQ` at construction, so a robot whose
 plant vector the map does not reproduce is refused by name rather than evaluated on the
-wrong plant vector. A robot behind such a map has no closed-form row Jacobians
-(`has_analytic_row_jacobians` is False): the solver differentiates its rows by autograd.
+wrong plant vector.
+
+CONFIGURATION-SPACE JACOBIANS FOR SUCH A ROBOT (2026-10-12). Where the plant vector is not
+the padded configuration, the closed-form row Jacobians are taken w.r.t. the CONFIGURATION
+directly (`_kinematics_cfg_jacobians`): the composite `cfg -> config_to_plant_q -> FrameChain
+poses` -- the robot's own exact torch map and the plant replay, pure forward tensor ops --
+is pushed forward along the `ndof` coordinate directions at once (`torch.func.jvp`, vmapped
+over the tangents; particles are independent, so one tangent per coordinate serves the
+whole batch). That gives `J_plant = d q_plant / d cfg [N, num_pos, ndof]`, the frame
+origin's `Jp [N, 3, ndof]` and, from the quaternion's tangent, the world angular velocity's
+`Jw = 2 [-v, w I + [v]x] d quat / d cfg [N, 3, ndof]`. The collision row's plant gradient is
+pulled back through `J_plant` (`generic_rows_jacobian_cfg`). The rigid arms never enter this
+path (their plant vector is the padded configuration and their `FrameChain` Jacobians are
+the closed form above it), so their step is unchanged op for op.
 
 House rules: explicit `dtype=`/`device=` on every tensor (`jrl.config` mutates torch's
 defaults at import); no Python loop over particles; no in-place ops on autograd tensors;
@@ -56,6 +68,7 @@ defaults at import); no Python loop over particles; no in-place ops on autograd 
 kinematics and the collision evaluator (which screens non-finite rows before Drake sees them).
 """
 
+import hashlib
 import os
 import time
 import warnings
@@ -316,6 +329,19 @@ class BatchedProgram:
         if isinstance(self.fk, BatchedFK):
             self._frame_chain = self.fk.frame_chain(
                 [(self._frame_body, self._frame_X_BF), (self._flow_body, self._flow_X_BF)])
+        ## A plant vector that is not the padded configuration (the soft PCS arm): the
+        ## closed-form row Jacobians are taken w.r.t. the configuration by forward mode
+        ## through the map and the frame chain (module docstring). False on the rigid arms.
+        self._cfg_jacobians = bool(self._frame_chain is not None
+                                   and not self.plant_q_is_padded_cfg)
+        ## What the robot's own map closes over that `fused.structure_signature` cannot see
+        ## (a callable is recorded by name only): the plant slot permutation and the rung. A
+        ## compiled / graphed step reuses a template program's map for every program of one
+        ## structure, so two programs whose maps differ must not share a structure.
+        slots = getattr(program, "_plant_slots", None)
+        self._config_map_key = None if slots is None else (
+            str(getattr(getattr(program, "spec", None), "name", "")),
+            hashlib.sha1(np.ascontiguousarray(slots, dtype=np.int64).tobytes()).hexdigest())
 
         ## -- the task --------------------------------------------------------------------
         if self.is_mug:
@@ -808,11 +834,62 @@ class BatchedProgram:
     def kinematics(self, cfg_k, row_jacobians=False):
         """`(q_plant, pose_frame, pose_flow, frame_jac)` at configurations `cfg_k`: the
         plant vector, the two frames' poses and (with `row_jacobians`) the program frame's
-        geometric Jacobians `(Jp, Jw)`, else None. No collision, no rows."""
+        geometric Jacobians `(Jp, Jw)`, else None. No collision, no rows.
+
+        On a robot whose plant vector is not the padded configuration (`_cfg_jacobians`),
+        `frame_jac` is `(Jp, Jw, J_plant)`, every block w.r.t. the CONFIGURATION
+        (`_kinematics_cfg_jacobians`)."""
+        if row_jacobians and self._cfg_jacobians:
+            return self._kinematics_cfg_jacobians(cfg_k)
         q_plant = self.config_to_plant_q(cfg_k)
         frames = self._frame_poses(q_plant, jacobians=row_jacobians)
         frame_jac = (frames[0][2], frames[0][3]) if row_jacobians else None
         return q_plant, frames[0][:2], frames[1][:2], frame_jac
+
+    def _kinematics_cfg_jacobians(self, cfg_k):
+        """`kinematics(cfg_k, row_jacobians=True)` for a plant vector that is NOT the
+        padded configuration: the same plant vector and frame poses, with
+        `frame_jac = (Jp [N, 3, ndof], Jw [N, 3, ndof], J_plant [N, num_pos, ndof])` taken
+        w.r.t. the configuration by forward mode through `config_to_plant_q` and the frame
+        chain (`FrameChain.poses`, no Jacobians -- plain forward tensor ops).
+
+        One `torch.func.jvp` per configuration coordinate, vmapped: the tangent `e_k`
+        broadcast over the batch pushes every particle's k-th column at once (the
+        particles are independent through the map, as through the flow). The primal is
+        computed once (it does not depend on the vmapped tangent). `Jw` is the world
+        angular velocity's Jacobian from the quaternion's tangent, `omega = 2 [-v, w I +
+        [v]x] quat_dot` -- the inverse of `quat_dot = 1/2 (0, omega) (x) quat` for a unit
+        quaternion, and the same convention as `FrameChain`'s closed-form `Jw` (a test pins
+        both against each other on a rigid arm). It is invariant to the quaternion's sign.
+        Static shapes, no host sync: compilable and capturable."""
+        chain = self._frame_chain
+        to_plant = self.config_to_plant_q
+
+        def forward(c):
+            q_plant = to_plant(c)
+            (qa, pa), (qb, pb) = chain.poses(q_plant)
+            return q_plant, qa, pa, qb, pb
+
+        N, n = cfg_k.shape
+        basis = torch.eye(n, dtype=cfg_k.dtype, device=cfg_k.device).unsqueeze(1).expand(n, N, n)
+
+        def push(t):
+            return torch.func.jvp(forward, (cfg_k,), (t,))
+
+        (q_plant, qa, pa, qb, pb), (dq_plant, dqa, dpa, _, _) = torch.func.vmap(
+            push, out_dims=(None, 0))(basis)
+        J_plant = dq_plant.permute(1, 2, 0)                   # [N, num_pos, n]
+        Jp = dpa.permute(1, 2, 0)                             # [N, 3, n]
+        dquat = dqa.permute(1, 2, 0)                          # [N, 4, n]
+        w, v = qa[:, 0], qa[:, 1:]
+        zero = torch.zeros_like(w)
+        vx = torch.stack([torch.stack([zero, -v[:, 2], v[:, 1]], dim=1),
+                          torch.stack([v[:, 2], zero, -v[:, 0]], dim=1),
+                          torch.stack([-v[:, 1], v[:, 0], zero], dim=1)], dim=1)   # [v]x
+        eye = torch.eye(3, dtype=qa.dtype, device=qa.device).unsqueeze(0)
+        Et = torch.cat([-v.unsqueeze(2), w.view(-1, 1, 1) * eye + vx], dim=2)     # [N, 3, 4]
+        Jw = 2.0 * (Et @ dquat)
+        return q_plant, (qa, pa), (qb, pb), (Jp, Jw, J_plant)
 
     def collision_eval(self, q_plant, need_grad=True):
         """`(row [N], grad [N, nq] or None)`: the SCALED collision row (and its
@@ -921,10 +998,13 @@ class BatchedProgram:
             raise ValueError(f"Q must be [N, {self.ndof}], got {tuple(Q.shape)}")
         N = Q.shape[0]
         cfg = Q
-        q_plant = self.config_to_plant_q(cfg)
-        frames = self._frame_poses(q_plant, jacobians=row_jacobians)
-        pose_frame, pose_flow = frames[0][:2], frames[1][:2]
-        frame_jac = (frames[0][2], frames[0][3]) if row_jacobians else None
+        if row_jacobians and self._cfg_jacobians:
+            q_plant, pose_frame, pose_flow, frame_jac = self._kinematics_cfg_jacobians(cfg)
+        else:
+            q_plant = self.config_to_plant_q(cfg)
+            frames = self._frame_poses(q_plant, jacobians=row_jacobians)
+            pose_frame, pose_flow = frames[0][:2], frames[1][:2]
+            frame_jac = (frames[0][2], frames[0][3]) if row_jacobians else None
         values = []
         collision_y = None
         collision_grad = None
@@ -1062,9 +1142,14 @@ class BatchedProgram:
     @property
     def has_analytic_row_jacobians(self):
         """True when `generic_rows_jacobian_cfg` and `cost_gradient_parts` are available:
-        the frames come from the plant replay (`FrameChain`) and the plant vector is the
-        padded configuration (so a plant-space gradient is a configuration-space one by a
-        slice). A robot behind its own hooks goes through autograd instead."""
+        the frames come from the plant replay (`FrameChain`) and EITHER the plant vector is
+        the padded configuration (so a plant-space gradient is a configuration-space one by
+        a slice, and the frame Jacobians are `FrameChain`'s closed form) OR it is not and
+        the Jacobians are taken w.r.t. the configuration by forward mode through the map
+        (`_cfg_jacobians`: the soft PCS arm). A robot behind its own `BodyPoseProvider` goes
+        through autograd instead."""
+        if self._cfg_jacobians:
+            return True
         return (self._frame_chain is not None and self._frame_chain.has_jacobians
                 and self.plant_q_is_padded_cfg)
 
@@ -1081,12 +1166,15 @@ class BatchedProgram:
           joint_limit  I
 
         The `wrap_residual` shift and the target are constants. Plant columns beyond the
-        configuration (the gripper pad) are dropped."""
+        configuration (the gripper pad) are dropped. On a robot whose plant vector is not
+        the padded configuration (`_cfg_jacobians`) `Jp`, `Jw` are already w.r.t. the
+        configuration and the collision row is the evaluator's plant gradient pulled back
+        through `J_plant = d q_plant / d cfg` (`frame_jac`'s third block)."""
         if ev.extras.get("frame_jac") is None:
             raise ValueError("generic_rows_jacobian_cfg needs evaluate(..., row_jacobians=True)")
         if not self.has_analytic_row_jacobians:
             raise NotImplementedError("closed-form row Jacobians need has_analytic_row_jacobians")
-        Jp, Jw = ev.extras["frame_jac"]
+        Jp, Jw = ev.extras["frame_jac"][:2]
         N = Jp.shape[0]
         nd = self.ndof
         J = torch.zeros(N, self._n_drake_rows, nd, dtype=Jp.dtype, device=Jp.device)
@@ -1112,7 +1200,11 @@ class BatchedProgram:
             elif blk.kind == "collision":
                 cg = ev.extras.get("collision_grad")
                 if cg is not None:
-                    J[:, blk.start] = cg[:, :nd]
+                    if self._cfg_jacobians:
+                        J_plant = ev.extras["frame_jac"][2]
+                        J[:, blk.start] = (cg.unsqueeze(1) @ J_plant).squeeze(1)
+                    else:
+                        J[:, blk.start] = cg[:, :nd]
             elif blk.kind == "joint_limit":
                 J[:, sl] = torch.eye(nd, dtype=Jp.dtype, device=Jp.device)[:blk.size].unsqueeze(0)
         return J
