@@ -516,8 +516,10 @@ def test_stage_catalogue_robots_and_seeds():
     _, iiwa, _ = _stage_tags("iiwa")
     ## The iiwa: its twin (stage PAPER's IPOPT run, the record's rows at paper conditions), the
     ## primary, then R17's kernel-space variants, learned arm only, on the n4 chart at seed 1.
-    assert list(iiwa) == [R.STAGE_TWIN, "kq", "kcz", "kczrho1e5", "pin2"], list(iiwa)
+    assert list(iiwa) == [R.STAGE_TWIN, "kq", "kcz", "kczrho1e5", "pin2", "pin2kq"], list(iiwa)
     assert iiwa[R.STAGE_TWIN]["manifest"] == "PAPER" and iiwa["kq"]["manifest"] == "SVGD_R12"
+    ## R21: the joint-space ablation at the pin on the three non-Panda record contexts.
+    assert iiwa["pin2kq"]["manifest"] == "SVGD_R21" and iiwa["pin2kq"]["arms"] == ("numerical",)
     assert iiwa["kcz"]["manifest"] == iiwa["kczrho1e5"]["manifest"] == "SVGD_R17"
     assert iiwa["kq"]["arms"] == ("learned",) and iiwa[R.STAGE_TWIN]["arms"] == R.ARMS
     ## R12 is the primary's settings exactly, plus the clearance collision row (an execution
@@ -643,8 +645,9 @@ def test_stage_seed2_pairs_its_own_twin_only():
 OTHER_ROBOTS = {"screw7_p050": ("n6", "SVGD_R15"), "soft12": ("n6", "SVGD_R16")}
 ## The rounds after the primary on each of those robots: R17S's / R17P's kernel-space variants.
 OTHER_ROBOT_ROUNDS = {"screw7_p050": {"kcz": "SVGD_R17S", "kczrho1e5": "SVGD_R17S",
-                                      "pin2": "SVGD_R20"},
-                      "soft12": {"kcz": "SVGD_R17P", "kczrho1e5": "SVGD_R17P", "pin2": "SVGD_R20"}}
+                                      "pin2": "SVGD_R20", "pin2kq": "SVGD_R21"},
+                      "soft12": {"kcz": "SVGD_R17P", "kczrho1e5": "SVGD_R17P", "pin2": "SVGD_R20",
+                                 "pin2kq": "SVGD_R21"}}
 
 
 def test_stage_kernel_and_two_factor_rounds():
@@ -689,7 +692,8 @@ def test_stage_screw_and_soft_blocks():
         assert list(cols) == [R.STAGE_TWIN, "kq"] + list(OTHER_ROBOT_ROUNDS[robot]), (robot, list(cols))
         assert cols[R.STAGE_TWIN]["manifest"] == "PAPER" and cols["kq"]["manifest"] == stage
         for v, st in OTHER_ROBOT_ROUNDS[robot].items():
-            assert cols[v]["manifest"] == st and cols[v]["arms"] == ("learned",), (robot, v)
+            arms = ("numerical",) if v == "pin2kq" else ("learned",)    # R21: the joint-space ablation
+            assert cols[v]["manifest"] == st and cols[v]["arms"] == arms, (robot, v)
         assert cols["kq"]["arms"] == ("learned",) and cols[R.STAGE_TWIN]["arms"] == R.ARMS
         assert cols["kq"]["sets"] == {**panda["kq"]["sets"], **CLR}, robot
         row = (robot, "mugshelf", "paired")
@@ -846,7 +850,9 @@ def test_stage_r20_record_rows_at_the_pin():
         assert cols["pin2"]["round"] == "R20" and cols["pin2"]["manifest"] == "SVGD_R20", robot
         assert cols["pin2"]["sets"] == {**EXEC, **PIN} and cols["pin2"]["arms"] == ("learned",), robot
         assert cols["pin2"]["settings"] == cols["pin2"]["sets"], "a v2 stage relies on no default"
-        assert ("pin2kq" in cols) == (robot == "panda"), (robot, list(cols))
+        ## pin2kq: R20 on the Panda, R21 on the other three (same token, pin and overrides).
+        assert cols["pin2kq"]["round"] == ("R20" if robot == "panda" else "R21"), (robot, cols["pin2kq"])
+        assert cols["pin2kq"]["arms"] == ("numerical",) and cols["pin2kq"]["sets"] == {**EXEC, **PIN, "svgd_kernel": "q"}
         for row in M.TASK_ROWS:
             for start in M.STARTS:
                 tag = f"sc_SVGD_R20_{robot}_{rung}_svgd_{row}_480_180_{start}_pin2"
@@ -874,8 +880,9 @@ def test_stage_r20_record_rows_at_the_pin():
         with tempfile.TemporaryDirectory() as root:
             rep, text = _stage_run(root, extra=["--variants", "pin2,pin2kq"], row=row)
             assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
-            want = {f"sc_SVGD_R20_{robot}_{robots[robot][0]}_svgd_mugshelf_480_180_native_{v}"
-                    for v in (("pin2", "pin2kq") if robot == "panda" else ("pin2",))}
+            r21 = "R20" if robot == "panda" else "R21"
+            want = {f"sc_SVGD_R20_{robot}_{robots[robot][0]}_svgd_mugshelf_480_180_native_pin2",
+                    f"sc_SVGD_{r21}_{robot}_{robots[robot][0]}_svgd_mugshelf_480_180_native_pin2kq"}
             assert want <= set(rep.missing), (robot, rep.missing)
             assert f"robot {robot}" in text
     ## On disk: the Panda twin, R20's pin2 (learned) and pin2kq (joint space) on one row.
