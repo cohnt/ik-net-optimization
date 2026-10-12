@@ -1308,6 +1308,77 @@ the fielded metric H and the swept H/T form, for q, z, x, cz, qz) follows; a clu
 the learned arm**; the joint-space svgd ablation can run the q kernel only, so the kernel space is a
 setting of the learned formulation's solver, not a shared one.
 
+## Kernel-space screen, stage B: temperature under both metric forms (laptop, 2026-10-11/12; PRELIMINARY, 12 cells)
+
+Same 12 cells and settings as stage A; for each of the five spaces q, z, x, c x z, q x z the
+temperature T in {1e-1, 1e-2, 1e-4} under the fielded metric form (`svgd_metric_temperature=off`,
+the SVN metric is H) and under the swept form (`on`, the metric is H / T). Stage A is the T = 1
+row of both forms, where they coincide. 60 runs; the screen was paused 21:50-00:05 for Thomas and
+resumed on the missing cells only. Full table: scratchpad `kernel_stageB.txt`; the doc keeps the
+reading.
+
+**Under the fielded metric H, every temperature below 1 diverges, in every space.** 0 or 1 of 6
+cells on all 30 runs, 2000-4000 redraws per cell (30-60 x N), every cell at the clock. This is the
+reading from the code of 2026-10-11 02:15 confirmed: with the drive `-grad L / T` and no 1 / T in H,
+the SVN step `H^-1 phi` scales as 1 / T, so T = 0.1 is a 10x step and the swarm leaves the basin on
+the first check. **Under the fielded form T is a step multiplier, not a temperature**, and R5's
+`T10` (a 0.1x step, 3-5x the outer steps, no extra spread) is the same fact from the other side.
+
+**Under H / T, temperature is a well-posed knob and it is inert over two decades.** T = 0.1 and
+0.01 solve 12 / 12 in every space, with feasible counts, q-spread among the feasible (4.5-4.8 rad in
+every non-q space at every T) and cost within noise of T = 1:
+
+```
+space   T       feas (mug/pose)  cost (mug/pose)   outer (mug/pose)  stops
+q       1       7.0 / 29.5       7.75 / 4.58       14 / 12           converged
+q       1e-1   16.5 / 34.0       6.10 / 4.12       15 / 10           converged
+q       1e-2   12.0 / 15.0       6.63 / 5.26       12 / 10           converged
+q       1e-4    0.5 /  0.0       9.86 / 7.44       51 / 58           3/6, 2/6; clock 5 + 5, redraws ~2000
+z       1      33.5 / 30.5       3.53 / 3.51       14 / 11           converged
+z       1e-1   31.5 / 29.5       3.54 / 3.57       12 / 12           converged
+z       1e-2   31.0 / 32.0       3.37 / 3.50       18 / 14           converged
+z       1e-4    8.5 /  0.5       3.34 / 3.36       34 / 40           5/6, 3/6; clock 3 + 4, redraws ~1600
+x       1      29.0 / 27.5       3.79 / 3.56       14 / 10           converged
+x       1e-1   38.5 / 32.0       3.71 / 3.64       20 / 10           converged
+x       1e-2   39.5 / 34.0       3.40 / 4.16       24 / 12           clock 2 (mug)
+x       1e-4    5.5 /  1.0       3.60 / 4.71       28 / 28           5/6, 4/6; clock 2 + 2, redraws ~700-950
+cz      1      56.5 / 42.5       3.33 / 3.63       16 /  9           clock 1 (mug)
+cz      1e-1   57.0 / 39.5       2.96 / 4.15       13 /  9           clock 1 (mug)
+cz      1e-2   57.5 / 38.5       2.98 / 3.63       40 /  9           clock 5 (mug)
+cz      1e-4   43.5 / 16.0       2.12 / 4.66       36 / 18           clock 3 (mug); redraws 80 / 218
+qz      1      22.0 / 38.0       4.31 / 4.13       13 /  9           converged
+qz      1e-1   38.0 / 44.5       3.67 / 3.55       10 / 10           converged
+qz      1e-2   47.0 / 46.0       3.67 / 3.53       16 /  9           converged
+qz      1e-4   35.0 / 37.5       2.16 / 3.52       27 / 13           clock 1 (mug)
+```
+
+**What it says, at 12 cells.** (i) The "temperature = coverage" reading is not seen: lowering T by
+two decades under a consistent metric changes neither the spread of the feasible set nor the
+feasible count in any space. The repulsion-to-drive ratio T sets is not what limits coverage here;
+the start distribution and the flow's multimodality are (stage A). (ii) At T = 1e-4 the single
+spaces q, z, x break (3-5 of 6, 700-2000 redraws, clock stops): the repulsion is gone and the SVN
+drive alone walks particles into the runaway regions, the N = 1 failure mode of R3 at N = 64. The
+two PRODUCT spaces survive 1e-4 at 6 / 6 (c x z 43 / 16 feasible, q x z 35 / 38) and return the
+lowest costs of the table (2.1-2.2 on grasp), so the second block's repulsion holds the swarm
+together when the first's is too cold. (iii) **c x z has the most feasible particles and the lowest
+grasp cost at every T, and it is the one space that runs to the clock**: 1 / 1 / 5 / 3 grasp cells
+at T = 1 / 1e-1 / 1e-2 / 1e-4, with 57 of 64 particles feasible -- a swarm that keeps nearly every
+particle feasible keeps improving the best objective in small steps and the stall rule (1e-3
+relative over 5 checks) fires late or not at all. That is the stop rule interacting with the kernel
+space, as flagged in stage A, and a 480-cell row will say whether it costs wall only or success.
+(iv) **q x z is the robust space**: 6 / 6 at every T, 35-47 feasible, cost 3.5-3.7 at T >= 1e-2 and
+2.2 at 1e-4, converged on every grasp cell but one; it carries the q kernel's geometric spread and
+the latent kernel's convergence. (v) The q kernel improves under H / T at T = 0.1 (17 feasible,
+cost 6.1 against 7 / 7.75) and is still the worst space at any temperature.
+
+**For the cluster.** R13 (z, c x z, q x z, x at T = 1, the fielded metric; submitted 2026-10-12
+00:00) settles stage A at 480 cells. R14 carries `kzHonT0p1` (z under H / T at T = 0.1) as the
+metric-form row; this table says it should tie `kz`, which is the test that the H / T form is the
+consistent one. If the stop interaction of c x z costs cells at 480, the fix is the stall rule's
+window or threshold, not the space. **The H / T form should become the fielded metric**: it makes
+T mean what the method says it means, and at T = 1 it is bit-identical to today's -- a definition
+decision for Thomas, not a tuning one.
+
 ## Other robots: screw and soft PCS plumbing (2026-10-11)
 
 `BatchedProgram.from_program` now takes all four programs of the screw arm (`screw7_p050`, chart
