@@ -943,7 +943,12 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
-## R20 (after the 2026-10-12..14 maintenance)
+## R20 (ran 2026-10-12 13:02-14:52 EDT, before the maintenance)
+
+**Done.** Restaged 86efbb0, smoke job 5897146 then R20 jobs 5897148-51 `afterok`, collected into staging
+`20261012-145309`, promoted, reported (`docs/svgd-solver.md`, "R20"). **6 node-hours against the 25
+allotted** below: the joint-space ablation converged in 1.5 s a cell, not the 60 s assumed. The
+section below is the checklist as written before the run; it was followed as is.
 
 **The record rows at the fielded pin.** Thomas, 2026-10-12: *"Agree re 1 and 2. Native draw is the
 method and paired is the ablation."* The pin is `SVGD_PINNED_V2`: kernel `cz`, rho 1e5, the H / T

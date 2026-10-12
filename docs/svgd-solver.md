@@ -1576,24 +1576,99 @@ manifest (R1-R19, the smokes) ran the old pin, regenerates byte-identically
 `SVGD_HISTORICAL_DEFAULTS` records them for the reporter), and a stage from R20 on takes
 `SVGD_PINNED_V2`, which names all four moved settings.
 
-### R20 (queued): the record rows at the fielded pin
+### R20: the record rows at the fielded pin (`pin2`, `pin2kq`), measured 2026-10-12
 
-**Queued for after the 2026-10-12..14 maintenance; `cluster/SVGD_RUNBOOK.md`, "R20".** The first stage
-on `SVGD_PINNED_V2` (c x z, rho 1e5, H / T, the native-draw paired swarm, gn_lm 10, lr 0.3, every one
-named), and the source of the single-start table. It covers the record's sixteen rows, four robots x
-grasp / pose x native / paired, 480 cells at 180 s on seed 1, at the pin with no further overrides
-(`pin2`). The learned arm is the question, read against the same IPOPT twins the earlier rounds paired
-with: SVGD_R2 on the Panda, stage PAPER on the iiwa, the screw arm and the soft PCS arm. **Native is
-the primary row and paired its ablation**, per the ruling above. Beside it sits the joint-space
-ablation on the Panda's four rows (`pin2kq`: the pin with `svgd_kernel=q`, since `cz` is
-learned-only), in its own items. It is the swarm without the network at the new pin, never a
-baseline. A smoke of both arms at these settings (SVGD_SMOKE_R20) runs first, because joint space has
-never run at rho 1e5 / H / T / native init or on the clearance row. Everything R1-R19 measured ran
-`SVGD_PINNED_V1` with the kernel, metric and init unnamed (`SVGD_HISTORICAL_DEFAULTS`). R20's
-settings therefore differ from the seed-1 `kczrho1e5` runs (R14 / R17 / R17S / R17P) in three things
-only: the H / T form (bit-identical at T = 1), the paired swarm's draw (R18: equal cost, no churn)
-and the gate-edge rule (b4666d7, the one solver change since the staged 7ca45a4, which is why R20
-needs a restage).
+**Ran 2026-10-12 13:02-14:52 EDT, before the maintenance** (Thomas: an idle cluster until the evening
+is wasted compute). Tip 86efbb0 restaged (the pin, the gate-edge rule and the soft PCS split step
+all in the staged tree; `.staged-commit` verified), jobs 5897146 (SVGD_SMOKE_R20, one node) and
+5897148-51 (R20, four nodes, `afterok`), `DRAKE_ENV=crc PROCS=2`, the clearance row. **6 node-hours
+against the 25 allotted**: the joint-space ablation, charged at 60 s per grasp cell, converged in
+1.5 s. `cluster/SVGD_RUNBOOK.md`, "R20". The first stage on `SVGD_PINNED_V2` (c x z, rho 1e5, H / T,
+the native-draw paired swarm, gn_lm 10, lr 0.3, every one named), the record's sixteen rows, four
+robots x grasp / pose x native / paired, 480 cells at 180 s on seed 1, zero further overrides
+(`pin2`), read against the same IPOPT twins the single-robot rounds paired with (SVGD_R2 on the
+Panda, stage PAPER on the others). **Native is the primary row and paired its ablation** (the
+ruling above). The joint-space ablation (`pin2kq`, the pin with `svgd_kernel=q`) ran on the
+Panda's four rows in its own items.
+
+**The smoke passed every gate item** (eight items, Panda, 4 cells at 60 s, both arms as separate
+items): 32 / 32 cells solved, zero `error` records, `svgd_kernel` `q` on the `pin2kq` items and
+`cz` on `pin2`, `svgd_warmup_seconds` present, `n_recheck_failures` and `feas_level` on every record
+(the restaged solver ran), the solver's verdict equal to Drake's on 32 / 32, slowest cell 10.1 s.
+Joint space at the new pin solved its 16 cells in 1.1-1.6 s.
+
+**Learned under svgd at the fielded pin, against learned under IPOPT, same cells** (exact McNemar;
+cost = median reported cost, svgd on the cells it shares with the twin's learned arm, IPOPT the
+reporter's column on the cells both of its arms solved; wall = mean over all cells clamped at 180 s;
+steps = median svgd outer steps; max = the slowest svgd cell):
+
+| row | svgd | IPOPT | verdict | cost svgd / IPOPT | wall s svgd / IPOPT | outer | ms / outer | max s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda grasp native | 480 | 480 | tie | 3.39 / 4.51 | 2.47 / 3.00 | 18 | 84 | 19.7 |
+| Panda grasp paired | 480 | 479 | tie | 3.37 / 4.14 | 2.49 / 5.01 | 19 | 83 | 14.5 |
+| Panda pose native | 480 | 458 | **svgd** p = 4.8e-7 | 4.61 / 6.71 | 1.01 / 0.77 | 9 | 85 | 6.5 |
+| Panda pose paired | 480 | 395 | **svgd** p = 5.2e-26 | 4.63 / 6.40 | 1.00 / 2.02 | 9 | 86 | 5.6 |
+| iiwa grasp native | 480 | 480 | tie | 3.46 / 7.95 | 1.44 / 2.68 | 11 | 66 | 13.9 |
+| iiwa grasp paired | 480 | 479 | tie | 3.41 / 7.57 | 1.28 / 6.27 | 11 | 66 | 10.3 |
+| iiwa pose native | 480 | 462 | **svgd** p = 7.6e-6 | 3.88 / 8.99 | 0.89 / 0.67 | 11 | 68 | 3.5 |
+| iiwa pose paired | 480 | 406 | **svgd** p = 1.1e-22 | 3.85 / 9.03 | 0.92 / 1.61 | 11 | 68 | 3.8 |
+| screw grasp native | 480 | 475 | tie p = 0.062 | 3.28 / 9.02 | 1.76 / 6.93 | 13 | 84 | 10.9 |
+| screw grasp paired | 480 | 473 | **svgd** p = 0.016 | 3.27 / 9.45 | 1.95 / 11.11 | 13 | 85 | 51.1 |
+| screw pose native | 480 | 459 | **svgd** p = 9.5e-7 | 3.74 / 11.48 | 1.28 / 1.10 | 12 | 86 | 7.8 |
+| screw pose paired | 480 | 429 | **svgd** p = 8.9e-16 | 3.66 / 13.12 | 1.29 / 1.95 | 11 | 87 | 9.6 |
+| soft PCS grasp native | 480 | 480 | tie | 0.909 / 0.626 | 2.58 / 1.21 | 8 | 213 | 19.5 |
+| soft PCS grasp paired | 480 | 477 | tie p = 0.25 | 0.889 / 0.704 | 2.54 / 6.12 | 8 | 214 | 22.7 |
+| soft PCS pose native | 480 | 477 | tie p = 0.25 | 1.389 / 1.368 | 1.51 / 0.61 | 8 | 177 | 7.6 |
+| soft PCS pose paired | 480 | 437 | **svgd** p = 2.3e-13 | 1.370 / 0.985 | 1.52 / 8.70 | 8 | 174 | 4.8 |
+
+- **480 / 480 on all sixteen rows; 8 wins, 8 ties, 0 losses** against the learned arm under IPOPT.
+  Zero clock stops and zero step-cap stops on any row (IPOPT's twins: screw grasp 6 / 3 and soft
+  PCS 3 / 18 timeouts). Every cell `converged`.
+- **Success is identical cell for cell to the V1 rounds on every row** (`pin2` against `kq`:
+  +0 / -0 on all sixteen; the VARIANT vs VARIANT block). The pin moves cost and wall, not cells.
+- **Cost below the IPOPT learned arm on the twelve rigid-arm rows** (0.55-0.81x on the Panda,
+  0.43-0.45x on the iiwa, 0.28-0.36x on the screw arm); above it on three soft PCS rows (1.26-1.45x)
+  and level on soft PCS pose native (1.02x).
+- **Wall (cluster, one solve per GPU, cap-clamped mean): 0.9-2.6 s on every row.** Below the IPOPT
+  learned arm on all eight paired rows and on the four grasp-native rows but soft PCS; above it on
+  pose native (IPOPT 0.6-1.1 s there).
+- **Residual at stop** 4e-6 to 3e-5 (median `max_violation`) against IPOPT's 1e-8; the task gate is
+  1e-3. Feasible particles at stop: median 58 of 64 on Panda grasp paired (the q kernel's 6).
+- **`n_recheck_failures` is 0 on every cell of every row**: the gate-edge rule never fired at 480
+  x 20 = 9600 cells.
+
+**The soft PCS split step on the cluster** (`pin2` R20 against `kczrho1e5` R17P, the same pin's two
+method factors on the autograd / eager step, same grid):
+
+| soft PCS row | ms / outer step R17P -> R20 | wall s | max s | outer steps | cost |
+| --- | --- | --- | --- | --- | --- |
+| grasp native | 804 -> 213 | 8.57 -> 2.58 | 96 -> 20 | 8 -> 8 | 1.48 -> 0.91 |
+| grasp paired | 780 -> 214 | 10.11 -> 2.54 | 88 -> 23 | 9 -> 8 | 0.90 -> 0.89 |
+| pose native | 850 -> 177 | 8.57 -> 1.51 | 127 -> 8 | 9 -> 8 | 1.58 -> 1.39 |
+| pose paired | 832 -> 174 | 7.51 -> 1.52 | 64 -> 5 | 9 -> 8 | 1.36 -> 1.37 |
+
+3.7-4.8x per outer step and 3.3-5.7x in wall, success and step counts unchanged (+0 / -0 on every
+row against R17P's 480s). The soft PCS arm now sits at 2.4-3.2x the rigid arms' ms per outer
+step (the clearance row over 231 plant positions), where it was 10x.
+
+**The joint-space ablation at the pin (`pin2kq`, Panda, kernel q)** against joint space under IPOPT,
+same cells (not a baseline):
+
+| row | svgd | IPOPT | verdict | cost svgd / IPOPT | wall s svgd / IPOPT | outer | clock stops svgd (R1 `kq`) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| grasp native | 480 | 448 | svgd p = 4.7e-10 | 3.39 / 2.25 | 1.49 / 6.07 | 20 | 0 (143) |
+| grasp paired | 480 | 449 | svgd p = 9.3e-10 | 3.39 / 2.23 | 1.45 / 6.06 | 20 | 0 (143) |
+| pose native | 480 | 200 | svgd p = 1.0e-84 | 4.43 / 7.69 | 0.83 / 0.53 | 14 | 0 (29) |
+| pose paired | 480 | 200 | svgd p = 1.0e-84 | 4.43 / 7.58 | 0.83 / 0.53 | 14 | 0 (29) |
+
+At the V1 pin (R1, kernel q, rho 1e3, jitter) joint-space svgd was 338 / 480 on grasp with 143 cells
+at the clock and 451 on pose; **at the V2 pin it is 480 / 480 on all four rows with no clock stop**,
+at 0.8-1.5 s a cell. Its grasp cost is 1.5x IPOPT's joint-space cost (the learned arm's is 0.75x
+IPOPT's learned), its pose cost 0.6x. Feasible particles at stop: median 4 of 64 (the learned arm's
+58). Multiplier clips per run: 2.8e5 (`mug_xy`) and 5.2e5 (`collision`) on the joint-space grasp
+rows against 0.9e4 and 1.2e4 on the learned arm's, so the swarm without the network leans on the
+clip where the learned arm does not. Which of rho 1e5, the H / T metric and the native init did this
+is not separated (the ablation ran the pin as a block, by design).
 
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
