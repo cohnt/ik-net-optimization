@@ -1346,6 +1346,52 @@ analytic row Jacobians (the rigid arms' path) should return this robot to the 1-
 then the soft PCS row is reported at this cost and the comparison stays on success and iterations,
 where it is the Panda's picture.
 
+### R14: do the levers add? Declared two-factor combinations, learned arm only, measured 2026-10-12
+
+**Jobs 5895130-34, 384 items, clearance row, 0 error cells; `--variants kq,rho1e5,n128,kz,kcz,kzHonT0p1,kzrho1e5,kzn128,kczrho1e5`.**
+The first declared two-factor round (`SVGD_TWO_FACTOR_ROUNDS`; the selftest holds each variant to
+exactly its two factors): the latent kernel z with the H / T metric at T = 0.1 (one factor: at T = 1
+the two metric forms coincide), z with rho = 1e5, z with N = 128, and c x z with rho = 1e5.
+
+| variant | success | cost on shared cells (gp / gn / pp / pn) | outer steps | feasible particles | redraws / N (gp) | mean wall s |
+| --- | --- | --- | --- | --- | --- | --- |
+| `kq` (R1) | 480 x 4 | 8.38 / 8.41 / 5.61 / 7.50 | 24 / 13 / 13 / 13 | 6 / 13 / 21 / 31 | 0.33 | (autodiff row) |
+| `kz` (R13) | 480 x 4 | 4.89 / 6.95 / 4.70 / 6.78 | 26 / 12 / 12 / 13 | 16 / 31 / 27 / 25 | 0.59 | 2.54 / 1.42 / 1.38 / 1.48 |
+| `kcz` (R13) | 480 x 4 | 4.73 / 6.61 / 4.79 / 6.33 | 26 / 10 / 11 / 12 | 18 / 54 / 36 / 45 | 0.45 | 2.64 / 1.34 / 1.56 / 1.35 |
+| `kzHonT0p1` | 480 x 4 | 4.11 / 5.86 / 4.53 / 6.08 | 18 / 13 / 11 / 12 | 35 / 32 / 32 / 28 | 1.17 | 2.66 / 1.56 / 1.13 / 1.31 |
+| `kzrho1e5` | 480 x 4 | 4.09 / 5.19 / 4.52 / 5.44 | 14 / 14 / 10 / 13 | 35 / 32 / 32 / 28 | 1.06 | 1.71 / 1.57 / 1.13 / 1.39 |
+| `kzn128` | 480 x 4 | 4.82 / 6.44 / 4.51 / 6.18 | 25 / 11 / 11 / 13 | 28 / 68 / 61 / 58 | 0.48 | 3.27 / 1.99 / 1.52 / 1.97 |
+| `kczrho1e5` | 480 x 4 | **3.39 / 4.93 / 4.62 / 5.14** | 21 / 13 / 10 / 12 | **57 / 54 / 47 / 47** | 1.06 | 2.66 / 1.95 / 1.06 / 1.31 |
+| IPOPT learned (R2) | 479 / 480 / 395 / 458 | 4.14 / 4.66 / 6.15 / 6.55 | | | | 5.0 / 3.0 / 2.0 / 0.8 |
+
+**Lead: the kernel space and rho ADD; N does not add to the latent kernel; the H / T form at T = 0.1
+is worth the same as rho = 1e5 on the latent kernel.** All four combinations are 480 / 480 on every
+row with `kq`'s verdicts (twenty-three variants within one cell now), every cell converged on the
+stop rule (the c x z clock stop of R13 is gone), wall 1.1-2.7 s.
+- **c x z + rho = 1e5 returns grasp paired cost 3.39, BELOW IPOPT's learned 4.14 on the same cells**
+  (0.82x), where the fielded `kq` sat at 2.0x; grasp native 4.93 against 4.66 (1.06x), pose 25-30%
+  below IPOPT. The feasible swarm is 47-57 of 64 on every row. Against its parents: c x z alone 4.73,
+  rho = 1e5 alone 5.94 -- the two gains stack almost fully (4.73 -> 3.39 is -28%, rho alone bought
+  -29% on `kq`).
+- **z + rho = 1e5** reads the same way (4.89 -> 4.09, -16%), with the fewest outer steps of the
+  table (10-14).
+- **z + H / T at T = 0.1** lands on z + rho = 1e5's numbers almost exactly (4.11 / 5.86 / 4.53 / 6.08
+  against 4.09 / 5.19 / 4.52 / 5.44; the same 35 / 32 / 32 / 28 feasible). Under H / T a colder
+  temperature scales the repulsion-to-drive ratio the way a larger rho scales the constraint-to-
+  objective ratio; on this program the two knobs move the swarm the same way. Both roughly triple the
+  redraw rate (1.06-1.17 per particle against 0.59), the same churn R9 saw at rho = 1e5.
+- **z + N = 128 does not add**: cost 4.82 against z's 4.89 at twice the feasible particles and 1.3x
+  the wall. N's cost gain on the q kernel (R8) came from having more feasible particles to choose
+  among; the latent kernel already supplies them, so the swarm size stops mattering above 64.
+
+**Fielding candidate after R13 + R14: c x z + rho = 1e5** (or z + rho = 1e5 as the single-block
+form). What it changes against today's pin is two settings and one kernel definition; what it
+buys is a learned arm under svgd that is 480 / 480 on all four Panda rows at 1-3 s with grasp cost
+at or below IPOPT's learned arm. The open items it does not settle: H / T as the metric form (a
+definition, bit-identical at T = 1; T stays 1 under this candidate), the native-draw paired init
+(R10, orthogonal), and whether the gain transfers to the iiwa, screw and soft PCS contexts (not
+measured; their rounds ran `kq`).
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
