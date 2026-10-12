@@ -905,10 +905,14 @@ DRAKE; `scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2[,pin2
   arms bitwise unchanged, pays only compiled (eager it is dispatch-bound and slower). **Cluster:
   780-850 -> 174-214 ms per outer step (3.7-4.8x), wall 7.5-10.1 -> 1.5-2.6 s, same cells, same
   step counts** (R17P -> R20). It now sits at 2.4-3.2x the rigid arms per outer step, from 10x.
-- **The joint-space ablation at the pin (Panda, kernel q, `pin2kq`): 480 / 480 on all four rows**
-  against joint-space IPOPT's 448 / 449 / 200 / 200 (p <= 5e-10), zero clock stops where the V1 pin
-  had 143 on grasp, 0.8-1.5 s a cell; grasp cost 1.5x IPOPT joint space's, pose 0.6x; median 4
-  feasible particles of 64 (learned 58) and 30-40x the learned arm's multiplier clips. Not a
+- **The joint-space ablation at the pin (`pin2kq`, kernel q; R20 Panda, R21 the other three,
+  2026-10-12): joint space under svgd beats joint space under IPOPT on all sixteen rows**, 480 / 480
+  on twelve; the screw arm leaves 17-20 grasp and 3 pose cells per protocol at the clock (463 / 460
+  / 477 / 477 against IPOPT's 442 / 320), under the 24-cell threshold. Its grasp solutions are dearer
+  than IPOPT joint space's (1.2-3.5x), its rigid pose ones cheaper. **Inside svgd, learned against
+  joint space on the same cells: 2 wins (screw grasp, both protocols), 14 ties, 0 losses**; cost
+  level on grasp, joint space cheaper on pose; the learned swarm keeps 58 feasible particles at stop
+  where joint space keeps 4-5 on rigid grasp (the q kernel spreads it off the manifold). Not a
   baseline; which pin factor did it is not separated.
 - **Mechanisms settled**: the kernel-off swarm keeps descending to the clock (R1K); the q-space
   kernel spreads particles OFF the manifold (few feasible, 2x cost) where a latent kernel keeps them
