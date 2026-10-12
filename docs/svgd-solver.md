@@ -1109,6 +1109,43 @@ fewer feasible particles on the paired rows (2 / 5 against 6 / 21). With R4's `l
 worst grasp cost, most redraws) the step-size ladder reads 0.1 < 0.3 < 1.0 as wall-vs-cost with the
 fielded 0.3 in the middle; nothing moves success.
 
+### R8: N = 4, 32, 128 (`n4`, `n32`, `n128`), learned arm only, measured 2026-10-11
+
+**Jobs 5892412-15, 288 items, clearance row, 0 error cells; `--variants ...,n4,n32,n128`.** With R3's
+N = 1 and 256 and R5's N = 16 the particle-count ladder is complete at 1 / 4 / 16 / 32 / 64 / 128 / 256.
+
+| N | success (gp / gn / pp / pn) | cost on shared cells | outer steps | feasible particles | redraws / N (paired grasp, median) | mean wall s (row) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4 | 480 / 480 / 480 / **479** | 10.9 / 11.2 / 8.5 / 8.7 | 41 / 27 / 17 / 15 | 1 / 1 / 2 / 2 | 1.00 | 2.3 / 1.8 / 2.5 / 2.2 |
+| 32 | 480 x 4 | 9.3 / 9.5 / 6.7 / 8.2 | 26 / 13 / 14 / 13 | 3 / 5 / 10 / 15 | 0.44 | 1.8 / 1.1 / 1.2 / 1.7 |
+| 64 (`kq`, autodiff row) | 480 x 4 | 8.4 / 8.4 / 5.6 / 7.5 | 24 / 13 / 13 / 13 | 6 / 13 / 21 / 31 | 0.33 | 12.3 / 7.1 / 6.6 / 7.0 |
+| 128 | 480 x 4 | 7.5 / 7.9 / 5.2 / 6.8 | 21 / 12 / 13 / 14 | 12 / 28 / 41 / 61 | 0.24 | 2.7 / 1.7 / 1.7 / 1.9 |
+
+**Lead: N buys no success at any rung** -- 480 / 480 on 11 of the 12 rows, the twelfth the same
+gate-edge cell as `K1`'s (below) -- and the verdicts against the IPOPT twin are `kq`'s on every rung.
+With R3 and R5 that is the whole ladder from 1 to 256 within one cell on every row. **What N buys is
+cost, monotonically**: on the shared cells 10.9 -> 9.3 -> 8.4 -> 7.5 (R3: 6.3-7.2 at 256) on grasp
+paired, 8.5 -> 6.7 -> 5.6 -> 5.2 on pose paired, every row in the same order, with the feasible
+particle count rising 1 -> 61 and the per-particle redraw rate falling 1.0 -> 0.24. The N = 4 swarm
+is one feasible particle plus three being redrawn (`selected idx` median 2 of 4, redraws 1.0 per
+particle per cell); N = 128 keeps 12-61 feasible and chooses among them. Outer steps fall with N on
+the paired rows (41 -> 21 grasp) and are flat on native (12-13), so the swarm's coverage shortens
+the paired search but not the native one.
+
+**Wall on the clearance row is flat in N from 32 to 128** (1.1-1.8 against 1.7-2.7 s mean): the step
+cost grows 66 -> 82 -> 114 ms per outer step (N = 32 / 64 / 128) while the step count falls, and
+below that N = 4 is slower than N = 32 (49 ms per step but 1.5-3x the steps). So on this hardware the
+cost-vs-wall trade is nearly free up to N = 128, and R3's N = 256 (3-4x `kq`'s wall on the autodiff
+row) is where the GPU step stops amortising. **The one-solve column can run N = 128 at N = 32's
+wall and a 20% lower cost**; that is the setting to carry into the kernel-space round, where the
+latent kernel is expected to raise the feasible count further.
+
+**The gate-edge cell is the same cell.** Pose native (15, 2) is the one lost cell for both `K1`
+(Drake 1.0070e-4) and `n4` (1.0347e-4); `kq` returns it at 1.6e-5 and IPOPT at 8e-10. Five go/no-go
+(3) disagreements in 11,520 cells, all on the float32 rows reading a particle inside the 1e-4 gate
+that float64 Drake reads 0.05-7% outside it: the phase-2 fix (a stop-rule margin inside the gate, or
+the float64 polish before the verdict) is a one-line change of policy, Thomas's call.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
