@@ -454,7 +454,7 @@ def ab_vs_primary(rep, matrix, columns, primary=M.PRIMARY, twin=M.IPOPT, legend=
     W = name_width(columns)
     legend = M.variant_token(M.PRIMARY) if legend is None else legend
     print(f"\n{'=' * 100}\nA/B against the primary {primary} ({legend}): each "
-          f"column differs from it in ONE setting; exact McNemar per arm on the same cells "
+          f"column differs from it in the settings its diff line names; exact McNemar per arm on the same cells "
           f"(col+ = cells only that column solved)")
     print(f"  {'row':<34}{'column':<{W}}{'arm':<13}{primary:>6}{'col':>6}{'col+':>6}{'prim+':>6}"
           f"{'p':>9}{'steps prim':>11}{'steps col':>10}{'wall prim':>10}{'wall col':>9}"
