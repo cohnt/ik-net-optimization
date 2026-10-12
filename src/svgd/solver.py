@@ -26,16 +26,18 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
     `phi_i = (1/N) sum_j [K(q_j, q_i)(-grad_y f_j / T) + grad_{y_j} K(q_j, q_i)]
              - (1/T) grad_y (L - f)_i`;
     `svgd_kernel` the RBF's space (median bandwidth per factor, `fused.kernel_terms`): `q`
-    (fielded) the configuration, repulsion pulled back to y through the flow's VJP; `x` all of
+    the configuration, repulsion pulled back to y through the flow's VJP; `x` all of
     y; `z` / `c` the latent / conditioning block of y (learned arm only), repulsion on that block
-    directly; `cz` / `qz` products of two factors, each its own bandwidth; `pose` the task
+    directly; `cz` / `qz` products of two factors, each its own bandwidth (`cz` fielded
+    2026-10-12, with rho = 1e5); `pose` the task
     frame's [position; canonical quaternion], pulled back through d pose / d q and the VJP;
     `none` drops both kernel terms. `svgd_constraint_inside_kernel` puts the
     whole `-grad L / T` under the average. Step (`fused.step_from`), `H_i` the GN Hessian of
     the AL in y (`fused.gn_hessian`): `svgd_metric = gn` (Stein variational Newton, Detommaso
     et al. 2018) `dy_i = svgd_lr (H_i + svgd_gn_lm I)^-1 phi_i`; `identity`
-    `dy_i = (svgd_lr / ||H_i||_F) phi_i`; `svgd_metric_temperature = on` uses `H_i / T` in
-    place of `H_i` in both (off, fielded: the drive's 1/T is unmatched); then
+    `dy_i = (svgd_lr / ||H_i||_F) phi_i`; `svgd_metric_temperature = on` (fielded 2026-10-12)
+    uses `H_i / T` in place of `H_i` in both (off: the drive's 1/T is unmatched; the two are
+    bit-identical at T = 1); then
     `y_i <- clamp_B(y_i + dy_i)`.
  5. Every K = `svgd_inner_iters` steps a CHECK: the dual-ascent step on every particle,
     unconditionally (`al.dual_update`: `lam_i += alpha h_i`, `mu_i = max(0, mu_i + alpha g_i)`,
@@ -55,9 +57,14 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
     improved by less than `svgd_stop_rel` (relative): `stop_reason` converged / wall_clock /
     step_cap; or every particle dropped: `all_dead`, scored infeasible (the returned point is
     NaN, so the harness scores the last recorded iterate under `recovered_*`).
- 8. Select: the particles feasible on the batched rows, by objective; the top
-    `svgd_recheck_topk` re-checked exactly in Drake (`prog.EvalBinding`, float64, same x);
-    the first passer is returned, else the smallest Drake violation, scored infeasible.
+    THE GATE-EDGE RULE (2026-10-12): a stall stop stands only if step 8's float64 re-check
+    passes; if none passes, the swarm continues with the stall counter reset and the
+    feasibility level `v <= feas_level` (1.0 = the gate) tightened x0.9, and re-tests at the
+    next stall (`n_recheck_failures`, `feas_level`). Nothing float64 runs except at a stop.
+ 8. Select: the particles feasible on the batched rows (at the solve's feasibility level), by
+    objective; the top `svgd_recheck_topk` re-checked exactly in Drake (`prog.EvalBinding`,
+    float64, same x); the first passer is returned, else the smallest Drake violation, scored
+    infeasible. A stall stop's selection is the one the gate-edge rule already made.
 
 DERIVATIVES: THE ONLY BACKWARD IS THROUGH THE FLOW. On the fielded robots
 (`BatchedProgram.has_analytic_row_jacobians`) every derivative downstream of the
@@ -71,7 +78,7 @@ THE INIT PROTOCOL cannot be read off the program (the harness called `SetStartFr
 `SetNativeStart` before `Solve()`), so particle 0 is ALWAYS the program's initial guess,
 exactly, never clipped (the +-5 latent-clip trap). The other N-1 are drawn around it
 (`svgd_paired_init = "jitter"`: `y0 + svgd_jitter * xi` in the normalised coordinates) or from
-the arm's native distribution (`"native"`: learned `c = native_c, z ~ N(0, I), q_c = 0`; joint
+the arm's native distribution (`"native"`, fielded 2026-10-12: learned `c = native_c, z ~ N(0, I), q_c = 0`; joint
 space uniform in `ConfigLimits`, kept collision-free by `ParallelCollisionChecker` with
 bounded redraws and a documented fallback), then clamped onto the true bounds with the clip
 distance recorded. The seed is `svgd_seed` mixed with a CRC of the initial guess.
@@ -451,7 +458,7 @@ class _Target:
                      "med_mu_inf", "max_mu_inf", "min_F_feasible", "med_h_pos", "med_h_rot",
                      "med_g_plus", "n_multiplier_clipped", "n_resampled", "bound_clip", "n_live")
 
-    def trace_row(self, ev, S, n_clipped, n_resampled, bound_clip, live=None):
+    def trace_row(self, ev, S, n_clipped, n_resampled, bound_clip, live=None, feas_level=1.0):
         """One `[len(TRACE_COLUMNS)]` tensor of swarm statistics at a check, on the device
         (stacked and moved to the host ONCE at the end): the best and median scaled
         violation, the feasible count, the median and largest `|lam_i|_inf` and `|mu_i|_inf`
@@ -460,13 +467,15 @@ class _Target:
         inequality, how many multiplier entries the dual step clipped, the particles
         redrawn, the clamp distance onto the bounds since the last check, and the live
         particles. `live [N]` bool (some particle dropped): every column is over the live
-        particles only (NaN where none is live)."""
+        particles only (NaN where none is live). `feas_level`: the solve's feasibility level
+        (1.0 = the gate; tightened by the gate-edge rule), which the feasible count and the best
+        feasible objective use."""
         if live is not None:
-            return self._trace_row_live(ev, S, n_clipped, n_resampled, bound_clip, live)
+            return self._trace_row_live(ev, S, n_clipped, n_resampled, bound_clip, live, feas_level)
         kw = dict(dtype=self.dtype, device=self.device)
         nan = torch.full((), float("nan"), **kw)
         v = torch.nan_to_num(ev.infeas, nan=float("inf"))
-        feas = v <= 1.0
+        feas = v <= feas_level
         ## The row columns in TOLERANCE units (1 = the gate), whatever the AL's units.
         habs = torch.nan_to_num((ev.out.h * self.th).detach().abs(), nan=float("inf"))
         gpos = torch.nan_to_num(torch.clamp((ev.out.g * self.tg).detach(), min=0.0), nan=float("inf"))
@@ -489,13 +498,13 @@ class _Target:
             n_clipped.to(self.dtype), torch.full((), float(n_resampled), **kw),
             bound_clip.to(self.dtype), torch.full((), float(v.shape[0]), **kw)])
 
-    def _trace_row_live(self, ev, S, n_clipped, n_resampled, bound_clip, live):
+    def _trace_row_live(self, ev, S, n_clipped, n_resampled, bound_clip, live, feas_level=1.0):
         """`trace_row` over the live particles: a dropped particle's entries are NaN and every
         statistic is NaN-aware (`nanmedian`, a NaN-skipping min / max)."""
         kw = dict(dtype=self.dtype, device=self.device)
         nan = torch.full((), float("nan"), **kw)
         v = torch.nan_to_num(ev.infeas, nan=float("inf"))
-        feas = (v <= 1.0) & live
+        feas = (v <= feas_level) & live
         v = torch.where(live, v, torch.full_like(v, float("nan")))
         habs = torch.nan_to_num((ev.out.h * self.th).detach().abs(), nan=float("inf"))
         gpos = torch.nan_to_num(torch.clamp((ev.out.g * self.tg).detach(), min=0.0), nan=float("inf"))
@@ -749,7 +758,18 @@ class SvgdSolver:
 
     ## ---------------------------------- swarm -----------------------------------------
     def _swarm(self, X, S, deadline, outer_iters, inner_iters, record):
-        """The outer/inner loop; returns `(X, S, stop_status, stats)`."""
+        """The outer/inner loop; returns `(X, S, stop_status, stats)`.
+
+        THE GATE-EDGE RULE (Thomas, 2026-10-12). A stall stop is accepted only once the float64
+        Drake re-check (`_select`, the same one the end selection runs) passes: the selection is
+        made HERE, at the stall, and handed back as `stats["selection"]` for `solve` to reuse, so
+        a cell whose first re-check passes runs exactly one re-check, as before. If none passes,
+        the swarm does not stop: the stall counter resets, the solve's feasibility level
+        `feas_level` (the per-row test `v <= feas_level`, 1.0 = the gate, used by the stop rule,
+        the trace and the selection's mask alike) is multiplied by 0.9, the failure is recorded,
+        and the swarm continues to the next stall. Nothing float64 runs anywhere else: the
+        wall-clock, step-cap and all_dead stops select at the end as before, at the current
+        level."""
         opts = self.options
         tg = self._tg
         N = X.shape[0]
@@ -767,6 +787,8 @@ class SvgdSolver:
         mclip_grp = torch.zeros(n_grp, dtype=torch.long, device=self.device)
         best_seen = float("inf")
         stale = 0
+        feas_level = 1.0
+        stats["recheck_failures"] = []
         status = STATUS_STEP_CAP
         ## `svgd_resample`: the runaway threshold (`keep` never treats a finite particle as
         ## runaway) and the live set's host mirror (`n_live`; the device copy is `S.live`).
@@ -808,14 +830,14 @@ class SvgdSolver:
             v = torch.nan_to_num(ev.infeas, nan=float("inf"))
             if mode == "native":
                 n_re, n_die = int(mask.sum().item()), 0
-                feas = (v <= 1.0) & ~mask
+                feas = (v <= feas_level) & ~mask
             else:
                 ## `drop` / `keep`: the masked LIVE particles die at this check; nothing is
                 ## redrawn. The live set below is the one after the deaths.
                 die = mask & live_b
                 n_re, n_die = 0, int(die.sum().item())
                 live_b = live_b & ~die
-                feas = (v <= 1.0) & ~mask & live_b
+                feas = (v <= feas_level) & ~mask & live_b
                 v = torch.where(live_b, v, torch.full_like(v, float("inf")))
             F = torch.where(feas, torch.nan_to_num(ev.F, nan=float("inf")),
                             torch.full_like(ev.F, float("inf")))
@@ -823,7 +845,8 @@ class SvgdSolver:
                 i_best = int(torch.argmin(F).item()) if bool(feas.any()) else int(torch.argmin(v).item())
                 record(X[i_best])
             stats["trace"].append(tg.trace_row(ev, S, n_clipped, n_re, clip_check,
-                                               live=None if n_live - n_die == N else live_b))
+                                               live=None if n_live - n_die == N else live_b,
+                                               feas_level=feas_level))
             stats["n_multiplier_clipped"] += int(n_clipped.item())
             if n_re:
                 fresh, _ = self._draw_native(N, self._gen)
@@ -851,9 +874,19 @@ class SvgdSolver:
                 else:
                     stale += 1
                 if stale >= int(opts.svgd_stop_patience):
-                    status = STATUS_CONVERGED
-                    stats["stop_reason"] = "converged"
-                    break
+                    ## The gate-edge rule: the stop stands only if the float64 re-check passes.
+                    sel = self._select(X, S, STATUS_CONVERGED, feas_level)
+                    if sel.drake_ok:
+                        status = STATUS_CONVERGED
+                        stats["stop_reason"] = "converged"
+                        stats["selection"] = sel
+                        break
+                    feas_level *= 0.9
+                    stale = 0
+                    stats["recheck_failures"].append(dict(
+                        outer=t_outer + 1, n_feasible=sel.n_feasible, selected=int(sel.selected),
+                        drake_max_violation=(None if sel.drake_viol is None else float(sel.drake_viol)),
+                        feas_level=feas_level, seconds=sel.seconds))
             if self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
             if time.perf_counter() >= deadline:
@@ -861,6 +894,7 @@ class SvgdSolver:
                 stats["stop_reason"] = "wall_clock"
                 break
         stats["n_live"] = n_live
+        stats["feas_level"] = feas_level
         stats["bound_clip"] = float(clip_tot.item())
         stats["bound_clip_count"] = int(nclip_tot.item())
         stats["multiplier_clips_by_group"] = dict(zip(
@@ -898,6 +932,87 @@ class SvgdSolver:
             worst = max(worst, w)
         return worst
 
+    def _drake_recheck(self, X_np, order, n_feasible):
+        """The exact float64 re-check of the candidates `order` (particle indices, in order) in
+        Drake: the first whose worst signed violation is within `tol` -- if the batched rows
+        called any particle feasible -- is selected and passes, else the smallest violation is
+        selected and fails. Returns `(selected, drake_max_violation, drake_ok)`."""
+        bp = self._tg.bp
+        selected, drake_viol, drake_ok = None, np.inf, False
+        for j in order:
+            vj = self._drake_max_violation(bp.to_drake_x(X_np[j]))
+            if n_feasible and vj <= self.tol:
+                selected, drake_viol, drake_ok = j, vj, True
+                break
+            if vj < drake_viol:
+                selected, drake_viol = j, vj
+        if not drake_ok:
+            drake_ok = bool(drake_viol <= self.tol)
+        return selected, drake_viol, drake_ok
+
+    def _select(self, X, S, stop, feas_level):
+        """The selection at a stop: the particles feasible on the batched rows at `feas_level`
+        (`v <= feas_level`), by objective; the top `svgd_recheck_topk` re-checked exactly in
+        Drake (`_drake_recheck`, float64, same x). Run once at the end of the solve -- or at a
+        stall, by the gate-edge rule, whose passing selection `solve` then reuses. Returns a
+        namespace: the evaluation `evf`, `v`, `Fv`, `feas`, `n_feasible`, `live_np`, `n_live`,
+        `bound_rounding`, `x_ret`, `status`, `drake_ok`, `solver_ok`, `selected`, `drake_viol`,
+        `cands` and the `seconds` it took."""
+        t = time.perf_counter()
+        tg = self._tg
+        bp = tg.bp
+        N = X.shape[0]
+        x0_np = self._x0_np
+        opts = self.options
+        with torch.no_grad():
+            evf = tg.evaluate(X, need_grad=False)
+        v = torch.nan_to_num(evf.infeas, nan=float("inf")).cpu().double().numpy()
+        Fv = torch.nan_to_num(evf.F, nan=float("inf")).cpu().double().numpy()
+        ## A dropped particle is never feasible and never selected (`svgd_resample`).
+        live_np = (S.live > 0).cpu().numpy() if S.live is not None else np.ones(N, dtype=bool)
+        n_live = int(live_np.sum())
+        if n_live < N:
+            v = np.where(live_np, v, np.inf)
+        feas = v <= feas_level
+        n_feasible = int(feas.sum())
+        ## The swarm's clamp onto B ran in the swarm's dtype, whose rounding of a bound can sit
+        ## an ulp outside the float64 bound Drake holds; the same clamp in float64 removes that
+        ## (it moves no coordinate by more than the swarm dtype's rounding, recorded).
+        X32 = X.detach().cpu().double().numpy()
+        lo64, hi64 = bp._variable_bounds()
+        X_np = np.minimum(np.maximum(X32, lo64), hi64)
+        bound_rounding = float(np.nan_to_num(np.abs(X_np - X32), nan=0.0).max(initial=0.0))
+        k = max(1, int(opts.svgd_recheck_topk))
+        if n_live == 0:
+            ## Every particle dropped: nothing to select. A NaN point, so `verify` scores it
+            ## `nan` and run_grid scores the last recorded iterate under `recovered_*`.
+            x_ret, status, drake_ok, solver_ok, selected, drake_viol, cands = (
+                np.full_like(x0_np, np.nan), STATUS_INFEASIBLE, False, False, -1, None, [])
+        elif not np.isfinite(v).any():
+            x_ret, status, drake_ok, solver_ok, selected, drake_viol, cands = (
+                x0_np.copy(), STATUS_NAN, False, False, -1, None, [])
+        else:
+            if n_feasible:
+                order = [int(i) for i in np.argsort(np.where(feas, Fv, np.inf), kind="stable")[:min(k, n_feasible)]]
+            else:
+                if n_live < N:
+                    ## Never re-check a dropped particle: it is never selected, and its x may
+                    ## be non-finite, which Drake's SetPositions aborts the interpreter on.
+                    order = [int(i) for i in np.argsort(v, kind="stable") if live_np[i]][:k]
+                else:
+                    order = [int(i) for i in np.argsort(v, kind="stable")[:k]]
+            cands = order
+            selected, drake_viol, drake_ok = self._drake_recheck(X_np, order, n_feasible)
+            x_ret = X_np[selected].copy()
+            solver_ok = bool(feas[selected])
+            status = STATUS_CONVERGED if drake_ok else (
+                stop if stop in (STATUS_WALL_CLOCK, STATUS_STEP_CAP) else STATUS_INFEASIBLE)
+        return SimpleNamespace(
+            evf=evf, v=v, Fv=Fv, feas=feas, n_feasible=n_feasible, live_np=live_np, n_live=n_live,
+            bound_rounding=bound_rounding, x_ret=x_ret, status=status, drake_ok=bool(drake_ok),
+            solver_ok=bool(solver_ok), selected=selected, drake_viol=drake_viol, cands=cands,
+            seconds=time.perf_counter() - t)
+
     ## ----------------------------------- solve ----------------------------------------
     def _kernel_spread(self, X, evf, feas):
         """`feasible_spread_kernel`: the median pairwise distance among the feasible (live)
@@ -933,6 +1048,7 @@ class SvgdSolver:
         counts0 = dict(getattr(program, "eval_counts", {}) or {})
 
         x0_np = np.asarray(program.prog.GetInitialGuess(program.lumped_vars), dtype=float)
+        self._x0_np = x0_np
         X, clip, init_stats = self._init_particles(x0_np)
         N = X.shape[0]
         extras = dict(init_protocol=opts.svgd_paired_init,
@@ -969,64 +1085,22 @@ class SvgdSolver:
             torch.cuda.synchronize(self.device)
         phase["swarm"] = time.perf_counter() - t
 
-        ## -- select: feasible on the batched rows, by objective; exact Drake re-check --
+        ## -- select: feasible on the batched rows, by objective; exact Drake re-check. A stall stop
+        ## already made it (the gate-edge rule, `_swarm`): reuse it, never re-check twice. --
         t = time.perf_counter()
-        with torch.no_grad():
-            evf = tg.evaluate(X, need_grad=False)
-        v = torch.nan_to_num(evf.infeas, nan=float("inf")).cpu().double().numpy()
-        Fv = torch.nan_to_num(evf.F, nan=float("inf")).cpu().double().numpy()
-        ## A dropped particle is never feasible and never selected (`svgd_resample`).
-        live_np = (S.live > 0).cpu().numpy() if S.live is not None else np.ones(N, dtype=bool)
-        n_live = int(live_np.sum())
-        if n_live < N:
-            v = np.where(live_np, v, np.inf)
-        feas = v <= 1.0
-        n_feasible = int(feas.sum())
+        sel = sstats.pop("selection", None)
+        if sel is None:
+            sel = self._select(X, S, stop, float(sstats.get("feas_level", 1.0)))
+        else:
+            phase["swarm"] -= sel.seconds          # the stall's selection is the select phase
+        evf, v, feas, n_feasible, n_live, live_np = sel.evf, sel.v, sel.feas, sel.n_feasible, sel.n_live, sel.live_np
+        x_ret, status, drake_ok, solver_ok = sel.x_ret, sel.status, sel.drake_ok, sel.solver_ok
+        selected, drake_viol, cands = sel.selected, sel.drake_viol, sel.cands
+        extras["bound_rounding"] = sel.bound_rounding
         cfg_np = evf.cfg.detach().cpu().double().numpy()
         spread = _median_pairwise_distance(cfg_np[feas]) if n_feasible >= 2 else None
         spread_kernel = self._kernel_spread(X, evf, feas) if n_feasible >= 2 else None
-        ## The swarm's clamp onto B ran in the swarm's dtype, whose rounding of a bound can sit
-        ## an ulp outside the float64 bound Drake holds; the same clamp in float64 removes that
-        ## (it moves no coordinate by more than the swarm dtype's rounding, recorded).
-        X32 = X.detach().cpu().double().numpy()
-        lo64, hi64 = bp._variable_bounds()
-        X_np = np.minimum(np.maximum(X32, lo64), hi64)
-        extras["bound_rounding"] = float(np.nan_to_num(np.abs(X_np - X32), nan=0.0).max(initial=0.0))
-        k = max(1, int(opts.svgd_recheck_topk))
-        if n_live == 0:
-            ## Every particle dropped: nothing to select. A NaN point, so `verify` scores it
-            ## `nan` and run_grid scores the last recorded iterate under `recovered_*`.
-            x_ret, status, drake_ok, solver_ok, selected, drake_viol, cands = (
-                np.full_like(x0_np, np.nan), STATUS_INFEASIBLE, False, False, -1, None, [])
-        elif not np.isfinite(v).any():
-            x_ret, status, drake_ok, solver_ok, selected, drake_viol, cands = (
-                x0_np.copy(), STATUS_NAN, False, False, -1, None, [])
-        else:
-            if n_feasible:
-                order = [int(i) for i in np.argsort(np.where(feas, Fv, np.inf), kind="stable")[:min(k, n_feasible)]]
-            else:
-                if n_live < N:
-                    ## Never re-check a dropped particle: it is never selected, and its x may
-                    ## be non-finite, which Drake's SetPositions aborts the interpreter on.
-                    order = [int(i) for i in np.argsort(v, kind="stable") if live_np[i]][:k]
-                else:
-                    order = [int(i) for i in np.argsort(v, kind="stable")[:k]]
-            cands = order
-            selected, drake_viol, drake_ok = None, np.inf, False
-            for j in order:
-                vj = self._drake_max_violation(bp.to_drake_x(X_np[j]))
-                if n_feasible and vj <= self.tol:
-                    selected, drake_viol, drake_ok = j, vj, True
-                    break
-                if vj < drake_viol:
-                    selected, drake_viol = j, vj
-            if not drake_ok:
-                drake_ok = bool(drake_viol <= self.tol)
-            x_ret = X_np[selected].copy()
-            solver_ok = bool(feas[selected])
-            status = STATUS_CONVERGED if drake_ok else (
-                stop if stop in (STATUS_WALL_CLOCK, STATUS_STEP_CAP) else STATUS_INFEASIBLE)
-        phase["select"] = time.perf_counter() - t
+        phase["select"] = sel.seconds + (time.perf_counter() - t)
 
         counts = dict(getattr(program, "eval_counts", {}) or {})
         map_evals = int(counts.get("map_forward", 0) - counts0.get("map_forward", 0))
@@ -1062,6 +1136,7 @@ class SvgdSolver:
                 key: int(counts.get(key, 0) - counts0.get(key, 0)) for key in counts},
             collision_calls=int(self._col.calls), collision_configs=int(self._col.configs),
             candidates=cands, live_at_stop=[bool(x) for x in live_np],
+            recheck_failures=list(sstats.get("recheck_failures", [])),
             bound_clip_count=int(sstats.get("bound_clip_count", 0)),
             warmup_steps=int(warmup_steps)))
         details = SvgdSolverDetails(
@@ -1073,6 +1148,8 @@ class SvgdSolver:
             selected_index=int(selected), phase_times=phase,
             timed_out=(stop == STATUS_WALL_CLOCK), hit_iteration_cap=(stop == STATUS_STEP_CAP),
             solver_feasible=bool(solver_ok), drake_feasible=bool(drake_ok),
+            n_recheck_failures=len(sstats.get("recheck_failures", [])),
+            feas_level=float(sstats.get("feas_level", 1.0)),
             solve_seconds=total, collision_seconds=float(self._col.seconds),
             collision_backend=str(getattr(self._col.evaluator, "backend", "autodiff")),
             collision_threads=int(getattr(self._col.evaluator, "num_threads", 1)),

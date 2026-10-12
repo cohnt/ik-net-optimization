@@ -85,6 +85,10 @@ class SvgdSolverDetails:
     hit_iteration_cap: bool = False
     solver_feasible: bool = False  # the returned particle passed the solver's own rows
     drake_feasible: bool = False   # ... and the exact `prog.EvalBinding` re-check
+    n_recheck_failures: int = 0    # stall stops REFUSED by the gate-edge rule (2026-10-12): the float64
+                                   # re-check passed no candidate, so the swarm continued
+    feas_level: float = 1.0        # the feasibility level at stop (v <= feas_level; 1.0 = the gate,
+                                   # x0.9 per refused stall)
     solve_seconds: float = 0.0
     collision_seconds: float = 0.0 # host time blocked in the collision backend (the exactness premium)
     collision_backend: str = "autodiff"  # which evaluator ran the row (`svgd_collision_backend`)
@@ -221,6 +225,9 @@ def write_log(path, details):
             f.write(f"SVGD phase {k} = {float(v):.6f}\n")
         if getattr(details, "stop_reason", ""):
             f.write(f"SVGD stop reason: {details.stop_reason}\n")
+        ## The gate-edge rule's refused stall stops and the level at stop. Informational.
+        f.write(f"SVGD gate re-check failures: {int(getattr(details, 'n_recheck_failures', 0))} "
+                f"(feasibility level at stop {float(getattr(details, 'feas_level', 1.0)):g})\n")
         ## The per-check trace, one line per column (`_Target.TRACE_COLUMNS`): violation,
         ## feasibility, the multiplier magnitudes, clips, resampling.
         ## Informational -- the harness parses none of these lines.
