@@ -1517,6 +1517,15 @@ cell converged, cost below the IPOPT learned arm on 11 of 16 rows and within 1.5
 (Panda grasp native 1.06x, the four soft PCS rows 1.1-1.5x), wall 1-3 s on the rigid arms and
 7.5-10 s on the soft PCS arm.**
 
+### RULINGS 2026-10-12 (Thomas, morning): the fielded pin, and native is the method
+
+**Fielded from here on: c x z + rho = 1e5 (N = 64, T = 1) with the H / T metric form and the
+native-draw paired swarm** -- items 1 and 2 of the decision list, approved as proposed. **"Native draw
+is the method and paired is the ablation"**: the native start protocol is the primary row of the
+learned arm under svgd; the paired start measures start sensitivity and is reported as an ablation,
+as joint-space svgd is. The defaults in `ProgramOptions` move to the pin once item 3 (the gate-edge
+rule) is decided, so the record rows are re-run under one change set.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
