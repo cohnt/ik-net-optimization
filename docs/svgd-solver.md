@@ -1035,6 +1035,38 @@ no column needs a different mode. `drop` is the honest "no redraw" control for t
 that cannot refill solves 70% of the paired cells), `keep` the control that shows why the threshold
 exists.
 
+### R7: the seed control (`kq@seed2` against `ipopt@seed2`), measured 2026-10-11
+
+**Jobs 5892403-06 (svgd, 96 items, clearance row) and 5892401-02 (the IPOPT twins, 32 items, both
+arms, the nightly tarball), 0 error cells.** Grid seed 2 draws new targets and guesses; the reporter
+pairs these two with each other only (`SVGD_TWIN_OF`), never with a seed-1 run. The svgd items are
+R1's `kq` verbatim on the new grid.
+
+| row | learned svgd (`kq@seed2`) | learned IPOPT (`ipopt@seed2`) | verdict | seed 1 (R1 v R2) |
+| --- | --- | --- | --- | --- |
+| grasp paired | 480 | 480 (joint space 448) | tie | 480 v 479, tie |
+| grasp native | 480 | 480 (447) | tie | 480 v 480, tie |
+| pose paired | 480 | 386 (211) | **svgd**, +94 / -0, p = 1e-28 | 480 v 395, svgd |
+| pose native | 480 | 461 (211) | **svgd**, +19 / -0, p = 4e-6 | 480 v 458, svgd |
+
+**Lead: seed 1 replicates on a fresh grid.** The learned arm under svgd solves 480 / 480 on all four
+rows again, the IPOPT twin's counts move by at most 9 cells (386 v 395, 461 v 458, 480 v 479), and
+every verdict and its direction is the same: ties on grasp, wins on pose where IPOPT leaves 19-94
+cells unsolved and svgd none. The IPOPT twin's own learned-vs-joint-space line also replicates
+(480 v 448, 480 v 447, 386 v 211, 461 v 211 against seed 1's 479 v 449, 480 v 448, 395 v 200,
+458 v 200). Median outer steps 24 / 12 / 14 / 13 against seed 1's 24 / 13 / 13 / 13; feasible
+particles at stop 6 / 13 / 20 / 28 against 6 / 13 / 21 / 31.
+
+**Cost on shared cells** carries the seed-1 pattern: grasp 8.4 / 9.0 against IPOPT's 4.0 / 4.7
+(~2x, the kernel-on stall of R1K); pose paired 5.9 against 6.2 (svgd cheaper), pose native 7.5
+against 6.6. Violation 2.3e-5 to 4.8e-5 against 1e-8.
+
+**Wall is on the clearance row** (not comparable to R1's): mean 2.10 / 1.21 / 1.30 / 1.43 s against
+the IPOPT twin's 4.45 / 2.41 / 2.55 / 1.32 s on the tarball at the same one solve per GPU -- the
+learned arm under svgd is now faster than under IPOPT on three of four rows and level on pose
+native, where under the autodiff row (R1) it was 2.5-8x slower on every row. The maximum cell is
+3.0-9.6 s; no cell is near the clock.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
