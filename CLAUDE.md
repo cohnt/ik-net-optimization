@@ -909,11 +909,32 @@ clearances venv, the one stated exception to ONE DRAKE):**
 seems like something we need to handle delicately"*) -- do not re-propose the one-loop strip-down.
 "Resample" is the term. The clearances wheel is a strict improvement and every svgd round uses it.
 Compute footprint (GPU + 40 threads vs one core) is a paper explanation, not a fairness worry.
-**Open for Thomas**: field c x z + rho = 1e5 (N = 64, T = 1) as the pin, with the native-draw paired
-init; field H / T as the metric form (bit-identical at T = 1); then re-run the record rows at the new
-pin; the gate-edge disagreements (5 cells in 11,520: a
-float32 particle inside the 1e-4 gate that float64 Drake reads 0.05-7% outside; margin or float64
-polish before the verdict); what to do with R14's combinations.
+
+**Rulings, 2026-10-12 -- THE FIELDED PIN (`SVGD_PINNED_V2`, R20 on).** Thomas: *"Agree re 1 and 2.
+Native draw is the method and paired is the ablation."* `ProgramOptions` defaults are now
+`svgd_kernel=cz`, `svgd_rho=1e5`, `svgd_metric_temperature=on` (H / T; bit-identical at T = 1) and
+`svgd_paired_init=native` (particle 0 at the shared guess, the rest from the native draw); N, T, lr,
+gn_lm, K, the resample and the stop rule are unchanged. **Native is the method's primary row and
+paired its ablation.** `cz` is learned-only, so **a joint-space svgd run must name its kernel**
+(`svgd_kernel=q`) or it is refused at warm-up. Every round through R19 ran the old pin
+(`SVGD_PINNED_V1`; `SVGD_HISTORICAL_DEFAULTS` records what they ran unnamed) and regenerates
+byte-identically; the reporter prints a v1 round's settings with those defaults filled in.
+
+**The gate-edge rule (2026-10-12, *"Yes, I like the proposed fix."*).** Five cells in 11,520 stopped
+on a float32 particle inside the 1e-4 gate that float64 Drake read 0.05-7% outside (network error x
+chart gain). The fix costs nothing per step: a stall stop stands only if the existing float64 Drake
+re-check of the top-k passes. If none passes the swarm does not stop: the stall counter resets, the
+solve's feasibility level (`v <= feas_level`, 1.0 = the gate, used by the stop rule, the trace and
+the selection) is tightened x0.9, and it re-tests at the next stall. Recorded per cell as
+`n_recheck_failures` and `feas_level`. Rejected on the way: a per-step float64 check (1 ms per outer
+step for a 0.04% event) and a fixed margin.
+
+**Still open**: R20, the record rows at the fielded pin (four robots x two tasks x two protocols,
+learned arm; joint-space svgd ablation at kernel q), after the 2026-10-12..14 maintenance; the
+soft PCS fast step (branch `svgd-pcs`: configuration-space Jacobians by forward mode through the
+exact strain map, the collision pullback through the plant Jacobian); the GVS arm under svgd is
+DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU, and a dlpack bridge would
+not remove the batched root-find's cost; what to do with R14's combinations.
 
 ## Results: the campaign of record
 
