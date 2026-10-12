@@ -1415,6 +1415,28 @@ width-8 latent behaves as on the width-7 one; nothing about the iiwa's runaway p
 record's gain-ceiling finding) shows in the redraw rate (0.3-1.2 per particle, the Panda's band at
 rho = 1e5).
 
+### R17S: the kernel space transfers to the screw arm (`kcz`, `kczrho1e5` on `p050 n6`), measured 2026-10-12
+
+**Jobs 5895827-30, 192 items, clearance row, 0 error cells; `--rows screw7_p050 --variants kq,kcz,kczrho1e5`.**
+
+| variant | success | cost on shared cells (gp / gn / pp / pn) | outer steps | feasible particles | mean wall s |
+| --- | --- | --- | --- | --- | --- |
+| `kq` (R15) | 480 x 4 | 10.49 / 12.19 / 4.19 / 7.57 | 16 / 13 / 14 / 15 | 3 / 10 / 28 / 30 | 1.54 / 1.38 / 1.44 / 1.59 |
+| `kcz` | 480 x 4 | 6.83 / 9.55 / 3.58 / 5.95 | 17 / 13 / 14 / 16 | 6 / 25 / 35 / 38 | 1.76 / 1.55 / 1.66 / 2.17 |
+| `kczrho1e5` | 480 x 4 | **3.36 / 4.03 / 3.57 / 4.89** | 14 / 15 / 13 / 14 | **49 / 46 / 37 / 36** | 1.97 / 1.89 / 1.50 / 1.68 |
+| IPOPT learned (PAPER) | 473 / 475 / 429 / 459 | 9.45 / 9.02 / 13.12 / 11.48 | | | 11.1 / 6.9 / 2.0 / 1.1 |
+
+**Lead: transfers whole on the third robot too.** 480 / 480 on every row, R15's verdicts (a grasp
+paired win, a native near-win, two pose wins), every cell converged, wall 1.5-2.2 s. Cost against
+`kq`: c x z alone -35% / -22% / -15% / -21%, with rho = 1e5 -68% / -67% / -15% / -35%; the
+combination sits at 0.36x / 0.45x / 0.27x / 0.43x of the IPOPT learned arm's cost on the same cells
+(the screw arm's IPOPT learned column is the record's most expensive). Feasible particles 36-49 of
+64 against 3-30. The paired grasp swarm that `kq` and `kcz` leave thin (3 and 6 feasible) fills to 49
+under rho = 1e5, at a redraw rate of 1.5 per particle per cell -- the churn is the price on this
+arm as on the others, and nothing in success or stop behaviour pays for it. **Three robots, twelve
+rows, one setting change (c x z + rho = 1e5): 480 / 480 everywhere, cost below the IPOPT learned arm
+on 11 of 12 rows** (the twelfth, Panda grasp native, 1.06x).
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
