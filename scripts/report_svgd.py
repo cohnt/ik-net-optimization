@@ -60,7 +60,9 @@ solved, the twin standing in for the absent arm.
 
 Robots and grid seeds come from gen_manifest too (SVGD_STAGE_CONTEXT, SVGD_TWIN_OF). Each ROBOT is
 its own block, the Panda's first: the iiwa's round R12 pairs with stage PAPER's iiwa IPOPT runs
-(`sc_PAPER_iiwa_n4_ipopt_*`), checked exactly as R2 is. A run on another GRID SEED (round R7, seed
+(`sc_PAPER_iiwa_n4_ipopt_*`), checked exactly as R2 is, and so do the screw arm's R15
+(`sc_PAPER_screw7_p050_n6_ipopt_*`) and the soft PCS arm's R16 (`sc_PAPER_soft12_n6_ipopt_*`);
+`--rows` takes every robot the stage builds (`screw7_p050`, `soft12`) as well as smoke.py's. A run on another GRID SEED (round R7, seed
 2) is its own column `<variant>@seed<k>`, printed beside the seed-1 one and paired only with the
 twin on its own seed (`ipopt@seed2`, stage SVGD_R7IPOPT); the seed is part of the provenance
 check and of every pairing's must-match list, so R7 never pairs with R2, and the A/B and
@@ -581,7 +583,8 @@ def go_no_go(rep, matrix, columns, variant_kw, profile):
 ## until it lands -- with no edit.
 STAGE_FAMILIES = {"SVGD": "sc_SVGD"}
 STAGE_TWIN = M.IPOPT              # the IPOPT twin's variant name; its tags carry no variant token
-STAGE_SKIP = ("SVGD_SMOKE", "SVGD_SMOKE_IIWA")   # 4-cell grids at 60 s: they pair with nothing
+## The cluster smokes (gen_manifest's SVGD_SMOKES: 4-cell grids at 60 s) pair with nothing and are
+## not read here.
 STAGE_SOLVERS = ("ipopt", "svgd")
 ## A twin that is not an svgd stage carries its own stage's tag family and no round token:
 ## `sc_PAPER_<robot>_<rung>_ipopt_...` (gen_manifest's SVGD_TWIN_OF; the iiwa's twin is stage PAPER).
@@ -693,7 +696,7 @@ def stage_catalogue(family="SVGD"):
     assert family in STAGE_FAMILIES, family
     G = _gen_manifest()
     runs, variants = {}, {}
-    sources = [(stage, G.stage_SVGD(stage)) for stage in G.SVGD_STAGES if stage not in STAGE_SKIP]
+    sources = [(stage, G.stage_SVGD(stage)) for stage in G.SVGD_STAGES if stage not in G.SVGD_SMOKES]
     sources += [(st, G.svgd_twin_items(st)) for st in dict.fromkeys(G.SVGD_TWIN_OF.values())
                 if st not in G.SVGD_STAGES]
     twin_stages = set(G.SVGD_TWIN_OF.values())
@@ -749,6 +752,15 @@ def stage_catalogue(family="SVGD"):
             head += [c for c in (STAGE_TWIN + sfx, primary + sfx) if c in cols and c not in head]
         out[robot] = {c: cols[c] for c in head + [c for c in cols if c not in head]}
     return runs, out
+
+
+def stage_row_filter(spec, robots):
+    """smoke.py's `--rows` parse, with every robot the stage builds (`robots`: the screw and soft
+    PCS arms too, which smoke.py does not know) accepted as a robot token."""
+    toks = [t.strip() for t in (spec or "").split(",") if t.strip()]
+    extra = {t for t in toks if t in robots and t not in M.ROBOTS}
+    known, rows, starts = M.parse_row_filter(",".join(t for t in toks if t not in extra))
+    return (set(known or ()) | extra) or None, rows, starts
 
 
 def stage_primary():
@@ -1081,7 +1093,7 @@ def stage_main(args):
         if unknown:
             raise SystemExit(f"--variants: {unknown} not built by gen_manifest; it builds "
                              f"{list(dict.fromkeys(c for cols in variants_by_robot.values() for c in cols))}")
-    robots, rows, starts = M.parse_row_filter(args.rows)
+    robots, rows, starts = stage_row_filter(args.rows, set(variants_by_robot))
     rep = Report()
     rep.verdicts = {}
     printed = 0

@@ -29,7 +29,10 @@ And the stage mode (`--stage SVGD`, the cluster's `sc_SVGD_*` family):
     R2, its ablation `not run`; with nothing on disk it is MISSING and not fatal;
   - the SEED dimension: R7 (grid seed 2) is the column `kq@seed2` beside `kq` in the LEAD table,
     paired against its own twin `ipopt@seed2` (SVGD_R7IPOPT) and never against R2's; a run at
-    the wrong seed is REFUSED as not the run its tag names, and a twin on another grid is refused.
+    the wrong seed is REFUSED as not the run its tag names, and a twin on another grid is refused;
+  - R13's kernel variants carry exactly their one override and R14's exactly their declared
+    factors; the screw arm's R15 and the soft PCS arm's R16 are their own blocks, each paired
+    against stage PAPER's IPOPT run on that robot, and `--rows` accepts those robots.
 The stage fixtures keep gen_manifest's real tags but are 16-cell runs: the catalogue's cell count
 is patched to the fixture's, which is the one thing the 480-cell tag cannot carry.
 """
@@ -223,7 +226,7 @@ def _stage_tags(robot="panda"):
     return runs, variants[robot], by
 
 
-CKPTS = {robot: ck for robot, _, ck in GM.ADOPTED_RUNGS}
+CKPTS = {robot: ck for (robot, _), (ck, _) in GM.SVGD_RUNGS.items()}
 
 
 def _stage_meta(info, grid=GRID, overrides=None, seed=None):
@@ -291,7 +294,7 @@ def test_stage_tag_parsing_every_variant():
     assert next(iter(variants)) == R.STAGE_TWIN and list(variants)[1] == R.stage_primary() == "kq"
     seen = set()
     for stage in GM.SVGD_STAGES:
-        if stage in R.STAGE_SKIP:
+        if stage in GM.SVGD_SMOKES:
             continue
         for it in GM.stage_SVGD(stage):
             a = it["args"]
@@ -616,6 +619,62 @@ def test_stage_seed2_pairs_its_own_twin_only():
         rep, _ = _stage_run(root)
         assert any(tag in m and "seed 1 != the manifest's 2" in m for m in rep.refused), rep.refused
         assert STAGE_ROW + ("kq@seed2",) not in rep.blocks and rep.status == 2
+
+## ------------------------------------------- R13 / R14 and the screw / soft PCS arms --
+OTHER_ROBOTS = {"screw7_p050": ("n6", "SVGD_R15"), "soft12": ("n6", "SVGD_R16")}
+
+
+def test_stage_kernel_and_two_factor_rounds():
+    _, panda, _ = _stage_tags("panda")
+    kq = panda["kq"]["sets"]
+    CLR = {"svgd_collision_backend": "clearances"}
+    ## R13: one override of svgd_kernel each (kq's own kernel is the default q, unset).
+    for v, kernel in (("kz", "z"), ("kcz", "cz"), ("kqz", "qz"), ("kx", "x")):
+        assert panda[v]["round"] == "R13" and panda[v]["sets"] == {**kq, **CLR, "svgd_kernel": kernel}
+    ## R14: exactly the declared factors; rho 1e5 replaces the pinned 1000 in place.
+    want = {"kzHonT0p1": dict(svgd_kernel="z", svgd_metric_temperature="on", svgd_temperature=0.1),
+            "kzrho1e5": dict(svgd_kernel="z", svgd_rho=100000),
+            "kzn128": dict(svgd_kernel="z", svgd_n=128),
+            "kczrho1e5": dict(svgd_kernel="cz", svgd_rho=100000)}
+    for v, over in want.items():
+        assert panda[v]["round"] == "R14" and panda[v]["sets"] == {**kq, **CLR, **over}, v
+    assert "svgd_metric_temperature='on'" in R.setting_diff(panda, "kzHonT0p1", "kq")
+    assert "svgd_rho=100000 (primary 1000)" in R.setting_diff(panda, "kzrho1e5", "kq")
+
+
+def test_stage_screw_and_soft_blocks():
+    runs, variants = R.stage_catalogue()
+    _, panda, _ = _stage_tags("panda")
+    CLR = {"svgd_collision_backend": "clearances"}
+    ## Robot blocks in manifest order: the Panda, the iiwa, then the screw and soft PCS arms.
+    assert list(variants)[:2] == ["panda", "iiwa"] and set(OTHER_ROBOTS) <= set(variants)
+    for robot, (rung, stage) in OTHER_ROBOTS.items():
+        _, cols, by = _stage_tags(robot)
+        assert list(cols) == [R.STAGE_TWIN, "kq"], (robot, list(cols))
+        assert cols[R.STAGE_TWIN]["manifest"] == "PAPER" and cols["kq"]["manifest"] == stage
+        assert cols["kq"]["arms"] == ("learned",) and cols[R.STAGE_TWIN]["arms"] == R.ARMS
+        assert cols["kq"]["sets"] == {**panda["kq"]["sets"], **CLR}, robot
+        row = (robot, "mugshelf", "paired")
+        twin = by[row + (R.STAGE_TWIN,)]
+        assert twin == f"sc_PAPER_{robot}_{rung}_ipopt_mugshelf_480_180_paired", twin
+        assert runs[twin]["sets"] == {"correction_cost_weight": 10.0, "flow_cuda_graph": True,
+                                      "max_iter": 1000000}
+        assert by[row + ("kq",)] == f"sc_{stage}_{robot}_{rung}_svgd_mugshelf_480_180_paired_kq"
+        with tempfile.TemporaryDirectory() as root:
+            ## Nothing on disk: MISSING, not fatal; `--rows` takes the robot smoke.py does not know.
+            rep, text = _stage_run(root, row=row)
+            assert by[row + ("kq",)] in rep.missing and twin in rep.missing
+            assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+            assert f"robot {robot} (rung {rung})" in text and "robot panda" not in text
+        with tempfile.TemporaryDirectory() as root:
+            ## The PAPER twin and the learned-only kq: the LEAD pairs them.
+            _stage_twin(root, row=row)
+            _stage_write(root, "kq", [_rec(i, i < 13, 1.0) for i in range(N_CELLS)], None, row=row)
+            rep, text = _stage_run(root, row=row)
+            assert rep.status == 0 and not rep.refused and not rep.bugs, (rep.refused, rep.bugs)
+            b = rep.blocks[row + ("kq",)]
+            assert (b["vs_twin"]["learned"]["a_only"], b["vs_twin"]["learned"]["b_only"]) == (3, 0)
+            assert f"IPOPT twin (PAPER): {twin}" in text
 
 
 def main():
