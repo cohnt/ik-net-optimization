@@ -1467,6 +1467,27 @@ bit-identical at T = 1 and leaves T = 1 in the pin. Measured on three robots and
 new kernel; a seed-2 replication of the candidate has not run; and fielding is Thomas's decision,
 after which the record rows are re-run at the new pin.
 
+### R19: the candidate pin replicates on the seed-2 grid (`kczrho1e5@seed2`), measured 2026-10-12
+
+**Jobs 5896065-68, 96 items, clearance row, 0 error cells; `--variants kq,kczrho1e5`.** c x z + rho = 1e5
+on the Panda's seed-2 grid, paired with the seed-2 IPOPT twin (R7IPOPT) and read beside R7's
+`kq@seed2`; never paired with a seed-1 run (the reporter refuses).
+
+| | seed 1 (R14) | seed 2 (R19) | IPOPT learned, seed 2 |
+| --- | --- | --- | --- |
+| success (gp / gn / pp / pn) | 480 x 4 | 480 x 4 | 480 / 480 / 386 / 461 |
+| verdict vs IPOPT | T / T / W / W | T / T / W +94 / W +19 | |
+| cost on shared cells | 3.39 / 4.93 / 4.62 / 5.14 | 3.48 / 4.70 / 4.37 / 4.90 | 4.00 / 4.66 / 6.15 / 6.55 |
+| feasible particles | 57 / 54 / 47 / 47 | 57 / 54 / 48 / 48 | |
+| outer steps | 21 / 13 / 10 / 12 | 21 / 13 / 10 / 12 | |
+| mean wall s | 2.66 / 1.95 / 1.06 / 1.31 | 2.60 / 2.05 / 1.06 / 1.27 | 4.45 / 2.41 / 2.55 / 1.32 |
+
+**Lead: the candidate replicates to the digit.** 480 / 480 on all four rows, the same verdicts, cost
+within 3-5% of seed 1 on every row and below the seed-2 IPOPT learned arm on three (grasp native
+4.70 against 4.66, level), the same feasible counts and step counts, every cell converged, and the
+wall 1.1-2.6 s against the twin's 1.3-4.5 s. The one-cell reproducibility band the record quotes
+for cap-bound rows does not apply here: nothing is cap-bound.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
