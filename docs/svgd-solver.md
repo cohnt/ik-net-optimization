@@ -1270,6 +1270,52 @@ Wall is below the IPOPT twin on three rows and 1.4x above it on pose native (1.5
 The gain-ceiling runaway of this robot's `p025` chart is not at issue here (`p050` has none); the
 per-particle redraw rate is the Panda's.
 
+### R13: the kernel space at 480 cells (`kz`, `kcz`, `kqz`, `kx`), learned arm only, measured 2026-10-12
+
+**Jobs 5895126-29, 384 items, clearance row, 0 error cells; `--variants kq,...,kz,kcz,kqz,kx`.** One
+change each against `kq`: `svgd_kernel` q -> z (the latent), cz (the product of the conditioning-pose
+and latent blocks, per-block median bandwidths), qz (configuration x latent), x (the whole decision
+vector). The 480-cell confirmation of the laptop screen's stage A.
+
+| kernel | success | cost on shared cells (gp / gn / pp / pn) | outer steps | feasible particles | redraws / N (gp) | mean wall s | stops |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| q (`kq`, R1, autodiff row) | 480 x 4 | 8.38 / 8.41 / 5.61 / 7.50 | 24 / 13 / 13 / 13 | 6 / 13 / 21 / 31 | 0.33 | (12.3 / 7.1 / 6.6 / 7.0) | 1919 converged, 1 clock |
+| z | 480 x 4 | 4.89 / 6.95 / 4.70 / 6.78 | 26 / 12 / 12 / 13 | 16 / 31 / 27 / 25 | 0.59 | 2.54 / 1.42 / 1.38 / 1.48 | all converged |
+| c x z | 480 x 4 | **4.73 / 6.61 / 4.79 / 6.33** | 26 / **10** / 11 / 12 | **18 / 54 / 36 / 45** | 0.45 | 2.64 / 1.34 / 1.56 / 1.35 | 1919 converged, 1 clock |
+| q x z | 480 x 4 | 5.73 / 7.05 / 4.87 / 6.40 | 22 / 10 / 13 / 12 | 11 / 44 / 31 / 39 | 0.25 | 2.07 / 1.33 / 1.68 / 1.45 | all converged |
+| x | 480 x 4 | 5.18 / 7.42 / 4.78 / 7.11 | 22 / **9** / 11 / 11 | 26 / 38 / 28 / 37 | 1.02 | 2.11 / **0.82** / **1.08** / **1.12** | all converged |
+| IPOPT learned (R2), for scale | 479 / 480 / 395 / 458 | 4.14 / 4.66 / 6.15 / 6.55 | -- | -- | -- | 5.0 / 3.0 / 2.0 / 0.8 | |
+
+**Lead: the kernel space is the cost lever Thomas predicted, and it costs nothing in success or
+wall.** All four spaces are 480 / 480 on every row with `kq`'s verdicts against the IPOPT twin
+(nineteen variants within one cell on every row now). On grasp paired the cost falls from 8.38 to
+4.7-5.7, i.e. from 2.0x IPOPT's 4.14 to **1.14x under c x z and 1.18x under z**; on grasp native from
+8.41 to 6.6-7.4 (1.4-1.6x IPOPT); on both pose rows the swarm was already cheaper than IPOPT and the
+new spaces take another 10-15% off. The feasible count at stop triples (c x z: 18 / 54 / 36 / 45 of
+64 against 6 / 13 / 21 / 31) while the feasible q-spread FALLS (3.2 against 5.2 rad on grasp native):
+the latent kernel keeps the swarm on the manifold and lets it settle into fewer, better basins, where
+the q kernel holds particles apart in configuration space at the cost of feasibility -- the stage A
+reading, at 480 cells. **The stop-rule interaction feared from the screen did not cost anything**:
+c x z has one clock stop in 1920 cells (pose paired, 162 s, solved), every other cell converged on
+the stall rule, and its outer-step counts are `kq`'s or lower. Wall is 1.3-2.6 s on every space,
+`kq@seed2`'s 1.2-2.1 s on the same row (grasp paired is 0.4-0.5 s slower under z and c x z, the
+price of the lower cost; x is the fastest variant on three rows at 0.8-1.1 s).
+
+**Ranking by cost, grasp paired / native: c x z < z < x < q x z << q**; by feasible particles c x z >
+q x z > x > z >> q; q x z is the most conservative (lowest redraw rate, 0.25) and x the most churned
+(1.02, every particle redrawn once per cell) because the x kernel's bandwidth is dominated by the
+latent block without the per-block scaling. **c x z is the fielding candidate** -- the lowest cost
+on three of four rows, the fullest feasible swarm everywhere, one clock stop in 1920 -- with z as the
+single-block alternative that gives up 3% of cost for a simpler kernel. Thomas's call, after R14
+says whether the gain adds to rho = 1e5's and to N = 128's (both lower cost by a similar amount on
+the q kernel) or substitutes for them.
+
+**Against the record.** Under IPOPT the learned arm's grasp cost premium over joint space was
+1.9-5.1x (CLAUDE.md, the record's cost paragraph); under svgd with the fielded q kernel it was 2x
+IPOPT's own learned cost on top of that. With the latent kernel the learned arm under svgd returns
+grasp solutions within 15% of IPOPT's learned cost on the paired start and 40-60% above on native,
+and cheaper than IPOPT on pose, at 480 / 480 success and 1-3 s wall.
+
 **Still queued**, learned arm only (Thomas, 2026-10-10: *"drop joint space ablation arm from R3, R4,
 R5"*, extended to R6-R10), **and from here on every svgd round runs the batched clearance row under
 the clearances venv** (Thomas, 2026-10-11 14:45: *"restage everything using batch clearances"*; R6 had
