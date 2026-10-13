@@ -22,8 +22,9 @@ the project's reporting rules rather than to be convenient:
     different cell sets, and the easy cells are exactly the ones a weaker arm also solves, so
     that form flatters whichever arm fails more. `record["cost"]` is already the reported cost
     with learned-only regularizers excluded.
-  - **learned vs joint space is the comparison**; the analytic arm is future work and possibly
-    not needed at all, so it is not fielded here. Ties are printed as ties -- and equally, a row
+  - **learned vs joint space is the comparison**; the analytic arm (Panda and iiwa, an
+    upper-bound reference column) is not part of the record and is read beside it by
+    scripts/report_analytic.py. Ties are printed as ties -- and equally, a row
     where the baseline is at the floor and the learned arm is not is reported as the decisive
     result it is, not hedged into a non-comparison.
   - **the joint-space arm moves with a cap change too**, so its column is always shown -- a
@@ -702,7 +703,8 @@ def main(argv):
         print(f"THE CAMPAIGN OF RECORD BEFORE STAGE REMEASURE (superseded 2026-10-09) -- {CELLS} cells, "
               "180 s cap, seed 1")
         print("Stages STATUSQUO (panda, iiwa) + SOFT12 (soft12) + SCREW (screw7_p050), identical conditions.")
-        print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
+        print("Arms: learned vs joint space (numerical). The analytic reference column is "
+              "scripts/report_analytic.py.")
         print(f"Iteration-budget-bound rows are reported at the LIFTED budget, same 180 s clock: "
               f"{len(provenance)} of {len(runs)} runs")
         print("  from stages ITCAP (IPOPT max_iter 1e6; SNOPT 1e5 majors, 1e8 minors) and SCREWCAP.")
@@ -729,7 +731,8 @@ def main(argv):
         print("  clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.")
         if svgd_missing:
             print(f"  MISSING: {len(svgd_missing)} AL-SVGD summary file(s), e.g. {svgd_missing[0]}")
-        print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
+        print("Arms: learned vs joint space (numerical). The analytic reference column is "
+              "scripts/report_analytic.py.")
     else:
         n_ipsn = sum(1 for t in runs if parse_tag(t)["solver"] in ("ipopt", "snopt"))
         n_nl = sum(1 for t in runs if parse_tag(t)["solver"] == "nlopt")
@@ -754,7 +757,8 @@ def main(argv):
         print(f"The GVS arm ({', '.join(OUTSIDE_RECORD)}) was measured in the same stage under identical")
         print("  conditions and is OUTSIDE the record: its rows print as a separate block at the end,")
         print("  with their own tally, and enter none of the record's tables, tally or flags.")
-        print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
+        print("Arms: learned vs joint space (numerical). The analytic reference column is "
+              "scripts/report_analytic.py.")
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")
 
