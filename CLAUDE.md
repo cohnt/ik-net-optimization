@@ -846,12 +846,111 @@ optimizer selectable; no release carries it, and `local_optimizer_ftol_rel` is a
 artifacts **expire after 45 days (~2026-11-02)**, so **move the pin to 1.58.0 the moment it carries
 PR 25002** and restore the published-checksum path.
 
+**One stated exception, for the svgd rounds only (Thomas, 2026-10-11).** The batched collision row
+needs `CollisionChecker::CalcRobotClearances`, which no release carries, so a wheel built from his
+branch `calc-robot-clearances` (`0.0.20261011+crc.15a2c97`) lives in a SECOND cluster venv,
+`~/learned-ik/venv-crc`, selected per submission by `DRAKE_ENV=crc` (`cluster/run_items.sh`,
+`cluster/submit_bench.sh`; refused on a manifest without the clearance row and vice versa). The
+IPOPT / SNOPT / NLopt record stages and every svgd IPOPT twin stay on the pinned nightly; a run
+records which Drake it ran under (`drake_version_txt`). It is a strict speed improvement (the row is
+bitwise the same functional, 7-10x per configuration), not a second pin: when Drake ships the API,
+the wheel and the venv go.
+
 ### The grasp-containment lever is closed on both axes
 
 It was the standing "revisit whenever another knob moves" lever, because on the contained task joint
 space needs 970 median iterations against 48 on the free one. Under SNOPT it never flips a verdict
 *toward* the learned arm and flips one away from it. Step rejection was the remaining candidate and is
 refuted too, so the containment verdicts stand as measured under IPOPT.
+
+## The fourth method class: AL-SVGD on the fixed programs (branch `svgd`, 2026-10-08 to 10-12)
+
+**Evidence lives in `docs/svgd-solver.md`** (pre-registration, every round's section, the kernel
+screens); operations in `cluster/SVGD_RUNBOOK.md`; reader `scripts/report_svgd.py --stage SVGD`.
+This file keeps the verdicts and the rulings.
+
+**What it is.** Thomas reopened the closed solver axis for a fourth METHOD CLASS: a batch-parallel
+particle method on exactly the existing programs. The fielded method is plain augmented-Lagrangian
+SVGD (PHR merit, Tabor-Hermans form, SVN block-diagonal Gauss-Newton metric, N = 64, float32 swarm,
+K = 10 inner steps per check, rho = 1e3, lr = 0.3, the runaway RESAMPLE from the native draw, stop =
+best feasible objective stalls 5 checks). **The goal is the LEARNED arm under svgd against the
+learned arm under IPOPT on the same cells; joint-space svgd is an ablation, not a baseline** (Thomas,
+2026-10-10). Rulings: SVGD-style only; exact Drake collision, no proxy; no formulation-specific
+information inside the solver (kernel SPACE is the one deliberate exception, swept); AL is the
+formulation and SVGD the optimizer, one dynamics; `--solver svgd`.
+
+**THE SVGD RECORD IS STAGE R20 (2026-10-12): the record's sixteen rows at the fielded pin**
+(`SVGD_PINNED_V2`; four robots x grasp / pose x native / paired, 480 cells, 180 s, seed 1, one
+solve per GPU, the clearance row under the clearances venv -- the one stated exception to ONE
+DRAKE; `scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2[,pin2kq]`;
+`docs/svgd-solver.md` "R20"). Ran in 6 node-hours.
+- **Learned under svgd: 480 / 480 on all sixteen rows, 8 wins / 8 ties / 0 losses against learned
+  under IPOPT on the same cells** (wins: every pose paired row, Panda / iiwa / screw pose native,
+  screw grasp paired; IPOPT at 395-480). Zero clock or step-cap stops anywhere; every cell converged;
+  the gate-edge re-check never failed on 9600 cells. Success is identical cell for cell to the V1
+  rounds (R1 / R12 / R15 / R16, `kq`): **the pin moves cost and wall, never cells.** Nineteen
+  single-factor variants on the Panda had already sat within one cell of each other (N 1-256, rho
+  1e2-1e5, lr, K, T, kernel on/off, resample mode, kernel space).
+- **Cost (cells shared with the twin): below the IPOPT learned arm on all twelve rigid-arm rows**
+  (Panda 0.55-0.81x, iiwa 0.43-0.45x, screw 0.28-0.36x), above it on three soft PCS rows
+  (1.26-1.45x), level on soft PCS pose native. The two levers that bought it ADD: the kernel SPACE
+  (q -> c x z) and rho (1e3 -> 1e5); N does not add to the latent kernel; the native-draw paired
+  init removes the redraw churn at equal cost; the H / T metric is bit-identical at T = 1.
+- **Wall (cap-clamped mean) 0.9-2.6 s on every row**, below IPOPT learned on all eight paired rows
+  and three of four grasp-native rows, above it on pose native (IPOPT 0.6-1.1 s). Residual at stop
+  4e-6 to 3e-5 against IPOPT's 1e-8, gate 1e-3.
+- **The soft PCS arm takes the split step since 2026-10-12** (merge a2a5569): row Jacobians w.r.t.
+  the configuration by forward mode through the exact strain map (`_kinematics_cfg_jacobians`),
+  collision gradient pulled back through `d q_plant / d cfg`; parity with autograd 1e-15, rigid
+  arms bitwise unchanged, pays only compiled (eager it is dispatch-bound and slower). **Cluster:
+  780-850 -> 174-214 ms per outer step (3.7-4.8x), wall 7.5-10.1 -> 1.5-2.6 s, same cells, same
+  step counts** (R17P -> R20). It now sits at 2.4-3.2x the rigid arms per outer step, from 10x.
+- **The joint-space ablation at the pin (`pin2kq`, kernel q; R20 Panda, R21 the other three,
+  2026-10-12): joint space under svgd beats joint space under IPOPT on all sixteen rows**, 480 / 480
+  on twelve; the screw arm leaves 17-20 grasp and 3 pose cells per protocol at the clock (463 / 460
+  / 477 / 477 against IPOPT's 442 / 320), under the 24-cell threshold. Its grasp solutions are dearer
+  than IPOPT joint space's (1.2-3.5x), its rigid pose ones cheaper. **Inside svgd, learned against
+  joint space on the same cells: 2 wins (screw grasp, both protocols), 14 ties, 0 losses**; cost
+  level on grasp, joint space cheaper on pose; the learned swarm keeps 58 feasible particles at stop
+  where joint space keeps 4-5 on rigid grasp (the q kernel spreads it off the manifold). Not a
+  baseline; which pin factor did it is not separated.
+- **Mechanisms settled**: the kernel-off swarm keeps descending to the clock (R1K); the q-space
+  kernel spreads particles OFF the manifold (few feasible, 2x cost) where a latent kernel keeps them
+  on it; the paired-start penalty is the jittered swarm (drawing the paired swarm from the native
+  distribution removes it, R10); the resample carries the paired start (drop / keep lose 30-57% of
+  paired cells, R11); under the fielded metric H the temperature is a step multiplier (T < 1
+  diverges), under H / T it is a well-posed knob inert over two decades; the multiplier box is a
+  bystander (R9); K trades swarm convergence for wall (R6).
+
+**Rulings, 2026-10-11.** K stays a separate parameter (*"The balance of inner to outer steps in AL
+seems like something we need to handle delicately"*) -- do not re-propose the one-loop strip-down.
+"Resample" is the term. The clearances wheel is a strict improvement and every svgd round uses it.
+Compute footprint (GPU + 40 threads vs one core) is a paper explanation, not a fairness worry.
+
+**Rulings, 2026-10-12 -- THE FIELDED PIN (`SVGD_PINNED_V2`, R20 on).** Thomas: *"Agree re 1 and 2.
+Native draw is the method and paired is the ablation."* `ProgramOptions` defaults are now
+`svgd_kernel=cz`, `svgd_rho=1e5`, `svgd_metric_temperature=on` (H / T; bit-identical at T = 1) and
+`svgd_paired_init=native` (particle 0 at the shared guess, the rest from the native draw); N, T, lr,
+gn_lm, K, the resample and the stop rule are unchanged. **Native is the method's primary row and
+paired its ablation.** `cz` is learned-only, so **a joint-space svgd run must name its kernel**
+(`svgd_kernel=q`) or it is refused at warm-up. Every round through R19 ran the old pin
+(`SVGD_PINNED_V1`; `SVGD_HISTORICAL_DEFAULTS` records what they ran unnamed) and regenerates
+byte-identically; the reporter prints a v1 round's settings with those defaults filled in.
+
+**The gate-edge rule (2026-10-12, *"Yes, I like the proposed fix."*).** Five cells in 11,520 stopped
+on a float32 particle inside the 1e-4 gate that float64 Drake read 0.05-7% outside (network error x
+chart gain). The fix costs nothing per step: a stall stop stands only if the existing float64 Drake
+re-check of the top-k passes. If none passes the swarm does not stop: the stall counter resets, the
+solve's feasibility level (`v <= feas_level`, 1.0 = the gate, used by the stop rule, the trace and
+the selection) is tightened x0.9, and it re-tests at the next stall. Recorded per cell as
+`n_recheck_failures` and `feas_level`. Rejected on the way: a per-step float64 check (1 ms per outer
+step for a 0.04% event) and a fixed margin.
+
+**Still open**: the paper tables from R20 (`report_svgd` stage mode; the multistart column via
+`scratchpad/runtime_vs_js.py`; Thomas writes every word -- numbers and verdicts only from here);
+the GVS arm under svgd is DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU,
+and a dlpack bridge would not remove the batched root-find's cost; what to do with R14's
+combinations. The staged cluster tree is 86efbb0.
 
 ## Results: the campaign of record
 
@@ -877,10 +976,12 @@ median is 1.15x and 1.09x. `scripts/report_statusquo.py --paper` prints the reco
 conditions, and `scripts/report_paper.py` pairs every run. NLopt was not re-run, so its seconds stay
 at PROCS=8 under `MPS=1`.
 
-**THE RECORD IS 48 LOGICAL RUNS: four robots x TWO experiments (grasp, pose) x two protocols x three
+**THE RECORD IS 64 LOGICAL RUNS: four robots x TWO experiments (grasp, pose) x two protocols x four
 solvers**: the 32 IPOPT and SNOPT runs from stage REMEASURE, the 16 NLopt runs from stage
 **REMEASURE_NLOPT** (same conditions and tag family, queued last; jobs 5868202/03/04/07, collected
-2026-10-10). **The GVS arm is OUTSIDE the record**:
+2026-10-10), and the 16 AL-SVGD rows (column `PS`), each arm its own run: learned from stage
+SVGD_R20, joint space from SVGD_R20 (Panda) and SVGD_R21 (the rest). **The GVS arm is OUTSIDE the
+record**:
 stage REMEASURE measured it under identical conditions and the reporter prints its eight rows as a
 separate block with their own tally (IPOPT 3 learned / 1 tie, SNOPT 2 / 2), but it is merged as a
 measured robot outside the record and does not replace the soft PCS arm (its section). The old
@@ -900,9 +1001,9 @@ included**.
 ### What the tables say
 
 **Success: interior point 15 learned / 1 tie / 0 joint space, SQP 10 / 1 / 5, augmented Lagrangian
-11 / 3 / 2**, against 12/4/0, 7/4/5 and 9/7/0 on the old record over the same sixteen rows; five
-verdicts flipped under IPOPT and SNOPT each, eight under NLopt. Verdicts
-are exact McNemar within each run; the reporter prints the tally beside the table so text and table
+11 / 3 / 2, AL-SVGD 2 / 14 / 0**; the three Drake classes against 12/4/0, 7/4/5 and 9/7/0 on the
+old record over the same sixteen rows; five verdicts flipped under IPOPT and SNOPT each, eight under
+NLopt. Verdicts are exact McNemar within each run; the reporter prints the tally beside the table so text and table
 cannot drift.
 
 - **Interior point loses nothing anywhere.** Its one tie is soft PCS grasp paired (477 v 472, a
@@ -933,12 +1034,14 @@ native rows (all but screw), on iiwa pose native, and on Panda grasp paired. Tha
 12.92 s, a row the development run had the other way round. The ratio is largest on the pose paired
 rows, where a joint-space solve takes a fraction of a second: soft PCS 8.70 s against 0.35 s, iiwa
 1.61 against 0.09. The iiwa grasp wins cost 2.68 / 6.27 s against 1.02 / 1.01 s, where the old
-record's tie cost 13x.
+record's tie cost 13x. AL-SVGD (PROCS=2): learned 0.9-2.6 s on every row; joint space 0.8-4.0 s but
+the screw arm's grasp rows, 7.5-8.5 s from its clock-bound cells.
 
 **Iterations**: on Panda grasp the joint-space median fell 908 -> 206 with its bound fixed, so the
 old "containment costs joint space its cheapness" was largely the +-10 rad box; the learned arm still
 uses fewer there under IPOPT (134 / 199) and on soft PCS grasp native. **The augmented
-Lagrangian column is `N/A` BY CONSTRUCTION** -- NLopt has no major iteration to count.
+Lagrangian and AL-SVGD columns are `N/A` BY CONSTRUCTION** -- NLopt has no major iteration to count,
+and svgd counts outer steps (K = 10 inner steps each), not majors.
 
 **The rescue rate** (cells only the learned arm solved, against joint space's failures) is printed
 per row as `L+` beside `JS` in the per-solver detail; the old record's 83-100% is not re-quoted.
@@ -997,10 +1100,12 @@ every row; SNOPT at most 10; NLopt 0 at `hit_eval_cap` and `hit_iteration_cap` o
 arms. Learned timeouts are at most 18 under IPOPT and 17 under SNOPT (both soft PCS), joint space's at
 most 8 and 34. **NLopt is clock-bound everywhere** -- learned 123-194 timeouts native and 161-477
 paired, joint space 356-480 -- which is the fielded clock, never lifted, so these are results at it.
+AL-SVGD: 0 cells at a budget on both arms, 0 clock stops but the screw arm's joint space (17 / 20
+grasp, 3 / 3 pose, native / paired).
 SOFTCAP's "quadrupling the clock moves nothing" was measured on the defective scene and is void.
 
 **Acceptance checks all pass.** Every run on one robot x task scene carries the same
-`scene_fingerprint`, NLopt's included; joint space is bit-identical between protocols on 42 of 42
+`scene_fingerprint`, NLopt's and AL-SVGD's included; joint space is bit-identical between protocols on 42 of 42
 protocol pairs across every sub-stage and the GVS arm (cap-bound cells excluded, which leaves the
 eight NLopt pairs only 0-124 cells each); and the Panda, whose scene did not change, **reproduces the old record
 under the legacy settings** with every discordant cell cap-bound.
@@ -1761,6 +1866,23 @@ doesn't sleep on AC. So no need to worry about manually preventing it from sleep
 gap in a session is him closing it deliberately or hitting a usage cap -- neither is a fault, and
 neither is diagnosed or mitigated. Long benchmarks run on the cluster
 anyway, where a laptop's state is irrelevant.
+
+**Local compute must never take the laptop down (Thomas, 2026-10-09: *"If a pytest sweep crashes my
+machine, that is unacceptable"*).** On 2026-10-09 at 16:02 the svgd solver's Drake collision PROCESS
+pools -- one per cached BatchedProgram in a test file plus 20-worker pools in benchmark subprocesses,
+run concurrently by a subagent -- reached 81 worker processes and 44.8 GB on a 62 GB machine with no
+swap, and the kernel OOM killer took his Slack. **The pool is deleted outright** (Thomas, the same
+evening: the only parallelism is the GPU over particles and, behind it, Drake's own C++ threads). The
+collision row is evaluated IN PROCESS on the program's own `MinimumDistanceLowerBoundConstraint`
+(`src/svgd/collision_backend.py`, `CollisionEvaluator`), serially, ~0.3 ms per particle -- 92-96% of a
+step at N = 64-256 -- until Drake gains a batched, GIL-releasing
+`CollisionChecker::CalcRobotClearances` (brief: `~/Downloads/drake-CalcRobotClearances-plan.md`;
+locally pydrake comes from his own build at `~/opt/rlg/drake-build`, so it lands here before any
+nightly). Rules that survive, in practice and in briefs: no process pools in this project; every local
+test file, smoke or end-to-end run that can build a program runs ONE AT A TIME, in the foreground,
+under `systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0` (the 8 GB of swap is his
+emergency buffer and is never counted or used), so a runaway kills the run and not his applications;
+and loadavg is logged before and after every timed run, any run at load above 24 re-run.
 
 Two details of that paragraph survive it, being about process handling rather than power: detach a
 long local process with **`setsid`, not `nohup`** -- `nohup` only ignores SIGHUP, so a teardown group

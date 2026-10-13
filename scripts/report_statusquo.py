@@ -66,6 +66,18 @@ per V100 with no MPS (stage PAPER, 28 runs, with stage SVGD_R2's four Panda IPOP
 load_record(which="paper")), and the 16 NLopt rows unchanged from REMEASURE_NLOPT (PROCS=8 under
 MPS=1). Same grids, scenes and args as stage REMEASURE; scripts/report_paper.py pairs them cell for
 cell and shows that only the seconds move.
+
+AL-SVGD, the fourth method class (branch `svgd`; Thomas, 2026-10-12: "Add AL-SVGD columns as a
+solver in the status quo."), is a fourth column block `PS` in the default and `--paper` modes, in
+the tally, the per-solver detail (rescue rate `L+`), the flags and the cap check. It is not a Drake
+solver, so it stays OUT of SOLVERS (scripts/report_remeasure.py iterates that over stage REMEASURE),
+and one of its logical runs is TWO summaries, one per arm: the learned arm from stage SVGD_R20
+(`_pin2`, run `--arms learned`) and the joint-space ablation from SVGD_R20 (Panda) or SVGD_R21 (the
+other three; `_pin2kq`, kernel q). load_svgd_record pairs them by (target, guess) only after checking
+that both carry the row's IPOPT record run's grid_hash and scene_fingerprint, and refuses otherwise.
+Both were measured at paper conditions (PROCS=2, no MPS) on the clearance collision row under the
+clearances venv. svgd counts OUTER steps (K = 10 inner steps each), not majors, so its iterations
+print N/A like NLopt's. It has no legacy runs, so `--legacy` does not print it.
 """
 import glob
 import json
@@ -89,6 +101,15 @@ SOLVER_NAME = {"ipopt": "IPOPT (interior point)",
 CONFIG = {"ipopt": "acceptable-point early stop (acceptable_tol 1e-3, acceptable_iter 1)",
           "snopt": "Major step limit = 0.5",
           "nlopt": "LD_AUGLAG + LD_MMA inner + inner xtol_rel = ftol_rel = 1e-3"}
+## AL-SVGD (see the module docstring). Kept OUT of SOLVERS on purpose: report_remeasure.py iterates
+## SOLVERS over stage REMEASURE, which has no svgd run.
+SVGD = "svgd"
+ALL_SOLVERS = SOLVERS + (SVGD,)
+SOLVER_NAME[SVGD] = "AL-SVGD (particle, the svgd branch's fielded pin)"
+CONFIG[SVGD] = ("SVGD_PINNED_V2: N = 64, K = 10 inner steps per outer step, rho = 1e5, lr = 0.3, "
+                "H / T metric, kernel cz (learned) / q (joint space), native-draw paired init")
+## CLAUDE.md, the cap check: this many cells of 480 at an ITERATION budget void a verdict.
+BUDGET_CELLS = 24
 ## Two experiments per robot. `mugfree` is deliberately absent -- see the module docstring.
 ROW_ORDER = {"mugshelf": 0, "posetip": 1}
 ROW_NAME = {"mugshelf": "grasp contained", "posetip": "pose contained (tip)"}
@@ -171,6 +192,19 @@ def by_cell(summary, arm):
     return {(r["target"], r["guess"]): r for r in summary["records"].get(arm, [])}
 
 
+def clock_bound(r):
+    """Stopped by the wall clock. svgd also records why its SWARM stopped, and a clock stop there
+    counts even if the top-level `timed_out` flag were False; Drake records carry no `svgd`."""
+    return bool(r.get("timed_out")) or (r.get("svgd") or {}).get("stop_reason") == "wall_clock"
+
+
+def budget_bound(r):
+    """Stopped by an ITERATION budget: IPOPT/SNOPT `hit_iteration_cap`, NLopt `hit_eval_cap`, svgd
+    a `step_cap` stop of its swarm."""
+    return bool(r.get("hit_iteration_cap") or r.get("hit_eval_cap")) or \
+        (r.get("svgd") or {}).get("stop_reason") == "step_cap"
+
+
 def arm_stats(summary, arm, other):
     """The reporting quartet for one arm, with cost on cells BOTH arms solved."""
     A, B = by_cell(summary, arm), by_cell(summary, other)
@@ -179,7 +213,7 @@ def arm_stats(summary, arm, other):
     return dict(
         n=len(A),
         succ=len(ok),
-        to=sum(1 for r in A.values() if r.get("timed_out")),
+        to=sum(1 for r in A.values() if clock_bound(r)),
         iters=median([r["iterations"] for r in ok]),
         wall=median([r["wall_time"] for r in ok]),
         jac=median([map_jacobians(r) for r in ok]),
@@ -228,7 +262,7 @@ def parse_tag(tag):
     """
     p = tag.split("_")
     rung, solver, row, cells, cap, start = p[-6:]
-    assert p[0] == "sc" and solver in SOLVERS, f"not a record tag: {tag}"
+    assert p[0] == "sc" and solver in ALL_SOLVERS, f"not a record tag: {tag}"
     return dict(stage=p[1], robot="_".join(p[2:-6]), rung=rung, solver=solver, row=row,
                 cells=cells, cap=cap, start=start)
 
@@ -254,8 +288,13 @@ def row_table(runs, solver, tokens, title):
     ## IPOPT and SNOPT keep the project's standing convention (medians over succeeded
     ## cells), which is sound there because they succeed on most of them.
     allcells = solver == "nlopt"
+    outer = solver == SVGD
     itcol = "jac/c" if allcells else "iters"
     print(f"\n  {title}")
+    if outer:
+        print("  iterations print -- BY CONSTRUCTION: svgd counts OUTER steps (K = 10 inner steps each),"
+              "\n  not majors. Each arm is its own run (see the header); LTO / JTO count clock stops,"
+              "\n  timed_out or svgd.stop_reason == 'wall_clock'.")
     if allcells:
         print("  work, wall clock and violation are MEANS/MEDIANS OVER ALL 480 CELLS here, not over"
               "\n  successes: this column times out most cells, so a median over successes would"
@@ -266,8 +305,8 @@ def row_table(runs, solver, tokens, title):
           f"{'n':>5}{'LTO':>5}{'JTO':>5}")
     for r in rows:
         L, J = r["L"], r["J"]
-        lwork = L["jac_all"] if allcells else L["iters"]
-        jwork = J["jac_all"] if allcells else J["iters"]
+        lwork = L["jac_all"] if allcells else None if outer else L["iters"]
+        jwork = J["jac_all"] if allcells else None if outer else J["iters"]
         lwall = L["wall_all"] if allcells else L["wall"]
         jwall = J["wall_all"] if allcells else J["wall"]
         label = f"{r['robot']} {ROW_NAME[r['row']]} {r['start']}"
@@ -287,10 +326,13 @@ def row_table(runs, solver, tokens, title):
 ## Thomas, 2026-09-21, also: "please include zero rows in tables, otherwise it superficially looks
 ## like something is missing", hence every row prints and a genuinely absent comparison says N/A.
 METRIC_BLOCKS = (("ipopt", "IP"), ("nlopt", "AL"), ("snopt", "SQP"))
+## The record's blocks since AL-SVGD joined it; METRIC_BLOCKS alone where svgd has no runs
+## (--legacy, the GVS arm).
+RECORD_BLOCKS = METRIC_BLOCKS + ((SVGD, "PS"),)
 
 
 def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, per solver)",
-                  runtime_only=False, runtime_note=None):
+                  runtime_only=False, runtime_note=None, blocks=METRIC_BLOCKS):
     """The four headline tables: success rate, cost, runtime, iterations.
 
     `runtime_only` prints Table 3 alone (the one table that differs at paper conditions);
@@ -298,10 +340,13 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
     cells, pvals = {}, {}
     for tag, s in runs.items():
         t = parse_tag(tag)
-        if t["row"] not in STATUS_QUO_ROWS:
+        if t["row"] not in STATUS_QUO_ROWS or t["solver"] not in dict(blocks):
             continue
         L = arm_stats(s, "learned", "numerical")
         J = arm_stats(s, "numerical", "learned")
+        if t["solver"] == SVGD:
+            ## Outer steps are not majors: Table 4 prints N/A for svgd by construction.
+            L, J = dict(L, iters=None), dict(J, iters=None)
         A, B = by_cell(s, "learned"), by_cell(s, "numerical")
         shared = [k for k in A if k in B]
         b = sum(1 for k in shared if A[k]["feasible"] and not B[k]["feasible"])
@@ -315,11 +360,11 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
     def emit(title, note, pick, fmt, better, tied=None):
         print(f"\n  {title}")
         print(f"  {note}")
-        head = "".join(f"{b + ' L':>13}{b + ' JS':>13}" for _, b in METRIC_BLOCKS)
+        head = "".join(f"{b + ' L':>13}{b + ' JS':>13}" for _, b in blocks)
         print(f"  {'experiment':<36}{head}")
         for e in exps:
             vals = {}
-            for solver, _ in METRIC_BLOCKS:
+            for solver, _ in blocks:
                 got = cells.get((e[0], e[1], e[2], solver))
                 vals[solver] = pick(*got) if got else (None, None)
             ## The row marker goes on the best value anywhere in the row, so it has to be
@@ -331,7 +376,7 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
                 mark = min(flat, key=lambda x: x[0])[1] if better(0, 1) else \
                        max(flat, key=lambda x: x[0])[1]
             out = []
-            for solver, _ in METRIC_BLOCKS:
+            for solver, _ in blocks:
                 l, j = vals[solver]
                 fl, fj = fmt(l), fmt(j)
                 if l is not None and j is not None:
@@ -367,6 +412,9 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
     print("  IP = interior point (IPOPT), AL = augmented Lagrangian (NLOPT),")
     print("  SQP = sequential quadratic programming (SNOPT). *better* of each pair is starred;")
     print("  a trailing * marks the best in the row. Every row prints, zeros included.")
+    if SVGD in dict(blocks):
+        print("  PS = AL-SVGD (particle, the svgd branch's fielded pin): each arm its own run, learned")
+        print("  from stage SVGD_R20, joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest).")
     if runtime_only:
         emit_runtime(emit, runtime_note)
         return
@@ -380,9 +428,9 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
     ## equality and the text read them by McNemar, so one said 18 wins / 2 ties / 4 losses
     ## and the other 4/2/2 on the SNOPT block alone, and a reader could not reconcile them.
     tally = {"learned": 0, "tie": 0, "joint space": 0}
-    per_solver = {s: dict(tally) for s, _ in METRIC_BLOCKS}
+    per_solver = {s: dict(tally) for s, _ in blocks}
     for e in exps:
-        for solver, _ in METRIC_BLOCKS:
+        for solver, _ in blocks:
             key = (e[0], e[1], e[2], solver)
             got = cells.get(key)
             if not got:
@@ -394,7 +442,7 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
     print(f"\n  Of the {n} solver x experiment cells, learned wins {tally['learned']}, "
           f"ties {tally['tie']}, loses {tally['joint space']}"
           f"  (verdicts by exact McNemar on the same cells the table shows)")
-    for solver, b in METRIC_BLOCKS:
+    for solver, b in blocks:
         d = per_solver[solver]
         if not sum(d.values()):
             continue
@@ -408,7 +456,9 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
     emit_runtime(emit, runtime_note)
     emit("Table 4 -- median major iterations over solved cells",
          "lower is better; AL is N/A BY CONSTRUCTION -- NloptSolverDetails carries a single status "
-         "and NLopt has no major iteration to count",
+         "and NLopt has no major iteration to count"
+         + ("\n  PS is N/A BY CONSTRUCTION too -- svgd counts OUTER steps (K = 10 inner steps each), "
+            "not majors" if SVGD in dict(blocks) else ""),
          lambda L, J: (L["iters"], J["iters"]), fi, lambda a, b: a < b)
 
 
@@ -506,6 +556,70 @@ def _load_paper_record(cells):
     return runs, provenance
 
 
+#: AL-SVGD's runs, promoted under results/<dir>/benchmark/: robot -> (rung, dir). One logical run is
+#: TWO summaries, one per arm (see the module docstring).
+SVGD_ROBOTS = {"iiwa": ("n4", "iiwa"), "panda": ("n6", "panda"),
+               "screw7_p050": ("n6", "screw_arm"), "soft12": ("n6", "soft12")}
+SVGD_LEARNED = "sc_SVGD_R20_{robot}_{rung}_svgd_{row}_480_180_{start}_pin2"
+SVGD_JOINT = {"panda": "sc_SVGD_R20_{robot}_{rung}_svgd_{row}_480_180_{start}_pin2kq"}
+SVGD_JOINT_DEFAULT = "sc_SVGD_R21_{robot}_{rung}_svgd_{row}_480_180_{start}_pin2kq"
+
+
+def load_svgd_record(record_runs, cells=CELLS):
+    """AL-SVGD's 16 rows: {`sc_SVGD_<robot>_<rung>_svgd_<row>_<cells>_180_<start>`: a summary whose
+    records hold the learned arm of the SVGD_R20 `_pin2` run and the numerical arm of the `_pin2kq`
+    run}. Refuses (SystemExit) unless the two runs share grid_hash and scene_fingerprint with each
+    other AND with the row's IPOPT run in `record_runs`, hold `cells` records each, cover the same
+    (target, guess) cells and carry one wall-clock cap. A row with a run missing is skipped and
+    counted in the second return."""
+    ipopt = {}
+    for tag, s in record_runs.items():
+        t = parse_tag(tag)
+        if t["solver"] == "ipopt":
+            ipopt[(t["robot"], t["row"], t["start"])] = s
+    out, missing = {}, []
+    for robot, (rung, d) in SVGD_ROBOTS.items():
+        for row in STATUS_QUO_ROWS:
+            for start in ("native", "paired"):
+                f = dict(robot=robot, rung=rung, row=row, start=start)
+                got = {}
+                for arm, tag in (("learned", SVGD_LEARNED.format(**f)),
+                                 ("numerical", SVGD_JOINT.get(robot, SVGD_JOINT_DEFAULT).format(**f))):
+                    path = f"results/{d}/benchmark/{tag}/summary.json"
+                    if not os.path.exists(path):
+                        missing.append(path)
+                        continue
+                    with open(path) as fh:
+                        s = json.load(fh)
+                    recs = s["records"].get(arm, [])
+                    if s["metadata"].get("solver") != SVGD or len(recs) != cells:
+                        raise SystemExit(f"REFUSING: {path} is not a {cells}-cell svgd run with a "
+                                         f"{arm} arm ({s['metadata'].get('solver')}, {len(recs)} records)")
+                    got[arm] = (tag, s)
+                if len(got) < 2:
+                    continue
+                (ltag, L), (jtag, J) = got["learned"], got["numerical"]
+                ip = ipopt.get((robot, row, start))
+                if ip is None:
+                    raise SystemExit(f"REFUSING: no IPOPT record run for {robot} {row} {start} to check "
+                                     f"{ltag} / {jtag} against")
+                for field in ("grid_hash", "scene_fingerprint"):
+                    vals = {ltag: L["metadata"].get(field), jtag: J["metadata"].get(field),
+                            "the IPOPT record run": ip["metadata"].get(field)}
+                    if None in vals.values() or len(set(vals.values())) != 1:
+                        raise SystemExit(f"REFUSING to pair AL-SVGD {robot} {row} {start}: {field} "
+                                         f"differs: {vals}")
+                if set(by_cell(L, "learned")) != set(by_cell(J, "numerical")):
+                    raise SystemExit(f"REFUSING: {ltag} and {jtag} do not cover the same cells")
+                if L["metadata"].get("wall_time") != J["metadata"].get("wall_time"):
+                    raise SystemExit(f"REFUSING: {ltag} and {jtag} ran under different clocks")
+                out[f"sc_SVGD_{robot}_{rung}_svgd_{row}_{cells}_180_{start}"] = dict(
+                    metadata=L["metadata"], sources=(ltag, jtag),
+                    records={"learned": L["records"]["learned"],
+                             "numerical": J["records"]["numerical"]})
+    return out, missing
+
+
 def _load_legacy_record(cells):
     """The pre-REMEASURE record (see load_record(which="legacy"))."""
     ## Filtered at LOAD time, not per table. The campaign also produced 12 runs on
@@ -564,7 +678,7 @@ def main(argv):
     if runtime and not paper:
         raise SystemExit("--runtime prints the paper-conditions Table 3 only; it needs --paper")
     only = [a for a in argv if not a.startswith("--")]
-    want = [s for s in SOLVERS if not only or s in only]
+    want = [s for s in ALL_SOLVERS if not only or s in only]
     runs, provenance = load_record(which="legacy" if legacy else "paper" if paper else "remeasure")
 
     retired = [tag for tag in runs if parse_tag(tag)["row"] not in STATUS_QUO_ROWS]
@@ -577,6 +691,12 @@ def main(argv):
         print("no merged 480-cell record runs found (staged or promoted). "
               "Merge shards first: cluster/merge_shard_summaries.py")
         return 1
+    ## AL-SVGD joins the record in the default and --paper modes; it has no legacy runs.
+    svgd_runs, svgd_missing = ({}, []) if legacy else load_svgd_record(runs)
+    if legacy:
+        want = [s for s in want if s != SVGD]
+    blocks = RECORD_BLOCKS if svgd_runs else METRIC_BLOCKS
+    table_runs = {**runs, **svgd_runs}
 
     if legacy:
         print(f"THE CAMPAIGN OF RECORD BEFORE STAGE REMEASURE (superseded 2026-10-09) -- {CELLS} cells, "
@@ -586,6 +706,8 @@ def main(argv):
         print(f"Iteration-budget-bound rows are reported at the LIFTED budget, same 180 s clock: "
               f"{len(provenance)} of {len(runs)} runs")
         print("  from stages ITCAP (IPOPT max_iter 1e6; SNOPT 1e5 majors, 1e8 minors) and SCREWCAP.")
+        print("AL-SVGD (PS): no legacy runs -- the fourth method class postdates this record, so its")
+        print("  columns, detail and flags are not printed here.")
     elif paper:
         n_ip = sum(1 for t in runs if parse_tag(t)["solver"] in ("ipopt", "snopt"))
         n_r2 = sum(1 for t in provenance.values() if t.startswith(PAPER_PANDA_IPOPT))
@@ -601,6 +723,12 @@ def main(argv):
         print("  the record's grids and scenes. Success, cost and iterations are the record's to the cell")
         print("  but for two one-cell differences; scripts/report_paper.py pairs every run against its")
         print("  REMEASURE twin. The GVS arm was not re-run and is not printed here.")
+        print(f"AL-SVGD (PS): {len(svgd_runs)} of 16 rows, each TWO runs, one per arm -- learned from stage")
+        print("  SVGD_R20 (_pin2), joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest) (_pin2kq, kernel")
+        print("  q) -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the")
+        print("  clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.")
+        if svgd_missing:
+            print(f"  MISSING: {len(svgd_missing)} AL-SVGD summary file(s), e.g. {svgd_missing[0]}")
         print("Arms: learned vs joint space (numerical). No analytic baseline is fielded.")
     else:
         n_ipsn = sum(1 for t in runs if parse_tag(t)["solver"] in ("ipopt", "snopt"))
@@ -617,6 +745,12 @@ def main(argv):
         print("  x two protocols x two solvers).")
         print(f"NLopt: {n_nl} of 16 runs from stage {RECORD_STAGE}_NLOPT (2026-10-10; same conditions, same")
         print("  tag family). 48 logical runs in all.")
+        print(f"AL-SVGD (PS): {len(svgd_runs)} of 16 rows, each TWO runs, one per arm -- learned from stage")
+        print("  SVGD_R20 (_pin2), joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest) (_pin2kq, kernel")
+        print("  q) -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the")
+        print("  clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.")
+        if svgd_missing:
+            print(f"  MISSING: {len(svgd_missing)} AL-SVGD summary file(s), e.g. {svgd_missing[0]}")
         print(f"The GVS arm ({', '.join(OUTSIDE_RECORD)}) was measured in the same stage under identical")
         print("  conditions and is OUTSIDE the record: its rows print as a separate block at the end,")
         print("  with their own tally, and enter none of the record's tables, tally or flags.")
@@ -624,24 +758,35 @@ def main(argv):
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")
 
+    ps_note = ("PS at PROCS=2, no MPS (paper conditions; stages SVGD_R20 / SVGD_R21), on the clearance "
+               "collision row under the clearances venv")
     if runtime:
-        metric_tables(runs, heading="=== TABLE 3 AT PAPER CONDITIONS (IP and SQP: PROCS=2, no MPS)",
-                      runtime_only=True,
+        metric_tables(table_runs,
+                      heading="=== TABLE 3 AT PAPER CONDITIONS (IP, SQP and PS: PROCS=2, no MPS)",
+                      runtime_only=True, blocks=blocks,
                       runtime_note="IP and SQP at PROCS=2, no MPS (paper conditions); AL at PROCS=8 "
-                                   "under MPS=1 (REMEASURE_NLOPT, not re-run)")
+                                   "under MPS=1 (REMEASURE_NLOPT, not re-run)"
+                                   + (f"; {ps_note}" if svgd_runs else ""))
         return 0
-    metric_tables(runs)
+    metric_tables(table_runs, blocks=blocks,
+                  runtime_note=None if not svgd_runs else
+                  ps_note + "; IP, SQP and AL as in the header above" if not paper else
+                  "IP and SQP at PROCS=2, no MPS (paper conditions); AL at PROCS=8 under MPS=1 "
+                  f"(REMEASURE_NLOPT, not re-run); {ps_note}")
 
     print("\n=== PER-SOLVER DETAIL (discordant counts, McNemar p, timeouts)")
     all_rows = {}
     for solver in want:
         print(f"\n=== {SOLVER_NAME[solver]}   [{CONFIG[solver]}]")
-        sq = row_table(runs, solver, STATUS_QUO_ROWS, "THE STATUS QUO (contained targets)")
+        sq = row_table(table_runs, solver, STATUS_QUO_ROWS, "THE STATUS QUO (contained targets)")
         if not sq:
             print("  (no rows found)")
         all_rows[solver] = sq
 
     flags(all_rows, want, remeasure=not legacy)
+    if svgd_runs:
+        cap_check(table_runs, blocks)
+        svgd_acceptance(table_runs)
     if not (legacy or paper):
         beside_record(want)
     return 0
@@ -661,7 +806,7 @@ def beside_record(want):
     metric_tables(beside, heading=f"=== HEADLINE TABLES -- {label}")
     print(f"\n=== PER-SOLVER DETAIL -- {label}")
     for solver in want:
-        if solver == "nlopt":
+        if solver not in ("ipopt", "snopt"):
             continue
         print(f"\n=== {SOLVER_NAME[solver]}   [{CONFIG[solver]}]")
         if not row_table(beside, solver, STATUS_QUO_ROWS, label):
@@ -683,7 +828,7 @@ def flags(all_rows, want, remeasure=False):
     for pre in ("sc_SOLVER2_", "sc_SNOPTCOMBO_", "sc_NLOPTTUNE_"):
         refs.update(load(pre))
     moved = unpaired = 0
-    for solver in want:
+    for solver in [s for s in want if s in SOLVERS]:
         for r in all_rows.get(solver, []):
             ref_tag = REF_TAG[solver].format(robot=r["robot"], rung=r["rung"],
                                              row=r["row"], start=r["start"])
@@ -708,6 +853,13 @@ def flags(all_rows, want, remeasure=False):
             moved += was != now
             print(f"  {label:<48} {was:>14} -> {now:<12}{scale}{tail}")
     print(f"  => {moved} verdict(s) moved, {unpaired} row(s) unpaired")
+    if SVGD in want:
+        sv = all_rows.get(SVGD, [])
+        for r in sv:
+            label = f"{r['robot']} {ROW_NAME[r['row']]} {r['start']} / {SVGD}"
+            now = verdict(r["L"]["succ"], r["J"]["succ"], r["p"])
+            print(f"  {label:<48} {'':>14} -> {now:<12} UNPAIRED (no 45 s AL-SVGD run exists)")
+        print(f"  => AL-SVGD: 0 verdict(s) moved, {len(sv)} row(s) unpaired")
 
     ## --- 2. The IPOPT-vs-SNOPT gap. Predicted to widen: IPOPT's learned failures are mostly
     ## wall-clock while only 3.6% of SNOPT's are the time limit, so a 4x cap helps IPOPT more.
@@ -728,6 +880,8 @@ def flags(all_rows, want, remeasure=False):
                   "CLAUDE.md; a widening gap is the predicted direction, so report its SIZE.")
     else:
         print("  (needs both the IPOPT and SNOPT columns)")
+    if SVGD in want:
+        print("  AL-SVGD: the criterion as written compares IPOPT with SNOPT; it says nothing about AL-SVGD.")
 
     ## --- 3. NLopt at 180 s under the adopted configuration -- untested before this campaign.
     print("\n--- 3. NLopt at 180 s under the adopted configuration (previously untested)")
@@ -761,6 +915,69 @@ def flags(all_rows, want, remeasure=False):
         print("  Cost needs cells both arms solved, of which there are few -- hence the N/A.")
     else:
         print("  (no NLopt rows found)")
+    if SVGD in want:
+        print("  AL-SVGD: the criterion as written concerns NLopt; it says nothing about AL-SVGD.")
+
+
+def cap_check(runs, blocks):
+    """CLAUDE.md, the cap check: read BOTH clock stops and iteration-budget stops, never timeouts
+    alone. Per solver class and arm, over the 16 rows."""
+    print("\n\n=== CAP CHECK (per solver class and arm, over the 16 rows)")
+    print("  clock = timed_out, or svgd.stop_reason == 'wall_clock'; budget = hit_iteration_cap or")
+    print("  hit_eval_cap, or svgd.stop_reason == 'step_cap'. A row with >= %d of %d cells at a BUDGET"
+          % (BUDGET_CELLS, CELLS))
+    print("  carries no verdict; the 180 s clock is the fielded one and is never lifted.")
+    print(f"  {'class':<6}{'L clock':>12}{'L budget':>10}{'JS clock':>12}{'JS budget':>11}"
+          f"{'rows >= ' + str(BUDGET_CELLS) + ' budget':>18}")
+    for solver, b in blocks:
+        clk, bud, void, nz = {"L": [], "JS": []}, {"L": [], "JS": []}, 0, []
+        for tag, s in sorted(runs.items()):
+            t = parse_tag(tag)
+            if t["solver"] != solver or t["row"] not in STATUS_QUO_ROWS:
+                continue
+            counts = {}
+            for arm, short in (("learned", "L"), ("numerical", "JS")):
+                recs = s["records"].get(arm, [])
+                c, u = sum(map(clock_bound, recs)), sum(map(budget_bound, recs))
+                clk[short].append(c)
+                bud[short].append(u)
+                counts[short] = c
+            void += max(bud["L"][-1], bud["JS"][-1]) >= BUDGET_CELLS
+            if any(counts.values()):
+                nz.append((t, counts))
+        if not clk["L"]:
+            continue
+        rng = lambda xs: f"{min(xs)}-{max(xs)}" if min(xs) != max(xs) else f"{max(xs)}"  # noqa: E731
+        print(f"  {b:<6}{rng(clk['L']):>12}{max(bud['L']):>10}{rng(clk['JS']):>12}{max(bud['JS']):>11}"
+              f"{void:>18}")
+        if solver == SVGD:
+            print("         AL-SVGD rows with any clock stop: " + (", ".join(
+                f"{t['robot']} {ROW_NAME[t['row']].split(' (')[0]} {t['start']} (L {c['L']}, JS {c['JS']})"
+                for t, c in sorted(nz, key=lambda x: (x[0]["robot"], ROW_ORDER[x[0]["row"]],
+                                                      x[0]["start"]))) or "none"))
+
+
+def svgd_acceptance(runs):
+    """The acceptance checks as they apply to AL-SVGD."""
+    sv = {t: s for t, s in runs.items() if parse_tag(t)["solver"] == SVGD}
+    print("\n\n=== ACCEPTANCE (AL-SVGD)")
+    print(f"--- grid_hash and scene_fingerprint: on all {len(sv)} AL-SVGD rows the two runs (one per arm)")
+    print("  agree with each other and with the row's IPOPT record run (checked at load; this script")
+    print("  refuses to pair otherwise).")
+    print("--- scene_fingerprint per robot x task scene, over every run in these tables (Drake runs and")
+    print("  both AL-SVGD arms):")
+    groups = {}
+    for tag, s in runs.items():
+        t = parse_tag(tag)
+        groups.setdefault((t["robot"], t["row"]), set()).add(s["metadata"].get("scene_fingerprint"))
+    for (robot, row), fps in sorted(groups.items(), key=lambda kv: (kv[0][0], ROW_ORDER[kv[0][1]])):
+        state = "identical" if len(fps) == 1 and None not in fps else f"{len(fps)} DIFFERENT"
+        print(f"  {robot:<14}{ROW_NAME[row].split(' (')[0]:<18}{state}: "
+              + ", ".join(str(fp)[:12] for fp in sorted(fps, key=str)))
+    print("--- joint space bit-identical between protocols is a DRAKE-solver check (scripts/report_remeasure.py")
+    print("  4b): same q_init, deterministic solver. AL-SVGD is EXCLUDED from it: its paired swarm draws 63")
+    print("  of its 64 particles from the native distribution (only particle 0 is the given start), so its")
+    print("  native and paired joint-space solves are different solves by design.")
 
 
 if __name__ == "__main__":
