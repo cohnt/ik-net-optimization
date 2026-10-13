@@ -13,9 +13,9 @@ row with ONLY `--arms`, the tag and (tight ladder) two `--set`s changed, so `gri
 against the record's learned and joint-space arms. An upper-bound reference column, not a
 competitor.
 
-Svgd flagged choices for Thomas (`src/svgd/solver.py:region_scale`): the analytic arm's
-normalising half-widths are `c_position_slack` on position, pi on rpy, and psi's own bound
-half-width (5 Panda, 10 iiwa).
+Svgd normalisation (`src/svgd/solver.py:region_scale`, chosen 2026-10-13, Thomas no preference):
+`c_position_slack` on position, pi on rpy and on psi. A/B against psi's bound half-width (5 / 10)
+on 192 smoke cells: identical success on every row.
 
 Two clip ladders, both measured (Thomas, 2026-10-12): `ANALYTIC` is ../codebase's 1e-4 / 1e-3,
 `ANALYTICT` the tight 1e-8 / 1.1e-4.
