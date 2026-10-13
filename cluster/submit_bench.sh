@@ -112,6 +112,16 @@ sc_run "test -f ~/$SC_ROOT/repo/cluster/$MANIFEST" || {
     exit 2
 }
 
+## An analytic_backend=cpp item needs the C++ library BUILT ON THE CLUSTER from the staged
+## sources (cluster/build_cpp_job.sh writes the sentinel only after its parity test passes).
+## Without it every program construction raises and the run aborts after three cells.
+if grep -vE '^[[:space:]]*(#|$)' "$LOCAL" | grep -q -- 'analytic_backend=cpp'; then
+    sc_run "grep -q '^OK ' ~/$SC_ROOT/build_cpp.DONE" || {
+        echo "REFUSING: $MANIFEST uses analytic_backend=cpp and ~/$SC_ROOT/build_cpp.DONE is" >&2
+        echo "  missing or not OK. Run cluster/build_cpp_job.sh (after stage_code.sh) first." >&2
+        exit 3; }
+fi
+
 ## Refuse rather than measure a checkpoint that does not exist. A benchmark against a
 ## missing --checkpoint does not fail fast: the workers start, construct a program, and
 ## die per cell, so four jobs burned 16 minutes each before anyone noticed. This happened

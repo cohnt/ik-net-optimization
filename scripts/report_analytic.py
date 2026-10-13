@@ -42,8 +42,9 @@ ARMS = {"panda": ("analytic", "analytic8"), "iiwa": ("analytic",)}
 ROBOT_DIR = {"panda": "panda", "iiwa": "iiwa"}
 LADDER_NAME = {"": "clip 1e-4 / reach 1e-3 (../codebase)", "T": "clip 1e-8 / reach 1.1e-4 (tight)"}
 #: ANALYTIC (IPOPT/SNOPT), ANALYTICN (NLopt), ANALYTICS (AL-SVGD, `_pin2kx` / `_pin2kq` kernel
-#: suffix); a `T` after the stage token is the tight clip ladder.
-TAG = re.compile(r"^sc_ANALYTIC([NS]?)(T?)_(.+?)(_pin2k[xq])?$")
+#: suffix), ANALYTICC (IPOPT/SNOPT on the C++ backend, default ladder; its arms print as
+#: `analytic/cpp`); a `T` after the stage token is the tight clip ladder.
+TAG = re.compile(r"^sc_ANALYTIC([NSC]?)(T?)_(.+?)(_pin2k[xq])?$")
 
 
 def load_analytic(cells=480):
@@ -148,7 +149,8 @@ def rows(analytic, record, ladder_filter=None):
         L, J = by_cell(R, "learned"), by_cell(R, "numerical")
         for arm in A["records"]:
             Ac = by_cell(A, arm)
-            yield dict(t, tag=tag, record=r_tag, ladder=ladder, arm=arm, clock=cap,
+            label = arm + ("/cpp" if m.group(1) == "C" else "")
+            yield dict(t, tag=tag, record=r_tag, ladder=ladder, arm=label, clock=cap,
                        L=describe(L, t["solver"], cap), J=describe(J, t["solver"], cap),
                        A=describe(Ac, t["solver"], cap),
                        LvJ=versus(L, J, ("L", "JS")), AvL=versus(Ac, L, ("A", "L")),
@@ -161,7 +163,7 @@ def flag(d):
 
 
 def print_rows(rs):
-    head = (f"{'robot':6}{'row':9}{'start':7}{'solver':7}{'arm':10}"
+    head = (f"{'robot':6}{'row':9}{'start':7}{'solver':7}{'arm':14}"
             f"{'L':>5}{'JS':>5}{'A':>5}{'L v JS':>14}{'A v L':>16}{'A v JS':>16}"
             f"{'it L/JS/A':>16}{'ms/it L/JS/A':>20}{'cost A:L':>16}{'cost A:JS':>16}"
             f"{'wall L/JS/A':>20}{'clk A':>6}{'bud A':>6}{'unrep':>6}{'band':>5}")
@@ -178,7 +180,7 @@ def print_rows(rs):
             return (f"{num(ca, 6, 2)}:{num(cb, 6, 2)}" if ca is not None
                     else f"{'N/A':>8} ({n})")
         solver = r['solver'] + (f"/{r['kernel']}" if r.get("kernel") else "")
-        print(f"{r['robot']:6}{r['row']:9}{r['start']:7}{solver:7}{r['arm']:10}"
+        print(f"{r['robot']:6}{r['row']:9}{r['start']:7}{solver:7}{r['arm']:14}"
               f"{L['succ']:>5}{J['succ']:>5}{A['succ']:>5}{vs(r['LvJ']):>14}{vs(r['AvL']):>16}"
               f"{vs(r['AvJ']):>16}"
               f"{num(L['iters'], 5)}{num(J['iters'], 5)}{num(A['iters'], 6)}"

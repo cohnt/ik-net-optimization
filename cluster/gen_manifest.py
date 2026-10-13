@@ -3752,11 +3752,29 @@ def stage_ANALYTIC(variant="ANALYTIC"):
     return items
 
 
+def stage_ANALYTIC_CPP():
+    """The default clip ladder's IPOPT / SNOPT items again on the C++ backend (Thomas,
+    2026-10-13: measure both backends). Tag token ANALYTICC; one extra --set. The tight ladder,
+    NLopt and AL-SVGD (which never calls this map: it has its own torch twins) stay on the
+    Python reference. Needs cluster/build_cpp_job.sh's sentinel (submit_bench.sh checks)."""
+    items = []
+    for it in stage_ANALYTIC("ANALYTIC"):
+        a = list(it["args"])
+        i = a.index("--tag")
+        if not a[i + 1].startswith("sc_ANALYTIC_"):
+            continue  # the tight ladder
+        old = a[i + 1]
+        a[i + 1] = old.replace("sc_ANALYTIC_", "sc_ANALYTICC_", 1)
+        a += ["--set", "analytic_backend=cpp"]
+        items.append(dict(it, args=a, id=it["id"].replace(old, a[i + 1], 1)))
+    return items
+
+
 def stage_ANALYTIC_SMOKE():
     """2 targets x 2 guesses at 60 s: every robot x task x protocol x solver x ladder, one item
     each, unsharded -- the cluster pipeline end to end before the real stages."""
     items = []
-    for it in stage_ANALYTIC("ANALYTIC") + stage_ANALYTIC("ANALYTIC_NLOPT"):
+    for it in stage_ANALYTIC("ANALYTIC") + stage_ANALYTIC("ANALYTIC_NLOPT") + stage_ANALYTIC_CPP():
         a = list(it["args"])
         if "--shard" in a:
             k = a.index("--shard")
@@ -3846,6 +3864,10 @@ def analytic_allotment():
         procs = ANALYTIC_PROCS[variant]
         print(f"  {variant:<16}{procs:>6}{len(runs):>6}{len(its):>7}{secs / 3600:>9.1f}"
               f"{secs / 3600 / procs:>8.1f}")
+    cp = stage_ANALYTIC_CPP()
+    secs = sum(i["seconds"] for i in cp)
+    print(f"  {'ANALYTIC_CPP':<16}{2:>6}{len({i['id'].rsplit('_shard', 1)[0] for i in cp}):>6}"
+          f"{len(cp):>7}{secs / 3600:>9.1f}{secs / 3600 / 2:>8.1f}   (charged as Python: an upper bound)")
     sv = stage_ANALYTIC_SVGD()
     secs = sum(i["seconds"] for i in sv)
     print(f"  {'ANALYTIC_SVGD':<16}{2:>6}{len({i['id'].rsplit('_shard', 1)[0] for i in sv}):>6}"
@@ -6134,10 +6156,16 @@ def selftest():
             if "--compile" in a or "flow_cuda_graph=True" in a or "svgd" in a:
                 an_fails.append(f"{it['id']}: a GPU-only switch on a CPU-node item")
     sm = stage_ANALYTIC_SMOKE()
-    if len(sm) != 48 or any("--shard" in i["args"] for i in sm) or \
+    cpp = stage_ANALYTIC_CPP()
+    if len(cpp) != 128 or len({i["id"].rsplit("_shard", 1)[0] for i in cpp}) != 16 or any(
+            i["args"][-2:] != ["--set", "analytic_backend=cpp"] or "analytic_clip_stepback=1e-08"
+            in i["args"] or not i["id"].startswith("sc_ANALYTICC_") for i in cpp):
+        an_fails.append(f"ANALYTIC_CPP: {len(cpp)} items, expected 128 (16 runs), default ladder, "
+                        f"the one --set")
+    if len(sm) != 64 or any("--shard" in i["args"] for i in sm) or \
             any(not i["id"].startswith("sc_ANALYTICSMOKE") for i in sm) or \
             any("--compile" in i["args"] or "flow_cuda_graph=True" in i["args"] for i in sm):
-        an_fails.append(f"ANALYTIC_SMOKE: {len(sm)} items (expected 48, unsharded, sc_ANALYTICSMOKE*, "
+        an_fails.append(f"ANALYTIC_SMOKE: {len(sm)} items (expected 64, unsharded, sc_ANALYTICSMOKE*, "
                         f"no GPU-only switch)")
     if ALL_ARMS["iiwa"] != "learned,numerical":
         an_fails.append("ALL_ARMS changed: the old stages' manifests would not regenerate")
@@ -6170,8 +6198,8 @@ def selftest():
         print(f"FAIL stage ANALYTIC: {msg}")
     fails += len(an_fails)
     if not an_fails:
-        print("ok   stages ANALYTIC / ANALYTIC_NLOPT / ANALYTIC_SMOKE / ANALYTIC_SVGD(_SMOKE): 32 / 16 / "
-              "48 / 32 / 32 runs, the record's Panda and iiwa items (svgd: R20's pin2) with only the "
+        print("ok   stages ANALYTIC / ANALYTIC_NLOPT / ANALYTIC_CPP / ANALYTIC_SMOKE / ANALYTIC_SVGD(_SMOKE): "
+              "32 / 16 / 16 / 64 / 32 / 32 runs, the record's Panda and iiwa items (svgd: R20's pin2) with only the "
               "arms, tag, kernel and clip ladder changed (and, on the CPU-node stages, the "
               "learned-only GPU switches dropped)")
 
@@ -6200,7 +6228,7 @@ def main():
                                  "SVGD_R15", "SVGD_R16", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT",
                                  "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
                                  "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21",
-                                 "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_SMOKE",
+                                 "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
@@ -6353,6 +6381,7 @@ def main():
              "PAPER": lambda: stage_PAPER(),
              "ANALYTIC": lambda: stage_ANALYTIC("ANALYTIC"),
              "ANALYTIC_NLOPT": lambda: stage_ANALYTIC("ANALYTIC_NLOPT"),
+             "ANALYTIC_CPP": lambda: stage_ANALYTIC_CPP(),
              "ANALYTIC_SMOKE": lambda: stage_ANALYTIC_SMOKE(),
              "ANALYTIC_SVGD": lambda: stage_ANALYTIC_SVGD(),
              "ANALYTIC_SVGD_SMOKE": lambda: stage_ANALYTIC_SVGD_SMOKE(),

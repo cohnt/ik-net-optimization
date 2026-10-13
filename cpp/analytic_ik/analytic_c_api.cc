@@ -76,6 +76,12 @@ extern "C" {
 /// library built from another version rather than calling it with the wrong arguments.
 int learnedik_analytic_abi_version() { return 1; }
 
+/// sha1 (first 16 hex) of cpp/analytic_ik/* at build time, set by cpp/build.sh.
+#ifndef LEARNEDIK_SRC_HASH
+#define LEARNEDIK_SRC_HASH "unknown"
+#endif
+const char* learnedik_analytic_src_hash() { return LEARNEDIK_SRC_HASH; }
+
 /// The Panda (He & Liu). gc = (B, C) on the 4-branch chart or (B, C, A) on 8, with
 /// B, C in {1, 2} and A in {+1, -1}.
 int learnedik_panda_analytic(const double* x, const double* R_off, const double* p_off,

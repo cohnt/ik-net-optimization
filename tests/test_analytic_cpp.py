@@ -230,6 +230,31 @@ def test_refusals():
     except FileNotFoundError as exc:
         check("a missing library raises, naming the build script", "cpp/build.sh" in str(exc),
               exc)
+    ## A library built from other sources (the cluster keeps cpp/build/ across restaging) is
+    ## refused by its compiled-in source hash: copy the real library to a fresh path (so the
+    ## per-path cache does not answer) and make the sources the loader hashes differ.
+    import shutil
+    import tempfile
+    import src.analytic_cpp as acpp
+    with tempfile.TemporaryDirectory() as tmp:
+        lib_copy = os.path.join(tmp, "stale.so")
+        shutil.copy(acpp.LIBRARY_PATH, lib_copy)
+        src_copy = os.path.join(tmp, "analytic_ik")
+        shutil.copytree(acpp.SOURCE_DIR, src_copy)
+        with open(os.path.join(src_copy, "ad7.h"), "a") as f:
+            f.write("\n// edited after the build\n")
+        real = acpp.SOURCE_DIR
+        acpp.SourceHash.__defaults__ = (src_copy,)
+        try:
+            acpp.LoadLibrary(lib_copy)
+            check("a library built from other sources is refused", False, "loaded")
+        except RuntimeError as exc:
+            check("a library built from other sources is refused, naming the build script",
+                  "cpp/build.sh" in str(exc), exc)
+        finally:
+            acpp.SourceHash.__defaults__ = (real,)
+    check("the built library's hash is the current sources'",
+          acpp.LoadLibrary().learnedik_analytic_src_hash().decode() == acpp.SourceHash())
     m = AnalyticCppMap("panda")
     x = np.array([0.4, 0.1, 0.5, np.pi, 0.0, 0.0, 0.2])
     for gc in ((3, 1), (1, 1, 0), (1,)):

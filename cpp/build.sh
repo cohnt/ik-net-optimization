@@ -11,6 +11,12 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$here/build"
+## The sources' hash is compiled in and src/analytic_cpp.py recomputes it at load, so a library
+## built from other sources (the cluster keeps cpp/build/ across stage_code.sh, which excludes it)
+## is refused rather than run. Same recipe both sides: sha1 over the files in C-locale order.
+src_hash=$(cd "$here/analytic_ik" && LC_ALL=C ls | LC_ALL=C sort | xargs cat | sha1sum | cut -c1-16)
 "${CXX:-g++}" -O2 -std=c++17 -fPIC -shared -Wall -Wextra \
+    -DLEARNEDIK_SRC_HASH="\"$src_hash\"" \
     -o "$here/build/liblearnedik_analytic.so" "$here/analytic_ik/analytic_c_api.cc"
+echo "sources $src_hash"
 echo "built $here/build/liblearnedik_analytic.so"
