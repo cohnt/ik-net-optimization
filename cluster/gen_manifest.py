@@ -3743,6 +3743,59 @@ def stage_ANALYTIC_SMOKE():
     return items
 
 
+#: The analytic arm under AL-SVGD: R20's `pin2` items (the fielded pin, clearance row, crc venv,
+#: PROCS=2) on the Panda and iiwa contexts with --arms swapped and the kernel named, as the
+#: analytic arm must (`cz` is learned-only): `pin2kx` its own normalised decision vector, `pin2kq`
+#: the configuration (Thomas, 2026-10-12: run both). Both clip ladders (tags ANALYTICS /
+#: ANALYTICST). Submit with DRAKE_ENV=crc PROCS=2; R20's IPOPT twins are the record's PAPER rows.
+ANALYTIC_SVGD_KERNELS = {"pin2kx": "x", "pin2kq": "q"}
+#: Laptop smoke 2026-10-12 (eager, 20 s cap): 2-7 s per cell per arm; graphed 1-3 s. Charged 5 s.
+ANALYTIC_SVGD_CELL_S = 5.0
+
+
+def stage_ANALYTIC_SVGD():
+    items = []
+    for it in stage_SVGD("SVGD_R20"):
+        a = list(it["args"])
+        tag = a[a.index("--tag") + 1]
+        if it["robot"] not in ANALYTIC_ARMS or not tag.endswith("_pin2"):
+            continue
+        for ladder, extra in ANALYTIC_LADDERS.items():
+            for variant, kernel in ANALYTIC_SVGD_KERNELS.items():
+                b = list(a)
+                b[b.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
+                k = b.index("svgd_kernel=cz")
+                b[k] = f"svgd_kernel={kernel}"
+                new = tag.replace("sc_SVGD_R20_", f"sc_ANALYTICS{ladder}_", 1)[:-len("_pin2")] \
+                    + f"_{variant}"
+                b[b.index("--tag") + 1] = new
+                b += extra
+                shards = int(b[b.index("--shard") + 1].split("/")[1]) if "--shard" in b else 1
+                n_arms = len(ANALYTIC_ARMS[it["robot"]].split(","))
+                items.append(dict(it, args=b, id=it["id"].replace(tag, new, 1),
+                                  seconds=480 * n_arms * ANALYTIC_SVGD_CELL_S / shards
+                                  + REMEASURE_ITEM_OVERHEAD_S,
+                                  order=it.get("order", 0) + (0 if ladder == "" else 1000)))
+    return items
+
+
+def stage_ANALYTIC_SVGD_SMOKE():
+    """Shard 0 of each ANALYTIC_SVGD run at 2 x 2 cells and 60 s, unsharded: 32 items."""
+    out = []
+    for it in stage_ANALYTIC_SVGD():
+        a = list(it["args"])
+        k = a.index("--shard")
+        if a[k + 1].split("/")[0] != "0":
+            continue
+        del a[k:k + 2]
+        for flag, value in (("--targets", "2"), ("--guesses", "2"), ("--wall-time", "60")):
+            a[a.index(flag) + 1] = value
+        i = a.index("--tag")
+        a[i + 1] = a[i + 1].replace("sc_ANALYTICS", "sc_ANALYTICSMOKES", 1)
+        out.append(dict(it, args=a, id=a[i + 1], seconds=4 * 60 * 2 + REMEASURE_ITEM_OVERHEAD_S))
+    return out
+
+
 def analytic_allotment():
     print("ANALYTIC ALLOTMENT -- the analytic arms, both clip ladders, per robot x solver.")
     print(f"  Mean wall per cell per analytic arm = {ANALYTIC_WALL_PER_JS:g} x the record's joint-space")
@@ -3755,6 +3808,10 @@ def analytic_allotment():
         procs = ANALYTIC_PROCS[variant]
         print(f"  {variant:<16}{procs:>6}{len(runs):>6}{len(its):>7}{secs / 3600:>9.1f}"
               f"{secs / 3600 / procs:>8.1f}")
+    sv = stage_ANALYTIC_SVGD()
+    secs = sum(i["seconds"] for i in sv)
+    print(f"  {'ANALYTIC_SVGD':<16}{2:>6}{len({i['id'].rsplit('_shard', 1)[0] for i in sv}):>6}"
+          f"{len(sv):>7}{secs / 3600:>9.1f}{secs / 3600 / 2:>8.1f}   (DRAKE_ENV=crc)")
     sm = stage_ANALYTIC_SMOKE()
     print(f"  {'ANALYTIC_SMOKE':<16}{2:>6}{len(sm):>6}{len(sm):>7}"
           f"{sum(i['seconds'] for i in sm) / 3600:>9.1f}{sum(i['seconds'] for i in sm) / 3600 / 2:>8.1f}")
@@ -6041,12 +6098,38 @@ def selftest():
         an_fails.append(f"ANALYTIC_SMOKE: {len(sm)} items (expected 48, unsharded, sc_ANALYTICSMOKE*)")
     if ALL_ARMS["iiwa"] != "learned,numerical":
         an_fails.append("ALL_ARMS changed: the old stages' manifests would not regenerate")
+    r20 = {it["id"]: it for it in stage_SVGD("SVGD_R20")}
+    asv = stage_ANALYTIC_SVGD()
+    if len(asv) != 2 * 4 * 24 * 2 * 2 or len({i["id"] for i in asv}) != len(asv):
+        an_fails.append(f"ANALYTIC_SVGD: {len(asv)} items, expected {2 * 4 * 24 * 2 * 2}, unique")
+    for it in asv:
+        a = it["args"]
+        tag = a[a.index("--tag") + 1]
+        m = re.match(r"sc_ANALYTICS(T?)_(.+)_(pin2k[xq])$", tag)
+        if m is None:
+            an_fails.append(f"{it['id']}: bad tag")
+            continue
+        twin_tag = f"sc_SVGD_R20_{m.group(2)}_pin2"
+        twin = r20.get(it["id"].replace(tag, twin_tag, 1))
+        if twin is None:
+            an_fails.append(f"{it['id']}: no R20 pin2 twin")
+            continue
+        b = list(twin["args"])
+        b[b.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
+        b[b.index("svgd_kernel=cz")] = f"svgd_kernel={ANALYTIC_SVGD_KERNELS[m.group(3)]}"
+        b[b.index("--tag") + 1] = tag
+        if a != b + ANALYTIC_LADDERS[m.group(1)] or it["env"] != twin["env"] or \
+                "svgd_collision_backend=clearances" not in a:
+            an_fails.append(f"{it['id']} is not its R20 pin2 twin modulo arms / tag / kernel / ladder")
+    if len(stage_ANALYTIC_SVGD_SMOKE()) != 32:
+        an_fails.append("ANALYTIC_SVGD_SMOKE is not 32 items")
     for msg in an_fails[:12]:
         print(f"FAIL stage ANALYTIC: {msg}")
     fails += len(an_fails)
     if not an_fails:
-        print("ok   stages ANALYTIC / ANALYTIC_NLOPT / ANALYTIC_SMOKE: 32 / 16 / 48 runs, the record's "
-              "Panda and iiwa items with only the arms, tag and clip ladder changed")
+        print("ok   stages ANALYTIC / ANALYTIC_NLOPT / ANALYTIC_SMOKE / ANALYTIC_SVGD(_SMOKE): 32 / 16 / "
+              "48 / 32 / 32 runs, the record's Panda and iiwa items (svgd: R20's pin2) with only the "
+              "arms, tag, kernel and clip ladder changed")
 
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
@@ -6074,6 +6157,7 @@ def main():
                                  "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
                                  "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21",
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_SMOKE",
+                                 "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -6140,7 +6224,7 @@ def main():
     if args.allotment and args.stage == "PAPER":
         paper_allotment()
         raise SystemExit(0)
-    if args.allotment and args.stage in ("ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_SMOKE"):
+    if args.allotment and args.stage.startswith("ANALYTIC"):
         analytic_allotment()
         raise SystemExit(0)
     if args.allotment and args.stage in SVGD_STAGES:
@@ -6226,6 +6310,8 @@ def main():
              "ANALYTIC": lambda: stage_ANALYTIC("ANALYTIC"),
              "ANALYTIC_NLOPT": lambda: stage_ANALYTIC("ANALYTIC_NLOPT"),
              "ANALYTIC_SMOKE": lambda: stage_ANALYTIC_SMOKE(),
+             "ANALYTIC_SVGD": lambda: stage_ANALYTIC_SVGD(),
+             "ANALYTIC_SVGD_SMOKE": lambda: stage_ANALYTIC_SVGD_SMOKE(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),

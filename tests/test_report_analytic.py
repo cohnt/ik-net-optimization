@@ -80,6 +80,10 @@ def main():
                 check("a scene_fingerprint mismatch is refused", "scene_fingerprint" in str(e), str(e))
         finally:
             os.chdir(here)
+    m = ra.TAG.match("sc_ANALYTICST_iiwa_n4_svgd_mugshelf_480_180_native_pin2kq")
+    check("an svgd analytic tag parses: stage S, tight ladder, kernel q",
+          m is not None and m.group(1) == "S" and m.group(2) == "T" and m.group(4) == "_pin2kq"
+          and ra.parse_tag(m.group(0)[:-len(m.group(4))])["start"] == "native", m and m.groups())
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:
         sys.exit(1)
