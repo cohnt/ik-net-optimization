@@ -13,6 +13,10 @@ row with ONLY `--arms`, the tag and (tight ladder) two `--set`s changed, so `gri
 against the record's learned and joint-space arms. An upper-bound reference column, not a
 competitor.
 
+Svgd flagged choices for Thomas (`src/svgd/solver.py:region_scale`): the analytic arm's
+normalising half-widths are `c_position_slack` on position, pi on rpy, and psi's own bound
+half-width (5 Panda, 10 iiwa).
+
 Two clip ladders, both measured (Thomas, 2026-10-12): `ANALYTIC` is ../codebase's 1e-4 / 1e-3,
 `ANALYTICT` the tight 1e-8 / 1.1e-4.
 
@@ -22,7 +26,10 @@ Two clip ladders, both measured (Thomas, 2026-10-12): `ANALYTIC` is ../codebase'
 | `manifest_stageANALYTIC.txt` | IPOPT and SNOPT, both ladders | PROCS=2, no MPS (paper) | 32 | 256 | 41 |
 | `manifest_stageANALYTIC_NLOPT.txt` | NLopt, both ladders (tags `ANALYTICN`, `ANALYTICNT`) | PROCS=8, `MPS=1` (as the record's NLopt) | 16 | 384 | 74 |
 
-The svgd rows are their own stage (see `cluster/SVGD_RUNBOOK.md`, round R22). Estimates:
+| `manifest_stageANALYTIC_SVGD_SMOKE.txt` | 2 x 2 cells at 60 s, every svgd run | PROCS=2, `DRAKE_ENV=crc` | 32 | 32 | <= 2 |
+| `manifest_stageANALYTIC_SVGD.txt` | AL-SVGD at R20's pin, kernels `x` (`pin2kx`) and `q` (`pin2kq`), both ladders (`ANALYTICS`, `ANALYTICST`) | PROCS=2, `DRAKE_ENV=crc` | 32 | 768 | 35 |
+
+Estimates:
 `python cluster/gen_manifest.py --stage ANALYTIC --allotment` (2x joint space's mean wall per
 cell per analytic arm, capped at the clock).
 
@@ -34,7 +41,9 @@ python cluster/gen_manifest.py --selftest
 cluster/stage_code.sh
 PROCS=2 bash cluster/submit_bench.sh manifest_stageANALYTIC_SMOKE.txt 1      # -> <SMOKE>
 DEPENDENCY=afterok:<SMOKE> PROCS=2 bash cluster/submit_bench.sh manifest_stageANALYTIC.txt 4
-DEPENDENCY=afterany:<ANALYTIC jobs> PROCS=8 MPS=1 bash cluster/submit_bench.sh manifest_stageANALYTIC_NLOPT.txt 4
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageANALYTIC_SVGD_SMOKE.txt 1   # -> <SSMOKE>
+DEPENDENCY=afterok:<SSMOKE> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageANALYTIC_SVGD.txt 4
+DEPENDENCY=afterany:<ANALYTIC and ANALYTIC_SVGD jobs> PROCS=8 MPS=1 bash cluster/submit_bench.sh manifest_stageANALYTIC_NLOPT.txt 4
 ```
 
 Collect with `cluster/collect_results.sh` and read with `python scripts/report_analytic.py`.

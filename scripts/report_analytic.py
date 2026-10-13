@@ -31,13 +31,16 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.report_statusquo import (BUDGET_CELLS, MIN_COST_CELLS, budget_bound,  # noqa: E402
-                                      by_cell, clock_bound, load_record, mcnemar, mean,
+                                      by_cell, clock_bound, load_record, load_svgd_record,
+                                      mcnemar, mean,
                                       median, map_jacobians, num, parse_tag)
 
 ARMS = {"panda": ("analytic", "analytic8"), "iiwa": ("analytic",)}
 ROBOT_DIR = {"panda": "panda", "iiwa": "iiwa"}
 LADDER_NAME = {"": "clip 1e-4 / reach 1e-3 (../codebase)", "T": "clip 1e-8 / reach 1.1e-4 (tight)"}
-TAG = re.compile(r"^sc_ANALYTIC(N?)(T?)_(.+)$")
+#: ANALYTIC (IPOPT/SNOPT), ANALYTICN (NLopt), ANALYTICS (AL-SVGD, `_pin2kx` / `_pin2kq` kernel
+#: suffix); a `T` after the stage token is the tight clip ladder.
+TAG = re.compile(r"^sc_ANALYTIC([NS]?)(T?)_(.+?)(_pin2k[xq])?$")
 
 
 def load_analytic(cells=480):
@@ -123,7 +126,9 @@ def rows(analytic, record, ladder_filter=None):
         if ladder_filter is not None and ladder != ladder_filter:
             continue
         A = analytic[tag]
-        t = parse_tag(tag)
+        kernel = (m.group(4) or "")[len("_pin2k"):]
+        t = parse_tag(tag[:len(tag) - len(m.group(4) or "")])
+        t["kernel"] = kernel
         hit = rec.get(record_key(t))
         if hit is None:
             print(f"  note  {tag}: no record run for {record_key(t)}; skipped")
@@ -162,7 +167,8 @@ def print_rows(rs):
             _, _, _, _, ca, cb, n = v
             return (f"{num(ca, 6, 2)}:{num(cb, 6, 2)}" if ca is not None
                     else f"{'N/A':>8} ({n})")
-        print(f"{r['robot']:6}{r['row']:9}{r['start']:7}{r['solver']:7}{r['arm']:10}"
+        solver = r['solver'] + (f"/{r['kernel']}" if r.get("kernel") else "")
+        print(f"{r['robot']:6}{r['row']:9}{r['start']:7}{solver:7}{r['arm']:10}"
               f"{L['succ']:>5}{J['succ']:>5}{A['succ']:>5}{vs(r['LvJ']):>14}{vs(r['AvL']):>16}"
               f"{vs(r['AvJ']):>16}"
               f"{num(L['iters'], 5)}{num(J['iters'], 5)}{num(A['iters'], 6)}"
@@ -179,6 +185,11 @@ def main(argv=None):
     p.add_argument("--cells", type=int, default=480)
     args = p.parse_args(argv)
     record, _ = load_record(args.cells, which="paper")
+    try:
+        svgd, _ = load_svgd_record(record, args.cells)
+        record = dict(record, **svgd)
+    except SystemExit as e:
+        print(f"  note  the AL-SVGD record rows are not loaded: {e}")
     analytic = load_analytic(args.cells)
     print(f"{len(analytic)} analytic runs, {len(record)} record runs (IPOPT / SNOPT at paper "
           f"conditions, NLopt at PROCS=8 MPS=1)")
