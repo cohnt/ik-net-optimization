@@ -1,13 +1,10 @@
-"""Paired-grid benchmark on the iiwa14, learned against joint space.
+"""Paired-grid benchmark on the iiwa14: learned, joint space, and the analytic arm.
 
 The same harness as `scripts/panda/panda_benchmark.py`; only the robot, the scene and the
-program classes differ. There is no analytic arm here: no `Iiwa14IKProgramAnalytic`
-exists, and writing one is future work or possibly not done at all (Thomas, 2026-09-19).
-It was never a small job -- the iiwa closed-form map took `IK(pose, GC, psi)` with the
-gripper offset baked in rather than passed as a `pose_offset`, so wiring it up is a
-frame-conventions job in its own right, and a mis-specified offset would silently
-measure the wrong frame, which is
-exactly the failure this overhaul just found in the Panda grasp scene.
+program classes differ. The analytic arm (`Iiwa14IKProgramAnalytic`, Faria et al.'s S-R-S
+closed form over all eight branches, ported from ../codebase on 2026-10-12) is an
+upper-bound reference column and is not in the default `--arms`; its frame offset is
+measured against the plant, never typed in (src/analytic_program.py).
 
 Usage:
     python iiwa_benchmark.py --task mug  --targets 15 --guesses 2 --wall-time 20
@@ -32,7 +29,9 @@ from src.target_screening import (MAX_CONSECUTIVE_REJECTIONS, SCENES,
                                   SampleShelfTargets, SceneFile)
 from src.generic_program import ProgramOptions, orientation_error_rpy
 from src.iiwa_program import (Iiwa14IKProgram, Iiwa14IKProgramNumerical,
-                              IiwaMugProgram, IiwaMugProgramNumerical)
+                              IiwaMugProgram, IiwaMugProgramNumerical,
+                              Iiwa14IKProgramAnalytic, IiwaMugProgramAnalytic)
+from src.analytic_program import CheckClipCannotEscapeGate
 from pydrake.all import Quaternion, RigidTransform, RollPitchYaw, RotationMatrix
 from pydrake.geometry import Meshcat
 from tqdm import tqdm
@@ -359,18 +358,23 @@ def main():
             return ok, dict(pos_error=axis_max, rpy_error=rpy_max)
 
     numerical_options = replace(base_options, joint_centering_cost=1e0)
+    ## The analytic arm: joint space's centering weight (Thomas, 2026-10-12, as on the
+    ## Panda) and the iiwa chart's eight branches.
+    analytic_options = replace(base_options, joint_centering_cost=1e0, analytic_branches=8)
+    if "analytic" in args.arms.split(","):
+        CheckClipCannotEscapeGate(analytic_options, slack)
     mug = args.task == "mug"
 
-    def build(cls, options, target, q_init, cell):
+    def build(cls, options, target, q_init, cell, **extra):
         if mug:
             diagram_with_mug, target_mug = target
             with HiddenPrints():
                 program = cls(diagram_with_mug, options=options, model=ik_solver)
-                program.create_prog(target_mug=target_mug)
+                program.create_prog(target_mug=target_mug, **extra)
         else:
             with HiddenPrints():
                 program = cls(diagram, options=options, model=ik_solver)
-                program.create_prog(target)
+                program.create_prog(target, **extra)
         with HiddenPrints():
             if args.start == "paired":
                 program.clip_distance = program.SetStartFromQ(q_init)
@@ -393,6 +397,11 @@ def main():
                                 IiwaMugProgramNumerical if mug else Iiwa14IKProgramNumerical,
                                 numerical_options, t, g, c),
                             numerical_options.joint_centering_cost),
+        "analytic": bm.Arm("analytic",
+                           lambda t, g, c: build(
+                               IiwaMugProgramAnalytic if mug else Iiwa14IKProgramAnalytic,
+                               analytic_options, t, g, c),
+                           analytic_options.joint_centering_cost),
     }
     arms = [all_arms[name] for name in args.arms.split(",")]
 

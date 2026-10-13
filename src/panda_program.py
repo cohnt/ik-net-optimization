@@ -17,6 +17,7 @@ from pydrake.all import (
     RigidTransform_,
 )
 from src.panda_analytic_ik import Analytic_IK_Panda
+from src.analytic_program import AnalyticProgramMixin
 from src.flow_loading import LoadFlowSolver
 
 
@@ -343,180 +344,44 @@ class PandaIKProgramNumerical(PandaIKProgram):
         self.QBoundingBoxConstraint(legacy_bounds=PANDA_LEGACY_Q_BOUNDS)
 
 def AnalyticBranchOptions(branches):
-    """The discrete branch set of the Panda analytic chart.
-
-    4 is the historical chart (B x C, elbow branch pinned); 8 adds the elbow branch
-    A in {+1, -1} as a third index (see Analytic_IK_Panda.IK). One helper rather than
-    three copies of the array, so the two sets cannot drift apart.
-    """
-    bc = [(1, 1), (1, 2), (2, 1), (2, 2)]
-    if branches == 4:
-        return np.array(bc)
-    if branches == 8:
-        return np.array([(b, c, a) for b, c in bc for a in (1, -1)])
-    raise ValueError(f"analytic_branches must be 4 or 8, got {branches}")
+    """The discrete branch set of the Panda analytic chart (see Analytic_IK_Panda.BranchSet)."""
+    return Analytic_IK_Panda().BranchSet(branches)
 
 
-class PandaIKProgramAnalytic(PandaIKProgram):
+class PandaIKProgramAnalytic(AnalyticProgramMixin, PandaIKProgram):
+    """The analytic + optimization formulation on the Panda (He & Liu's closed form,
+    psi = q7). `analytic_branches` picks the chart: 4 (B x C, the historical one) or 8
+    (adding the elbow branch A). Everything formulation-level is in
+    `src/analytic_program.py`; this class supplies the map."""
+
+    ANALYTIC_IK_CLASS = Analytic_IK_Panda
+    #: psi IS q7 here, so its bound must not equal q7's limits (+-2.8973): the joint-limit
+    #: row already holds them, and an identical bound would duplicate an active constraint.
+    PSI_BOUNDS = 5.0
+    LEGACY_GRASP_START_RPY = (1.0, 0.0, 0.0)
+
     def __init__(self, diagram, options = ProgramOptions(), model = None):
         super().__init__(diagram, options, model)
-        self.analytic_ik = Analytic_IK_Panda()
+        self._InitAnalytic()
 
-    def create_prog(self, target_pose = np.array([0., 0., 0., 1., 0., 0., 0.]), q_nominal = None, pose_offset = None, gc = None):
-        self.prog = MathematicalProgram()
-        self.xyz_rpy = self.prog.NewContinuousVariables(6) ## x y z roll pitch yaw
-        self.psi = self.prog.NewContinuousVariables(1) ## redundancy parameter
-        self.lumped_vars = np.hstack([self.xyz_rpy, self.psi])
+    def AnalyticFK(self, q_arm):
+        return self.analytic_ik.FK(np.asarray(q_arm, dtype=float))
 
-        self.target_pose = target_pose
-        self.q_nominal = self.ResolveQNominal(q_nominal)
-        if gc is None:
-            opts = AnalyticBranchOptions(self.options.analytic_branches)
-            self.gc = opts[np.random.randint(len(opts))]
-        else:
-            self.gc = gc
-        self.pose_offset = pose_offset
+    def _AnalyticSolve(self, R, p, psi, gc, clip_stepback):
+        return self.analytic_ik.Solve(R, p, psi, gc, clip_stepback=clip_stepback)
 
-        self.target_rpy = [*target_pose[:3], *RotationMatrix(Quaternion(target_pose[3:])).ToRollPitchYaw().vector()]
+    def BranchSet(self):
+        return self.analytic_ik.BranchSet(self.options.analytic_branches)
 
-        self.prog.SetInitialGuess(self.xyz_rpy, self.target_rpy)
-        self.prog.SetInitialGuess(self.psi, [.5])
+    def RecoverBranch(self, q_arm):
+        """`gc` of a configuration on this chart: (B, C) on 4 branches, (B, C, A) on 8. On
+        the 4-branch chart a configuration on the elbow branch A = -1 gets the (B, C) of its
+        mirror and is not reproduced -- the uncharted half, scored unrepresentable."""
+        return self.analytic_ik.gc(np.asarray(q_arm, dtype=float)[:7],
+                                   branches=3 if self.options.analytic_branches == 8 else 2)
 
-        self.add_constraints()
-        self.add_costs()
-
-    def SetStartFromQ(self, q_arm):
-        '''Recover the analytic parameterisation of `q_arm` by inversion.
-
-        `psi` and the branch `GC` are read straight back out of the configuration, the way
-        ../codebase seeds its new formulation with `analytic_ik.psi(q_initial)` and
-        `.GC(q_initial)`. Choosing the branch from the seed rather than at random is also
-        the honest baseline: a random branch is feasible only some of the time, and
-        charging the analytic arm for that is not a statement about the formulation.
-        '''
-        q_arm = np.asarray(q_arm, dtype=float)[:7]
-        self.gc = self.analytic_ik.gc(
-            q_arm, branches=3 if self.options.analytic_branches == 8 else 2)
-        self.plant.SetPositions(self.plant_context, self.PadQ(q_arm))
-        # self.frame, not FlowFrame(): there is no flow in this formulation, and the
-        # variables are the pose of the frame the closed-form map is written against --
-        # panda_hand here, between_fingers in the grasp scene.
-        pose = self.frame.CalcPoseInWorld(self.plant_context)
-        xyz_rpy = np.concatenate([pose.translation(),
-                                  pose.rotation().ToRollPitchYaw().vector()])
-        box = getattr(self, "xyz_rpy_box", None)  # pose task; the mug box stays a bound
-        dist = (float(np.linalg.norm(np.clip(xyz_rpy, *box) - xyz_rpy)) if box is not None
-                else self._BoxDistance(self.xyz_rpy, xyz_rpy))
-        if self.options.legacy_paired_start:
-            self.prog.SetInitialGuess(
-                self.xyz_rpy, np.clip(xyz_rpy, *box) if box is not None else xyz_rpy)
-            clipped = dist if box is not None else self._SetClipped(self.xyz_rpy, xyz_rpy)
-            clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])
-            return clipped
-        # Unclipped, like the learned arm's conditioning pose: the pose formulation pins
-        # xyz_rpy to the target exactly, so projecting the guess onto it replaced the
-        # paired start with (target pose, psi(q_init)) outright -- the
-        # archived pose tables show the analytic arm starting a median 2.7 rad from the
-        # shared q_init for exactly this reason, chart coverage notwithstanding.
-        #
-        # The returned distance is TWO quantities summed, and they are not the same kind.
-        # On the pose task `xyz_rpy_box` is an AddLinearEqualityConstraint, so `dist` is a
-        # pure diagnostic -- nothing projects it and iterate 0 is the guess as written. On
-        # the grasp task that region stays a genuine variable bound (hence `_BoxDistance`
-        # in the branch above), where the distance really is what IPOPT's `bound_push`
-        # will move at its first iterate. `psi` is bounded on both, so its term is always
-        # the projecting kind. Do not read the sum as either one alone.
-        self.prog.SetInitialGuess(self.xyz_rpy, xyz_rpy)
-        clipped = dist
-        clipped += self._SetClipped(self.psi, [self.analytic_ik.psi(q_arm)])
-        return clipped
-
-    def SetNativeStart(self, q_init, rng):
-        '''The analytic formulation's own initialisation.
-
-        Its pose variables are pinned near the target by the task itself, so what is
-        actually free at the start is the redundancy parameter and the branch, and both are
-        drawn rather than chosen: `psi` uniformly over the range joint 7 admits, `GC`
-        uniformly over the branches the configured chart covers (4 historically; 8 with
-        `analytic_branches=8`, which adds the elbow branch -- the half of the chart that
-        sits close to the joint limits). `create_prog` has already put the pose
-        variables at the target, which is the natural choice.'''
-        options = AnalyticBranchOptions(self.options.analytic_branches)
-        self.gc = options[rng.integers(len(options))]
-        self.prog.SetInitialGuess(self.psi, [rng.uniform(-np.pi, np.pi)])
-        return 0.0
-
-    def add_constraints(self):
-        if self.options.collision_avoidance:
-            self.CreateCollisionFreeConstraint()
-        if self.options.joint_limits:
-            self.CreateJointLimitsConstraint()
-        self.ApplyConstraints()
-        self.ReachabilityConstraint()
-        self.BoundingBoxConstraint()
-
-    def VarsToQ(self, rpy_vars, add_correction = False):
-        xyz_rpy = rpy_vars[:6]
-        psi = rpy_vars[6]
-        ad = isinstance(xyz_rpy[0], AutoDiffXd)
-        dtype = AutoDiffXd if ad else float
-        q = np.zeros(self.num_pos, dtype=dtype)
-        pose = RigidTransform_[dtype](RollPitchYaw_[dtype](xyz_rpy[3:]), xyz_rpy[:3])
-        q[:7] = self.analytic_ik.IK(pose, psi, GC=self.gc, pose_offset=self.pose_offset)
-        q[7:] = [0.04] * (self.num_pos - 7)  # fixed gripper joints
-        return q
-
-
-    def BoundingBoxConstraint(self):
-        # A linear EQUALITY pinning the pose variables to the target, exactly as
-        # ../codebase's new formulation does with `AddConstraint(eq(xyzrpy_ee, goal))`.
-        #
-        # These rows used to be a `+-ik_constraint_tol` box, and that was the worst
-        # instance of the boxed-equality defect in the repo, because the tolerance tuple
-        # is (1e-4, 0.01): the analytic arm was handed +-0.01 rad of orientation freedom
-        # on every axis while the learned and joint-space arms were pinned to zero, so it
-        # was solving a materially easier problem than the formulations it is a baseline
-        # for. It used the whole of it -- median rpy_error 8.5e-03 and p90 sitting exactly
-        # on the 1e-2 bound, 90% of its pose successes more than 1e-3 off target -- while
-        # max_violation reported 0.00, because a box is satisfied right up to its face.
-        # The same defect was repaired on this class's mug rows and missed here.
-        #
-        # It stays a general linear constraint and never becomes a bounding box: as a
-        # *variable bound* IPOPT's bound_push projected every initial guess into it before
-        # evaluating anything, so the paired start silently became (target pose,
-        # psi(q_init)), a median 2.7 rad from the shared q_init, and the arm was flattered
-        # by a head start it was never given on purpose. As a general constraint the guess
-        # may start outside (the violation lands in inf_pr) and the solver walks the pose
-        # to the target itself. Same reasoning as the learned arm's CBoxConstraint. The
-        # psi box below stays a bound: starts never violate it.
-        self.xyz_rpy_box = (self.target_rpy.copy(), self.target_rpy.copy())
-        self.xyz_rpy_box_constraint = self.prog.AddLinearEqualityConstraint(
-            np.eye(6), self.target_rpy, self.xyz_rpy)
-        self.xyz_rpy_box_constraint.evaluator().set_description("PoseTargetConstraint")
-        self.bounding_box_constraint_psi = self.prog.AddBoundingBoxConstraint(
-                    -5., 5., self.psi
-        )
-
-    def ReachabilityConstraint(self):
-
-        self.reachability_constraint = self.prog.AddConstraint(
-            func=lambda vars: self.EvalReachabilityConstraint(vars),
-            lb=np.array([-1., -1., -1., -1.]),
-            ub=np.array([1., 1., 1., 1.]),
-            vars=self.lumped_vars,
-            description="ReachabilityConstraint"
-        )
-        return self.reachability_constraint
-
-    def EvalReachabilityConstraint(self, vars):
-        xyz_rpy = vars[:6]
-        psi = vars[6]
-        ad = isinstance(xyz_rpy[0], AutoDiffXd)
-        dtype = AutoDiffXd if ad else float
-        pose = RigidTransform_[dtype](RollPitchYaw_[dtype](xyz_rpy[3:]), xyz_rpy[:3])
-        q = self.analytic_ik.IK(pose, psi, GC=self.gc, pose_offset=self.pose_offset, return_unclipped_vals=True)
-        return q
-
+    def RecoverPsi(self, q_arm):
+        return float(self.analytic_ik.psi(np.asarray(q_arm, dtype=float)))
 
 
 class PandaMugProgramNumerical(PandaMugProgram):
@@ -555,71 +420,14 @@ class PandaMugProgramNumerical(PandaMugProgram):
 
 
 class PandaMugProgramAnalytic(PandaIKProgramAnalytic):
+    """The grasp task: `xyz_rpy` is the pose of `between_fingers`, where the grasp acts.
+    (Leaving `self.frame` on `panda_hand` once made the paired start write a pose 0.1 m and
+    90 degrees from the one the variables mean.)"""
+
     def __init__(self, diagram, options = ProgramOptions(), model = None):
         super().__init__(diagram, options, model)
-        # `xyz_rpy` is the pose of the *grasp* frame: Analytic_IK_Panda.IK with
-        # MUG_ANALYTIC_OFFSET inverts the between_fingers pose back to q (to 5e-3 rad, the
-        # residual between the DH parameters and the finray URDF), while panda_hand's pose
-        # gives 4.5 rad. Leaving self.frame on panda_hand made the inherited SetStartFromQ
-        # write a pose 0.1 m and 90 degrees from the one the variables mean, so the analytic
-        # arm began 3-5.6 rad from the shared q_init -- i.e. it was not the paired start.
         self.frame = self.plant.GetFrameByName("between_fingers")
         self.autodiff_frame = self.autodiff_plant.GetFrameByName("between_fingers")
+
     def create_prog(self, target_mug = Mug(), q_nominal = None, pose_offset = None, gc = None):
-        self.prog = MathematicalProgram()
-        self.xyz_rpy = self.prog.NewContinuousVariables(6) ## x y z roll pitch yaw
-        self.psi = self.prog.NewContinuousVariables(1) ## redundancy parameter
-        self.lumped_vars = np.hstack([self.xyz_rpy, self.psi])
-
-        self.target_mug = target_mug
-        self.q_nominal = self.ResolveQNominal(q_nominal)
-        if gc is None:
-            opts = AnalyticBranchOptions(self.options.analytic_branches)
-            self.gc = opts[np.random.randint(len(opts))]
-        else:
-            self.gc = gc
-        self.pose_offset = pose_offset
-
-        self.prog.SetInitialGuess(self.xyz_rpy, [*target_mug.middle.translation(), 1, 0, 0])
-        # self.prog.SetInitialGuess(self.xyz_rpy, self.target_rpy)
-        self.prog.SetInitialGuess(self.psi, [.5])
-
-        self.add_constraints()
-        self.add_costs()
-
-
-    def IKConstraint(self):
-        # x = y = 0 exactly, the same equality the learned arm is held to. These rows used
-        # to be +-ik_constraint_tol[0], which held the analytic arm to a slightly easier
-        # problem than the formulation it is being compared against.
-        self.ik_constraint = self.prog.AddConstraint(
-            func = lambda vars: self.EvalIKMugConstraint(vars),
-            lb = np.array([0.0, 0.0, -self.options.mug_height]),
-            ub = np.array([0.0, 0.0, self.options.mug_height]),
-            vars = self.lumped_vars,
-            description = "IKMugConstraint"
-        )
-    def EvalIKMugConstraint(self, vars):
-        xyz_rpy = vars[:6]
-        psi = vars[6]
-        mug_transform = np.linalg.inv(self.target_mug.middle.GetAsMatrix4())
-        # Drop the homogeneous row: it is identically 1 with a zero gradient.
-        return (mug_transform @ np.array([[*(xyz_rpy[:3]), 1]]).T).squeeze()[:3]
-
-    def BoundingBoxConstraint(self):
-        self.bounding_box_constraint = self.prog.AddBoundingBoxConstraint(
-                    -5 * np.ones(6), 5 * np.ones(6), self.xyz_rpy
-        )
-        self.bounding_box_constraint_psi = self.prog.AddBoundingBoxConstraint(
-                    -5., 5., self.psi
-        )
-
-    def add_constraints(self):
-        if self.options.collision_avoidance:
-            self.CreateCollisionFreeConstraint()
-        if self.options.joint_limits:
-            self.CreateJointLimitsConstraint()
-        self.ApplyConstraints()
-        self.IKConstraint()
-        self.ReachabilityConstraint()
-        self.BoundingBoxConstraint()
+        self.create_grasp_prog(target_mug, q_nominal, pose_offset, gc)

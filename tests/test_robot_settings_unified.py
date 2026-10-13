@@ -105,7 +105,7 @@ class Robot:
 
     def __init__(self, name, scene, learned_pose, numerical_pose, learned_mug, numerical_mug,
                  kwargs, legacy_q_bounds, legacy_mug_centred_c, expect_rule_radius,
-                 nominal_sigma=True):
+                 nominal_sigma=True, analytic=None):
         self.name = name
         self.scene = os.path.join(REPO, scene)
         self.classes = dict(learned_pose=learned_pose, numerical_pose=numerical_pose,
@@ -115,6 +115,9 @@ class Robot:
         self.legacy_mug_centred_c = legacy_mug_centred_c
         self.expect_rule_radius = expect_rule_radius
         self.nominal_sigma = nominal_sigma
+        ## (pose class, grasp class, options overrides, legacy grasp start rpy or None):
+        ## the analytic arm, on the two robots that have a closed form.
+        self.analytic = analytic
 
     def build(self, opts):
         with HiddenPrints():
@@ -137,15 +140,27 @@ class Robot:
                 else:
                     p.create_prog(target)
                 out[key] = p
+            if self.analytic is not None:
+                from dataclasses import replace
+                pose_cls, mug_cls, overrides, _ = self.analytic
+                aopts = replace(opts, **overrides)
+                p = pose_cls(diagram, options=aopts, **self.kwargs)
+                p.create_prog(target)
+                out["analytic_pose"] = p
+                p = mug_cls(diagram_with_mug, options=aopts, **self.kwargs)
+                p.create_prog(target_mug=mug)
+                out["analytic_mug"] = p
         return out, mug
 
 
 def robots():
     from src.flow_loading import LEGACY_ARCH_BY_ROBOT, LoadFlowSolver
     from src.panda_program import (PandaIKProgram, PandaIKProgramNumerical, PandaMugProgram,
-                                   PandaMugProgramNumerical, PANDA_LEGACY_Q_BOUNDS)
+                                   PandaMugProgramNumerical, PANDA_LEGACY_Q_BOUNDS,
+                                   PandaIKProgramAnalytic, PandaMugProgramAnalytic)
     from src.iiwa_program import (Iiwa14IKProgram, Iiwa14IKProgramNumerical, IiwaMugProgram,
-                                  IiwaMugProgramNumerical)
+                                  IiwaMugProgramNumerical, Iiwa14IKProgramAnalytic,
+                                  IiwaMugProgramAnalytic)
     from src.iiwa_analytic_ik import iiwa_limits_lower, iiwa_limits_upper
     from src.screw_arm.params import PRIMARY as SCREW, GetSpec as ScrewSpec
     from src.screw_arm_program import (ScrewArmIKProgram, ScrewArmIKProgramNumerical,
@@ -169,10 +184,14 @@ def robots():
     return [
         Robot("panda", "models/panda/panda_finray_collision_hardened.yaml",
               PandaIKProgram, PandaIKProgramNumerical, PandaMugProgram, PandaMugProgramNumerical,
-              dict(model=panda_chart), PANDA_LEGACY_Q_BOUNDS, False, 4.15),
+              dict(model=panda_chart), PANDA_LEGACY_Q_BOUNDS, False, 4.15,
+              analytic=(PandaIKProgramAnalytic, PandaMugProgramAnalytic,
+                        dict(analytic_branches=8), (1.0, 0.0, 0.0))),
         Robot("iiwa14", "models/iiwa14/iiwa14_collision_hardened.yaml",
               Iiwa14IKProgram, Iiwa14IKProgramNumerical, IiwaMugProgram, IiwaMugProgramNumerical,
-              dict(model=iiwa_chart), (iiwa_limits_lower, iiwa_limits_upper), True, 4.33),
+              dict(model=iiwa_chart), (iiwa_limits_lower, iiwa_limits_upper), True, 4.33,
+              analytic=(Iiwa14IKProgramAnalytic, IiwaMugProgramAnalytic,
+                        dict(analytic_branches=8), None)),
         Robot(SCREW, f"models/{SCREW}/{SCREW}_collision_hardened.yaml",
               ScrewArmIKProgram, ScrewArmIKProgramNumerical, ScrewArmMugProgram,
               ScrewArmMugProgramNumerical, dict(robot=SCREW, model=screw_chart),
@@ -264,6 +283,44 @@ def check_unified(robot, programs, mug, opts):
           settings["legacy_robot_settings"] is False
           and settings["grasp_c_box_centre"] == "flow_pose"
           and np.allclose(settings["grasp_c_start"], want_c), json.dumps(settings)[:200])
+
+
+def check_analytic(robot, programs, mug, opts, legacy):
+    """The analytic arm on the same unified settings: the robot's home pose (checked with
+    the others), the grasp start at `between_fingers` of the generating configuration --
+    `mug.middle`, the analytic counterpart of item 1 -- and what RobotSettings records."""
+    if robot.analytic is None:
+        return
+    name, legacy_rpy = robot.name, robot.analytic[3]
+    pm, pp = programs["analytic_mug"], programs["analytic_pose"]
+    X = mug.middle
+    want = np.concatenate([X.translation(), X.rotation().ToRollPitchYaw().vector()])
+    if legacy and legacy_rpy is not None:
+        want = np.array([*X.translation(), *legacy_rpy])
+    tag = " LEGACY" if legacy else ""
+    x0 = pm.prog.GetInitialGuess(pm.xyz_rpy)
+    check(f"{name} analytic_mug{tag}: grasp start == {'[mug xyz, legacy rpy]' if legacy and legacy_rpy else 'the pose of mug.middle'}",
+          np.allclose(x0, want, atol=1e-12), f"start {x0}\n          want  {want}")
+    pm.SetNativeStart(None, np.random.default_rng(0))
+    check(f"{name} analytic_mug{tag}: the native start keeps that pose",
+          np.allclose(pm.prog.GetInitialGuess(pm.xyz_rpy), want, atol=1e-12))
+    psi0 = float(pm.prog.GetInitialGuess(pm.psi)[0])
+    check(f"{name} analytic_mug{tag}: native psi drawn inside +-pi", -np.pi <= psi0 <= np.pi, psi0)
+    for key, p in (("analytic_pose", pp), ("analytic_mug", pm)):
+        rs = p.RobotSettings()
+        check(f"{name} {key}{tag}: RobotSettings records the analytic state",
+              rs["formulation"] == "analytic" and rs["pose_offset_source"] == "measured"
+              and rs["branch_set_size"] == len(p.BranchSet())
+              and rs["legacy_robot_settings"] is bool(legacy)
+              and np.isclose(rs["analytic_clip_stepback"], opts.analytic_clip_stepback),
+              json.dumps(rs)[:300])
+        b = [bb for bb in p.prog.bounding_box_constraints()
+             if bb.evaluator().get_description() == "PsiBoundingBox"]
+        lo, hi = bounds_of(b[0]) if b else (None, None)
+        check(f"{name} {key}{tag}: psi bound +-{p.PSI_BOUNDS}, wider than any joint limit "
+              f"(never a duplicate of q7's row)",
+              b and np.isclose(hi[0], p.PSI_BOUNDS) and np.isclose(lo[0], -p.PSI_BOUNDS)
+              and p.PSI_BOUNDS > np.max(np.abs(np.asarray(p.ConfigLimits()[1])[:7])), f"{lo} {hi}")
 
 
 def check_legacy(robot, programs, mug, opts):
@@ -407,9 +464,11 @@ def main():
         print(f"\n--- {robot.name}: unified defaults ---")
         programs, mug = robot.build(unified)
         check_unified(robot, programs, mug, unified)
+        check_analytic(robot, programs, mug, unified, legacy=False)
         print(f"\n--- {robot.name}: legacy_robot_settings=True (the control) ---")
         programs_legacy, mug_legacy = robot.build(legacy)
         check_legacy(robot, programs_legacy, mug_legacy, legacy)
+        check_analytic(robot, programs_legacy, mug_legacy, legacy, legacy=True)
         print(f"\n--- {robot.name}: latent_trust_region_rule ---")
         programs_rule, _ = robot.build(rule)
         check_latent_rule(robot, programs_rule, programs)
