@@ -200,17 +200,16 @@ def region_scale(bp):
     joint limits). Read from the program's own options and bounds, never assumed."""
     p, opts = bp.program, bp.options
     if bp.is_analytic:
-        ## FLAGGED CHOICE (2026-10-12, for Thomas): the analytic arm's `[xyz | rpy | psi]`.
+        ## The analytic arm's `[xyz | rpy | psi]` (chosen 2026-10-13; A/B smoke in the commit).
         ## Position: `c_position_slack`, the half-width the learned arm's conditioning
         ## POSITION is normalised by -- the formulation-agnostic analogue (a task-frame
         ## position either way); the grasp task's +-5 m variable bound is a safeguard far too
         ## loose to be a scale, and the pose task has no position region at all (an equality).
-        ## Orientation: pi, as the learned arm's rpy. psi: the half-width of its own TRUE
-        ## variable bound (`PsiBoundingBox`, +-PSI_BOUNDS: 5 on the Panda, 10 on the iiwa),
-        ## read off the program like the joint-space arm's joint limits.
-        lo, hi = (b.detach().cpu().double().numpy() for b in bp.bounds)
-        s = np.asarray([float(opts.c_position_slack)] * 3 + [math.pi] * 3
-                       + [0.5 * (hi[6] - lo[6])], dtype=float)
+        ## Orientation: pi, as the learned arm's rpy. psi: pi too -- it is an angle on both
+        ## robots (q7 on the Panda, the periodic arm angle on the iiwa), and its variable bound
+        ## (+-5 / +-10) is a safeguard against IPOPT's unbounded variables, not a scale (on
+        ## the iiwa it spans ~3 periods). Thomas, 2026-10-13: no preference, my call.
+        s = np.asarray([float(opts.c_position_slack)] * 3 + [math.pi] * 4, dtype=float)
     elif bp.is_learned:
         radius = p.LatentTrustRadius() if hasattr(p, "LatentTrustRadius") else None
         radius = LATENT_BOX if radius is None else float(radius)
