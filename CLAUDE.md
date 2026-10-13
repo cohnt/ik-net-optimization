@@ -1331,7 +1331,13 @@ grid). Those rows exclude a band ~sqrt(2 * reach) rad wide around every seam: at
 **1e-4 / 1e-3** (default; tag `ANALYTIC`) that is 15.8% (Panda 8), 11.8% (Panda 4) and 8.6% (iiwa)
 of uniform configurations; at the tight **1e-8 / 1.1e-4** (tag `ANALYTICT`) 5.6 / 4.3 / 3.0%. Both
 are fielded. The arguments come from the SAME pass as `q` and are read through the `QAndPose` memo,
-and the pose-target and mug rows are linear constraints on the pose variables.
+and the pose-target and mug rows are linear constraints on the pose variables (../codebase's `PinVars`
+default encoding). **Under SNOPT that makes the paired start a fixed-pose psi search**: SNOPT satisfies
+linear constraints in its first minors, so iterate 0 already sits at the target pose (or on the mug
+axis) and only psi (and orientation, on the grasp task) moves, where IPOPT moves pose and psi together.
+Diagnosed 2026-10-13 on the smoke's Panda pose paired cells (SNOPT INFO 13/41 in 1-9 majors on cells
+IPOPT solves; one stuck on the clip kink, u = 1 - clip); hiding the pin behind a generic constraint
+rescued 1 of 2. A solver property, as ../codebase's own `PIN_AS_NONLINEAR` note records, not a defect.
 
 **`analytic8` against `analytic4` is the unbalanced-bundle pathology, both signs intact.** Under
 `paired` the 8-branch chart wins the grasp task (418 against 376) because it can represent starts the
@@ -1844,7 +1850,11 @@ minutes — **run it after any change to sharding, the merger, or grid construct
 have to use GPU. We've tried this before."*). So benchmark jobs and chart training compete for the
 same 4-node cap, and the lever when the cluster is saturated is **ordering the queued work**, never
 relocating benchmarks to `xeon-p8`. Datagen is the exception and does not generalise: it is pure
-CPU and `build_dataset_job.sh` runs on `xeon-p8`.
+CPU and `build_dataset_job.sh` runs on `xeon-p8`. **So are arms that never touch the GPU**
+(Thomas, 2026-10-13): the analytic arm's IPOPT / SNOPT / NLopt stages run on `xeon-p8`
+(`PARTITION=xeon-p8`; `submit_bench.sh` refuses `--compile`, CUDA graphs, svgd and learned arms
+there), so their seconds come from another machine than the record's; only its AL-SVGD stage uses
+the GPUs.
 
 **Two cluster facts that shaped the design.** The account's `xeon-g6-volta` limit is a Slurm
 **`GrpTRES` group** cap (`node=4`, `MaxSubmit=240`), not a per-job `MaxNodes`: work beyond it is

@@ -33,7 +33,8 @@ def recs(feasible, **extra):
 def write(root, tag, records, grid="g0-pose", fp="f" * 40):
     d = os.path.join(root, "results/panda/benchmark", tag)
     os.makedirs(d, exist_ok=True)
-    meta = dict(grid_hash=grid, scene_fingerprint=fp, wall_time=180.0, seed=1, solver="ipopt")
+    meta = dict(grid_hash=grid, scene_fingerprint=fp, wall_time=180.0, seed=1, solver="ipopt",
+                hosts=["c-1-2-3"] if "ANALYTIC" in tag else ["d-7-8-2", "d-9-4-1"])
     with open(os.path.join(d, "summary.json"), "w") as f:
         json.dump(dict(metadata=meta, records=records, summary={}), f)
 
@@ -63,6 +64,10 @@ def main():
             check("A v JS: 3 analytic-only cells", r["AvJ"][:2] == (3, 0), r["AvJ"])
             check("cost needs >= 10 shared cells (A v L shares 6: N/A)", r["AvL"][4] is None)
             check("the smoke run is not read", all("SMOKE" not in x["tag"] for x in rows))
+            check("node classes recorded (analytic on c, record on d)", r["nodes"] == ("c", "d"),
+                  r["nodes"])
+            check("the cross-machine note is printed",
+                  "node class c, the record on d" in out.getvalue(), out.getvalue()[-400:])
 
             write(tmp, f"sc_ANALYTIC_{tail}", dict(analytic=recs(A)), grid="other-pose")
             try:
