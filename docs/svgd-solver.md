@@ -1637,6 +1637,28 @@ steps = median svgd outer steps; max = the slowest svgd cell):
 - **`n_recheck_failures` is 0 on every cell of every row**: the gate-edge rule never fired at 480
   x 20 = 9600 cells.
 
+**Learned under svgd against JOINT SPACE under IPOPT, same cells** (the paper's comparison target;
+`scripts/svgd/cross/learned_svgd_vs_js_ipopt.py`). Time-matched = joint-space IPOPT allowed restarts
+from the target's other recorded starts, random order, inside svgd's wall on that cell (200
+permutations per target); starved = the budget outlasted all eight starts (0.0-0.4% everywhere):
+
+| row | learned svgd | JS IPOPT | L+ / JS+ | p | JS time-matched | cost L / JS (shared) | wall s L / JS |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Panda grasp native / paired | 480 | 448 / 449 | 32 / 0, 31 / 0 | 5e-10, 9e-10 | 64.8% / 64.2% | 3.37 / 2.25 | 2.47 / 6.07 |
+| Panda pose native / paired | 480 | 200 | 280 / 0 | 1e-84 | 84.4% / 84.6% | 4.51 / 7.71 | 1.01 / 0.53 |
+| iiwa grasp native / paired | 480 | 453 | 27 / 0 | 1.5e-8 | 74.4% / 74.3% | 3.44 / 2.91 | 1.44 / 1.02 |
+| iiwa pose native / paired | 480 | 312 | 168 / 0 | 5e-51 | 99.2% / 99.3% | 3.87 / 9.20 | 0.89 / 0.09 |
+| screw grasp native / paired | 480 | 442 | 38 / 0 | 7e-12 | 83.7% / 84.1% | 3.25 / 1.90 | 1.76 / 1.08 |
+| screw pose native / paired | 480 | 320 | 160 / 0 | 1e-48 | 97.9% / 98.2% | 3.58 / 12.38 | 1.28 / 0.12 |
+| soft PCS grasp native / paired | 480 | 472 | 8 / 0 | 0.008 | 82.2% / 81.3% | 0.90 / 0.24 | 2.58 / 3.19 |
+| soft PCS pose native / paired | 480 | 334 | 146 / 0 | 2e-44 | 92.4% / 92.3% | 1.37 / 0.55 | 1.51 / 0.34 |
+
+Every discordant cell on every row goes to svgd; time-matched joint-space IPOPT reaches 64-99% and
+100% nowhere, closest on iiwa and screw pose, where one joint-space solve is 0.1 s. Joint-space IPOPT
+solutions are cheaper on every grasp row (1.2x iiwa, 1.5x Panda, 1.7x screw, 3.7x soft PCS) and on
+soft PCS pose (2.5x); the learned svgd solutions are cheaper on rigid-arm pose (1.7-3.5x). Joint-space
+IPOPT is faster on every pose row (0.09-0.5 s a cell), svgd on three of four grasp rows.
+
 **The soft PCS split step on the cluster** (`pin2` R20 against `kczrho1e5` R17P, the same pin's two
 method factors on the autograd / eager step, same grid):
 
