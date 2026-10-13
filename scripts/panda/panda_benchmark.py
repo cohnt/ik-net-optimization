@@ -33,6 +33,7 @@ from src.target_screening import (MAX_CONSECUTIVE_REJECTIONS, SCENES,
                                   FormatTargetStats,
                                   SampleShelfTargets, SceneFile)
 from src.generic_program import ProgramOptions, orientation_error_rpy
+from src.analytic_program import CheckClipCannotEscapeGate
 from src.panda_program import (PandaIKProgram, PandaIKProgramNumerical,
                                PandaIKProgramAnalytic, PandaMugProgram,
                                PandaMugProgramNumerical, PandaMugProgramAnalytic)
@@ -40,26 +41,6 @@ from pydrake.all import Quaternion, RigidTransform, RollPitchYaw, RotationMatrix
 from pydrake.geometry import Meshcat
 from tqdm import tqdm
 
-
-# The analytic map is written against its own end-effector convention: link 7, rotated
-# -pi/4 about z and translated by d7 + d8 = 0.2104 m. Reconciling it with a scene frame is
-# therefore a measurement, not a constant -- the fitted MUG_ANALYTIC_OFFSET this replaces
-# was 0.046 degrees off, because the finray SDF writes 1.57 where the constant assumed
-# pi/2, which cost 1.5e-3 to 4.9e-3 rad of round-trip error in the paired start (0.019 mm
-# at the gripper, so it never showed up in the task gate).
-X_L7_ANALYTIC = RigidTransform(RotationMatrix.MakeZRotation(-np.pi / 4),
-                               np.array([0.0, 0.0, 0.2104]))
-
-
-def AnalyticPoseOffset(plant, context, frame_name):
-    """`X_FA`: the analytic map's frame, expressed in the frame its variables denote.
-
-    Both are welded to link 7, so this is constant and one configuration suffices.
-    """
-    plant.SetPositions(context, np.zeros(plant.num_positions()))
-    X_WF = plant.GetFrameByName(frame_name).CalcPoseInWorld(context)
-    X_WL7 = plant.GetFrameByName("panda_link7").CalcPoseInWorld(context)
-    return X_WF.inverse() @ X_WL7 @ X_L7_ANALYTIC
 
 # Ladder configurations. Each is an override of the base options; "baseline" is the
 # code exactly as it stood before this overhaul, so every later row is a delta from a
@@ -445,6 +426,12 @@ def main():
 
     ## -------------------------------- the arms ----------------------------- ##
     numerical_options = replace(base_options, joint_centering_cost=1e0)
+    ## The analytic arm centres at joint space's weight, not the learned arm's 1e-4 (Thomas,
+    ## 2026-10-12; ../codebase weights both of its formulations 1e0). `reported_cost`
+    ## divides by each arm's weight, so the cost columns compare either way.
+    analytic_options = replace(base_options, joint_centering_cost=1e0)
+    if any(a.startswith("analytic") for a in args.arms.split(",")):
+        CheckClipCannotEscapeGate(analytic_options, slack)
 
     def build(cls, options, target, q_init, cell, **extra):
         if args.task == "mug":
@@ -467,9 +454,6 @@ def main():
         return program
 
     mug = args.task == "mug"
-    analytic_offset = AnalyticPoseOffset(
-        sampler.plant, sampler.plant_context,
-        "between_fingers" if mug else "panda_hand")
     learned_cls = PandaIKProgram
     if mug:
         learned_cls = PandaMugProgram
@@ -483,11 +467,13 @@ def main():
             lambda t, g, c: build(PandaMugProgramNumerical if mug else PandaIKProgramNumerical,
                                numerical_options, t, g, c),
             numerical_options.joint_centering_cost),
+        ## The map's frame offset is MEASURED by the program against the plant
+        ## (src/analytic_program.py:MeasureAnalyticFrame), not passed in.
         "analytic": bm.Arm(
             "analytic",
             lambda t, g, c: build(PandaMugProgramAnalytic if mug else PandaIKProgramAnalytic,
-                               base_options, t, g, c, pose_offset=analytic_offset),
-            base_options.joint_centering_cost),
+                               analytic_options, t, g, c),
+            analytic_options.joint_centering_cost),
         # The same formulation on the full 8-branch chart. A separate arm rather than a
         # config so the 4- and 8-branch columns land in one run on identical cells; the
         # only difference is the discrete branch set (and so which q_init the paired start
@@ -495,9 +481,8 @@ def main():
         "analytic8": bm.Arm(
             "analytic8",
             lambda t, g, c: build(PandaMugProgramAnalytic if mug else PandaIKProgramAnalytic,
-                               replace(base_options, analytic_branches=8),
-                               t, g, c, pose_offset=analytic_offset),
-            base_options.joint_centering_cost),
+                               replace(analytic_options, analytic_branches=8), t, g, c),
+            analytic_options.joint_centering_cost),
     }
     arms = [all_arms[name] for name in args.arms.split(",")]
 

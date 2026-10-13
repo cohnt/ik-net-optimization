@@ -874,9 +874,25 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     # arm's own variables; representable arms sit at <=1e-6, the analytic
                     # chart's uncharted region at >=0.4 rad, so the threshold is not
                     # delicate.
-                    if (unrepresentable_tol is not None
+                    ##
+                    ## One exception, the analytic arm's CLIP BAND: there the variables ARE
+                    ## q_init's pose, psi and branch exactly, and only the clipped map returns
+                    ## a configuration ~sqrt(2 * clip) rad away. That is a matched start that
+                    ## violates the reachability rows -- a general constraint the solver walks
+                    ## off -- and ../codebase solves it as one. `UnclippedStartError` re-runs
+                    ## the closed form with the clip relaxed to the arccos domain: ~1e-12 in
+                    ## the band, radians where the branch genuinely cannot reproduce q_init.
+                    unclipped = getattr(program, "UnclippedStartError", None)
+                    if (unrepresentable_tol is not None and unclipped is not None
                             and record.get("start_q_error") is not None
                             and record["start_q_error"] > unrepresentable_tol):
+                        record["unclipped_start_error"] = unclipped(guesses[ti][gi])
+                        record["start_in_clip_band"] = (
+                            record["unclipped_start_error"] <= unrepresentable_tol)
+                    if (unrepresentable_tol is not None
+                            and record.get("start_q_error") is not None
+                            and record["start_q_error"] > unrepresentable_tol
+                            and not record.get("start_in_clip_band", False)):
                         record["feasible"] = False
                         record["fail_reason"] = "unrepresentable_start"
                         record["solver_success"] = False

@@ -640,6 +640,17 @@ class ProgramOptions:
     # default stays 4 so archived runs remain reproducible; the residual ~0.6% at 8 is a
     # measured property of this chart, left as future work (arXiv:2503.03992 may help).
     analytic_branches: int = 4
+    # The analytic map clips every arccos/arcsin argument into +-(1 - clip) (zero derivative
+    # where active); its reachability rows hold the unclipped arguments inside
+    # +-(1 - reach), a strictly tighter band, so the clip is inactive wherever the verifier
+    # passes (CheckClipCannotEscapeGate: reach - clip >= its slack). The rows exclude a band
+    # ~sqrt(2 * reach) rad wide around every chart seam. Two ladders are fielded (Thomas,
+    # 2026-10-12, "measure both"): 1e-4 / 1e-3, ../codebase's settled values (the default),
+    # and 1e-8 / 1.1e-4, the tightest that keeps the clip inactive at the 1e-4 slack.
+    # Measured on uniform configurations, 1e-4 / 1e-3 leaves 15.8% (Panda 8-branch) and
+    # 8.6% (iiwa) of configuration space outside the rows, 1.1e-4 5.6% and 3.0%.
+    analytic_clip_stepback: float = 1e-4
+    analytic_reach_stepback: float = 1e-3
     # Restores the pre-2026-08-31 paired start, in which the conditioning pose was clipped
     # into its box before the solve and the correction started at zero -- leaving the
     # learned arm 1.2-3.3 rad from the shared q_init. The repaired default sets the guess
@@ -739,6 +750,12 @@ class ProgramOptions:
         ## else would be a third configuration nobody measured.
         if self.flow_cuda_graph and not self.compile_flow_jacobian:
             raise ValueError("flow_cuda_graph requires compile_flow_jacobian (--compile)")
+        if self.analytic_branches not in (4, 8):
+            raise ValueError(f"analytic_branches must be 4 or 8, got {self.analytic_branches}")
+        if not 0.0 <= self.analytic_clip_stepback < self.analytic_reach_stepback < 1.0:
+            raise ValueError(
+                f"need 0 <= analytic_clip_stepback < analytic_reach_stepback < 1, got "
+                f"{self.analytic_clip_stepback} and {self.analytic_reach_stepback}")
 
 
 
