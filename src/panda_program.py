@@ -355,6 +355,7 @@ class PandaIKProgramAnalytic(AnalyticProgramMixin, PandaIKProgram):
     `src/analytic_program.py`; this class supplies the map."""
 
     ANALYTIC_IK_CLASS = Analytic_IK_Panda
+    ANALYTIC_CPP_ROBOT = "panda"
     #: psi IS q7 here, so its bound must not equal q7's limits (+-2.8973): the joint-limit
     #: row already holds them, and an identical bound would duplicate an active constraint.
     PSI_BOUNDS = 5.0
