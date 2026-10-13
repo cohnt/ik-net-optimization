@@ -976,10 +976,12 @@ median is 1.15x and 1.09x. `scripts/report_statusquo.py --paper` prints the reco
 conditions, and `scripts/report_paper.py` pairs every run. NLopt was not re-run, so its seconds stay
 at PROCS=8 under `MPS=1`.
 
-**THE RECORD IS 48 LOGICAL RUNS: four robots x TWO experiments (grasp, pose) x two protocols x three
+**THE RECORD IS 64 LOGICAL RUNS: four robots x TWO experiments (grasp, pose) x two protocols x four
 solvers**: the 32 IPOPT and SNOPT runs from stage REMEASURE, the 16 NLopt runs from stage
 **REMEASURE_NLOPT** (same conditions and tag family, queued last; jobs 5868202/03/04/07, collected
-2026-10-10). **The GVS arm is OUTSIDE the record**:
+2026-10-10), and the 16 AL-SVGD rows (column `PS`), each arm its own run: learned from stage
+SVGD_R20, joint space from SVGD_R20 (Panda) and SVGD_R21 (the rest). **The GVS arm is OUTSIDE the
+record**:
 stage REMEASURE measured it under identical conditions and the reporter prints its eight rows as a
 separate block with their own tally (IPOPT 3 learned / 1 tie, SNOPT 2 / 2), but it is merged as a
 measured robot outside the record and does not replace the soft PCS arm (its section). The old
@@ -999,9 +1001,9 @@ included**.
 ### What the tables say
 
 **Success: interior point 15 learned / 1 tie / 0 joint space, SQP 10 / 1 / 5, augmented Lagrangian
-11 / 3 / 2**, against 12/4/0, 7/4/5 and 9/7/0 on the old record over the same sixteen rows; five
-verdicts flipped under IPOPT and SNOPT each, eight under NLopt. Verdicts
-are exact McNemar within each run; the reporter prints the tally beside the table so text and table
+11 / 3 / 2, AL-SVGD 2 / 14 / 0**; the three Drake classes against 12/4/0, 7/4/5 and 9/7/0 on the
+old record over the same sixteen rows; five verdicts flipped under IPOPT and SNOPT each, eight under
+NLopt. Verdicts are exact McNemar within each run; the reporter prints the tally beside the table so text and table
 cannot drift.
 
 - **Interior point loses nothing anywhere.** Its one tie is soft PCS grasp paired (477 v 472, a
@@ -1032,12 +1034,14 @@ native rows (all but screw), on iiwa pose native, and on Panda grasp paired. Tha
 12.92 s, a row the development run had the other way round. The ratio is largest on the pose paired
 rows, where a joint-space solve takes a fraction of a second: soft PCS 8.70 s against 0.35 s, iiwa
 1.61 against 0.09. The iiwa grasp wins cost 2.68 / 6.27 s against 1.02 / 1.01 s, where the old
-record's tie cost 13x.
+record's tie cost 13x. AL-SVGD (PROCS=2): learned 0.9-2.6 s on every row; joint space 0.8-4.0 s but
+the screw arm's grasp rows, 7.5-8.5 s from its clock-bound cells.
 
 **Iterations**: on Panda grasp the joint-space median fell 908 -> 206 with its bound fixed, so the
 old "containment costs joint space its cheapness" was largely the +-10 rad box; the learned arm still
 uses fewer there under IPOPT (134 / 199) and on soft PCS grasp native. **The augmented
-Lagrangian column is `N/A` BY CONSTRUCTION** -- NLopt has no major iteration to count.
+Lagrangian and AL-SVGD columns are `N/A` BY CONSTRUCTION** -- NLopt has no major iteration to count,
+and svgd counts outer steps (K = 10 inner steps each), not majors.
 
 **The rescue rate** (cells only the learned arm solved, against joint space's failures) is printed
 per row as `L+` beside `JS` in the per-solver detail; the old record's 83-100% is not re-quoted.
@@ -1096,10 +1100,12 @@ every row; SNOPT at most 10; NLopt 0 at `hit_eval_cap` and `hit_iteration_cap` o
 arms. Learned timeouts are at most 18 under IPOPT and 17 under SNOPT (both soft PCS), joint space's at
 most 8 and 34. **NLopt is clock-bound everywhere** -- learned 123-194 timeouts native and 161-477
 paired, joint space 356-480 -- which is the fielded clock, never lifted, so these are results at it.
+AL-SVGD: 0 cells at a budget on both arms, 0 clock stops but the screw arm's joint space (17 / 20
+grasp, 3 / 3 pose, native / paired).
 SOFTCAP's "quadrupling the clock moves nothing" was measured on the defective scene and is void.
 
 **Acceptance checks all pass.** Every run on one robot x task scene carries the same
-`scene_fingerprint`, NLopt's included; joint space is bit-identical between protocols on 42 of 42
+`scene_fingerprint`, NLopt's and AL-SVGD's included; joint space is bit-identical between protocols on 42 of 42
 protocol pairs across every sub-stage and the GVS arm (cap-bound cells excluded, which leaves the
 eight NLopt pairs only 0-124 cells each); and the Panda, whose scene did not change, **reproduces the old record
 under the legacy settings** with every discordant cell cap-bound.

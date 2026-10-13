@@ -22,17 +22,22 @@ Conditions: 480 cells = 60 targets x 8 guesses, seed 1 (out of sample), **180 s*
 flow_cuda_graph=True`, IPOPT `max_iter` 1e6, SNOPT 1e5 majors / 1e8 minors, adopted rungs (Panda `n6`,
 iiwa `n4`, soft PCS `soft12` `n6`, screw `screw7_p050` `n6`), hardened
 scene, shelf-contained targets at the fingertips, arms `learned,numerical`, both start protocols, each
-solver at its adopted configuration, Drake nightly `0.0.20260918`. **48 logical runs: four robots x two experiments x two protocols x three
-solvers**, the IPOPT and SNOPT 32 from stage REMEASURE and the NLopt 16 from stage REMEASURE_NLOPT
-(same conditions and tag family, queued last; jobs 5868202/03/04/07, collected 2026-10-10). The old
-record's NLopt runs stay on disk and are read only by `--legacy`.
+solver at its adopted configuration, Drake nightly `0.0.20260918`. **64 logical runs: four robots x two experiments x two protocols x four
+solvers**, the IPOPT and SNOPT 32 from stage REMEASURE, the NLopt 16 from stage REMEASURE_NLOPT
+(same conditions and tag family, queued last; jobs 5868202/03/04/07, collected 2026-10-10), and the
+AL-SVGD 16 (column `PS`), each of those TWO runs, one per arm: learned from stage SVGD_R20 (`_pin2`),
+joint space from SVGD_R20 (Panda) and SVGD_R21 (the rest; `_pin2kq`, kernel q), at the fielded pin
+`SVGD_PINNED_V2`, at paper conditions (PROCS=2, no MPS), on the clearance collision row under the
+clearances venv; the reporter refuses to pair them unless both carry the row's IPOPT run's
+`grid_hash` and `scene_fingerprint`. The old record's NLopt runs stay on disk and are read only by
+`--legacy`, which has no AL-SVGD runs.
 
 **Two runtime tables; the second is the one of record.** The main block below is stage REMEASURE at
 PROCS=8 under `MPS=1`, a development-throughput condition, so its Table 3 and the per-solver `L s` /
 `JS s` columns are development-grade. **Stage PAPER + SVGD_R2 (2026-10-10) re-ran all 32 IPOPT and
 SNOPT runs at the paper's condition, one solve per V100 (PROCS=2, no MPS)**, same args, grids and
 scenes, and its Table 3 is the LAST table in this file: **IP and SQP seconds at paper conditions, AL
-still at PROCS=8 under `MPS=1`** (REMEASURE_NLOPT was not re-run). Tables 1, 2 and 4 are not repeated
+still at PROCS=8 under `MPS=1`** (REMEASURE_NLOPT was not re-run), PS at paper conditions in both. Tables 1, 2 and 4 are not repeated
 because they are identical to the cell but for two one-cell differences, both cap-bound: screw IPOPT
 grasp paired learned 472 -> 473 (its cost on shared cells 9.363 -> 9.453), and Panda IPOPT grasp
 native joint space 449 -> 448 (its cost 2.231 -> 2.248, median iterations 206 -> 205); no verdict,
@@ -63,6 +68,10 @@ IPOPT + SNOPT: 32 of 32 runs from stage REMEASURE (four robots x two experiments
   x two protocols x two solvers).
 NLopt: 16 of 16 runs from stage REMEASURE_NLOPT (2026-10-10; same conditions, same
   tag family). 48 logical runs in all.
+AL-SVGD (PS): 16 of 16 rows, each TWO runs, one per arm -- learned from stage
+  SVGD_R20 (_pin2), joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest) (_pin2kq, kernel
+  q) -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the
+  clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.
 The GVS arm (gvs_pushrod9_o1) was measured in the same stage under identical
   conditions and is OUTSIDE the record: its rows print as a separate block at the end,
   with their own tally, and enter none of the record's tables, tally or flags.
@@ -74,91 +83,96 @@ NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates th
   IP = interior point (IPOPT), AL = augmented Lagrangian (NLOPT),
   SQP = sequential quadratic programming (SNOPT). *better* of each pair is starred;
   a trailing * marks the best in the row. Every row prints, zeros included.
+  PS = AL-SVGD (particle, the svgd branch's fielded pin): each arm its own run, learned
+  from stage SVGD_R20, joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest).
 
   Table 1 -- success rate of 480 cells
   higher is better; ties are by exact McNemar (p >= 0.05), not numeric equality
-  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS
-  iiwa grasp contained native              *1.000**        0.944      *0.652*        0.000      *0.908*        0.725
-  iiwa grasp contained paired              *0.998**        0.944      *0.023*        0.000        0.575      *0.725*
-  iiwa pose contained native               *0.963**        0.650      *0.623*        0.085      *0.921*        0.567
-  iiwa pose contained paired               *0.846**        0.650      *0.233*        0.085        0.485      *0.567*
-  panda grasp contained native             *1.000**        0.935      *0.671*        0.000      *0.960*        0.752
-  panda grasp contained paired             *0.998**        0.935      *0.006*      *0.000*        0.625      *0.752*
-  panda pose contained native              *0.954**        0.417      *0.633*        0.294      *0.915*        0.402
-  panda pose contained paired              *0.823**        0.417      *0.271*      *0.294*      *0.588*        0.402
-  screw7_p050 grasp contained native       *0.990**        0.921      *0.673*        0.100      *0.833*        0.721
-  screw7_p050 grasp contained paired       *0.983**        0.921        0.008      *0.100*        0.540      *0.721*
-  screw7_p050 pose contained native        *0.956**        0.667      *0.629*        0.175      *0.873*        0.554
-  screw7_p050 pose contained paired        *0.894**        0.667      *0.194*      *0.175*      *0.560*      *0.554*
-  soft12 grasp contained native            *1.000**        0.983      *0.750*        0.077      *0.996*        0.785
-  soft12 grasp contained paired            *0.994**      *0.983*        0.008      *0.077*        0.729      *0.785*
-  soft12 pose contained native              *0.994*        0.696      *0.746*        0.106     *0.998**        0.631
-  soft12 pose contained paired             *0.910**        0.696      *0.677*        0.106      *0.819*        0.631
+  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS         PS L        PS JS
+  iiwa grasp contained native              *1.000**        0.944      *0.652*        0.000      *0.908*        0.725      *1.000*      *1.000*
+  iiwa grasp contained paired               *0.998*        0.944      *0.023*        0.000        0.575      *0.725*     *1.000**      *1.000*
+  iiwa pose contained native                *0.963*        0.650      *0.623*        0.085      *0.921*        0.567     *1.000**      *1.000*
+  iiwa pose contained paired                *0.846*        0.650      *0.233*        0.085        0.485      *0.567*     *1.000**      *1.000*
+  panda grasp contained native             *1.000**        0.935      *0.671*        0.000      *0.960*        0.752      *1.000*      *1.000*
+  panda grasp contained paired              *0.998*        0.935      *0.006*      *0.000*        0.625      *0.752*     *1.000**      *1.000*
+  panda pose contained native               *0.954*        0.417      *0.633*        0.294      *0.915*        0.402     *1.000**      *1.000*
+  panda pose contained paired               *0.823*        0.417      *0.271*      *0.294*      *0.588*        0.402     *1.000**      *1.000*
+  screw7_p050 grasp contained native        *0.990*        0.921      *0.673*        0.100      *0.833*        0.721     *1.000**        0.965
+  screw7_p050 grasp contained paired        *0.983*        0.921        0.008      *0.100*        0.540      *0.721*     *1.000**        0.958
+  screw7_p050 pose contained native         *0.956*        0.667      *0.629*        0.175      *0.873*        0.554     *1.000**      *0.994*
+  screw7_p050 pose contained paired         *0.894*        0.667      *0.194*      *0.175*      *0.560*      *0.554*     *1.000**      *0.994*
+  soft12 grasp contained native            *1.000**        0.983      *0.750*        0.077      *0.996*        0.785      *1.000*      *1.000*
+  soft12 grasp contained paired             *0.994*      *0.983*        0.008      *0.077*        0.729      *0.785*     *1.000**      *1.000*
+  soft12 pose contained native              *0.994*        0.696      *0.746*        0.106      *0.998*        0.631     *1.000**      *1.000*
+  soft12 pose contained paired              *0.910*        0.696      *0.677*        0.106      *0.819*        0.631     *1.000**      *1.000*
 
-  Of the 48 solver x experiment cells, learned wins 36, ties 5, loses 7  (verdicts by exact McNemar on the same cells the table shows)
+  Of the 64 solver x experiment cells, learned wins 38, ties 19, loses 7  (verdicts by exact McNemar on the same cells the table shows)
     IP   learned 15, ties 1, joint space 0
     AL   learned 11, ties 3, joint space 2
     SQP  learned 10, ties 1, joint space 5
+    PS   learned 2, ties 14, joint space 0
 
   Table 2 -- optimal cost, cells BOTH arms solved, learned-only regularizers excluded
   lower is better; N/A means fewer than 10 shared solved cells, so no comparison exists
-  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS
-  iiwa grasp contained native                 7.952     *2.911**          N/A          N/A        7.474      *6.928*
-  iiwa grasp contained paired                 7.573     *2.943**          N/A          N/A        7.823      *6.514*
-  iiwa pose contained native                *8.987*        9.195        9.147     *4.994**      *9.134*        9.387
-  iiwa pose contained paired                *9.030*        9.166       10.603     *5.482**      *7.907*        9.362
-  panda grasp contained native                4.506     *2.231**          N/A          N/A        3.730      *3.704*
-  panda grasp contained paired                4.135     *2.231**          N/A          N/A        4.153      *3.760*
-  panda pose contained native               *6.707*        7.693        7.138     *5.065**      *6.457*        6.968
-  panda pose contained paired               *6.403*        7.580        5.537     *4.368**      *6.620*        7.147
-  screw7_p050 grasp contained native          9.020      *1.906*       13.178     *0.996**        8.689      *6.977*
-  screw7_p050 grasp contained paired          9.363     *1.829**          N/A          N/A        8.657      *6.802*
-  screw7_p050 pose contained native        *11.479*       12.463       11.300     *2.945**     *11.505*       12.431
-  screw7_p050 pose contained paired          13.124     *12.002*       13.284     *2.892**       13.053     *12.707*
-  soft12 grasp contained native               0.626      *0.244*        1.628     *0.135**      *0.260*        0.287
-  soft12 grasp contained paired               0.704     *0.244**          N/A          N/A        0.608      *0.305*
-  soft12 pose contained native                1.368     *0.551**        1.570      *1.051*        0.588      *0.579*
-  soft12 pose contained paired                0.985     *0.551**      *0.855*        0.978        0.603      *0.579*
+  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS         PS L        PS JS
+  iiwa grasp contained native                 7.952     *2.911**          N/A          N/A        7.474      *6.928*      *3.460*        3.536
+  iiwa grasp contained paired                 7.573     *2.943**          N/A          N/A        7.823      *6.514*      *3.418*        3.536
+  iiwa pose contained native                *8.987*        9.195        9.147      *4.994*      *9.134*        9.387        3.885     *3.421**
+  iiwa pose contained paired                *9.030*        9.166       10.603      *5.482*      *7.907*        9.362        3.905     *3.421**
+  panda grasp contained native                4.506     *2.231**          N/A          N/A        3.730      *3.704*      *3.388*        3.430
+  panda grasp contained paired                4.135     *2.231**          N/A          N/A        4.153      *3.760*      *3.364*        3.430
+  panda pose contained native               *6.707*        7.693        7.138      *5.065*      *6.457*        6.968        4.624     *4.515**
+  panda pose contained paired               *6.403*        7.580        5.537     *4.368**      *6.620*        7.147        4.613      *4.515*
+  screw7_p050 grasp contained native          9.020      *1.906*       13.178     *0.996**        8.689      *6.977*      *3.214*        3.279
+  screw7_p050 grasp contained paired          9.363     *1.829**          N/A          N/A        8.657      *6.802*        3.218      *3.217*
+  screw7_p050 pose contained native        *11.479*       12.463       11.300      *2.945*     *11.505*       12.431        3.705     *2.625**
+  screw7_p050 pose contained paired          13.124     *12.002*       13.284      *2.892*       13.053     *12.707*        3.634     *2.642**
+  soft12 grasp contained native               0.626      *0.244*        1.628     *0.135**      *0.260*        0.287        0.909      *0.837*
+  soft12 grasp contained paired               0.704     *0.244**          N/A          N/A        0.608      *0.305*        0.892      *0.844*
+  soft12 pose contained native                1.368     *0.551**        1.570      *1.051*        0.588      *0.579*        1.386      *0.827*
+  soft12 pose contained paired                0.985     *0.551**      *0.855*        0.978        0.603      *0.579*        1.378      *0.826*
 
   Table 3 -- mean runtime, s, over ALL cells, each clamped at the 180 s clock
   lower is better; this machine only, never compared across machines. Clamped because SNOPT overruns its clock on cycling cells (none feasible) once the iteration budget is lifted
-  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS
-  iiwa grasp contained native                  3.01      *1.09**      *63.48*       180.00       *3.45*        14.81
-  iiwa grasp contained paired                  7.10      *1.10**     *175.89*       180.00        15.92      *14.88*
-  iiwa pose contained native                   0.75      *0.10**      *78.74*       169.95       *1.49*         1.60
-  iiwa pose contained paired                   1.82      *0.10**     *142.06*       169.95        13.96       *1.60*
-  panda grasp contained native              *3.52**         6.24      *60.01*       180.00       *4.18*        13.12
-  panda grasp contained paired              *5.86**         6.27     *178.88*       180.00        13.34      *13.10*
-  panda pose contained native                  0.93      *0.54**      *77.68*       142.98         1.91       *1.43*
-  panda pose contained paired                  2.37      *0.55**     *138.10*       142.98         9.11       *1.45*
-  screw7_p050 grasp contained native           7.81      *1.12**      *60.71*       162.88        10.37       *9.28*
-  screw7_p050 grasp contained paired          12.18      *1.12**       178.52     *162.87*        14.54       *9.36*
-  screw7_p050 pose contained native            1.23      *0.13**      *78.08*       159.39         2.86       *1.81*
-  screw7_p050 pose contained paired            2.28      *0.13**     *149.11*       159.37         6.22       *1.80*
-  soft12 grasp contained native             *2.37**         3.44      *49.85*       166.74       *7.73*        20.41
-  soft12 grasp contained paired                6.62      *3.39**       178.52     *166.74*        28.86      *20.35*
-  soft12 pose contained native                 0.78      *0.37**      *50.56*       178.70         4.74       *2.49*
-  soft12 pose contained paired                 9.27      *0.37**      *64.88*       178.70        24.96       *2.51*
+  PS at PROCS=2, no MPS (paper conditions; stages SVGD_R20 / SVGD_R21), on the clearance collision row under the clearances venv; IP, SQP and AL as in the header above
+  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS         PS L        PS JS
+  iiwa grasp contained native                  3.01      *1.09**      *63.48*       180.00       *3.45*        14.81       *1.44*         1.93
+  iiwa grasp contained paired                  7.10      *1.10**     *175.89*       180.00        15.92      *14.88*       *1.28*         1.82
+  iiwa pose contained native                   0.75      *0.10**      *78.74*       169.95       *1.49*         1.60       *0.89*         1.08
+  iiwa pose contained paired                   1.82      *0.10**     *142.06*       169.95        13.96       *1.60*       *0.92*         1.09
+  panda grasp contained native               *3.52*         6.24      *60.01*       180.00       *4.18*        13.12         2.47      *1.49**
+  panda grasp contained paired               *5.86*         6.27     *178.88*       180.00        13.34      *13.10*         2.49      *1.45**
+  panda pose contained native                  0.93      *0.54**      *77.68*       142.98         1.91       *1.43*         1.01       *0.83*
+  panda pose contained paired                  2.37      *0.55**     *138.10*       142.98         9.11       *1.45*         1.00       *0.83*
+  screw7_p050 grasp contained native           7.81      *1.12**      *60.71*       162.88        10.37       *9.28*       *1.76*         7.47
+  screw7_p050 grasp contained paired          12.18      *1.12**       178.52     *162.87*        14.54       *9.36*       *1.95*         8.54
+  screw7_p050 pose contained native            1.23      *0.13**      *78.08*       159.39         2.86       *1.81*       *1.28*         2.24
+  screw7_p050 pose contained paired            2.28      *0.13**     *149.11*       159.37         6.22       *1.80*       *1.29*         2.28
+  soft12 grasp contained native             *2.37**         3.44      *49.85*       166.74       *7.73*        20.41       *2.58*         3.95
+  soft12 grasp contained paired                6.62       *3.39*       178.52     *166.74*        28.86      *20.35*      *2.54**         3.86
+  soft12 pose contained native                 0.78      *0.37**      *50.56*       178.70         4.74       *2.49*       *1.51*         2.74
+  soft12 pose contained paired                 9.27      *0.37**      *64.88*       178.70        24.96       *2.51*       *1.52*         2.75
 
   Table 4 -- median major iterations over solved cells
   lower is better; AL is N/A BY CONSTRUCTION -- NloptSolverDetails carries a single status and NLopt has no major iteration to count
-  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS
-  iiwa grasp contained native                   134       *118**          N/A          N/A          264        *128*
-  iiwa grasp contained paired                   246       *118**          N/A          N/A          599        *128*
-  iiwa pose contained native                     50         *28*          N/A          N/A           78        *21**
-  iiwa pose contained paired                    106         *28*          N/A          N/A          331        *21**
-  panda grasp contained native                *134*          206          N/A          N/A          191       *129**
-  panda grasp contained paired                *199*          206          N/A          N/A          426       *129**
-  panda pose contained native                    37         *33*          N/A          N/A           47        *21**
-  panda pose contained paired                   107         *33*          N/A          N/A          247        *21**
-  screw7_p050 grasp contained native            227       *116**          N/A          N/A          544        *126*
-  screw7_p050 grasp contained paired            398       *116**          N/A          N/A          818        *126*
-  screw7_p050 pose contained native              65         *32*          N/A          N/A          125        *22**
-  screw7_p050 pose contained paired             143         *32*          N/A          N/A          360        *22**
-  soft12 grasp contained native               *38**           53          N/A          N/A          367        *149*
-  soft12 grasp contained paired                  57        *53**          N/A          N/A          660        *149*
-  soft12 pose contained native                *19**           22          N/A          N/A          205         *40*
-  soft12 pose contained paired                   40        *22**          N/A          N/A          609         *40*
+  PS is N/A BY CONSTRUCTION too -- svgd counts OUTER steps (K = 10 inner steps each), not majors
+  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS         PS L        PS JS
+  iiwa grasp contained native                   134       *118**          N/A          N/A          264        *128*          N/A          N/A
+  iiwa grasp contained paired                   246       *118**          N/A          N/A          599        *128*          N/A          N/A
+  iiwa pose contained native                     50         *28*          N/A          N/A           78        *21**          N/A          N/A
+  iiwa pose contained paired                    106         *28*          N/A          N/A          331        *21**          N/A          N/A
+  panda grasp contained native                *134*          206          N/A          N/A          191       *129**          N/A          N/A
+  panda grasp contained paired                *199*          206          N/A          N/A          426       *129**          N/A          N/A
+  panda pose contained native                    37         *33*          N/A          N/A           47        *21**          N/A          N/A
+  panda pose contained paired                   107         *33*          N/A          N/A          247        *21**          N/A          N/A
+  screw7_p050 grasp contained native            227       *116**          N/A          N/A          544        *126*          N/A          N/A
+  screw7_p050 grasp contained paired            398       *116**          N/A          N/A          818        *126*          N/A          N/A
+  screw7_p050 pose contained native              65         *32*          N/A          N/A          125        *22**          N/A          N/A
+  screw7_p050 pose contained paired             143         *32*          N/A          N/A          360        *22**          N/A          N/A
+  soft12 grasp contained native               *38**           53          N/A          N/A          367        *149*          N/A          N/A
+  soft12 grasp contained paired                  57        *53**          N/A          N/A          660        *149*          N/A          N/A
+  soft12 pose contained native                *19**           22          N/A          N/A          205         *40*          N/A          N/A
+  soft12 pose contained paired                   40        *22**          N/A          N/A          609         *40*          N/A          N/A
 
 === PER-SOLVER DETAIL (discordant counts, McNemar p, timeouts)
 
@@ -229,6 +243,30 @@ NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates th
   soft12 pose contained (tip) native        358   51  318   11 1.96e-79      learned     1819   4421   50.60 178.81   1.570   1.051   40  126  469
   soft12 pose contained (tip) paired        325   51  284   10 7.42e-71      learned     2374   4384   64.91 178.79   0.855   0.978   41  161  469
 
+=== AL-SVGD (particle, the svgd branch's fielded pin)   [SVGD_PINNED_V2: N = 64, K = 10 inner steps per outer step, rho = 1e5, lr = 0.3, H / T metric, kernel cz (learned) / q (joint space), native-draw paired init]
+
+  THE STATUS QUO (contained targets)
+  iterations print -- BY CONSTRUCTION: svgd counts OUTER steps (K = 10 inner steps each),
+  not majors. Each arm is its own run (see the header); LTO / JTO count clock stops,
+  timed_out or svgd.stop_reason == 'wall_clock'.
+  row                                         L   JS   L+  JS+        p      verdict  L iters  JS it     L s   JS s   Lcost  JScost    n  LTO  JTO
+  iiwa grasp contained native               480  480    0    0        1          tie       --     --    0.82   1.56   3.460   3.536  480    0    0
+  iiwa grasp contained paired               480  480    0    0        1          tie       --     --    0.83   1.47   3.418   3.536  480    0    0
+  iiwa pose contained (tip) native          480  480    0    0        1          tie       --     --    0.80   0.81   3.885   3.421  480    0    0
+  iiwa pose contained (tip) paired          480  480    0    0        1          tie       --     --    0.82   0.84   3.905   3.421  480    0    0
+  panda grasp contained native              480  480    0    0        1          tie       --     --    1.60   1.19   3.388   3.430  480    0    0
+  panda grasp contained paired              480  480    0    0        1          tie       --     --    1.70   1.15   3.364   3.430  480    0    0
+  panda pose contained (tip) native         480  480    0    0        1          tie       --     --    0.89   0.77   4.624   4.515  480    0    0
+  panda pose contained (tip) paired         480  480    0    0        1          tie       --     --    0.91   0.76   4.613   4.515  480    0    0
+  screw7_p050 grasp contained native        480  463   17    0 1.53e-05      learned       --     --    1.17   1.44   3.214   3.279  463    0   17
+  screw7_p050 grasp contained paired        480  460   20    0 1.91e-06      learned       --     --    1.21   1.52   3.218   3.217  460    0   20
+  screw7_p050 pose contained (tip) native   480  477    3    0     0.25          tie       --     --    1.12   1.00   3.705   2.625  477    0    3
+  screw7_p050 pose contained (tip) paired   480  477    3    0     0.25          tie       --     --    1.08   1.04   3.634   2.642  477    0    3
+  soft12 grasp contained native             480  480    0    0        1          tie       --     --    1.89   2.86   0.909   0.837  480    0    0
+  soft12 grasp contained paired             480  480    0    0        1          tie       --     --    1.92   2.78   0.892   0.844  480    0    0
+  soft12 pose contained (tip) native        480  480    0    0        1          tie       --     --    1.42   2.30   1.386   0.827  480    0    0
+  soft12 pose contained (tip) paired        480  480    0    0        1          tie       --     --    1.46   2.25   1.378   0.826  480    0    0
+
 
 === PRE-REGISTERED FLAG CRITERIA
 Named in advance so 'did the story change' is a printed verdict, not a judgement.
@@ -286,6 +324,23 @@ with the scene fix and the settings; scripts/report_remeasure.py attributes them
   soft12 pose contained (tip) native / nlopt                      -> learned      UNPAIRED (no sc_NLOPTTUNE_soft12_n6_nlopt_posetip_60_45_native_mmaloose)
   soft12 pose contained (tip) paired / nlopt                      -> learned      UNPAIRED (no sc_NLOPTTUNE_soft12_n6_nlopt_posetip_60_45_paired_mmaloose)
   => 8 verdict(s) moved, 24 row(s) unpaired
+  iiwa grasp contained native / svgd                              -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  iiwa grasp contained paired / svgd                              -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  iiwa pose contained (tip) native / svgd                         -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  iiwa pose contained (tip) paired / svgd                         -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  panda grasp contained native / svgd                             -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  panda grasp contained paired / svgd                             -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  panda pose contained (tip) native / svgd                        -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  panda pose contained (tip) paired / svgd                        -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  screw7_p050 grasp contained native / svgd                       -> learned      UNPAIRED (no 45 s AL-SVGD run exists)
+  screw7_p050 grasp contained paired / svgd                       -> learned      UNPAIRED (no 45 s AL-SVGD run exists)
+  screw7_p050 pose contained (tip) native / svgd                  -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  screw7_p050 pose contained (tip) paired / svgd                  -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  soft12 grasp contained native / svgd                            -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  soft12 grasp contained paired / svgd                            -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  soft12 pose contained (tip) native / svgd                       -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  soft12 pose contained (tip) paired / svgd                       -> tie          UNPAIRED (no 45 s AL-SVGD run exists)
+  => AL-SVGD: 0 verdict(s) moved, 16 row(s) unpaired
 
 --- 2. The IPOPT-vs-SNOPT gap (learned arm, per row). Size is the reported quantity.
   row                                       IPOPT  SNOPT   gap   ITO   STO
@@ -306,6 +361,7 @@ with the scene fix and the settings; scripts/report_remeasure.py attributes them
   soft12 pose contained (tip) native          477    479    -2     0     0
   soft12 pose contained (tip) paired          437    393    44    18     8
   => IPOPT ahead on 15/16 rows, median gap 60 cells. Compare against the 45 s gaps in CLAUDE.md; a widening gap is the predicted direction, so report its SIZE.
+  AL-SVGD: the criterion as written compares IPOPT with SNOPT; it says nothing about AL-SVGD.
 
 --- 3. NLopt at 180 s under the adopted configuration (previously untested)
   Per row, native against paired (successes of 480; joint space's two protocols
@@ -324,6 +380,39 @@ with the scene fix and the settings; scripts/report_remeasure.py attributes them
   network), not of the harness.
   Both arms under 5% (24 cells) on 2 row(s), a verdict there being about a floor: iiwa grasp contained paired, panda grasp contained paired
   Cost needs cells both arms solved, of which there are few -- hence the N/A.
+  AL-SVGD: the criterion as written concerns NLopt; it says nothing about AL-SVGD.
+
+
+=== CAP CHECK (per solver class and arm, over the 16 rows)
+  clock = timed_out, or svgd.stop_reason == 'wall_clock'; budget = hit_iteration_cap or
+  hit_eval_cap, or svgd.stop_reason == 'step_cap'. A row with >= 24 of 480 cells at a BUDGET
+  carries no verdict; the 180 s clock is the fielded one and is never lifted.
+  class      L clock  L budget    JS clock  JS budget rows >= 24 budget
+  IP            0-18         0         0-8          0                 0
+  AL         123-477         0     356-480          0                 0
+  SQP           0-17        10        1-34          3                 0
+  PS               0         0        0-20          0                 0
+         AL-SVGD rows with any clock stop: screw7_p050 grasp contained native (L 0, JS 17), screw7_p050 grasp contained paired (L 0, JS 20), screw7_p050 pose contained native (L 0, JS 3), screw7_p050 pose contained paired (L 0, JS 3)
+
+
+=== ACCEPTANCE (AL-SVGD)
+--- grid_hash and scene_fingerprint: on all 16 AL-SVGD rows the two runs (one per arm)
+  agree with each other and with the row's IPOPT record run (checked at load; this script
+  refuses to pair otherwise).
+--- scene_fingerprint per robot x task scene, over every run in these tables (Drake runs and
+  both AL-SVGD arms):
+  iiwa          grasp contained   identical: e8f8de49adba
+  iiwa          pose contained    identical: 3a1c302e3626
+  panda         grasp contained   identical: 64dbd94dc2c2
+  panda         pose contained    identical: bcdb2d2af900
+  screw7_p050   grasp contained   identical: 48e42ac398bd
+  screw7_p050   pose contained    identical: 6a0cb1658654
+  soft12        grasp contained   identical: 414394e0409a
+  soft12        pose contained    identical: f034ae3a9859
+--- joint space bit-identical between protocols is a DRAKE-solver check (scripts/report_remeasure.py
+  4b): same q_init, deterministic solver. AL-SVGD is EXCLUDED from it: its paired swarm draws 63
+  of its 64 particles from the native distribution (only particle 0 is the given start), so its
+  native and paired joint-space solves are different solves by design.
 
 
 === GVS ARM, MEASURED UNDER IDENTICAL CONDITIONS, OUTSIDE THE RECORD
@@ -405,32 +494,38 @@ Every other condition is the record's (fixed wsg scene, unified settings, CUDA g
   the record's grids and scenes. Success, cost and iterations are the record's to the cell
   but for two one-cell differences; scripts/report_paper.py pairs every run against its
   REMEASURE twin. The GVS arm was not re-run and is not printed here.
+AL-SVGD (PS): 16 of 16 rows, each TWO runs, one per arm -- learned from stage
+  SVGD_R20 (_pin2), joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest) (_pin2kq, kernel
+  q) -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the
+  clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.
 Arms: learned vs joint space (numerical). No analytic baseline is fielded.
 NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the
       network, so a moving JS column is a property of the problem, not drift.
 
-=== TABLE 3 AT PAPER CONDITIONS (IP and SQP: PROCS=2, no MPS)
+=== TABLE 3 AT PAPER CONDITIONS (IP, SQP and PS: PROCS=2, no MPS)
   IP = interior point (IPOPT), AL = augmented Lagrangian (NLOPT),
   SQP = sequential quadratic programming (SNOPT). *better* of each pair is starred;
   a trailing * marks the best in the row. Every row prints, zeros included.
+  PS = AL-SVGD (particle, the svgd branch's fielded pin): each arm its own run, learned
+  from stage SVGD_R20, joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest).
 
   Table 3 -- mean runtime, s, over ALL cells, each clamped at the 180 s clock
   lower is better; this machine only, never compared across machines. Clamped because SNOPT overruns its clock on cycling cells (none feasible) once the iteration budget is lifted
-  IP and SQP at PROCS=2, no MPS (paper conditions); AL at PROCS=8 under MPS=1 (REMEASURE_NLOPT, not re-run)
-  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS
-  iiwa grasp contained native                  2.68      *1.02**      *63.48*       180.00       *3.15*        14.56
-  iiwa grasp contained paired                  6.27      *1.01**     *175.89*       180.00        14.83      *14.50*
-  iiwa pose contained native                   0.67      *0.09**      *78.74*       169.95       *1.28*         1.58
-  iiwa pose contained paired                   1.61      *0.09**     *142.06*       169.95        13.14       *1.58*
-  panda grasp contained native              *3.00**         6.07      *60.01*       180.00       *3.54*        12.94
-  panda grasp contained paired              *5.01**         6.06     *178.88*       180.00      *12.15*        12.92
-  panda pose contained native                  0.77      *0.53**      *77.68*       142.98         1.67       *1.39*
-  panda pose contained paired                  2.02      *0.53**     *138.10*       142.98         8.30       *1.41*
-  screw7_p050 grasp contained native           6.93      *1.08**      *60.71*       162.88         9.30       *9.11*
-  screw7_p050 grasp contained paired          11.11      *1.08**       178.52     *162.87*        13.10       *9.11*
-  screw7_p050 pose contained native            1.10      *0.12**      *78.08*       159.39         2.35       *1.78*
-  screw7_p050 pose contained paired            1.95      *0.12**     *149.11*       159.37         5.19       *1.76*
-  soft12 grasp contained native             *1.21**         3.19      *49.85*       166.74       *6.69*        19.86
-  soft12 grasp contained paired                6.12      *3.21**       178.52     *166.74*        26.72      *19.87*
-  soft12 pose contained native                 0.61      *0.34**      *50.56*       178.70         3.97       *2.42*
-  soft12 pose contained paired                 8.70      *0.35**      *64.88*       178.70        22.11       *2.40*
+  IP and SQP at PROCS=2, no MPS (paper conditions); AL at PROCS=8 under MPS=1 (REMEASURE_NLOPT, not re-run); PS at PROCS=2, no MPS (paper conditions; stages SVGD_R20 / SVGD_R21), on the clearance collision row under the clearances venv
+  experiment                                   IP L        IP JS         AL L        AL JS        SQP L       SQP JS         PS L        PS JS
+  iiwa grasp contained native                  2.68      *1.02**      *63.48*       180.00       *3.15*        14.56       *1.44*         1.93
+  iiwa grasp contained paired                  6.27      *1.01**     *175.89*       180.00        14.83      *14.50*       *1.28*         1.82
+  iiwa pose contained native                   0.67      *0.09**      *78.74*       169.95       *1.28*         1.58       *0.89*         1.08
+  iiwa pose contained paired                   1.61      *0.09**     *142.06*       169.95        13.14       *1.58*       *0.92*         1.09
+  panda grasp contained native               *3.00*         6.07      *60.01*       180.00       *3.54*        12.94         2.47      *1.49**
+  panda grasp contained paired               *5.01*         6.06     *178.88*       180.00      *12.15*        12.92         2.49      *1.45**
+  panda pose contained native                  0.77      *0.53**      *77.68*       142.98         1.67       *1.39*         1.01       *0.83*
+  panda pose contained paired                  2.02      *0.53**     *138.10*       142.98         8.30       *1.41*         1.00       *0.83*
+  screw7_p050 grasp contained native           6.93      *1.08**      *60.71*       162.88         9.30       *9.11*       *1.76*         7.47
+  screw7_p050 grasp contained paired          11.11      *1.08**       178.52     *162.87*        13.10       *9.11*       *1.95*         8.54
+  screw7_p050 pose contained native            1.10      *0.12**      *78.08*       159.39         2.35       *1.78*       *1.28*         2.24
+  screw7_p050 pose contained paired            1.95      *0.12**     *149.11*       159.37         5.19       *1.76*       *1.29*         2.28
+  soft12 grasp contained native             *1.21**         3.19      *49.85*       166.74       *6.69*        19.86       *2.58*         3.95
+  soft12 grasp contained paired                6.12       *3.21*       178.52     *166.74*        26.72      *19.87*      *2.54**         3.86
+  soft12 pose contained native                 0.61      *0.34**      *50.56*       178.70         3.97       *2.42*       *1.51*         2.74
+  soft12 pose contained paired                 8.70      *0.35**      *64.88*       178.70        22.11       *2.40*       *1.52*         2.75
