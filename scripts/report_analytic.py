@@ -76,9 +76,10 @@ def index_record(runs):
 
 
 def node_class(meta):
-    """The SuperCloud node-name prefixes a run ran on (`d` volta, ...), from its metadata."""
-    hosts = meta.get("hosts") or ([meta["host"]] if meta.get("host") else [])
-    return "/".join(sorted({h.split("-")[0] for h in hosts})) or "?"
+    """`gpu` or `cpu`: the device the run's process saw (metadata `device`, e.g. `cuda:0` / `cpu`).
+    Not the host name: SuperCloud's xeon-p8 and volta nodes are both named `d-...`."""
+    device = str(meta.get("device") or "?")
+    return "gpu" if device.startswith("cuda") else device
 
 
 def check_pairable(a_tag, A, r_tag, R):
