@@ -25,7 +25,6 @@ Two clip ladders, both measured (Thomas, 2026-10-12): `ANALYTIC` is ../codebase'
 | `manifest_stageANALYTIC_SMOKE.txt` | 2 x 2 cells at 60 s, every robot x task x protocol x solver x ladder | PROCS=2 | 48 | 48 | <= 6 |
 | `manifest_stageANALYTIC.txt` | IPOPT and SNOPT, both ladders | PROCS=2, no MPS (paper) | 32 | 256 | 41 |
 | `manifest_stageANALYTIC_NLOPT.txt` | NLopt, both ladders (tags `ANALYTICN`, `ANALYTICNT`) | PROCS=8, `MPS=1` (as the record's NLopt) | 16 | 384 | 74 |
-
 | `manifest_stageANALYTIC_SVGD_SMOKE.txt` | 2 x 2 cells at 60 s, every svgd run | PROCS=2, `DRAKE_ENV=crc` | 32 | 32 | <= 2 |
 | `manifest_stageANALYTIC_SVGD.txt` | AL-SVGD at R20's pin, kernels `x` (`pin2kx`) and `q` (`pin2kq`), both ladders (`ANALYTICS`, `ANALYTICST`) | PROCS=2, `DRAKE_ENV=crc` | 32 | 768 | 35 |
 
