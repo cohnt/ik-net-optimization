@@ -1339,6 +1339,14 @@ Diagnosed 2026-10-13 on the smoke's Panda pose paired cells (SNOPT INFO 13/41 in
 IPOPT solves; one stuck on the clip kink, u = 1 - clip); hiding the pin behind a generic constraint
 rescued 1 of 2. A solver property, as ../codebase's own `PIN_AS_NONLINEAR` note records, not a defect.
 
+**Two backends for the map, both measured (Thomas, 2026-10-13).** `analytic_backend="cpp"`
+(`cpp/`, ctypes, one g++ call; built on the cluster by `cluster/build_cpp_job.sh`, a stale build
+refused by its source hash) equals the Python AutoDiffXd path bit for bit and the float path to
+~4e-12 (numpy's BLAS), so IPOPT trajectories are not bitwise (iterations equal on 44 of 108 local
+cells, 5 verdicts differ: the per-cell instability any setting change shows). Its ms/it is level
+with joint space's (2.2-4.3 against 2.1-2.9 on the same cells; Python 4.7-9.2). Stage ANALYTIC_CPP
+fields it on the default ladder's IPOPT / SNOPT rows; everything else runs the Python reference.
+
 **`analytic8` against `analytic4` is the unbalanced-bundle pathology, both signs intact.** Under
 `paired` the 8-branch chart wins the grasp task (418 against 376) because it can represent starts the
 4-branch chart forfeits; under `native` it loses badly on both tasks (387 against 450, and 155

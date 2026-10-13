@@ -52,11 +52,16 @@ def main():
             write(tmp, f"sc_PAPER_{tail}", dict(learned=recs(L), numerical=recs(J)))
             write(tmp, f"sc_ANALYTIC_{tail}", dict(analytic=recs(A), analytic8=recs(A)))
             write(tmp, f"sc_ANALYTICSMOKE_{tail}", dict(analytic=recs(A[:4])))
+            write(tmp, f"sc_ANALYTICC_{tail}", dict(analytic=recs(A)))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 rows = ra.main(["--cells", str(cells)])
-            check("both analytic arms paired against the record run", len(rows) == 2,
-                  out.getvalue())
+            check("both analytic arms and the C++ run paired against the record run",
+                  len(rows) == 3, out.getvalue())
+            check("the C++ run's arm is labelled analytic/cpp",
+                  sorted(x["arm"] for x in rows) == ["analytic", "analytic/cpp", "analytic8"],
+                  [x["arm"] for x in rows])
+            rows = [x for x in rows if not x["arm"].endswith("/cpp")]
             r = rows[0]
             check("L v JS counted from the record (0 learned-only, 3 joint-only)",
                   r["LvJ"][:2] == (0, 3), r["LvJ"])

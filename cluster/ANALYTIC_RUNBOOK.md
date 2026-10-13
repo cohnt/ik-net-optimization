@@ -31,8 +31,9 @@ Two clip ladders, both measured (Thomas, 2026-10-12): `ANALYTIC` is ../codebase'
 
 | manifest | what | conditions | runs | items | est. node-h |
 | --- | --- | --- | --- | --- | --- |
-| `manifest_stageANALYTIC_SMOKE.txt` | 2 x 2 cells at 60 s, every robot x task x protocol x solver x ladder | xeon-p8, PROCS=2 | 48 | 48 | <= 6 |
+| `manifest_stageANALYTIC_SMOKE.txt` | 2 x 2 cells at 60 s, every robot x task x protocol x solver x ladder, and the C++ runs | xeon-p8, PROCS=2 | 64 | 64 | <= 8 |
 | `manifest_stageANALYTIC.txt` | IPOPT and SNOPT, both ladders | xeon-p8, PROCS=2 (paper) | 32 | 256 | 26 |
+| `manifest_stageANALYTIC_CPP.txt` | IPOPT and SNOPT, default ladder, C++ backend (`ANALYTICC`) | xeon-p8, PROCS=2 | 16 | 128 | <= 13 |
 | `manifest_stageANALYTIC_NLOPT.txt` | NLopt, both ladders (tags `ANALYTICN`, `ANALYTICNT`) | xeon-p8, PROCS=8 (as the record's NLopt; no MPS, no GPU) | 16 | 384 | <= 74 |
 | `manifest_stageANALYTIC_SVGD_SMOKE.txt` | 2 x 2 cells at 60 s, every svgd run | PROCS=2, `DRAKE_ENV=crc` | 32 | 32 | <= 2 |
 | `manifest_stageANALYTIC_SVGD.txt` | AL-SVGD at R20's pin, kernels `x` (`pin2kx`) and `q` (`pin2kq`), both ladders (`ANALYTICS`, `ANALYTICST`) | PROCS=2, `DRAKE_ENV=crc` | 32 | 768 | 161 |
@@ -45,9 +46,16 @@ clock on every cell, an upper bound. ANALYTIC_SVGD is dominated by Panda `analyt
 swarms run to the clock. Worst item: ~6 h (ANALYTIC shard, every cell at the clock), under the 8 h
 item cap.
 
-The C++ backend (`--set analytic_backend=cpp`) is NOT in these manifests; if Thomas fields it,
-run `bash cpp/build.sh` in the cluster tree after `stage_code.sh` (one g++ call; a missing library
-raises at program construction, before the first cell) and regenerate the manifests with the set.
+**Both backends (Thomas, 2026-10-13: "Measure both").** ANALYTIC_CPP is the default ladder's
+IPOPT / SNOPT items again with `--set analytic_backend=cpp` (tag token `ANALYTICC`; the reader
+prints its arms as `analytic/cpp`). The C++ map matches the Python AutoDiffXd path exactly, but
+IPOPT reads values from the float path, which differs by ~1e-12, so trajectories are not bitwise:
+read it as a second implementation of one formulation, not a replay. The tight ladder, NLopt and
+AL-SVGD stay on Python (svgd never calls this map). The library is BUILT ON THE CLUSTER by
+`cluster/build_cpp_job.sh` (debug-cpu; `stage_code.sh` never pushes `cpp/build/`), whose sentinel
+`build_cpp.DONE` is written only after `tests/test_analytic_cpp.py` passes there; `submit_bench.sh`
+refuses any `analytic_backend=cpp` manifest (ANALYTIC_CPP, and the smoke, which carries 16 such
+items) without it, and the loader refuses a library built from other sources.
 
 ## Submit (only after the go-ahead)
 
@@ -55,10 +63,15 @@ raises at program construction, before the first cell) and regenerate the manife
 git rev-parse --abbrev-ref HEAD                  # analytic-baseline; tree clean
 python cluster/gen_manifest.py --selftest
 cluster/stage_code.sh
-## CPU nodes (xeon-p8): the smoke, then IPOPT / SNOPT, then NLopt
+## the C++ library, on the cluster (compile only; poll ~/learned-ik/build_cpp.DONE for "OK <hash>")
+ssh ... 'cd ~/learned-ik/repo && LLsub ./cluster/build_cpp_job.sh -s 4 -q debug-cpu -T 00:20:00 -J lik_build_cpp'
+## CPU nodes (xeon-p8), up to 4 nodes; xeon-p8's 8-node cap is shared with ~/ik-tune: message the
+## ik-tune session first (agreed 2026-10-13: whoever Thomas releases first goes first, the other
+## chains afterany on it or sizes to the 4 nodes left)
 PARTITION=xeon-p8 PROCS=2 bash cluster/submit_bench.sh manifest_stageANALYTIC_SMOKE.txt 1      # -> <SMOKE>
 DEPENDENCY=afterok:<SMOKE> PARTITION=xeon-p8 PROCS=2 bash cluster/submit_bench.sh manifest_stageANALYTIC.txt 4
-DEPENDENCY=afterany:<ANALYTIC jobs> PARTITION=xeon-p8 PROCS=8 bash cluster/submit_bench.sh manifest_stageANALYTIC_NLOPT.txt 4
+DEPENDENCY=afterok:<SMOKE> PARTITION=xeon-p8 PROCS=2 bash cluster/submit_bench.sh manifest_stageANALYTIC_CPP.txt 2
+DEPENDENCY=afterany:<ANALYTIC and ANALYTIC_CPP jobs> PARTITION=xeon-p8 PROCS=8 bash cluster/submit_bench.sh manifest_stageANALYTIC_NLOPT.txt 4
 ## GPU nodes (xeon-g6-volta): AL-SVGD only
 DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageANALYTIC_SVGD_SMOKE.txt 1   # -> <SSMOKE>
 DEPENDENCY=afterok:<SSMOKE> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageANALYTIC_SVGD.txt 4

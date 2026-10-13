@@ -18,6 +18,7 @@ A missing or stale library RAISES; there is no silent fall-back to Python, becau
 that asked for one backend and measured the other would record the wrong one.
 """
 import ctypes
+import hashlib
 import os
 
 import numpy as np
@@ -33,6 +34,17 @@ NUM_Q, NUM_U, NUM_VARS = 7, 4, 7
 _STATUS = {1: "a branch index outside the chart's set (or the wrong number of them)",
            2: "clip_stepback outside [0, 1)"}
 _LIBRARIES = {}
+SOURCE_DIR = os.path.join(REPO, "cpp", "analytic_ik")
+
+
+def SourceHash(source_dir=SOURCE_DIR):
+    '''sha1 (first 16 hex) over the C++ sources in byte order of their names -- the recipe
+    cpp/build.sh compiles into the library.'''
+    h = hashlib.sha1()
+    for name in sorted(os.listdir(source_dir), key=lambda n: n.encode()):
+        with open(os.path.join(source_dir, name), "rb") as f:
+            h.update(f.read())
+    return h.hexdigest()[:16]
 
 
 def LoadLibrary(path=None):
@@ -52,6 +64,12 @@ def LoadLibrary(path=None):
     if version != ABI_VERSION:
         raise RuntimeError(f"{path} has ABI version {version}, this wrapper expects "
                            f"{ABI_VERSION}: rebuild it with `bash cpp/build.sh`")
+    lib.learnedik_analytic_src_hash.restype = ctypes.c_char_p
+    lib.learnedik_analytic_src_hash.argtypes = []
+    built, here = lib.learnedik_analytic_src_hash().decode(), SourceHash()
+    if built != here:
+        raise RuntimeError(f"{path} was built from other sources ({built}) than "
+                           f"cpp/analytic_ik/ holds ({here}): rebuild it with `bash cpp/build.sh`")
     p = ctypes.c_void_p
     for name in ("learnedik_panda_analytic", "learnedik_iiwa_analytic"):
         fn = getattr(lib, name)
