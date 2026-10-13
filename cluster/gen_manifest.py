@@ -41,8 +41,9 @@ SCRIPTS = {"panda": "scripts/panda/panda_benchmark.py",
 SOFT_RUNGS = ("soft9", "soft12", "soft16")
 SCRIPTS.update({rung: "scripts/soft_arm/soft_arm_benchmark.py" for rung in SOFT_RUNGS})
 
-# Arms per robot. The iiwa has no analytic arm: no Iiwa14IKProgramAnalytic exists, and
-# writing one is future work or possibly not done at all (Thomas, 2026-09-19).
+# Arms per robot, as the OLD stages fielded them -- frozen so their manifests regenerate
+# byte-identically. The iiwa's analytic arm (2026-10-12) is fielded only by the ANALYTIC
+# stages, through ANALYTIC_ARMS.
 ALL_ARMS = {"panda": "learned,numerical,analytic,analytic8", "iiwa": "learned,numerical"}
 ## Two arms, for a stronger reason than the iiwa's: a redundant continuum arm has no
 ## closed-form IK to write an analytic column from.
@@ -3657,6 +3658,108 @@ def paper_allotment():
     print("  (REMEASURE ran these exact shards inside ITEM_TIMEOUT).")
 
 
+## ---------------------------------------------------------------------------- ANALYTIC --
+##
+## The analytic + optimization arm on the two robots with a closed form (Thomas, 2026-10-12):
+## the Panda's He-Liu map on 4 and 8 branches (`analytic`, `analytic8`) and the iiwa's Faria
+## S-R-S map on its 8 (`analytic`). An UPPER-BOUND REFERENCE column, expected to beat both arms
+## (the TRO result); the record's learned v joint-space verdicts are untouched by it.
+##
+## Each item is the record's item for the same row with ONLY `--arms` and the tag changed:
+## same seed, grid, scene, chart, --compile, CUDA graphs and lifted budgets, so `grid_hash` and
+## `scene_fingerprint` match the record's run and the reader pairs the analytic arm cell for
+## cell against the record's learned and joint-space arms (scripts/report_analytic.py). The
+## grid is drawn from the script's own generator before any arm is built, so it cannot depend
+## on which arms run.
+##
+## TWO CLIP LADDERS, both measured (Thomas, 2026-10-12, "measure both"): the default
+## 1e-4 / 1e-3 (../codebase's), tag token ANALYTIC; the tight 1e-8 / 1.1e-4, tag token
+## ANALYTICT. Conditions as the record: IPOPT / SNOPT at PAPER conditions (PROCS=2, no MPS);
+## NLopt at PROCS=8 under MPS=1 like the record's own NLopt rows (Thomas), under its own tag
+## tokens (ANALYTICN / ANALYTICNT) because PROCS is a submit-time setting and lives in the tag.
+## Not submitted before Thomas says go.
+
+ANALYTIC_ARMS = {"panda": "analytic,analytic8", "iiwa": "analytic"}
+ANALYTIC_LADDERS = {
+    ## token suffix: extra --set
+    "": [],
+    "T": ["--set", "analytic_clip_stepback=1e-08", "--set", "analytic_reach_stepback=0.00011"],
+}
+ANALYTIC_PROCS = {"ANALYTIC": 2, "ANALYTIC_NLOPT": 8}
+#: The analytic arm's expected mean wall per cell, as a multiple of the record's joint-space
+#: arm on the same row (its closest relative: a 7-variable program over Drake kinematics, with
+#: a ~0.3-0.6 ms Python closed-form pass per evaluation on top). Laptop smoke, 2026-10-12:
+#: 1.5-2x joint space's ms/it, fewer iterations. Charged 2x, per analytic arm.
+ANALYTIC_WALL_PER_JS = 2.0
+
+
+def stage_ANALYTIC(variant="ANALYTIC"):
+    """The analytic arms on the record's Panda and iiwa rows, both clip ladders."""
+    source = {"ANALYTIC": "REMEASURE", "ANALYTIC_NLOPT": "REMEASURE_NLOPT"}[variant]
+    stem = {"ANALYTIC": "ANALYTIC", "ANALYTIC_NLOPT": "ANALYTICN"}[variant]
+    items = []
+    for ladder, extra in ANALYTIC_LADDERS.items():
+        token = stem + ladder
+        for it in stage_REMEASURE(source):
+            if it["robot"] not in ANALYTIC_ARMS:
+                continue
+            a = list(it["args"])
+            a[a.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
+            i = a.index("--tag")
+            old = a[i + 1]
+            new = old.replace("sc_REMEASURE_", f"sc_{token}_", 1)
+            a[i + 1] = new
+            a += extra
+            task, start, solver = (a[a.index(k) + 1] for k in ("--task", "--start", "--solver"))
+            shards = int(a[a.index("--shard") + 1].split("/")[1]) if "--shard" in a else 1
+            n_arms = len(ANALYTIC_ARMS[it["robot"]].split(","))
+            J = RECORD_MEAN_WALL[(it["robot"], task, start)][solver][1]
+            ## A cell cannot outlast the 180 s clock by much (SNOPT's zero-minor overrun aside),
+            ## so the multiple is capped there -- NLopt's joint space already sits at it.
+            seconds = (480 * n_arms * min(ANALYTIC_WALL_PER_JS * J, 180.0) / shards
+                       + REMEASURE_ITEM_OVERHEAD_S)
+            items.append(dict(it, args=a, id=it["id"].replace(old, new, 1), seconds=seconds,
+                              order=it["order"] + (0 if ladder == "" else 1000)))
+    return items
+
+
+def stage_ANALYTIC_SMOKE():
+    """2 targets x 2 guesses at 60 s: every robot x task x protocol x solver x ladder, one item
+    each, unsharded -- the cluster pipeline end to end before the real stages."""
+    items = []
+    for it in stage_ANALYTIC("ANALYTIC") + stage_ANALYTIC("ANALYTIC_NLOPT"):
+        a = list(it["args"])
+        if "--shard" in a:
+            k = a.index("--shard")
+            if a[k + 1].split("/")[0] != "0":
+                continue
+            del a[k:k + 2]
+        for flag, value in (("--targets", "2"), ("--guesses", "2"), ("--wall-time", "60")):
+            a[a.index(flag) + 1] = value
+        i = a.index("--tag")
+        tag = a[i + 1].replace("sc_ANALYTIC", "sc_ANALYTICSMOKE", 1)
+        a[i + 1] = tag
+        items.append(dict(it, args=a, id=tag, seconds=4 * 60 * 3 + REMEASURE_ITEM_OVERHEAD_S))
+    return items
+
+
+def analytic_allotment():
+    print("ANALYTIC ALLOTMENT -- the analytic arms, both clip ladders, per robot x solver.")
+    print(f"  Mean wall per cell per analytic arm = {ANALYTIC_WALL_PER_JS:g} x the record's joint-space")
+    print(f"  mean (Table 3 base, RECORD_MEAN_WALL); +{REMEASURE_ITEM_OVERHEAD_S:g} s per item.")
+    print(f"\n  {'stage':<16}{'PROCS':>6}{'runs':>6}{'items':>7}{'solve-h':>9}{'node-h':>8}")
+    for variant in ("ANALYTIC", "ANALYTIC_NLOPT"):
+        its = stage_ANALYTIC(variant)
+        runs = {i["id"].rsplit("_shard", 1)[0] for i in its}
+        secs = sum(i["seconds"] for i in its)
+        procs = ANALYTIC_PROCS[variant]
+        print(f"  {variant:<16}{procs:>6}{len(runs):>6}{len(its):>7}{secs / 3600:>9.1f}"
+              f"{secs / 3600 / procs:>8.1f}")
+    sm = stage_ANALYTIC_SMOKE()
+    print(f"  {'ANALYTIC_SMOKE':<16}{2:>6}{len(sm):>6}{len(sm):>7}"
+          f"{sum(i['seconds'] for i in sm) / 3600:>9.1f}{sum(i['seconds'] for i in sm) / 3600 / 2:>8.1f}")
+
+
 def stage_SCREWCHART(wall, targets, guesses, shards, only=None, tag="SCREWCHART", seed=1,
                      starts="paired,native"):
     """The chart ladder on the primary rung: nb_nodes 4 / 6 / 8, IPOPT only.
@@ -5903,6 +6006,48 @@ def selftest():
         print("ok   stage PAPER: 28 logical runs / 224 items, REMEASURE's primary items re-tagged "
               "sc_PAPER_, no GVS / NLopt / controls / Panda IPOPT, Panda SNOPT first")
 
+    ## Stages ANALYTIC / ANALYTIC_NLOPT / ANALYTIC_SMOKE: each item is the record's item for the
+    ## same row with ONLY --arms, the tag and (tight ladder) the two clip --sets changed, so the
+    ## grid and the scene fingerprint pair with the record; Panda and iiwa only; the counts.
+    an_fails = []
+    for variant, source, n_runs, n_items in (("ANALYTIC", "REMEASURE", 32, 256),
+                                             ("ANALYTIC_NLOPT", "REMEASURE_NLOPT", 16, 384)):
+        its = stage_ANALYTIC(variant)
+        src = {it["id"]: it for it in stage_REMEASURE(source)}
+        runs = {it["id"].rsplit("_shard", 1)[0] for it in its}
+        if len(runs) != n_runs or len(its) != n_items or len({i["id"] for i in its}) != len(its):
+            an_fails.append(f"{variant}: {len(runs)} runs / {len(its)} items, expected "
+                            f"{n_runs} / {n_items}, unique ids")
+        for it in its:
+            a = it["args"]
+            tag = a[a.index("--tag") + 1]
+            m = re.match(r"sc_(ANALYTICN?)(T?)_", tag)
+            if m is None or it["robot"] not in ANALYTIC_ARMS:
+                an_fails.append(f"{it['id']}: bad tag or robot")
+                continue
+            twin = src.get(it["id"].replace(m.group(0), "sc_REMEASURE_", 1))
+            if twin is None:
+                an_fails.append(f"{it['id']}: no REMEASURE twin")
+                continue
+            extra = ANALYTIC_LADDERS[m.group(2)]
+            b = list(twin["args"])
+            b[b.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
+            b[b.index("--tag") + 1] = tag
+            if a != b + extra or it["script"] != twin["script"] or it["env"] != twin["env"]:
+                an_fails.append(f"{it['id']} is not its REMEASURE twin modulo arms / tag / ladder")
+    sm = stage_ANALYTIC_SMOKE()
+    if len(sm) != 48 or any("--shard" in i["args"] for i in sm) or \
+            any(not i["id"].startswith("sc_ANALYTICSMOKE") for i in sm):
+        an_fails.append(f"ANALYTIC_SMOKE: {len(sm)} items (expected 48, unsharded, sc_ANALYTICSMOKE*)")
+    if ALL_ARMS["iiwa"] != "learned,numerical":
+        an_fails.append("ALL_ARMS changed: the old stages' manifests would not regenerate")
+    for msg in an_fails[:12]:
+        print(f"FAIL stage ANALYTIC: {msg}")
+    fails += len(an_fails)
+    if not an_fails:
+        print("ok   stages ANALYTIC / ANALYTIC_NLOPT / ANALYTIC_SMOKE: 32 / 16 / 48 runs, the record's "
+              "Panda and iiwa items with only the arms, tag and clip ladder changed")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -5928,6 +6073,7 @@ def main():
                                  "SVGD_R15", "SVGD_R16", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT",
                                  "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
                                  "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21",
+                                 "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_SMOKE",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -5993,6 +6139,9 @@ def main():
         raise SystemExit(selftest())
     if args.allotment and args.stage == "PAPER":
         paper_allotment()
+        raise SystemExit(0)
+    if args.allotment and args.stage in ("ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_SMOKE"):
+        analytic_allotment()
         raise SystemExit(0)
     if args.allotment and args.stage in SVGD_STAGES:
         svgd_allotment()
@@ -6074,6 +6223,9 @@ def main():
              ## rows in their SVGD_STAGE_CONTEXT, and the smokes' shape is SVGD_SMOKE_SHAPE.
              **{s: (lambda s=s: stage_SVGD(s)) for s in SVGD_STAGES},
              "PAPER": lambda: stage_PAPER(),
+             "ANALYTIC": lambda: stage_ANALYTIC("ANALYTIC"),
+             "ANALYTIC_NLOPT": lambda: stage_ANALYTIC("ANALYTIC_NLOPT"),
+             "ANALYTIC_SMOKE": lambda: stage_ANALYTIC_SMOKE(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
