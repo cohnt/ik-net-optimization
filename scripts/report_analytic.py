@@ -16,7 +16,10 @@ pairs every analytic run CELL FOR CELL with the record's run on the same row -- 
   * cost on cells BOTH arms solved (median A and the other's, >= 10 shared cells), A v L, A v JS;
   * mean wall over all cells, clamped at the clock;
   * paired starts scored `unrepresentable_start`, and those solved from the clip band;
-  * exact McNemar A v L and A v JS.
+  * exact McNemar A v L and A v JS;
+  * a NOTE wherever the analytic run and the record ran on different node classes (the
+    IPOPT / SNOPT / NLopt analytic stages run on CPU nodes, the record on GPU nodes), where the
+    seconds columns cross machines.
 
 The analytic arm is an UPPER-BOUND REFERENCE column (Thomas, 2026-10-12): the record's verdicts
 are learned v joint space, and nothing here changes them. Thomas writes every word; this prints
@@ -69,6 +72,12 @@ def index_record(runs):
     for tag, s in runs.items():
         out[record_key(parse_tag(tag))] = (tag, s)
     return out
+
+
+def node_class(meta):
+    """The SuperCloud node-name prefixes a run ran on (`d` volta, ...), from its metadata."""
+    hosts = meta.get("hosts") or ([meta["host"]] if meta.get("host") else [])
+    return "/".join(sorted({h.split("-")[0] for h in hosts})) or "?"
 
 
 def check_pairable(a_tag, A, r_tag, R):
@@ -143,7 +152,8 @@ def rows(analytic, record, ladder_filter=None):
                        L=describe(L, t["solver"], cap), J=describe(J, t["solver"], cap),
                        A=describe(Ac, t["solver"], cap),
                        LvJ=versus(L, J, ("L", "JS")), AvL=versus(Ac, L, ("A", "L")),
-                       AvJ=versus(Ac, J, ("A", "JS")))
+                       AvJ=versus(Ac, J, ("A", "JS")),
+                       nodes=(node_class(A["metadata"]), node_class(R["metadata"])))
 
 
 def flag(d):
@@ -205,6 +215,12 @@ def main(argv=None):
             continue
         print(f"=== {LADDER_NAME[ladder]} ===")
         print_rows(rs)
+        ## The IPOPT / SNOPT / NLopt analytic stages run on CPU nodes (Thomas, 2026-10-13), the
+        ## record on the GPU nodes: different machines, so the wall columns do not compare.
+        cross = sorted({r["nodes"] for r in rs if r["nodes"][0] != r["nodes"][1]})
+        for a_nodes, r_nodes in cross:
+            print(f"  NOTE  analytic runs on node class {a_nodes}, the record on {r_nodes}: the "
+                  f"wall and ms/it columns cross machines and are not compared across them")
         relaxed = sum(r["A"]["relaxed_only"] for r in rs)
         print(f"  cells the analytic arm passes only at the relaxed gate (task_tol): {relaxed}\n")
     return all_rows

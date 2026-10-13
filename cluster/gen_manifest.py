@@ -3675,9 +3675,17 @@ def paper_allotment():
 ## TWO CLIP LADDERS, both measured (Thomas, 2026-10-12, "measure both"): the default
 ## 1e-4 / 1e-3 (../codebase's), tag token ANALYTIC; the tight 1e-8 / 1.1e-4, tag token
 ## ANALYTICT. Conditions as the record: IPOPT / SNOPT at PAPER conditions (PROCS=2, no MPS);
-## NLopt at PROCS=8 under MPS=1 like the record's own NLopt rows (Thomas), under its own tag
-## tokens (ANALYTICN / ANALYTICNT) because PROCS is a submit-time setting and lives in the tag.
+## NLopt at PROCS=8 like the record's own NLopt rows (Thomas), under its own tag tokens
+## (ANALYTICN / ANALYTICNT) because PROCS is a submit-time setting and lives in the tag.
 ## Not submitted before Thomas says go.
+##
+## ON CPU NODES (Thomas, 2026-10-13: "the analytic baseline doesn't use GPU (except AL-SVGD), so
+## those cells should be sent to CPU nodes if available, leaving GPU nodes for GPU work"). The
+## IPOPT / SNOPT / NLopt items (and their smoke) are submitted with PARTITION=xeon-p8, and so drop
+## the two learned-only GPU switches the record's items carry -- `--compile` (the flow's compiled
+## jacrev) and `flow_cuda_graph=True` -- which no analytic arm reaches and which a GPU-less node
+## cannot honour. Neither touches the grid, the scene or the tag. submit_bench.sh refuses either
+## switch, `--solver svgd` or a learned arm on xeon-p8. AL-SVGD (ANALYTIC_SVGD) stays on the GPUs.
 
 ANALYTIC_ARMS = {"panda": "analytic,analytic8", "iiwa": "analytic"}
 ANALYTIC_LADDERS = {
@@ -3686,11 +3694,34 @@ ANALYTIC_LADDERS = {
     "T": ["--set", "analytic_clip_stepback=1e-08", "--set", "analytic_reach_stepback=0.00011"],
 }
 ANALYTIC_PROCS = {"ANALYTIC": 2, "ANALYTIC_NLOPT": 8}
-#: The analytic arm's expected mean wall per cell, as a multiple of the record's joint-space
-#: arm on the same row (its closest relative: a 7-variable program over Drake kinematics, with
-#: a ~0.3-0.6 ms Python closed-form pass per evaluation on top). Laptop smoke, 2026-10-12:
-#: 1.5-2x joint space's ms/it, fewer iterations. Charged 2x, per analytic arm.
-ANALYTIC_WALL_PER_JS = 2.0
+#: MEASURED mean seconds per cell, summed over the run's analytic arms, per (robot, task, start,
+#: solver). Laptop sample 2026-10-13: 12 cells of each record grid at the record's lifted budgets,
+#: joint space timed alongside (cluster/laptop wall on its cells 0.95-1.13, so unscaled); a cell
+#: reaching the local 30 s clock is charged the full 180 s, so these are upper-ish bounds. They
+#: replaced a "2x the record's joint space" guess that over-charged by ~1.6x.
+ANALYTIC_CELL_S = {
+    ("panda", "mug", "native", "ipopt"): 7.4, ("panda", "mug", "paired", "ipopt"): 13.2,
+    ("panda", "pose", "native", "ipopt"): 2.1, ("panda", "pose", "paired", "ipopt"): 0.6,
+    ("panda", "mug", "native", "snopt"): 31.9, ("panda", "mug", "paired", "snopt"): 35.8,
+    ("panda", "pose", "native", "snopt"): 0.2, ("panda", "pose", "paired", "snopt"): 0.2,
+    ("iiwa", "mug", "native", "ipopt"): 3.9, ("iiwa", "mug", "paired", "ipopt"): 16.5,
+    ("iiwa", "pose", "native", "ipopt"): 0.1, ("iiwa", "pose", "paired", "ipopt"): 0.3,
+    ("iiwa", "mug", "native", "snopt"): 15.5, ("iiwa", "mug", "paired", "snopt"): 16.0,
+    ("iiwa", "pose", "native", "snopt"): 0.1, ("iiwa", "pose", "paired", "snopt"): 0.1,
+}
+#: NLopt is not sampled: charged the clock per arm (its record joint space sits at it), an upper bound.
+#: The record's learned-only GPU switches, dropped from the CPU-node items (header).
+ANALYTIC_GPU_ONLY = (["--compile"], ["--set", "flow_cuda_graph=True"])
+
+
+def _strip_gpu_only(args):
+    """`args` without the learned-only GPU switches (each removed where it occurs)."""
+    a = list(args)
+    for tokens in ANALYTIC_GPU_ONLY:
+        for i in range(len(a) - len(tokens), -1, -1):
+            if a[i:i + len(tokens)] == tokens:
+                del a[i:i + len(tokens)]
+    return a
 
 
 def stage_ANALYTIC(variant="ANALYTIC"):
@@ -3703,7 +3734,7 @@ def stage_ANALYTIC(variant="ANALYTIC"):
         for it in stage_REMEASURE(source):
             if it["robot"] not in ANALYTIC_ARMS:
                 continue
-            a = list(it["args"])
+            a = _strip_gpu_only(it["args"])
             a[a.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
             i = a.index("--tag")
             old = a[i + 1]
@@ -3713,11 +3744,9 @@ def stage_ANALYTIC(variant="ANALYTIC"):
             task, start, solver = (a[a.index(k) + 1] for k in ("--task", "--start", "--solver"))
             shards = int(a[a.index("--shard") + 1].split("/")[1]) if "--shard" in a else 1
             n_arms = len(ANALYTIC_ARMS[it["robot"]].split(","))
-            J = RECORD_MEAN_WALL[(it["robot"], task, start)][solver][1]
-            ## A cell cannot outlast the 180 s clock by much (SNOPT's zero-minor overrun aside),
-            ## so the multiple is capped there -- NLopt's joint space already sits at it.
-            seconds = (480 * n_arms * min(ANALYTIC_WALL_PER_JS * J, 180.0) / shards
-                       + REMEASURE_ITEM_OVERHEAD_S)
+            per_cell = (n_arms * 180.0 if solver == "nlopt"
+                        else ANALYTIC_CELL_S[(it["robot"], task, start, solver)])
+            seconds = 480 * per_cell / shards + REMEASURE_ITEM_OVERHEAD_S
             items.append(dict(it, args=a, id=it["id"].replace(old, new, 1), seconds=seconds,
                               order=it["order"] + (0 if ladder == "" else 1000)))
     return items
@@ -3749,8 +3778,16 @@ def stage_ANALYTIC_SMOKE():
 #: the configuration (Thomas, 2026-10-12: run both). Both clip ladders (tags ANALYTICS /
 #: ANALYTICST). Submit with DRAKE_ENV=crc PROCS=2; R20's IPOPT twins are the record's PAPER rows.
 ANALYTIC_SVGD_KERNELS = {"pin2kx": "x", "pin2kq": "q"}
-#: Laptop smoke 2026-10-12 (eager, 20 s cap): 2-7 s per cell per arm; graphed 1-3 s. Charged 5 s.
-ANALYTIC_SVGD_CELL_S = 5.0
+#: MEASURED mean seconds per cell, summed over the run's analytic arms, per (robot, task, start):
+#: laptop smokes 2026-10-13 (8 cells, 30 s clock, kernels x and q alike), a clock stop charged the
+#: full 180 s. A failing swarm never stalls on a feasible objective, so it runs to the clock: Panda
+#: `analytic8` (the native 8-branch pathology) is nearly all of it. Replaced a flat 5 s (~5x low).
+ANALYTIC_SVGD_CELL_S = {
+    ("panda", "mug", "native"): 144.0, ("panda", "mug", "paired"): 77.0,
+    ("panda", "pose", "native"): 183.0, ("panda", "pose", "paired"): 116.0,
+    ("iiwa", "mug", "native"): 4.0, ("iiwa", "mug", "paired"): 4.5,
+    ("iiwa", "pose", "native"): 2.2, ("iiwa", "pose", "paired"): 2.4,
+}
 
 
 def stage_ANALYTIC_SVGD():
@@ -3771,9 +3808,10 @@ def stage_ANALYTIC_SVGD():
                 b[b.index("--tag") + 1] = new
                 b += extra
                 shards = int(b[b.index("--shard") + 1].split("/")[1]) if "--shard" in b else 1
-                n_arms = len(ANALYTIC_ARMS[it["robot"]].split(","))
                 items.append(dict(it, args=b, id=it["id"].replace(tag, new, 1),
-                                  seconds=480 * n_arms * ANALYTIC_SVGD_CELL_S / shards
+                                  seconds=480 * ANALYTIC_SVGD_CELL_S[
+                                      (it["robot"], "mug" if "mug" in tag else "pose",
+                                       "paired" if "paired" in tag else "native")] / shards
                                   + REMEASURE_ITEM_OVERHEAD_S,
                                   order=it.get("order", 0) + (0 if ladder == "" else 1000)))
     return items
@@ -3798,8 +3836,8 @@ def stage_ANALYTIC_SVGD_SMOKE():
 
 def analytic_allotment():
     print("ANALYTIC ALLOTMENT -- the analytic arms, both clip ladders, per robot x solver.")
-    print(f"  Mean wall per cell per analytic arm = {ANALYTIC_WALL_PER_JS:g} x the record's joint-space")
-    print(f"  mean (Table 3 base, RECORD_MEAN_WALL); +{REMEASURE_ITEM_OVERHEAD_S:g} s per item.")
+    print("  Seconds per cell: MEASURED on the laptop 2026-10-13 (ANALYTIC_CELL_S, ANALYTIC_SVGD_CELL_S;")
+    print(f"  clock stops charged 180 s); NLopt charged the clock; +{REMEASURE_ITEM_OVERHEAD_S:g} s per item.")
     print(f"\n  {'stage':<16}{'PROCS':>6}{'runs':>6}{'items':>7}{'solve-h':>9}{'node-h':>8}")
     for variant in ("ANALYTIC", "ANALYTIC_NLOPT"):
         its = stage_ANALYTIC(variant)
@@ -6087,15 +6125,20 @@ def selftest():
                 an_fails.append(f"{it['id']}: no REMEASURE twin")
                 continue
             extra = ANALYTIC_LADDERS[m.group(2)]
-            b = list(twin["args"])
+            b = _strip_gpu_only(twin["args"])
             b[b.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
             b[b.index("--tag") + 1] = tag
             if a != b + extra or it["script"] != twin["script"] or it["env"] != twin["env"]:
-                an_fails.append(f"{it['id']} is not its REMEASURE twin modulo arms / tag / ladder")
+                an_fails.append(f"{it['id']} is not its REMEASURE twin modulo arms / tag / ladder "
+                                f"/ the GPU-only switches")
+            if "--compile" in a or "flow_cuda_graph=True" in a or "svgd" in a:
+                an_fails.append(f"{it['id']}: a GPU-only switch on a CPU-node item")
     sm = stage_ANALYTIC_SMOKE()
     if len(sm) != 48 or any("--shard" in i["args"] for i in sm) or \
-            any(not i["id"].startswith("sc_ANALYTICSMOKE") for i in sm):
-        an_fails.append(f"ANALYTIC_SMOKE: {len(sm)} items (expected 48, unsharded, sc_ANALYTICSMOKE*)")
+            any(not i["id"].startswith("sc_ANALYTICSMOKE") for i in sm) or \
+            any("--compile" in i["args"] or "flow_cuda_graph=True" in i["args"] for i in sm):
+        an_fails.append(f"ANALYTIC_SMOKE: {len(sm)} items (expected 48, unsharded, sc_ANALYTICSMOKE*, "
+                        f"no GPU-only switch)")
     if ALL_ARMS["iiwa"] != "learned,numerical":
         an_fails.append("ALL_ARMS changed: the old stages' manifests would not regenerate")
     r20 = {it["id"]: it for it in stage_SVGD("SVGD_R20")}
@@ -6129,7 +6172,8 @@ def selftest():
     if not an_fails:
         print("ok   stages ANALYTIC / ANALYTIC_NLOPT / ANALYTIC_SMOKE / ANALYTIC_SVGD(_SMOKE): 32 / 16 / "
               "48 / 32 / 32 runs, the record's Panda and iiwa items (svgd: R20's pin2) with only the "
-              "arms, tag, kernel and clip ladder changed")
+              "arms, tag, kernel and clip ladder changed (and, on the CPU-node stages, the "
+              "learned-only GPU switches dropped)")
 
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
