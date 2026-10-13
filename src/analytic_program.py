@@ -195,6 +195,26 @@ class AnalyticProgramMixin:
     def VarsToQ(self, vars, add_correction=False):
         return self.VarsToConfigAndQ(vars)[1]
 
+    ## ------------------------- the svgd solver's hooks ------------------------- ##
+
+    def TorchAnalyticMap(self, dtype, device):
+        '''This program's map as batched torch, `X [N, 7] -> (q [N, 7], u [N, 4])`
+        (`src/svgd/batched_analytic.py`, pinned against `_Solve` by
+        tests/test_batched_analytic.py), on the CURRENT branch `self.gc` -- the one the
+        start protocol set. Its presence is also how `BatchedProgram` recognises this
+        formulation (explicitly: an analytic program has 7 variables == ndof and must never
+        be replayed as joint space).'''
+        from src.svgd.batched_analytic import BatchedAnalyticMap
+        return BatchedAnalyticMap.from_program(self, dtype=dtype, device=device)
+
+    def SvgdNativeSpec(self):
+        '''The native start distribution as `SetNativeStart` draws it, for a swarm: the pose
+        variables at `AnalyticNativePose()` and psi uniform over `PSI_NATIVE_RANGE`. The
+        branch is NOT part of it: a swarm keeps the cell's branch `self.gc` for every
+        particle (a per-particle branch draw would be a multistart over branches).'''
+        return dict(pose=np.asarray(self.AnalyticNativePose(), dtype=float).copy(),
+                    psi_range=tuple(float(v) for v in self.PSI_NATIVE_RANGE))
+
     def ReachabilityValues(self, vars):
         '''The unclipped arguments at an iterate, from the pass `QAndPose` already made.'''
         self.QAndPose(vars)
