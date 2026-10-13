@@ -947,7 +947,7 @@ the selection) is tightened x0.9, and it re-tests at the next stall. Recorded pe
 step for a 0.04% event) and a fixed margin.
 
 **Still open**: the paper tables from R20 (`report_svgd` stage mode; the multistart column via
-`scratchpad/runtime_vs_js.py`; Thomas writes every word -- numbers and verdicts only from here);
+`scripts/svgd/cross/`; Thomas writes every word -- numbers and verdicts only from here);
 the GVS arm under svgd is DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU,
 and a dlpack bridge would not remove the batched root-find's cost; what to do with R14's
 combinations. The staged cluster tree is 86efbb0.
