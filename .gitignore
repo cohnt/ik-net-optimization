@@ -37,3 +37,5 @@ wandb/
 .venv-soromox/
 ## Untrained smoke-test charts (scripts/gvs_arm/make_untrained_chart.py): never tracked, sidecar included.
 models/*/*__untrained__*
+## The screw arm's rungs, same rule.
+models/screw7_p*/*.pkl

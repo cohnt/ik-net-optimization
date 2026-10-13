@@ -127,6 +127,15 @@ class GvsArmIKProgram(SoftArmIKProgram):
         """The EXACT forward model, whatever this program is optimising against."""
         return self.model.PlantQ(np.asarray(cfg, dtype=float))[self._plant_slots]
 
+    def TorchConfigToPlantQ(self, dtype=None, device=None):
+        """Not inherited from the soft PCS arm: this robot's forward map is SoRoMoX's GVS
+        model solved to equilibrium in JAX (a root-find with implicit differentiation), and
+        there is no batched torch version of it for a particle solver to call. TODO (Thomas,
+        2026-10-11): rewrite the PCS and GVS forward steps in torch."""
+        raise NotImplementedError(
+            f"{type(self).__name__}: the GVS forward map is a JAX root-find with no torch "
+            f"port; BatchedProgram (the svgd solver) cannot replay it yet")
+
     def MapJacobian(self, cfg):
         """`(d(plant q)/d(cfg), plant q)` in the CANONICAL body order."""
         if self.fk_surrogate is not None:

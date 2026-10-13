@@ -6,7 +6,7 @@ import torch
 from ikflow.config import DEVICE
 import numpy as np
 from collections import namedtuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from functools import lru_cache, partial
 from pydrake.all import (
     AutoDiffXd,
@@ -214,6 +214,57 @@ def CheckNloptOptions(options):
             f"max_eval, max_time; the local_optimizer_* options and ftol_rel/ftol_abs/"
             f"stopval each arrived later, and in different releases.")
     return requested
+
+
+## ------------------------- the svgd option surface -----------------------------------
+##
+## The enum-valued `svgd_*` fields and what each accepts. Checked in
+## `ProgramOptions.__post_init__`, so a mistyped `--set svgd_method=...` raises at options
+## construction -- before the first cell and outside run_grid's per-cell `except` -- rather
+## than landing as a full column of instant failures, exactly as CheckNloptOptions does for
+## NLopt. Like that check it is NOT gated on `which_solver == "svgd"`: a manifest that sets
+## a nonsense svgd value on an IPOPT arm is a broken sweep and should say so.
+SVGD_ENUM_FIELDS = {
+    "svgd_method": ("al_svgd",),
+    "svgd_dtype": ("float32", "float64"),
+    "svgd_paired_init": ("jitter", "native"),
+    "svgd_kernel": ("q", "none", "x", "z", "c", "cz", "qz", "pose"),
+    "svgd_metric_temperature": ("off", "on"),
+    "svgd_warmup": ("none", "cem"),
+    "svgd_metric": ("gn", "identity"),
+    "svgd_row_units": ("natural", "tolerance"),
+    "svgd_collision_backend": ("autodiff", "clearances"),
+    "svgd_resample": ("native", "drop", "keep"),
+}
+
+
+def CheckSvgdOptions(options):
+    """Refuse an svgd enum value outside its choices, a non-positive particle count,
+    temperature or step size, and the CUDA-graph switch without the compile switch."""
+    for name, allowed in SVGD_ENUM_FIELDS.items():
+        value = getattr(options, name)
+        if value not in allowed:
+            raise ValueError(f"{name}={value!r} is not one of {allowed}")
+    if int(options.svgd_n) < 1:
+        raise ValueError(f"svgd_n must be >= 1, got {options.svgd_n!r} (N = 1 is the "
+                         f"degenerate single-particle control, not 0)")
+    for name in ("svgd_temperature", "svgd_lr", "svgd_rho", "svgd_row_length_scale"):
+        if not float(getattr(options, name)) > 0.0:
+            raise ValueError(f"{name} must be > 0, got {getattr(options, name)!r}")
+    if not float(options.svgd_gn_lm) >= 0.0:
+        raise ValueError(f"svgd_gn_lm must be >= 0, got {options.svgd_gn_lm!r}")
+    if options.svgd_dual_lr is not None and not float(options.svgd_dual_lr) >= 0.0:
+        raise ValueError(f"svgd_dual_lr must be >= 0 (or None for svgd_rho), got {options.svgd_dual_lr!r}")
+    if options.svgd_cuda_graph and not options.svgd_compile:
+        raise ValueError("svgd_cuda_graph=True requires svgd_compile=True (the graphs replay "
+                         "the compiled stages)")
+    if options.svgd_collision_backend == "clearances":
+        ## Refused here, before the first cell, rather than at the first solve -- inside
+        ## run_grid's per-cell `except` -- which would score a full column of instant failures.
+        from src.svgd.collision_backend import clearances_unavailable_reason
+        reason = clearances_unavailable_reason()
+        if reason is not None:
+            raise ValueError("svgd_collision_backend='clearances': " + reason)
 
 
 @dataclass
@@ -609,6 +660,62 @@ class ProgramOptions:
     jacobian_tikhonov_lambda: float = field(default=0.0, metadata={"help": "Tikhonov/LM damping: replace singular values s with s*λ/(s+λ), bounded by λ; 0 disables"})
     jacobian_svd_floor: float = field(default=0.0, metadata={"help": "Floor on singular values (pseudoinverse-style truncation); 0 disables"})
 
+    ## The svgd solver ##
+    ## A FOURTH METHOD CLASS on the solver axis: batch-parallel SVGD-style particle methods
+    ## in torch, on the GPU (reopened by Thomas, 2026-10-08). Every field here is prefixed
+    ## `svgd_` and is INERT unless `which_solver == "svgd"`: none is read by `_IpoptOptions`,
+    ## `_SnoptOptions` or `_NloptOptions`, so a Drake column emits exactly what it always
+    ## has (tests/test_solver_plumbing.py pins that). `use_float64` is untouched and governs
+    ## the Drake path only; the swarm's dtype is `svgd_dtype`, and the Drake re-check is
+    ## always float64. The enum fields are validated in `__post_init__` (CheckSvgdOptions) so a bad
+    ## `--set` dies before the first cell. Everything actually handed to the solver is
+    ## recorded in `emitted_solver_options["svgd"]` like the Drake solvers' options are.
+    ##
+    ## NO FORMULATION-SPECIFIC INFORMATION is encoded by any of these (Thomas, 2026-10-08).
+    ## The solver's target is exactly the program as written, -L_rho/T: no latent-prior
+    ## term, no assumption that the correction or any residual is zero-centred, no kernel or
+    ## schedule that knows what one arm's variables mean. What IS allowed is
+    ## formulation-agnostic: a kernel in configuration space (every arm has a q), row
+    ## scaling by tolerance, coordinates normalised by each region's half-width (read from
+    ## the program's own options and bounds), and the native start's own draw.
+    ##
+    ## PLAIN AUGMENTED-LAGRANGIAN SVGD, nothing else (Thomas, 2026-10-09): every field below
+    ## names one part of the method in `docs/svgd-solver.md`; the removed pieces are listed
+    ## there under "Removed, 2026-10-09".
+    svgd_method: str = field(default="al_svgd", metadata={"help": "svgd: the method -- 'al_svgd', plain augmented-Lagrangian SVGD (docs/svgd-solver.md), the only one. Named in full in every table"})
+    svgd_n: int = field(default=64, metadata={"help": "svgd: number of particles N -- a METHOD PARAMETER, reported everywhere; N = 1 is the degenerate single-particle control"})
+    svgd_dtype: str = field(default="float32", metadata={"help": "svgd: the swarm's torch dtype, 'float32' (fielded) or 'float64' (a control). The Drake re-check is always float64"})
+    svgd_seed: int = field(default=0, metadata={"help": "svgd: base seed for the particle draws (combined with the cell's initial guess)"})
+    svgd_paired_init: str = field(default="native", metadata={"help": "svgd: how the swarm is drawn around the program's initial guess (particle 0 is the guess, never clipped, either way) -- 'native' (fielded 2026-10-12; was 'jitter') draws the other N-1 from the arm's own start distribution, 'jitter' adds svgd_jitter * N(0, I) in the normalised coordinates (every svgd round through R19 ran it)"})
+    svgd_jitter: float = field(default=0.1, metadata={"help": "svgd: paired-jitter sigma, as a fraction of each variable's region half-width (the normalised coordinates)"})
+    svgd_temperature: float = field(default=1.0, metadata={"help": "svgd: the temperature T of the target exp(-L_rho / T); fixed for the whole solve"})
+    svgd_lr: float = field(default=0.3, metadata={"help": "svgd: the step, a dimensionless fraction of the metric's step -- under svgd_metric=gn dy_i = svgd_lr (H_i + svgd_gn_lm I)^-1 phi_i (Stein variational Newton), under identity dy_i = (svgd_lr / ||H_i||_F) phi_i, H_i the GN Hessian of the AL in the normalised coordinates (0.3: the 2026-10-10 screen at rho 1e3, delta 10 -- lr 0.3 solved 24/24 of 12 Panda cells x 2 arms, resampling 0.07 of N per check, against 22/24 and 0.12 at lr 1.0)"})
+    svgd_metric: str = field(default="gn", metadata={"help": "svgd: 'gn' -- the block-diagonal Stein variational Newton step (Detommaso et al. 2018) with the per-particle Gauss-Newton Hessian of the AL; 'identity' -- the plain SVGD direction with the per-particle step svgd_lr / ||H_i||_F"})
+    svgd_metric_temperature: str = field(default="on", metadata={"help": "svgd: whether the Stein variational Newton metric carries the temperature -- 'on' (fielded 2026-10-12; was 'off', bit-identical at T = 1): the metric is H / T, dy_i = svgd_lr (H_i / T + svgd_gn_lm I)^-1 phi_i, matching the drive so T sets only the repulsion-to-drive ratio (under svgd_metric=identity, the step bound ||H_i / T||_F = ||H_i||_F / T); 'off': the metric is H, so the drive -grad L / T is not matched by it and the Newton step scales as 1/T (every svgd round through R19 ran it). Both are swept; neither is 'the' definition (Thomas, 2026-10-11)"})
+    svgd_gn_lm: float = field(default=10.0, metadata={"help": "svgd: delta, the Levenberg damping added to the GN Hessian under svgd_metric=gn (10: the 2026-10-10 probe, most feasible of {1e-2, 1, 10} on 12 Panda cells)"})
+    svgd_row_units: str = field(default="natural", metadata={"help": "svgd: 'natural' -- the AL is formed on the rows exactly as the program's bindings evaluate them (orientation-type rows times svgd_row_length_scale); 'tolerance' -- every row divided by acceptable_constr_viol_tol (the pre-2026-10-09 path, a control). Feasibility is per row against the tolerance either way"})
+    svgd_row_length_scale: float = field(default=1.0, metadata={"help": "svgd: metres per radian on the orientation-type rows (rpy residuals, the c box's rpy rows; NOT joint limits) under svgd_row_units=natural"})
+    svgd_kernel: str = field(default="cz", metadata={"help": "svgd: the space of the RBF kernel, median bandwidth per factor (floored by svgd_bandwidth_floor in that factor's units; fielded 2026-10-12: 'cz', was 'q') -- 'q' (the configuration; repulsion pulled back to y through the flow's VJP; every svgd round through R19 that does not name a kernel ran it); 'x' (all of the normalised decision vector y = x / s, repulsion directly in y; on joint space this is q divided by its half-range); 'z' / 'c' (the latent / conditioning-pose block of y alone, repulsion on that block only; learned arm only); 'cz' (fielded: the product of the c and z RBFs, each its own bandwidth; learned only -- the joint-space arm must name another space, e.g. 'q'); 'qz' (the product of the q RBF, pulled back, and the z RBF, direct; learned only); 'pose' (the task frame's [position; canonical quaternion wxyz], pulled back through d pose / d q and the VJP); 'none' (no interaction: both kernel terms dropped, the batched-AL control). z / c / cz / qz are refused on the joint-space arm at solver construction"})
+    svgd_bandwidth_floor: float = field(default=0.05, metadata={"help": "svgd: floor on the median-heuristic kernel bandwidth"})
+    svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho / T), the whole AL gradient inside it -- an A/B"})
+    svgd_rho: float = field(default=100000.0, metadata={"help": "svgd: the penalty rho of the augmented Lagrangian -- ONE scalar, fixed for the whole solve, shared by every particle (1e5: fielded 2026-10-12 with svgd_kernel=cz, rounds R14/R17/R17S/R17P/R18/R19; was 1000, the 2026-10-10 screen -- 10/1e3/1e4/1e5 solved 5/12/12/12 learned and 0/10/9/11 joint space of 12 Panda cells, 1e3 the smallest that works with the least resampling)"})
+    svgd_dual_lr: float = field(default=None, metadata={"help": "svgd: alpha, the dual-ascent step taken every svgd_inner_iters steps on every particle (lam += alpha h~, mu = max(0, mu + alpha g~)); None = svgd_rho, the textbook step; 0 = a pure quadratic penalty (multipliers stay zero)"})
+    svgd_multiplier_max: float = field(default=1e4, metadata={"help": "svgd: box on the magnitude of every multiplier; the clipped entries are counted"})
+    svgd_inner_iters: int = field(default=10, metadata={"help": "svgd: K -- every K steps the unconditional dual-ascent step on every particle, runaway resampling, the stop rule and the wall clock"})
+    svgd_outer_iters: int = field(default=300, metadata={"help": "svgd: cap on outer checks (the 'iterations' column); `max_iter`, when set, also binds"})
+    svgd_resample_q_max: float = field(default=10.0, metadata={"help": "svgd: |q|_inf (rad) above which a particle counts as runaway at the next outer check; what then happens to it is svgd_resample"})
+    svgd_resample: str = field(default="native", metadata={"help": "svgd: what happens at a check to a RUNAWAY particle (|q|_inf > svgd_resample_q_max) or a NON-FINITE one (a non-finite configuration or row) -- 'native' (fielded): both are redrawn from the arm's native start with zero multipliers (n_resampled); 'drop': both are removed from the swarm for the rest of the solve -- frozen, out of every other particle's kernel average, repulsion and median bandwidth, never feasible or selected (n_dropped; n_live at stop; every particle dropped stops the swarm, stop_reason all_dead, scored infeasible); 'keep': a runaway is NOT redrawn and keeps stepping, while a non-finite particle, which cannot keep stepping without poisoning the kernel average, is dropped exactly as under 'drop' (n_dropped)"})
+    svgd_recheck_topk: int = field(default=10, metadata={"help": "svgd: how many particles feasible on the batched rows, in objective order, get the exact Drake `EvalBinding` re-check (float64); the first passer is returned. The same re-check gates a stall stop (the gate-edge rule, 2026-10-12): if none passes, the swarm continues with its feasibility level tightened x0.9 (n_recheck_failures, feas_level)"})
+    svgd_time_reserve: float = field(default=0.1, metadata={"help": "svgd: fraction of `max_wall_time` held back from the swarm for the selection and the Drake re-check"})
+    svgd_stop_patience: int = field(default=5, metadata={"help": "svgd: once a particle is feasible at the gate, stop (converged) after this many consecutive outer checks at which the best feasible particle's objective improved by less than svgd_stop_rel"})
+    svgd_stop_rel: float = field(default=1e-3, metadata={"help": "svgd: the relative improvement of the best feasible objective that counts as progress for the stop rule"})
+    svgd_warmup: str = field(default="none", metadata={"help": "svgd: 'none' or 'cem' -- a forward-only Cross-Entropy phase on the penalised merit before the gradient phase; a phase of the population method, named in full in every table and A/B tested"})
+    svgd_warmup_iters: int = field(default=10, metadata={"help": "svgd: CEM warm-up iterations"})
+    svgd_warmup_elite: float = field(default=0.1, metadata={"help": "svgd: CEM elite fraction"})
+    svgd_compile: bool = field(default=False, metadata={"help": "svgd: torch.compile the split step's three stages (src/svgd/fused.py; compiled by WarmUpSvgdStep, outside any timed cell)"})
+    svgd_collision_backend: str = field(default="autodiff", metadata={"help": "svgd: how the exact collision row is evaluated -- 'autodiff', the program's own MinimumDistanceLowerBoundConstraint on AutoDiffXd one configuration at a time (serial, GIL-bound); 'clearances', the same functional from ONE CollisionChecker.CalcRobotClearances call (batched, GIL-released, Drake-threaded) plus Drake's penalty aggregation in numpy. 'clearances' needs a Drake carrying CalcRobotClearances (branch calc-robot-clearances) and is refused where the running pydrake lacks it"})
+    svgd_cuda_graph: bool = field(default=False, metadata={"help": "svgd: replay the compiled stages as CUDA graphs, captured by WarmUpSvgdStep before the first timed cell (requires svgd_compile and CUDA)"})
+
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
     visualize: bool = field(default=False, metadata={"help": "If true, visualizes the IK solving process in Meshcat"})
 
@@ -625,6 +732,8 @@ class ProgramOptions:
         ## Deliberately NOT gated on `which_solver == "nlopt"`. A manifest that sets an NLopt
         ## field on an IPOPT arm is a broken sweep and should say so rather than run.
         CheckNloptOptions(self)
+        ## Same rule, same place, for the svgd enum fields.
+        CheckSvgdOptions(self)
         ## Graphing the eager jacrev is not possible (it allocates its basis offsets with a
         ## host-to-device copy every call, illegal under capture), and graphing anything
         ## else would be a third configuration nobody measured.
@@ -1188,6 +1297,24 @@ class IKFlowProgram:
             torch.cuda.synchronize()
         return time.time() - start
 
+    def WarmUpSvgdStep(self):
+        """Pay the svgd solver's one-off compile cost outside any timed solve.
+
+        Returns the seconds spent. The `WarmUpJacobian` pattern: the benchmark scripts call
+        it on the sampler program when `which_solver == "svgd"`, so the first timed cell
+        does not carry the compile.
+        """
+        from src.svgd.solver import SvgdSolver
+        return SvgdSolver(self).warm_up()
+
+    def PrepareSvgdSolve(self):
+        """The svgd solver's per-cell infrastructure -- the batched program and a first
+        collision-row evaluation -- paid in a cell's SETUP, before its clock starts
+        (`run_grid` calls it), as a Drake arm's scene is built in setup. No solver state
+        survives into the solve. Returns the seconds spent."""
+        from src.svgd.solver import SvgdSolver
+        return SvgdSolver(self).prepare()
+
     def fk(self, q, matrix = False):
         frame, context = self.SetPositions(q)
         rigid_transform = frame.CalcPoseInWorld(context)
@@ -1236,6 +1363,14 @@ class IKFlowProgram:
         rather than steps taken. Where a solver does report iterations (IPOPT and SNOPT,
         both via their print file) that is reported separately and is the number to compare
         across solvers.
+
+        **Under the `svgd` solver one count is one BATCHED pass**, i.e. one evaluation of
+        the map over all N particles at once, not one particle. The per-particle work is
+        `N x passes`, recoverable because `n_particles` is recorded in the svgd details
+        (`record["svgd"]`) beside the counts. The batched solver bumps these counters
+        itself, through the same keys; `map_jacobian` is a batched Jacobian pass and
+        `map_forward` a batched forward pass. Comparing a batched count against a Drake
+        solver's count is comparing passes, not particles -- say so wherever both appear.
         '''
         self.eval_counts = {k: 0 for k in self.EVAL_COUNT_KEYS}
 
@@ -1909,10 +2044,13 @@ class IKFlowProgram:
         self.correction_cost.evaluator().set_description("CorrectionCost")
     
 
-    ## The solver axis. These are three METHOD CLASSES, not three vendors: IPOPT is an
-    ## interior-point method, SNOPT is SQP, and NLopt is here as an augmented Lagrangian.
-    ## A solver added to this dict should be justified by the class it contributes.
-    SOLVERS = ("ipopt", "snopt", "nlopt")
+    ## The solver axis. These are METHOD CLASSES, not vendors: IPOPT is an interior-point
+    ## method, SNOPT is SQP, and NLopt is here as an augmented Lagrangian. A solver added
+    ## here should be justified by the class it contributes. The fourth class: `svgd`,
+    ## batch-parallel SVGD-style particle methods in torch (reopened by Thomas, 2026-10-08).
+    ## It is not a Drake solver -- `Solve()` dispatches it to `_SolveSvgd` before the Drake
+    ## option builders, and it returns a duck-typed `SvgdResult` (`src/svgd/result.py`).
+    SOLVERS = ("ipopt", "snopt", "nlopt", "svgd")
 
     def _IpoptOptions(self):
         solver = IpoptSolver()
@@ -2094,6 +2232,45 @@ class IKFlowProgram:
                                      spec.cast(value))
         return solver, solver_options
 
+    def RecordIterate(self, vars):
+        '''Keep the newest iterate on the program, in memory, always.
+
+        A solve that ends abnormally -- an exception, a harness kill, the (measured, once
+        in 1740 cells) C++-level wedge inside a single IPOPT iteration -- can then still be
+        verified from the point the solver actually had, instead of the point being
+        discarded with the solve. The predecessor design raised SolveTimeout from the
+        constraint callback, which both threw the iterate away and could not fire during
+        the wedge (no Python ran for 102 minutes); when a wedge releases, IPOPT's own
+        max_wall_time ends the solve at the next iteration boundary with the iterate
+        intact, which needs no help from us.
+
+        Called from `Solve()`'s visualization callback on every Drake solver, and by the
+        svgd solver at every outer step. Also counts the callback and runs the Meshcat /
+        `vars_file` visualization, so the two paths are the same code.
+        '''
+        self.last_iterate = np.array(vars, dtype=float)
+        self.eval_counts["callback"] += 1
+        visualization_callback(vars, diagram=self.diagram, diagram_context=self.diagram_context,
+                               plant=self.plant, plant_context=self.plant_context,
+                               vars_to_q=self.VarsToQ, vars_file=self.options.vars_file,
+                               visualize=self.options.visualize)
+
+    def _SolveSvgd(self):
+        '''The fourth solver class. Not a Drake solver: nothing here touches SolverOptions.
+
+        Records every `svgd_*` field as the emitted configuration -- the same role
+        `emitted_solver_options` plays for the Drake solvers, so an adopted default is
+        readable off the run -- resets the evaluation counters the batched solver bumps
+        per pass, and hands the program to `SvgdSolver`. The import is lazy so the Drake
+        columns never load torch-side solver code they do not use.
+        '''
+        self.ResetEvalCounts()
+        self.emitted_solver_options = {"svgd": {
+            f.name: getattr(self.options, f.name)
+            for f in dataclass_fields(self.options) if f.name.startswith("svgd_")}}
+        from src.svgd.solver import SvgdSolver
+        return SvgdSolver(self).solve()
+
     def Solve(self):
         if os.path.exists(self.options.file_print_name):
             with open(self.options.file_print_name, "r+") as f:
@@ -2107,6 +2284,10 @@ class IKFlowProgram:
         ## reachable from the command line.
         if which not in self.SOLVERS:
             raise ValueError(f"unknown which_solver {which!r}; expected one of {self.SOLVERS}")
+        ## The svgd class is not a Drake solver: no SolverOptions, no print-file option, a
+        ## duck-typed result. Everything from here down is the Drake path and stays as it was.
+        if which == "svgd":
+            return self._SolveSvgd()
         solver, solver_options = {"ipopt": self._IpoptOptions,
                                   "snopt": self._SnoptOptions,
                                   "nlopt": self._NloptOptions}[which]()
@@ -2135,23 +2316,10 @@ class IKFlowProgram:
 
         self.ResetEvalCounts()
 
-        inner = partial(visualization_callback, diagram=self.diagram, diagram_context=self.diagram_context,
-                                                plant=self.plant, plant_context=self.plant_context,
-                                                vars_to_q=self.VarsToQ, vars_file = self.options.vars_file, visualize = self.options.visualize)
-
         def record_iterate(vars):
-            # Keep the newest iterate on the program, in memory, always. A solve that ends
-            # abnormally -- an exception, a harness kill, the (measured, once in 1740
-            # cells) C++-level wedge inside a single IPOPT iteration -- can then still be
-            # verified from the point the solver actually had, instead of the point being
-            # discarded with the solve. The predecessor design raised SolveTimeout from
-            # the constraint callback, which both threw the iterate away and could not
-            # fire during the wedge (no Python ran for 102 minutes); when a wedge
-            # releases, IPOPT's own max_wall_time ends the solve at the next iteration
-            # boundary with the iterate intact, which needs no help from us.
-            self.last_iterate = np.array(vars, dtype=float)
-            self.eval_counts["callback"] += 1
-            inner(vars)
+            # Keep the newest iterate on the program, in memory, always -- see RecordIterate
+            # for why (abnormal exits are verified from the point the solver had).
+            self.RecordIterate(vars)
 
         self.prog.AddVisualizationCallback(record_iterate, self.lumped_vars)
         

@@ -9,6 +9,15 @@
 #   MANIFEST=cluster/manifest_stageA.txt PROCS=1 \
 #     LLsub ./cluster/run_items.sh -g volta:2 -s 40 -q xeon-g6-volta -T 48:00:00
 #
+# DRAKE_ENV selects the Python/Drake environment for the WHOLE job (one value per stage):
+#   unset   ~/learned-ik/venv + the nightly tarball pin on PYTHONPATH (+ the vendored sysdeps).
+#           Every stage of record runs this way, and its command lines are unchanged by the switch.
+#   crc     ~/learned-ik/venv-crc: the same environment with Drake from Thomas's
+#           `calc-robot-clearances` wheel inside the venv, NOTHING on PYTHONPATH, no sysdeps, the
+#           Drake model cache from ~/learned-ik/home-crc, and DRAKE_NUM_THREADS set (below). For the
+#           svgd rounds that carry `svgd_collision_backend=clearances` (cluster/SVGD_RUNBOOK.md);
+#           built by cluster/make_venv_crc.sh, verified by cluster/verify_venv_crc.sh.
+#
 # Keep the job wall ABOVE ITEM_TIMEOUT (below), or Slurm kills a long item and every other
 # worker on the node with it.  `xeon-g6-volta` allows 4-04:00:00 (100 h), so there is room.
 #
@@ -100,6 +109,31 @@ PROCS="${PROCS:-1}"
 ITEM_TIMEOUT="${ITEM_TIMEOUT:-28800}"
 export TMPDIR="${TMPDIR:-/tmp}"
 
+## --- the Drake environment (DRAKE_ENV, see the header) ---------------------
+## Validated ONCE, before any worker forks, so a typo or a missing venv fails the job in a
+## second instead of turning every item into an import error.
+DRAKE_ENV="${DRAKE_ENV:-}"
+case "$DRAKE_ENV" in
+    "") ;;
+    crc)
+        [ -x "$ROOT/venv-crc/bin/python" ] || {
+            echo "run_items.sh: DRAKE_ENV=crc but no $ROOT/venv-crc (cluster/make_venv_crc.sh)" >&2; exit 2; }
+        [ -d "$ROOT/home-crc/.cache/drake" ] || {
+            echo "run_items.sh: DRAKE_ENV=crc but no warmed $ROOT/home-crc/.cache/drake" >&2; exit 2; }
+        ## The clearance row is Drake-threaded (Parallelism::Max), and Drake reads OMP_NUM_THREADS,
+        ## which every worker pins to 1 -- so without this the batched row runs on ONE thread and
+        ## keeps ~1.2x of its 7-10x (docs/svgd-solver.md). Default: the node's CPUs split evenly
+        ## over the PROCS workers (at least 40 / 2 = 20 on xeon-g6-volta at the svgd PROCS=2;
+        ## more if the job's CPU set counts hyperthreads). Logged in each worker's header. Results are
+        ## bitwise independent of the thread count (tests/test_collision_clearances.py).
+        ## `env -u`: GNU nproc reports OMP_NUM_THREADS when it is set, not the CPUs the job holds.
+        DRAKE_NUM_THREADS="${DRAKE_NUM_THREADS:-$(( $(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc) / ${PROCS:-1} ))}"
+        [ "$DRAKE_NUM_THREADS" -ge 1 ] 2>/dev/null || DRAKE_NUM_THREADS=1
+        export DRAKE_NUM_THREADS ;;
+    *)
+        echo "run_items.sh: unknown DRAKE_ENV='$DRAKE_ENV' (unset, or 'crc')" >&2; exit 2 ;;
+esac
+
 if [ -z "${MANIFEST:-}" ]; then
     echo "run_items.sh: set MANIFEST to a manifest path (cluster/gen_manifest.py)" >&2
     exit 2
@@ -132,10 +166,21 @@ Worker() {
     ln -sfn "$ROOT/home/.cache/ikflow" "$HOME/.cache/ikflow" 2>/dev/null || true
     ## Drake's drake_models package, fetched during setup: compute nodes cannot download
     ## it, and ProcessModelDirectives would fail with "Network is unreachable".
-    ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null || true
+    local PY
+    if [ "$DRAKE_ENV" = "crc" ]; then
+        ## The wheel's own cache, warmed by make_venv_crc.sh with the wheel's Drake.
+        ln -sfn "$ROOT/home-crc/.cache/drake" "$HOME/.cache/drake" 2>/dev/null || true
+        ## The wheel lives INSIDE venv-crc and must be the only pydrake on the path: no tarball
+        ## on PYTHONPATH and no tarball runtime libs (sysdeps) on LD_LIBRARY_PATH.
+        unset PYTHONPATH
+        PY="${TEST_PYTHON:-$ROOT/venv-crc/bin/python}"
+    else
+        ln -sfn "$ROOT/home/.cache/drake" "$HOME/.cache/drake" 2>/dev/null || true
 
-    export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}"
+        export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}"
+        PY="${TEST_PYTHON:-$ROOT/venv/bin/python}"
+    fi
     ## One thread per process: the node is filled with processes, not threads.
     export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
     ## The GVS push-rod arm's forward model is JAX on the CPU; pin XLA's pool per worker too.
@@ -154,7 +199,6 @@ Worker() {
     else
         PinGpu "$LOCAL"
     fi
-    local PY="${TEST_PYTHON:-$ROOT/venv/bin/python}"
 
     ## Stagger, so PROCS workers do not import torch and Drake in lockstep.
     sleep $(( LOCAL * 3 ))
@@ -164,6 +208,8 @@ Worker() {
       echo "manifest $MANIFEST, state $STATE_DIR, TMPDIR=$TMPDIR"
       echo "CUDA_VISIBLE_DEVICES=[${CUDA_VISIBLE_DEVICES:-unset}] HOME=$HOME"
       echo "staged commit: $(cat "$REPO/.staged-commit" 2>/dev/null || echo UNKNOWN)"
+      [ -n "$DRAKE_ENV" ] && echo "DRAKE_ENV=$DRAKE_ENV: python $PY, PYTHONPATH=[${PYTHONPATH:-unset}]," \
+          "DRAKE_NUM_THREADS=${DRAKE_NUM_THREADS:-unset}"
     } >> "$LOG" 2>&1
 
     local OK=0 FAIL=0 SKIP=0
@@ -200,11 +246,15 @@ Worker() {
         mkdir "$CLAIM" 2>/dev/null || { SKIP=$((SKIP + 1)); continue; }
         echo "$TAGID $(date -Is)" > "$CLAIM/owner"
 
-        ## There is ONE Drake here and it is this project's pin, exported as PYTHONPATH
-        ## above.  A per-item `DRAKE=nightly` sentinel used to select a second install so a
-        ## stage could pair two Drake versions; that is gone by decision (2026-09-19, Thomas:
-        ## every arm runs on the current pin, and a version-induced regression is reported and
-        ## fixed upstream rather than pinned around).  Do not reintroduce a version switch.
+        ## ONE Drake per JOB, never per item. The record's Drake is this project's pin, exported
+        ## as PYTHONPATH above. A per-item `DRAKE=nightly` sentinel used to select a second
+        ## install so a stage could pair two Drake versions; that is gone by decision
+        ## (2026-09-19, Thomas: every arm runs on the current pin, and a version-induced
+        ## regression is reported and fixed upstream rather than pinned around), and it stays
+        ## gone. The one exception is job-level and has a different purpose: DRAKE_ENV=crc
+        ## (header) runs a whole svgd stage on Thomas's `calc-robot-clearances` build because the
+        ## clearance row needs a binding no release carries (Thomas, 2026-10-11) -- not to pair
+        ## versions. submit_bench.sh refuses a manifest that mixes the two.
         ITEM_ENVS="$ENVS"
 
         { echo "--- [$k] $ID START $(date -Is)"; echo "    env $ITEM_ENVS -- $SCRIPT $ARGS"; } \
