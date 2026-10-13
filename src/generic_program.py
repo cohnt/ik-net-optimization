@@ -637,8 +637,8 @@ class ProgramOptions:
     # Which discrete branch set the Panda analytic chart uses: 4 is the historical chart
     # (elbow branch pinned, the half far from the joint limits); 8 adds the mirrored elbow
     # branch, taking round-trip coverage from 89.4% to 99.4% of random configurations. The
-    # default stays 4 so archived runs remain reproducible; the residual ~0.6% at 8 is a
-    # measured property of this chart, left as future work (arXiv:2503.03992 may help).
+    # default stays 4 so archived runs remain reproducible. The old "residual ~0.6%" at 8 was
+    # the arccos clip at 1e-6, not the chart: at clip 1e-8 the round trip is 100% to 1e-2.
     analytic_branches: int = 4
     # The analytic map clips every arccos/arcsin argument into +-(1 - clip) (zero derivative
     # where active); its reachability rows hold the unclipped arguments inside
@@ -651,6 +651,12 @@ class ProgramOptions:
     # 8.6% (iiwa) of configuration space outside the rows, 1.1e-4 5.6% and 3.0%.
     analytic_clip_stepback: float = 1e-4
     analytic_reach_stepback: float = 1e-3
+    # Which implementation evaluates the closed-form map: "python" (src/*_analytic_ik.py,
+    # the reference) or "cpp" (cpp/build.sh -> src/analytic_cpp.py), which transliterates it
+    # op for op and returns d[q; u]/d(vars) in one call; tests/test_analytic_cpp.py pins the
+    # two together. Which one is fielded is Thomas's call, so the default stays the
+    # reference. "cpp" raises at program construction if the library is not built.
+    analytic_backend: str = field(default="python", metadata={"help": "Closed-form IK implementation for the analytic arm: 'python' (reference) or 'cpp' (cpp/build.sh; same numerics, faster)"})
     # Restores the pre-2026-08-31 paired start, in which the conditioning pose was clipped
     # into its box before the solve and the correction started at zero -- leaving the
     # learned arm 1.2-3.3 rad from the shared q_init. The repaired default sets the guess
@@ -752,6 +758,9 @@ class ProgramOptions:
             raise ValueError("flow_cuda_graph requires compile_flow_jacobian (--compile)")
         if self.analytic_branches not in (4, 8):
             raise ValueError(f"analytic_branches must be 4 or 8, got {self.analytic_branches}")
+        if self.analytic_backend not in ("python", "cpp"):
+            raise ValueError(f"analytic_backend must be 'python' or 'cpp', got "
+                             f"{self.analytic_backend!r}")
         if not 0.0 <= self.analytic_clip_stepback < self.analytic_reach_stepback < 1.0:
             raise ValueError(
                 f"need 0 <= analytic_clip_stepback < analytic_reach_stepback < 1, got "

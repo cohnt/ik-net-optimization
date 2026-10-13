@@ -359,6 +359,7 @@ class Iiwa14IKProgramAnalytic(AnalyticProgramMixin, Iiwa14IKProgram):
     `src/analytic_program.py`.'''
 
     ANALYTIC_IK_CLASS = Analytic_IK_7DoF
+    ANALYTIC_CPP_ROBOT = "iiwa"
     #: ../codebase boxes the arm angle at +-10; it is periodic, so the box only keeps IPOPT
     #: off an unbounded variable and never binds a start (the native draw is +-pi).
     PSI_BOUNDS = 10.0

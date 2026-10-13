@@ -83,9 +83,13 @@ class AnalyticProgramMixin:
     hands every program the already-loaded flow, so the only cost is the calibration's
     four FK calls; no network is ever evaluated by this formulation.
 
-    A robot provides: `ANALYTIC_IK_CLASS`, `PSI_BOUNDS`, `_AnalyticSolve(R, p, psi, gc,
-    clip)`, `AnalyticFK(q_arm)`, `BranchSet()`, `RecoverBranch(q_arm)`, `RecoverPsi(q_arm)`.
+    A robot provides: `ANALYTIC_IK_CLASS`, `ANALYTIC_CPP_ROBOT`, `PSI_BOUNDS`,
+    `_AnalyticSolve(R, p, psi, gc, clip)`, `AnalyticFK(q_arm)`, `BranchSet()`,
+    `RecoverBranch(q_arm)`, `RecoverPsi(q_arm)`.
     '''
+
+    #: Which map of the C++ backend (src/analytic_cpp.py) is this robot's; None = none.
+    ANALYTIC_CPP_ROBOT = None
 
     #: How many pre-clip arguments the map reports (both robots: four).
     NUM_REACH_VALUES = 4
@@ -107,6 +111,13 @@ class AnalyticProgramMixin:
         self.analytic_ik = self.ANALYTIC_IK_CLASS()
         self._analytic_offsets = {}
         self._analytic_aux = {}
+        ## Loaded HERE, so a missing library fails the construction, not the first solve.
+        self._analytic_cpp = None
+        if self.options.analytic_backend == "cpp":
+            if self.ANALYTIC_CPP_ROBOT is None:
+                raise ValueError(f"{type(self).__name__} has no C++ analytic map")
+            from src.analytic_cpp import AnalyticCppMap
+            self._analytic_cpp = AnalyticCppMap(self.ANALYTIC_CPP_ROBOT, self.analytic_ik)
 
     def AnalyticPoseOffset(self):
         '''`X_FA` for the current `self.frame`, measured once per frame.'''
@@ -169,6 +180,9 @@ class AnalyticProgramMixin:
     ## ------------------------------ the map -------------------------------- ##
 
     def _Solve(self, vars, clip_stepback):
+        if self._analytic_cpp is not None:
+            ## The same composition and map in one C++ call, d[q; u]/d(vars) included.
+            return self._analytic_cpp(vars, self.pose_offset, self.gc, clip_stepback)
         xyz_rpy, psi = vars[:6], vars[6]
         t = AutoDiffXd if isinstance(xyz_rpy[0], AutoDiffXd) else float
         X = RigidTransform_[t](RollPitchYaw_[t](xyz_rpy[3:6]), xyz_rpy[:3])
@@ -343,7 +357,8 @@ class AnalyticProgramMixin:
                                  *map(float, X.rotation().ToRollPitchYaw().vector())],
             pose_offset_source=self.pose_offset_source,
             analytic_clip_stepback=float(self.options.analytic_clip_stepback),
-            analytic_reach_stepback=float(self.options.analytic_reach_stepback))
+            analytic_reach_stepback=float(self.options.analytic_reach_stepback),
+            analytic_backend=str(self.options.analytic_backend))
         if getattr(self, "target_mug", None) is not None:
             out["analytic_grasp_start"] = [float(v) for v in self.AnalyticNativePose()]
         return out
