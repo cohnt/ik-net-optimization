@@ -271,7 +271,7 @@ _SVGD_DETAIL_KEYS = ("method", "dtype", "n_particles", "iterations", "inner_step
                      "multiplier_clips_by_group", "multiplier_inf_median_by_group",
                      "feasible_q_spread", "lambda_max_median", "lambda_max_max",
                      "frobenius_over_lambda_median", "repulsion_ratio_median",
-                     "kernel", "metric_temperature", "bandwidths", "feasible_spread_kernel")
+                     "kernel", "bandwidths", "feasible_spread_kernel")
 
 
 def is_timeout(exit_string):

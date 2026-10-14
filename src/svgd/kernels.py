@@ -18,11 +18,12 @@ q_j away from its neighbours (Liu & Wang eq. 8, second term). The 2-D Gaussian m
 objective's gradient and the repulsion are averaged over the kernel, and each particle's OWN
 constraint gradient is added outside the average,
 
-    phi_i = (1/N) sum_j [ K_ji (-grad f_j / T) + grad_{y_j} K(q_j, q_i) ] - (1/T) grad (L - f)_i,
+    phi_i = (1/N) sum_j [ K_ji (-grad f_j) + grad_{y_j} K(q_j, q_i) ] - grad (L - f)_i,
 
-or, with `inside=True` (the literal SVGD on exp(-L/T), an A/B), the whole `-grad L / T` inside
+or, with `inside=True` (the literal SVGD on exp(-L), an A/B), the whole `-grad L` inside
 the average. The no-interaction control (`svgd_kernel = none`) is `kernel=False`: both kernel
-terms dropped, `phi_i = -(1/T) grad L_i`.
+terms dropped, `phi_i = -grad L_i`. The target carries no temperature: `svgd_temperature` and
+`svgd_metric_temperature` were removed 2026-10-14 (stage SVGD_R22 measured T inert), so T = 1.
 
 Compile- and CUDA-graph-friendly: N is static (even the median over the off-diagonal pairs is
 taken at fixed shape), no `.item()`, no boolean indexing, explicit dtype / device.
@@ -89,23 +90,23 @@ def rbf_terms(y: Tensor, h):
     return K, R
 
 
-def stein_direction(K: Tensor, R_y: Tensor, gF_y: Tensor, gC_y: Tensor, T, inside=False,
+def stein_direction(K: Tensor, R_y: Tensor, gF_y: Tensor, gC_y: Tensor, inside=False,
                     kernel=True, avg_scale=None) -> Tensor:
     """`phi [N, n]` in the normalised coordinates `y` (module docstring).
 
     `K [N, N]` the kernel, `R_y [N, n]` its repulsion pulled back to `y`, `gF_y` the
     objective's gradient and `gC_y = grad_y (L - f)` the constraint part of the AL's, both
-    `[N, n]`; `T` the temperature. `kernel=False` is the no-interaction control, `inside=True`
+    `[N, n]`. `kernel=False` is the no-interaction control, `inside=True`
     the literal form with the whole AL gradient under the kernel average. `avg_scale` (a
     scalar tensor, the dropped-particle swarm) rescales the kernel average from `1/N` to
     `1/n_live` -- exactly 1.0 when every particle is live."""
     if not kernel:
-        return -(gF_y + gC_y) / T
+        return -(gF_y + gC_y)
     N = K.shape[0]
     if inside:
-        avg = (K @ (-(gF_y + gC_y) / T) + R_y) / N
+        avg = (K @ (-(gF_y + gC_y)) + R_y) / N
         return avg if avg_scale is None else avg * avg_scale
-    avg = (K @ (-gF_y / T) + R_y) / N
+    avg = (K @ (-gF_y) + R_y) / N
     if avg_scale is not None:
         avg = avg * avg_scale
-    return avg - gC_y / T
+    return avg - gC_y

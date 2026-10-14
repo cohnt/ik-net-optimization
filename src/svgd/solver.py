@@ -12,8 +12,10 @@ half-width normalises it (the coordinates below).
 THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
 
  1. Merit, per particle: `L_rho(x; lam, mu) = f + lam.h + (rho/2)|h|^2
-    + (1/(2 rho)) sum [max(0, mu + rho g)^2 - mu^2]`; target density `exp(-L_rho / T)`,
-    `T = svgd_temperature` and `rho = svgd_rho` FIXED and shared by every particle. The
+    + (1/(2 rho)) sum [max(0, mu + rho g)^2 - mu^2]`; target density `exp(-L_rho)`,
+    `rho = svgd_rho` FIXED and shared by every particle (no temperature: `svgd_temperature`
+    and `svgd_metric_temperature` were removed 2026-10-14, stage SVGD_R22 having measured
+    T inert; the step is the T = 1 one, bit for bit). The
     augmented Lagrangian is the FORMULATION and SVGD the optimizer: one dynamics.
  2. Rows in NATURAL units (`svgd_row_units`): the program's rows as its bindings evaluate them,
     the orientation-type rows times `svgd_row_length_scale` (`_Target`); `tolerance` divides
@@ -23,8 +25,8 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
     correction box on the learned arm, the joint limits on joint space -- are a clamp).
  3. Coordinates: `y = x / s`, `s` the per-block region half-widths (`region_scale`).
  4. Direction (Tabor-Hermans "Q method", `kernels.stein_direction`):
-    `phi_i = (1/N) sum_j [K(q_j, q_i)(-grad_y f_j / T) + grad_{y_j} K(q_j, q_i)]
-             - (1/T) grad_y (L - f)_i`;
+    `phi_i = (1/N) sum_j [K(q_j, q_i)(-grad_y f_j) + grad_{y_j} K(q_j, q_i)]
+             - grad_y (L - f)_i`;
     `svgd_kernel` the RBF's space (median bandwidth per factor, `fused.kernel_terms`): `q`
     the configuration, repulsion pulled back to y through the flow's VJP; `x` all of
     y; `z` / `c` the latent / conditioning block of y (learned arm only), repulsion on that block
@@ -32,12 +34,10 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
     2026-10-12, with rho = 1e5); `pose` the task
     frame's [position; canonical quaternion], pulled back through d pose / d q and the VJP;
     `none` drops both kernel terms. `svgd_constraint_inside_kernel` puts the
-    whole `-grad L / T` under the average. Step (`fused.step_from`), `H_i` the GN Hessian of
+    whole `-grad L` under the average. Step (`fused.step_from`), `H_i` the GN Hessian of
     the AL in y (`fused.gn_hessian`): `svgd_metric = gn` (Stein variational Newton, Detommaso
     et al. 2018) `dy_i = svgd_lr (H_i + svgd_gn_lm I)^-1 phi_i`; `identity`
-    `dy_i = (svgd_lr / ||H_i||_F) phi_i`; `svgd_metric_temperature = on` (fielded 2026-10-12)
-    uses `H_i / T` in place of `H_i` in both (off: the drive's 1/T is unmatched; the two are
-    bit-identical at T = 1); then
+    `dy_i = (svgd_lr / ||H_i||_F) phi_i`; then
     `y_i <- clamp_B(y_i + dy_i)`.
  5. Every K = `svgd_inner_iters` steps a CHECK: the dual-ascent step on every particle,
     unconditionally (`al.dual_update`: `lam_i += alpha h_i`, `mu_i = max(0, mu_i + alpha g_i)`,
@@ -1197,7 +1197,6 @@ class SvgdSolver:
             multiplier_clips_by_group=dict(sstats.get("multiplier_clips_by_group") or {}),
             multiplier_inf_median_by_group=mult_inf_by_group,
             feasible_q_spread=spread, kernel=self._sc.kernel,
-            metric_temperature=str(getattr(opts, "svgd_metric_temperature", "off")),
             bandwidths=sstats.get("bandwidths"), feasible_spread_kernel=spread_kernel,
             extras=extras)
         write_log(opts.file_print_name, details)

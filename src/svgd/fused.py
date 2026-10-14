@@ -112,7 +112,6 @@ class StepConfig:
     bandwidth_floor: float      # svgd_bandwidth_floor
     inside: bool                # svgd_constraint_inside_kernel
     lr: float                   # svgd_lr (a fraction of the Newton / Lipschitz step)
-    T: float                    # svgd_temperature
     rho: float                  # svgd_rho, the penalty: fixed, shared by every particle
     metric: str = "gn"          # svgd_metric: "gn" (Stein variational Newton) | "identity"
     gn_lm: float = 0.0          # svgd_gn_lm, the Levenberg damping delta of the GN metric
@@ -120,21 +119,16 @@ class StepConfig:
     ## and leaves dropped particles out. False under `native`, whose stages are then exactly
     ## the pre-2026-10-11 code (the live tensor is an input they never read).
     live_weights: bool = False
-    ## svgd_metric_temperature = "on": the Newton metric is H / T (and the identity metric's
-    ## step bound ||H / T||_F). False is exactly the pre-2026-10-11 step.
-    metric_temperature: bool = False
 
     @staticmethod
     def from_options(opts):
         return StepConfig(kernel=str(opts.svgd_kernel),
                           bandwidth_floor=float(opts.svgd_bandwidth_floor),
                           inside=bool(opts.svgd_constraint_inside_kernel),
-                          lr=float(opts.svgd_lr), T=float(opts.svgd_temperature),
-                          rho=float(opts.svgd_rho), metric=str(opts.svgd_metric),
+                          lr=float(opts.svgd_lr), rho=float(opts.svgd_rho),
+                          metric=str(opts.svgd_metric),
                           gn_lm=float(opts.svgd_gn_lm),
-                          live_weights=str(getattr(opts, "svgd_resample", "native")) != "native",
-                          metric_temperature=str(getattr(opts, "svgd_metric_temperature",
-                                                         "off")) == "on")
+                          live_weights=str(getattr(opts, "svgd_resample", "native")) != "native")
 
 
 ## ------------------------------------------------------------------------------------ ##
@@ -451,7 +445,7 @@ def direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kern
     gC_y = torch.where(fin, sv * gC, zero)
     R_y = repulsion_y(tg, X, J_q, R, kernel_on, finite)
     use_kernel = sc.kernel != "none"
-    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside, kernel=use_kernel,
+    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, inside=sc.inside, kernel=use_kernel,
                                   avg_scale=avg_scale)
     rep = R_y / N if use_kernel else zero
     if use_kernel and avg_scale is not None:
@@ -474,24 +468,17 @@ def step_from(tg, sc, X, phi, H, live=None):
                                   step; ||H||_F >= lambda_max(H), a safe Lipschitz bound and a
                                   pure reduction, so the step stays graph-capturable)
 
-    `svgd_metric_temperature = on` (`sc.metric_temperature`) puts `H_i / T` in place of `H_i`
-    in both -- `(H_i / T + delta I)^-1 phi_i`, and `||H_i / T||_F = ||H_i||_F / T` -- so the
-    metric matches the drive `-grad L / T`; off (the default) is exactly the step above.
-
     Returns `(X_new, clip [N], n_clip [N])`: the clamp's distance per particle in y and how
     many coordinates it moved. A failed solve (or a non-finite step) is a zero step. `live
     [N]` bool: a dropped particle is FROZEN -- `X_new = X` exactly, no clamp, nothing counted."""
     n = X.shape[1]
     if sc.metric == "gn":
         eye = torch.eye(n, dtype=X.dtype, device=X.device).unsqueeze(0)
-        Hm = H / sc.T if sc.metric_temperature else H
-        Y, info = torch.linalg.solve_ex(Hm + sc.gn_lm * eye, phi.unsqueeze(2), check_errors=False)
+        Y, info = torch.linalg.solve_ex(H + sc.gn_lm * eye, phi.unsqueeze(2), check_errors=False)
         dy = sc.lr * Y.squeeze(2)
         good = (info == 0) & torch.isfinite(dy).all(dim=1)
     else:
         fro = torch.clamp(H.flatten(1).norm(dim=1), min=torch.finfo(X.dtype).tiny)
-        if sc.metric_temperature:
-            fro = fro / sc.T
         dy = (sc.lr / fro).unsqueeze(1) * phi
         good = torch.isfinite(dy).all(dim=1)
     dy = torch.where(good.unsqueeze(1), dy, torch.zeros_like(dy))

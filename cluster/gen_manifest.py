@@ -2871,6 +2871,15 @@ def remeasure_allotment(variants=("REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RU
 ## staged tree's. A stage from R20 on takes SVGD_PINNED_V2, which names all four moved settings
 ## explicitly, so no stage of either version relies on a default that moved (selftest).
 ##
+## TWO OPTIONS REMOVED, 2026-10-14 (Thomas, after stage SVGD_R22 measured the temperature inert: "all
+## three options can be removed"): `svgd_temperature` and `svgd_metric_temperature` are gone from
+## ProgramOptions and the step is the T = 1 one, bit for bit the fielded pin (dividing by 1.0 is exact).
+## The stages that named them (R5 / R14 / R22's T variants, and every v2 stage through the pin's
+## `svgd_metric_temperature=on`) ran on the staged cluster tree that still has them, and their
+## manifests regenerate byte-identically: their strings are kept as they were. A stage from R24 on
+## takes SVGD_PINNED_V3, V2 without that setting, and may name no removed option (SVGD_REMOVED_OPTIONS;
+## selftest).
+##
 ## OTHER ROBOTS AND OTHER GRIDS (2026-10-11). The block above is the Panda `n6` at the record's
 ## seed 1, and that stays every stage's default CONTEXT (SVGD_ROBOT, SVGD_RUNG, SVGD_SEED). A stage
 ## that runs elsewhere names its context in SVGD_STAGE_CONTEXT -- robot and rung (an ADOPTED_RUNGS
@@ -3005,6 +3014,19 @@ SVGD_PINNED_V1 = ["--set", "svgd_rho=1000", "--set", "svgd_gn_lm=10", "--set", "
 SVGD_PINNED_V2 = ["--set", "svgd_kernel=cz", "--set", "svgd_rho=100000",
                   "--set", "svgd_metric_temperature=on", "--set", "svgd_paired_init=native",
                   "--set", "svgd_gn_lm=10", "--set", "svgd_lr=0.3"]
+#: The pin for stages from R24 on: SVGD_PINNED_V2 without `svgd_metric_temperature=on`, the option having
+#: been removed 2026-10-14 (the step it named is now the only step, so V3 runs what V2 ran, bit for bit).
+#: No stage takes it yet.
+SVGD_PINNED_V3 = ["--set", "svgd_kernel=cz", "--set", "svgd_rho=100000",
+                  "--set", "svgd_paired_init=native",
+                  "--set", "svgd_gn_lm=10", "--set", "svgd_lr=0.3"]
+#: Options removed from ProgramOptions that EXISTING stages still name (they ran on the staged tree that
+#: has them, and their manifests must regenerate byte-identically), each with the values those stages
+#: may carry (None: a numeric option, any value). The selftest checks a round's override of one against
+#: these frozen choices -- ProgramOptions' source no longer lists them -- checks each is really gone from
+#: ProgramOptions, and refuses one on any stage from R24 on (v3).
+SVGD_REMOVED_OPTIONS = {"svgd_metric_temperature": ("off", "on"),     # removed 2026-10-14
+                        "svgd_temperature": None}                     # removed 2026-10-14
 #: The stages that ran (and regenerate byte-identically under) the OLD pin, SVGD_PINNED_V1: every svgd
 #: stage that existed when the pin moved. A stage not named here -- R20 on -- takes SVGD_PINNED_V2.
 #: (SVGD_SMOKE and R1 / R1K are built with no stage argument, which also means v1.)
@@ -3015,14 +3037,23 @@ SVGD_PIN_V1_STAGES = frozenset({
     "SVGD_R18", "SVGD_R19", "SVGD_SMOKE_IIWA", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT"})
 
 
+#: The stages that ran SVGD_PINNED_V2 (R20 through R23): every svgd stage that existed when the
+#: temperature options were removed and is not a v1 stage. A stage in neither set -- R24 on -- takes
+#: SVGD_PINNED_V3.
+SVGD_PIN_V2_STAGES = frozenset({"SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23"})
+
+
 def svgd_pin_version(stage):
-    """1 for the stages that ran the old pin (and for the stage-less R1 / SMOKE builders), else 2."""
-    return 1 if stage is None or stage in SVGD_PIN_V1_STAGES else 2
+    """1 for the stages that ran the old pin (and for the stage-less R1 / SMOKE builders), 2 for
+    R20-R23 (SVGD_PIN_V2_STAGES), else 3."""
+    if stage is None or stage in SVGD_PIN_V1_STAGES:
+        return 1
+    return 2 if stage in SVGD_PIN_V2_STAGES else 3
 
 
 def svgd_pinned(stage):
-    """The pinned `--set` list a stage's svgd items carry: SVGD_PINNED_V1 or SVGD_PINNED_V2."""
-    return SVGD_PINNED_V1 if svgd_pin_version(stage) == 1 else SVGD_PINNED_V2
+    """The pinned `--set` list a stage's svgd items carry: SVGD_PINNED_V1, _V2 or _V3."""
+    return {1: SVGD_PINNED_V1, 2: SVGD_PINNED_V2, 3: SVGD_PINNED_V3}[svgd_pin_version(stage)]
 #: The batched clearance collision row (Thomas, 2026-10-11: "a strict improvement", and the rounds use
 #: it from now on). `clearances` evaluates the SAME functional as the default `autodiff` row from one
 #: batched, GIL-released, Drake-threaded `CollisionChecker.CalcRobotClearances` call -- values bitwise
@@ -3280,7 +3311,9 @@ SVGD_ALLOWED_SETS = {
 #: ProgramOptions defaults, as source text, that the manifests RELY ON rather than set (checked from
 #: src/generic_program.py's text, torch-free). The current defaults, the 2026-10-12 pin's; the four
 #: that pin moved are also NAMED by SVGD_PINNED_V2, so only svgd_n, svgd_compile, svgd_cuda_graph and
-#: svgd_temperature are relied on by a v2 stage.
+#: svgd_temperature are relied on by a v2 stage. The two SVGD_REMOVED_OPTIONS entries record the
+#: values their stages relied on (metric on, T = 1); since 2026-10-14 the step IS that behaviour, so
+#: the selftest checks they are absent from ProgramOptions rather than reading a default.
 SVGD_RELIED_DEFAULTS = {"svgd_n": "64", "svgd_paired_init": '"native"', "svgd_kernel": '"cz"',
                         "svgd_compile": "False", "svgd_cuda_graph": "False",
                         "svgd_metric_temperature": '"on"', "svgd_temperature": "1.0"}
@@ -5722,11 +5755,16 @@ def selftest():
                         "or an unknown stage")
     ## Every v2 stage (R20 on) runs the clearance row: every svgd round uses it from R6 on (Thomas,
     ## 2026-10-11), and a v2 stage cannot have finished before it landed.
-    if {s for s in SVGD_STAGES if svgd_pin_version(s) == 2} - set(SVGD_CLEARANCE_STAGES):
-        sv_fails.append("a v2 svgd stage is not in SVGD_CLEARANCE_STAGES")
+    if {s for s in SVGD_STAGES if svgd_pin_version(s) >= 2} - set(SVGD_CLEARANCE_STAGES):
+        sv_fails.append("a v2 / v3 svgd stage is not in SVGD_CLEARANCE_STAGES")
     gp_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "src", "generic_program.py")).read()
+    for name in SVGD_REMOVED_OPTIONS:
+        if re.search(rf"^\s+{name}: \w+ = field\(", gp_src, re.M):
+            sv_fails.append(f"SVGD_REMOVED_OPTIONS lists {name}, but it is still a ProgramOptions field")
     for name, want in SVGD_RELIED_DEFAULTS.items():
+        if name in SVGD_REMOVED_OPTIONS:
+            continue                       # removed: the behaviour it named is the only one (above)
         m = re.search(rf"^\s+{name}: \w+ = field\(default=([^,]+),", gp_src, re.M)
         if not m or m.group(1) != want:
             sv_fails.append(f"ProgramOptions.{name} default is {m.group(1) if m else '?'}, the "
@@ -5734,13 +5772,13 @@ def selftest():
     ## The pin's move (2026-10-12): every svgd stage that exists is a v1 stage (it ran the old pin and
     ## must regenerate byte-identically); SVGD_HISTORICAL_DEFAULTS names exactly the relied-on
     ## defaults that moved; SVGD_PINNED_V2 names each of them, so no v2 stage relies on a moved one.
-    if set(SVGD_STAGES) - SVGD_PIN_V1_STAGES != \
-            {"SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23"} or \
-            SVGD_PIN_V1_STAGES - set(SVGD_STAGES):
-        sv_fails.append(f"SVGD_PIN_V1_STAGES is not exactly the stages that ran the old pin, nor the "
-                        f"rest exactly the v2 stages R20 / SMOKE_R20 / R21 / R22 / R23: "
-                        f"{sorted(set(SVGD_STAGES) ^ SVGD_PIN_V1_STAGES)} (a new stage takes v2; "
-                        f"never move an existing one)")
+    if SVGD_PIN_V2_STAGES != {"SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23"} or \
+            (SVGD_PIN_V1_STAGES | SVGD_PIN_V2_STAGES) - set(SVGD_STAGES) or \
+            SVGD_PIN_V1_STAGES & SVGD_PIN_V2_STAGES:
+        sv_fails.append(f"SVGD_PIN_V1_STAGES / SVGD_PIN_V2_STAGES are not exactly the stages that ran the "
+                        f"old pin and the v2 stages R20 / SMOKE_R20 / R21 / R22 / R23: "
+                        f"{sorted(SVGD_PIN_V1_STAGES)} / {sorted(SVGD_PIN_V2_STAGES)} (a new stage takes "
+                        f"v3; never move an existing one)")
     moved = {k for k in SVGD_RELIED_DEFAULTS if SVGD_HISTORICAL_DEFAULTS.get(k, SVGD_RELIED_DEFAULTS[k])
              != SVGD_RELIED_DEFAULTS[k]}
     if moved != set(SVGD_HISTORICAL_DEFAULTS):
@@ -5749,6 +5787,15 @@ def selftest():
     v2_named = {x.split("=", 1)[0] for x in SVGD_PINNED_V2[1::2]}
     if not set(SVGD_HISTORICAL_DEFAULTS) <= v2_named:
         sv_fails.append(f"SVGD_PINNED_V2 does not name {sorted(set(SVGD_HISTORICAL_DEFAULTS) - v2_named)}")
+    ## V3 is V2 without the one setting whose option was removed, in V2's order; it names every moved
+    ## default that still exists and no removed option.
+    if SVGD_PINNED_V3 != [x for p in zip(SVGD_PINNED_V2[0::2], SVGD_PINNED_V2[1::2])
+                          if p[1] != "svgd_metric_temperature=on" for x in p]:
+        sv_fails.append("SVGD_PINNED_V3 is not SVGD_PINNED_V2 without svgd_metric_temperature=on")
+    v3_named = {x.split("=", 1)[0] for x in SVGD_PINNED_V3[1::2]}
+    if v3_named & set(SVGD_REMOVED_OPTIONS) or \
+            not set(SVGD_HISTORICAL_DEFAULTS) - set(SVGD_REMOVED_OPTIONS) <= v3_named:
+        sv_fails.append(f"SVGD_PINNED_V3 names a removed option or misses a moved default: {sorted(v3_named)}")
     if svgd_unnamed_settings("SVGD_R1") != {"svgd_kernel": "q", "svgd_metric_temperature": "off",
                                             "svgd_paired_init": "jitter"} \
             or svgd_unnamed_settings("SVGD_R20") != {}:
@@ -5763,6 +5810,13 @@ def selftest():
         for v, (overrides, _, _) in variants.items():
             for o in overrides:
                 name, value = o.split("=", 1)
+                if name in SVGD_REMOVED_OPTIONS:
+                    ## Removed from ProgramOptions after the stage ran: its frozen historical choices.
+                    allowed = SVGD_REMOVED_OPTIONS[name]
+                    if svgd_pin_version(r) >= 3 or (allowed is not None and value not in allowed):
+                        sv_fails.append(f"{r}: variant {v} sets {o}, a removed option "
+                                        f"(historical values {allowed}; none on a v3 stage)")
+                    continue
                 m = re.search(rf'"{name}": \(([^)]*)\)', gp_src)
                 if m and f'"{value}"' not in m.group(1):
                     sv_fails.append(f"{r}: variant {v} sets {o}; ProgramOptions accepts "
@@ -5947,6 +6001,9 @@ def selftest():
                     if k in sets:
                         sv_fails.append(f"{stage}: {it['id']} sets {k} twice")
                     sets[k] = v
+            if svgd_pin_version(stage) >= 3 and set(sets) & set(SVGD_REMOVED_OPTIONS):
+                sv_fails.append(f"{stage}: {it['id']} sets the removed option(s) "
+                                f"{sorted(set(sets) & set(SVGD_REMOVED_OPTIONS))}")
             if set(sets) - SVGD_ALLOWED_SETS[stage]:
                 sv_fails.append(f"{stage}: {it['id']} sets "
                                 f"{sorted(set(sets) - SVGD_ALLOWED_SETS[stage])}")
@@ -5959,11 +6016,13 @@ def selftest():
                         or "max_iter" in sets:
                     sv_fails.append(f"{stage}: {it['id']} not graphed / budget not svgd's own")
                 pinned = dict(x.split("=", 1) for x in svgd_pinned(stage)[1::2])
-                if pinned != ({"svgd_rho": "1000", "svgd_gn_lm": "10", "svgd_lr": "0.3"}
-                              if svgd_pin_version(stage) == 1 else
-                              {"svgd_kernel": "cz", "svgd_rho": "100000",
-                               "svgd_metric_temperature": "on", "svgd_paired_init": "native",
-                               "svgd_gn_lm": "10", "svgd_lr": "0.3"}):
+                if pinned != {1: {"svgd_rho": "1000", "svgd_gn_lm": "10", "svgd_lr": "0.3"},
+                              2: {"svgd_kernel": "cz", "svgd_rho": "100000",
+                                  "svgd_metric_temperature": "on", "svgd_paired_init": "native",
+                                  "svgd_gn_lm": "10", "svgd_lr": "0.3"},
+                              3: {"svgd_kernel": "cz", "svgd_rho": "100000",
+                                  "svgd_paired_init": "native", "svgd_gn_lm": "10",
+                                  "svgd_lr": "0.3"}}[svgd_pin_version(stage)]:
                     sv_fails.append(f"{stage}: pin {pinned} is not its version's "
                                     f"(v{svgd_pin_version(stage)})")
                 variant = tag.rsplit("_", 1)[1]
