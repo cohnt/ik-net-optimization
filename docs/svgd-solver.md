@@ -1828,8 +1828,10 @@ from the record" below.
 joint-space set), 1632 items. The tool's figure (`gen_manifest.py --stage SVGD_R22 --allotment`,
 5 s per learned cell + 180 s per item) and R20's measured scaling (1.0-2.6 s per learned cell, 6
 node-hours for 480 items) are both stated in `cluster/SVGD_RUNBOOK.md`; the worst case puts every
-cell at the clock. The only variant with a clock risk is `T0p1` (kernel-off behaviour), so it is
-claimed after the other learned variants; the joint-space items go last.
+cell at the clock. The only variant with a clock risk is `T0p1` (kernel-off behaviour). Items are claimed
+in id order within the learned group (so per robot and row the four variants run as T0p1, T10v2,
+clipoff, drop2, interleaved across the queue), and the joint-space items go last; the order sets
+only when a verdict can first be read, not the total.
 
 **Read from the record before the round, no compute** (R20's and R21's `summary.json`, every cell's
 `record["svgd"]`, 2026-10-14; this sharpens the predictions above and was written before any R22
