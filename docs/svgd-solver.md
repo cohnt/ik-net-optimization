@@ -1869,6 +1869,52 @@ cell ran):
 - Every one of the 32 runs: 480 of 480 `converged`, `n_recheck_failures` 0 (the screw joint-space
   rows: 17 / 20 / 3 / 3 `wall_clock`, as R21 reported).
 
+### Stage SVGD_R23: the phase-1 conditioning exceptions at the pin (pre-registered 2026-10-14, before any screen cell was read)
+
+**What it strips.** The three 2026-10-09 conditioning changes (the first section of this document:
+rows in natural units, the Stein variational Newton metric with its Levenberg delta, and the
+per-particle step). Thomas allowed them as phase-1 exceptions to "no special treatment", to be
+ablated in phase 2; their only A/B is the 12-cell attribution at rho 1e3, delta 10, lr 1 (section
+"3. The attribution" above), never at 480 cells or at the pin. The per-particle step has no
+option of its own: under `gn` the step is a fraction of each particle's Newton step, under
+`identity` it is `svgd_lr / ||H_i||_F` per particle, so a global step would need code and is not
+proposed; `identity` is the ablation of the metric with the per-particle Frobenius bound kept.
+
+**What runs.** R22's shape: the learned arm on the record's sixteen rows, 480 cells, 180 s, seed
+1, `SVGD_PINNED_V2` plus exactly ONE override per variant, graphed, the lifted step cap, the
+clearance row, 24 shards, read against R20's `pin2` on the same cells and the IPOPT twin. No
+joint-space item: these settings are shared by both arms, the ablation arm is not being tuned, and
+its attribution reading (joint space needs the metric, the units barely matter) stands as measured.
+
+**A laptop screen gates the manifest, and it is part of the pre-registration.** Two of the five
+variants are predicted dead at the pin and one is predicted structurally singular (below); a
+480-cell row of clock stops carries no verdict (the cap rule) and costs ~48 node-hours per variant.
+So every variant first runs on 12 Panda cells (targets 0-5, guess 0, grasp and pose, native, 180 s,
+the pin, one process at a time on the laptop; tags `screen_R23_panda_n6_svgd_*_6_180_native_<tok>`
+beside a `pin2` reference on the same cells). The rule, fixed before the screen ran: a variant that
+solves **fewer than 6 of its 12 cells, or stops on the clock on 3 or more**, is DEAD AT THE PIN and
+is reported from the screen (labelled preliminary, 12 cells); the rest go to the sixteen rows.
+Thomas can override either way.
+
+| token | override | what it strips | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ident` | `svgd_metric=identity` | the SVN metric (item 4): the direction is applied with the per-particle scalar step `svgd_lr / \|\|H_i\|\|_F` instead of `svgd_lr (H_i + delta I)^-1` | at the pin the AL's curvature is `rho J^T J` on the row directions, `lambda_max` median 1e5-1e7 (R20's `lambda_max_median`), against O(1-10) on the objective-only directions (joint centering, the correction penalty) along the feasible set. A scalar step bounded by `1 / \|\|H\|\|_F` moves the row directions at the right rate and the objective directions 1e-5 to 1e-7 as fast: the swarm reaches the rows and then barely descends the objective, so it stalls at a high cost or runs to the clock. The attribution at rho 1e3 read 8/12 and 36 outer steps against 12/12 and 10; rho 1e5 widens the gap by 100x | outer steps, `stop_reason`, cost on shared cells, `frobenius_over_lambda_median` (1.00-1.07 at the pin: the Frobenius bound is tight, so the step is the Lipschitz step, not a loose one), `repulsion_ratio_median`, feasible count | DEAD on the screen (pose cells to the clock, grasp cells at a cost far above the pin); if alive, cost up and outer steps up >= 3x on every row | success lost or cost > 5% above the pin on any row -> **the Newton metric earns its place**, and the explanation is the 1e5-1e7 spread between row and objective curvature that rho = 1e5 creates and the metric absorbs (why "a larger rho costs no conditioning" held in the rho screen). Within noise on all rows -> the metric is unnecessary and is stripped (not predicted) |
+| `tolunits` | `svgd_row_units=tolerance` | natural units (item 1): every AL row divided by `tol = 1e-4`, the pre-2026-10-09 path | Gauss-Newton is covariant under a row rescaling, so with an exact Newton step the units would be inert. The Levenberg delta is not covariant: dividing the rows by 1e-4 multiplies `rho J^T J` by 1e8, so delta 10 becomes a relative damping of 1e-7 and the float32 solve of a 1e13-curvature system (the attribution's (c): `lambda_max` median 1e12, every particle redrawn at every check, 0/12) returns garbage steps that the resample absorbs. At rho 1e5 the curvature is 1e15 | `lambda_max_median`, `n_resampled` (prediction: ~N per check), feasible count, `stop_reason` | DEAD on the screen: 0 feasible, every particle redrawn, clock stops | dead -> **natural units earn their place**, and the explanation is the units x delta x float32 interaction, not "ill-conditioning" in the abstract; alive (not predicted) -> the units are a free choice and the simpler one is reported |
+| `lm0` | `svgd_gn_lm=0` | the Levenberg delta (item 4): the plain GN step | **the learned formulation is 6-fold redundant in (c, z) by construction**: `q = flow(c, z) + q_c`, so `dq / d(c, z)` is 7 x 13 and every row of the AL (task, collision, joint limits -- all functions of q) and the joint-centering cost see the 13 conditioning-and-latent coordinates only through it. `H` on that block is therefore rank <= 7 of 13 wherever the c-box and latent-trust rows are inactive (nearly everywhere: both are regions, rarely active), with a 6-dimensional null space along the fibre `{(c, z): flow(c, z) = const}`. Only the correction penalty's constant Hessian (10 I on q_c) and delta see the fibre. **Delta is what fixes the gauge along the formulation's own redundancy**; at delta 0 `solve_ex` on a singular float32 block returns a step along the fibre of size ~1/eps that the bound clamp and the resample absorb | `n_resampled`, `bound_clip`, `lambda_max_median` unchanged, feasible count, the `solve_ex` failure count (recorded as a zero step; shows as frozen particles) | DEAD or near-dead on the screen: resamples explode, feasible count collapses. (Joint space has no fibre -- its block is `J_q = I` -- so this is a learned-arm fact; it is not run) | dead -> **delta earns its place, and the reason is structural, not numerical**: it regularises the (c, z) gauge. That names the phase-3 replacement: a term that lives on the fibre -- the latent prior `w_z |z|^2 / 2` of R26 gives the z block the curvature `w_z I`, so R26 adds `w_z = 1` with `svgd_gn_lm = 0` as a declared two-factor variant (the structure replacing the damping), subject to Thomas's go for R26 |
+| `lm1` | `svgd_gn_lm=1` | one decade below the pin | delta damps the directions whose curvature is below it: at the pin (delta 10) a direction of curvature 1 (joint centering, `w = 1`) takes `lr / 11` of its Newton step, the correction directions (curvature 10) `lr / 2`, the rows (1e5+) the full `lr`. Delta 1 lets the objective directions move 5x faster per outer step: more objective descent before the stall, so lower cost, at the risk of overshoot on the fibre (more resamples). The 2026-10-10 probe's "most feasible at delta 10" was at rho 10 and is void at the pin | cost on shared cells, outer steps, `n_resampled`, feasible count, residual | cost 5-15% below the pin on grasp (where the objective is the mug-frame cost and the self-motion is real), within noise on pose; outer steps unchanged or fewer; resamples up by a few per cell | `lm1` lowers cost >= 5% on >= 12 of 16 rows at no loss of success, wall within noise, resamples within +3 -> a tuning adoption that goes to Thomas as a question (phase-2 result, not fielded by me); within noise everywhere -> delta is inert over a decade and 10 stands with its structural explanation |
+| `lm100` | `svgd_gn_lm=100` | one decade above the pin | the objective directions take `lr / 101` of their Newton step: slower objective descent, more outer steps to the stall or an earlier stall at a higher cost; the row directions unchanged (curvature 1e5+) | as `lm1` | cost 5-15% above the pin on grasp, outer steps up; feasible count unchanged (the rows are untouched) | as `lm1`; together they say whether cost is monotone in delta, which is the mechanism's signature |
+
+**Strips decided without compute.** `svgd_row_length_scale` (1.0 m, "literally the raw rows"):
+the default is the identity, so there is nothing to strip, and a ladder on it is R24 material at
+most. The eager `lambda_max` diagnostic costs a `eigvalsh` per dual-update check and is a
+recorded diagnostic, not a solver setting.
+
+**Allotment.** 5 learned variants x 16 rows = 80 logical runs, 1920 items before the screen;
+each dead variant removes 16 runs. The tool's figure (5 s per cell + 180 s per item) is 71 node-h
+for the full set; R20's scaling (1-2.6 s per cell) makes the alive variants (`lm1`, `lm100`,
+and whichever of the others survives) ~4 node-h per variant. Worst case per clock-bound variant 48
+node-h, which is what the screen avoids.
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each
