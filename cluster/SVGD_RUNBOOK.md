@@ -945,6 +945,10 @@ longer run into the round token. Promote as for R7 / R16:
 
 ## R22 (branch `svgd-tune`, 2026-10-14): stripping at the pin
 
+**Submitted 2026-10-14 14:12 EDT: jobs 5918035-5918038, four nodes, `DRAKE_ENV=crc PROCS=2`, the
+staged 7812715 (no restage; manifest scp'd, md5 `0874898b`), after the local smokes of `clipoff`
+(3e38) and `T0p1` solved 2 / 2 each.**
+
 The first round of the tuning push (`docs/svgd-solver.md`, "The tuning push"). Stage `SVGD_R22`
 is R20's shape -- `SVGD_PINNED_V2`, the four record contexts, 480 cells at 180 s on seed 1, graphed,
 the lifted step cap, the clearance row, 24 shards, PROCS=2 with no MPS -- with one override per
