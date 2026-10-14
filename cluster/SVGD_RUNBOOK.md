@@ -981,6 +981,14 @@ the pin's wall on the screen); worst case 605 node-h. Read with
 staged 7812715 (no restage; manifest scp'd, md5 `0874898b`), after the local smokes of `clipoff`
 (3e38) and `T0p1` solved 2 / 2 each.**
 
+**Finished 2026-10-14 19:40 EDT (5.5 h on 4 nodes), 1631 of 1632 items.** One item died with a
+segmentation fault (status 139) 113 s in, right after the svgd warm-up, on worker `d-14-8-2_p1`
+(`sc_SVGD_R22_screw7_p050_n6_svgd_posetip_480_180_native_T0p1_shard6of24`, 17:56); the same worker
+ran its next item cleanly and no other item of the 1632 reports an error, so it is a one-off dead
+item: `collect_results.sh --reclaim manifest_stageSVGD_R22` cleared the claim and the manifest was
+resubmitted as ONE mop-up job (5924933), queued behind R23 under the 4-node cap. Until it lands the
+screw pose native `T0p1` row has 460 of 480 cells and is read as incomplete.
+
 The first round of the tuning push (`docs/svgd-solver.md`, "The tuning push"). Stage `SVGD_R22`
 is R20's shape -- `SVGD_PINNED_V2`, the four record contexts, 480 cells at 180 s on seed 1, graphed,
 the lifted step cap, the clearance row, 24 shards, PROCS=2 with no MPS -- with one override per
