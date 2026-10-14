@@ -2964,8 +2964,9 @@ SVGD_RECORD_CONTEXTS = ((SVGD_ROBOT, SVGD_RUNG, SVGD_SEED), ("iiwa", "n4", SVGD_
 #: R21 (2026-10-12, Thomas: "Run the joint-space svgd ablation on the other three robots"): R20's
 #: `pin2kq` on the three record contexts R20 ran it without -- joint space at the pin, kernel q.
 #: R22 (SVGD_PINNED_V2 tuning round, below): the four record robots again, as R20.
+#: R23 (the phase-1 conditioning strips at SVGD_PINNED_V2, below): the four record robots again, as R20 / R22.
 SVGD_STAGE_CONTEXTS = {"SVGD_R20": SVGD_RECORD_CONTEXTS, "SVGD_R21": SVGD_RECORD_CONTEXTS[1:],
-                       "SVGD_R22": SVGD_RECORD_CONTEXTS}
+                       "SVGD_R22": SVGD_RECORD_CONTEXTS, "SVGD_R23": SVGD_RECORD_CONTEXTS}
 #: Every chart an svgd context may run on: (robot, rung) -> (checkpoint, the builder of its record
 #: IPOPT rows). The status quo's two adopted rungs (stage_STATUSQUO), plus the screw arm's and the
 #: soft PCS arm's fielded rungs, whose record rows stage REMEASURE / PAPER build from stage_SCREW /
@@ -3041,7 +3042,7 @@ SVGD_CLEARANCE_STAGES = ("SVGD_R11", "SVGD_R12", "SVGD_SMOKE_IIWA", "SVGD_R7",
                          "SVGD_R13", "SVGD_R14", "SVGD_R15", "SVGD_R16",
                          "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT",
                          "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
-                         "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22")
+                         "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23")
 #: (b): the lifted step budget. ONE knob; the IPOPT `max_iter` is removed from svgd items.
 SVGD_STEP_CAP = 1000000
 SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
@@ -3145,6 +3146,13 @@ SVGD_ROUNDS = {
                 "T10v2": (["svgd_temperature=10"], 24, SVGD_BOTH),
                 "T0p1": (["svgd_temperature=0.1"], 24, SVGD_BOTH),
                 "clipoffjs": (["svgd_kernel=q", "svgd_multiplier_max=3e38"], 24, SVGD_BOTH)},
+    ## R23, the phase-1 conditioning strips at SVGD_PINNED_V2 on the four record robots (SVGD_RECORD_CONTEXTS, as
+    ## R20 / R22): the metric form (identity in place of the pinned H/T) and the Gauss-Newton-LM
+    ## damping bracket around the pin's svgd_gn_lm=10, each a single factor, undeclared. Learned arm
+    ## only, no joint-space variant.
+    "SVGD_R23": {"ident": (["svgd_metric=identity"], 24, SVGD_BOTH),
+                "lm1": (["svgd_gn_lm=1"], 24, SVGD_BOTH),
+                "lm100": (["svgd_gn_lm=100"], 24, SVGD_BOTH)},
 }
 #: Variants allowed MORE than one factor: round -> {variant: its factors}, each factor the overrides
 #: that make it up, so a variant's factor count is the length of its declaration. The selftest holds
@@ -3264,6 +3272,10 @@ SVGD_ALLOWED_SETS = {
                 "svgd_outer_iters", "svgd_kernel", "svgd_rho", "svgd_metric_temperature",
                 "svgd_paired_init", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend",
                 "svgd_multiplier_max", "svgd_resample", "svgd_temperature"},
+    "SVGD_R23": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                "svgd_outer_iters", "svgd_kernel", "svgd_rho", "svgd_metric_temperature",
+                "svgd_paired_init", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend",
+                "svgd_metric"},
 }
 #: ProgramOptions defaults, as source text, that the manifests RELY ON rather than set (checked from
 #: src/generic_program.py's text, torch-free). The current defaults, the 2026-10-12 pin's; the four
@@ -3567,6 +3579,13 @@ def svgd_allotment():
              / int(_svgd_flag(i["args"], "--shard").split("/")[1]) * STATUSQUO_WALL
              + SVGD_ITEM_OVERHEAD_S for i in stage_SVGD("SVGD_R22")]
     print(f"\n  SVGD_R22 WORST CASE (every cell at the clock, one arm per item): "
+          f"{sum(worst) / 3600:.1f} solve-h, {sum(worst) / 3600 / SVGD_PROCS:.1f} node-h, "
+          f"{sum(worst) / 3600 / SVGD_PROCS / SVGD_NODES:.1f} h on {SVGD_NODES} idle nodes; "
+          f"longest item {max(worst) / 3600:.2f} h.")
+    worst = [int(_svgd_flag(i["args"], "--targets")) * int(_svgd_flag(i["args"], "--guesses"))
+             / int(_svgd_flag(i["args"], "--shard").split("/")[1]) * STATUSQUO_WALL
+             + SVGD_ITEM_OVERHEAD_S for i in stage_SVGD("SVGD_R23")]
+    print(f"\n  SVGD_R23 WORST CASE (every cell at the clock, one arm per item): "
           f"{sum(worst) / 3600:.1f} solve-h, {sum(worst) / 3600 / SVGD_PROCS:.1f} node-h, "
           f"{sum(worst) / 3600 / SVGD_PROCS / SVGD_NODES:.1f} h on {SVGD_NODES} idle nodes; "
           f"longest item {max(worst) / 3600:.2f} h.")
@@ -5715,10 +5734,11 @@ def selftest():
     ## The pin's move (2026-10-12): every svgd stage that exists is a v1 stage (it ran the old pin and
     ## must regenerate byte-identically); SVGD_HISTORICAL_DEFAULTS names exactly the relied-on
     ## defaults that moved; SVGD_PINNED_V2 names each of them, so no v2 stage relies on a moved one.
-    if set(SVGD_STAGES) - SVGD_PIN_V1_STAGES != {"SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22"} or \
+    if set(SVGD_STAGES) - SVGD_PIN_V1_STAGES != \
+            {"SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23"} or \
             SVGD_PIN_V1_STAGES - set(SVGD_STAGES):
         sv_fails.append(f"SVGD_PIN_V1_STAGES is not exactly the stages that ran the old pin, nor the "
-                        f"rest exactly the v2 stages R20 / SMOKE_R20 / R21 / R22: "
+                        f"rest exactly the v2 stages R20 / SMOKE_R20 / R21 / R22 / R23: "
                         f"{sorted(set(SVGD_STAGES) ^ SVGD_PIN_V1_STAGES)} (a new stage takes v2; "
                         f"never move an existing one)")
     moved = {k for k in SVGD_RELIED_DEFAULTS if SVGD_HISTORICAL_DEFAULTS.get(k, SVGD_RELIED_DEFAULTS[k])
@@ -5767,10 +5787,11 @@ def selftest():
              "SVGD_R13": (16, 384), "SVGD_R14": (16, 384), "SVGD_R15": (4, 96),
              "SVGD_R16": (4, 96), "SVGD_R17": (8, 192), "SVGD_R17S": (8, 192),
              "SVGD_R18": (6, 144), "SVGD_R19": (4, 96), "SVGD_R17P": (8, 192),
-             "SVGD_R20": (20, 480), "SVGD_R21": (12, 288), "SVGD_R22": (68, 1632)} or \
+             "SVGD_R20": (20, 480), "SVGD_R21": (12, 288), "SVGD_R22": (68, 1632),
+             "SVGD_R23": (48, 1152)} or \
             sv_expected["SVGD_SMOKE_R20"] != (8, 8):
-        sv_fails.append("rounds R3-R22 are not 8/8/8/12/12/12/2/8/4/4/16/16/4/4/8/8/6/4/8/20/12/68 runs, "
-                        "128/192/160/288/288/288/48/192/96/96/384/384/96/96/192/192/144/96/192/480/288/1632 "
+        sv_fails.append("rounds R3-R23 are not 8/8/8/12/12/12/2/8/4/4/16/16/4/4/8/8/6/4/8/20/12/68/48 runs, "
+                        "128/192/160/288/288/288/48/192/96/96/384/384/96/96/192/192/144/96/192/480/288/1632/1152 "
                         "items, or SMOKE_R20 is not 8 items")
     ## R20's scope: `pin2` (learned) on exactly the four record contexts, `pin2kq` (joint space) on
     ## the Panda only, as its own items; every other round variant the rounds' learned arm on its
@@ -5788,11 +5809,11 @@ def selftest():
             if (svgd_variant_arms(r, v), svgd_variant_contexts(r, v)) != want_scope:
                 sv_fails.append(f"{r}: variant {v} runs {svgd_variant_arms(r, v)} on "
                                 f"{svgd_variant_contexts(r, v)}, expected {want_scope}")
-    if set(SVGD_STAGE_CONTEXTS) != {"SVGD_R20", "SVGD_R21", "SVGD_R22"} or \
+    if set(SVGD_STAGE_CONTEXTS) != {"SVGD_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23"} or \
             sorted(r for r, _, _ in SVGD_RECORD_CONTEXTS) != sorted(
                 ["panda", "iiwa", SCREW_PRIMARY, "soft12"]) or \
             any(c not in SVGD_TWIN_OF for c in SVGD_RECORD_CONTEXTS):
-        sv_fails.append("SVGD_STAGE_CONTEXTS is not R20 (and R21, R22) on the four record robots, "
+        sv_fails.append("SVGD_STAGE_CONTEXTS is not R20 (and R21, R22, R23) on the four record robots, "
                         "each with a twin")
     ## The declared multi-factor variants: each one's overrides are EXACTLY its declared
     ## factors' (as a multiset, so nothing missing and nothing extra), on disjoint option names,
@@ -6261,7 +6282,7 @@ def main():
                                  "SVGD_R7IPOPT", "SVGD_SMOKE_IIWA", "SVGD_R13", "SVGD_R14",
                                  "SVGD_R15", "SVGD_R16", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT",
                                  "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
-                                 "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22",
+                                 "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23",
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "A", "B", "B2", "B3",

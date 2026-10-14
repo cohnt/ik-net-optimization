@@ -943,6 +943,39 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R23 (branch `svgd-tune`, 2026-10-14): the phase-1 conditioning exceptions at the pin
+
+**Not yet submitted: waits for Thomas's word on the pre-registration** (`docs/svgd-solver.md`,
+"Stage SVGD_R23"). Stage `SVGD_R23` is R22's shape (`SVGD_PINNED_V2`, the four record contexts,
+480 cells at 180 s on seed 1, graphed, the lifted step cap, the clearance row, 24 shards, PROCS=2,
+learned arm only, no joint-space set) with one override per variant:
+
+| token | override | arm / rows |
+| --- | --- | --- |
+| `ident` | `svgd_metric=identity` | learned, all 16 rows |
+| `lm1` | `svgd_gn_lm=1` (replaces the pin's 10 in the item's `--set` list; one `svgd_gn_lm=` per item) | learned, all 16 rows |
+| `lm100` | `svgd_gn_lm=100` | learned, all 16 rows |
+
+Two pre-registered variants were screened DEAD on the laptop (12 Panda cells, every cell to the
+clock, every particle redrawn at every check) and are not run: `svgd_gn_lm=0` and
+`svgd_row_units=tolerance`; the doc's screen table reports them. 48 logical runs, 1152 items, md5
+`8fe92f911ad495d4a3a2591fb900b941`. Claim order within a cell is by id (`ident`, `lm100`, `lm1`).
+
+**No restage.** `svgd_metric` and `svgd_gn_lm` exist in the staged `7812715` (both are in R20's
+own `--set` surface or option table); manifest-only, as R22:
+
+```bash
+WT=~/Documents/programming/work/rlg/analytic-and-optimization-ik/learned-ik/.claude/worktrees/svgd-tune
+scp $WT/cluster/manifest_stageSVGD_R23.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/
+md5sum $WT/cluster/manifest_stageSVGD_R23.txt; ssh tcohn@txe1-login.mit.edu 'md5sum ~/learned-ik/repo/cluster/manifest_stageSVGD_R23.txt; cat ~/learned-ik/repo/.staged-commit; grep -c "\"svgd_metric\": (\"gn\", \"identity\")\|svgd_gn_lm" ~/learned-ik/repo/src/generic_program.py'
+cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R23.txt 4
+```
+
+**Allotment**: the tool's figure 44.8 node-h (5 s per cell + 180 s per item, 11.2 h on 4 nodes);
+R20's scaling makes `lm100` and `lm1` ~4 node-h each and `ident` more (its pose cells took 20x
+the pin's wall on the screen); worst case 605 node-h. Read with
+`scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,ident,lm1,lm100`.
+
 ## R22 (branch `svgd-tune`, 2026-10-14): stripping at the pin
 
 **Submitted 2026-10-14 14:12 EDT: jobs 5918035-5918038, four nodes, `DRAKE_ENV=crc PROCS=2`, the

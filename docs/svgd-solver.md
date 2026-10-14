@@ -1915,6 +1915,52 @@ for the full set; R20's scaling (1-2.6 s per cell) makes the alive variants (`lm
 and whichever of the others survives) ~4 node-h per variant. Worst case per clock-bound variant 48
 node-h, which is what the screen avoids.
 
+**The screen (laptop, 2026-10-14 14:25-15:47 EDT; PRELIMINARY, 12 Panda cells, read after the
+section above was committed as 4d3eaf8).** Targets 0-5, guess 0, native, 180 s, the pin plus one
+override; `pin2` re-run on the same cells as the reference (6/6 and 6/6, the cost ratio's
+denominator). Medians over the 6 cells of each task; cost ratio over the cells both solved.
+
+| variant | grasp solved / clock | pose solved / clock | outer steps grasp / pose (pin 23.5 / 8) | wall s grasp / pose (pin 4.2 / 1.2) | feasible of 64 grasp / pose (pin 52.5 / 42) | resamples per cell grasp / pose (pin 2.5 / 3.5) | cost ratio to pin grasp / pose | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `lm1` | 6/6, 0 | 6/6, 0 | 11 / 9 | 2.0 / 1.5 | 12.5 / 2.5 | 17.5 / 80 | **1.27 / 1.23** | alive -> cluster |
+| `lm100` | 6/6, 0 | 6/6, 0 | **45** / 8 | **9.6** / 1.4 | 61.5 / 54 | 0 / 0.5 | 1.00 / 0.99 | alive -> cluster |
+| `lm0` | **0/6, 6** | **0/6, 6** | 575 / 599 | 162 / 162 | 0 / 0 | **36,782 / 37,333** | -- | DEAD at the pin |
+| `ident` | 6/6, 0 | 6/6, 0 | 7 / **133** | 1.4 / **25.2** | 20.5 / **1** | 0 / 0 | **1.25 / 1.24** | alive -> cluster |
+| `tolunits` | **0/6, 6** | **0/6, 6** | 622 / 653 | 162 / 162 | 0 / 0 | **39,443 / 40,975** | -- | DEAD at the pin |
+
+What the screen says against the predictions, before the 480-cell round:
+
+- **`lm0` and `tolunits` are dead exactly as predicted, with the predicted signature**: every
+  particle redrawn at every check (~60 redraws per outer step, N = 64), zero feasible particles
+  ever, every cell to the clock, and the recorded `lambda_max` median is 1 with
+  `||H||_F / lambda_max = sqrt(20) = 4.47` -- the identity the solver substitutes for a non-finite
+  H. For `lm0` that is the singular (c, z) block: the plain GN solve of a rank-7-of-13 block in
+  float32 returns a non-finite step. For `tolunits` it is the 1e15 curvature of the rescaled rows
+  at rho 1e5. Neither goes to the cluster; both are reported from here (12 cells, preliminary) as
+  "the setting earns its place" with its mechanism. **The structural reading stands: delta is what
+  fixes the gauge along the learned formulation's own (c, z) redundancy**, which is the phase-3
+  candidate R26 carries (the latent prior as the term that lives on the fibre).
+- **`lm1` is alive but worse on everything except success, and the cost prediction had the wrong
+  sign.** Cost +23-27%, feasible particles 12.5 / 2.5 of 64 against 52.5 / 42, resamples 7x / 23x
+  the pin's. The mechanism's second half (overshoot along the fibre, absorbed by the resample) is
+  what happened; the first half (faster objective descent, lower cost) did not show, because a
+  particle that overshoots is redrawn rather than descending. So delta 10 is not slowing the
+  objective; it is keeping particles on the manifold. The 480-cell round reads it under the
+  pre-registered rule.
+- **`lm100` is level on cost and success, with 2x the outer steps and wall on grasp, zero
+  resamples and the most feasible particles of any variant** (61.5 / 54 of 64); its repulsion share
+  is 0.28 on grasp against the pin's 0.01, because the damped drive leaves the kernel term a larger
+  fraction of the step. The cost-up prediction did not show at 12 cells; the steps-up one did.
+- **`ident` is alive, against the prediction of dead, and lands in the mechanism's other branch**:
+  it stalls early at a high cost rather than running to the clock on grasp (7 outer steps, 1.4 s,
+  cost +25%, 20.5 feasible), and on pose it crawls (133 outer steps, 25 s, ONE feasible particle,
+  cost +24%). Both halves of the mechanism are visible: the scalar step reaches the rows and
+  barely descends the objective. Under the pre-registered rule a cost > 5% above the pin on any row
+  is already "the Newton metric earns its place"; the 480-cell round measures it on all sixteen.
+
+Manifest `cluster/manifest_stageSVGD_R23.txt` (48 runs, 1152 items: `ident`, `lm1`, `lm100` on
+the sixteen rows) was generated after this table was written; it is submitted on Thomas's word.
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each
