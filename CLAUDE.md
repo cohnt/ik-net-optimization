@@ -29,8 +29,8 @@ NOT an upper bound**: single start it loses success to learned on every IPOPT ro
 rows, leads under NLopt, is the fastest arm on 19 of 32 experiment x solver rows (its IPOPT / SNOPT /
 NLopt seconds are xeon-p8, the record's volta) and joint space is cheapest; with restarts over the 8
 starts it ties learned on success. Its failures end at targets the cell's fixed branch cannot reach.
-Rulings: `memory/analytic-baseline-rulings.md`; operations `cluster/ANALYTIC_RUNBOOK.md`; reader
-`scripts/report_analytic.py`.
+Rulings: `memory/analytic-baseline-rulings.md`; operations `cluster/ANALYTIC_RUNBOOK.md`; readers
+`scripts/report_analytic.py`, `scripts/report_threeway.py`; tables `docs/analytic-arm-tables.md`.
 
 All three go through the same `IKFlowProgram` machinery, so a change to constraints/costs affects
 all of them. `workshop-paper-draft.pdf` is the write-up — an early rough draft, orientation only,
