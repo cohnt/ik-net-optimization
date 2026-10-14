@@ -1757,6 +1757,83 @@ solved):
   the learned arm's 58** (Panda): the q-space kernel spreads a joint-space swarm off the manifold
   the way it did the learned arm's in R13, and the latent kernel is learned-only.
 
+## The tuning push (branch `svgd-tune`, from 2026-10-14): strip, then replace with structure
+
+**Thomas's end goal (2026-10-14): a high-performing AL-SVGD solver for the learned formulation that
+leverages the special structure of the formulation, with a clear explanation for why each decision
+helps.** The work pattern is his four phases: (1) a simple method working [R20]; (2) STRIP every
+piece that does not earn its place; (3) replace what special treatment remains with formulation
+insight; (4) add insight. Success is at the ceiling on every record row, so from here a round is
+read on **cost on the cells shared with the pin, wall, residual at stop, feasible particles at stop
+and outer steps**, and on each variant's own diagnostic.
+
+Rules for every round of the push, fixed here before the first manifest:
+
+- **Each variant pre-registers a mechanism, a diagnostic, a prediction and a decision rule.** The
+  mechanism says why the change should move which metric; the diagnostic is a recorded per-cell
+  quantity that the mechanism predicts; a variant whose outcome matches the prediction while its
+  diagnostic does not is reported as *outcome without mechanism* (the stage-STEP lesson) and is
+  never adopted on outcome alone.
+- **Noise band**: "within noise" means the median cost on the cells shared with the pin within
+  [0.95, 1.05] of the pin's (R19's seed-to-seed band is 3-5%), feasible particles within +-3, outer
+  steps within +-2, wall within +-15%, residual in the same decade. Success is exact McNemar
+  against the pin on the same cells, ties stated as ties.
+- **Cap check** reads `timed_out` AND `stop_reason` (`wall_clock`, `step_cap`); >= 24 of 480 cells
+  at a budget means no verdict. `n_recheck_failures` is printed per row.
+- **A strip that is inert is removed, not defaulted off** (the seeding precedent), in its own
+  commit after Thomas's word, with `tests/test_svgd_pin_and_gate.py` re-pinned.
+- **Joint-space svgd stays an ablation** and is never tuned as a side effect; where a strip touches
+  a setting the ablation arm leans on, one joint-space confirmation runs beside it.
+- Structure (phase 3 / 4) enters the LEARNED arm's target only; the program's rows, bounds and task
+  are untouched; every added term is a learned-only regulariser excluded from `reported_cost`.
+
+Roadmap, each round its own pre-registration shown to Thomas before its manifest: **R22** (this
+section) strips at the pin; **R23** ablates the three 2026-10-09 conditioning changes (natural
+units, per-particle step, SVN with Levenberg delta), which were phase-1 exceptions and were A/B'd
+only on 12 laptop cells at rho 1e3; **R24** tunes wall and cost at fixed success (N 16 / 32, rho
+1e6, the stall patience, the dual step alpha, the c x z bandwidth rule); **R25** a float64 polish of
+the returned particle (code; his call); **R26** the latent prior N(0, I) on z; **R27** the flow as an
+exact density (the log-det, aimed at the runaway); **R28** the correction regulariser (w_c ladder,
+weight 10 as control; the zero-centred q_c prior as the structural alternative to penalty and box).
+
+### Stage SVGD_R22: stripping at the pin (pre-registered 2026-10-14, before any manifest)
+
+**What runs.** The learned arm on the record's sixteen rows (Panda `n6`, iiwa `n4`, `screw7_p050`
+`n6`, `soft12` `n6` x grasp / pose x native / paired), 480 cells, 180 s, seed 1, `SVGD_PINNED_V2`
+plus exactly ONE override per variant, graphed, the lifted step cap, the clearance row
+(`DRAKE_ENV=crc PROCS=2`), 24 shards; and ONE joint-space item set on the Panda's four rows. Every
+variant is read against R20's `pin2` on the same cells (the VARIANT vs VARIANT block) and against
+the robot's IPOPT twin (SVGD_R2 on the Panda, stage PAPER elsewhere). Native is the primary row,
+paired the ablation.
+
+| token | override | what it strips or tests | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `clipoff` | `svgd_multiplier_max=1e300` (`inf` does not survive `literal_eval` and would arrive as a string; 1e300 is a float, `clamp` at +-1e300 is a no-op, float32 reads it as inf) | the multiplier box (item 6) | PHR multipliers on the learned arm are O(1e2-1e4); the box caps only the few particles whose rows are still large after a dual step, which are the ones about to be resampled or already infeasible; it cannot move a feasible particle | `n_multiplier_clipped` (0 by construction), `lam_inf_max` / `mu_inf_max` (how far unboxed multipliers run), `n_resampled`, feasible count | ties on all 16 rows; cost within noise; `mu_inf_max` reaches 1e5-1e7 on a few particles without moving the selected one | inert on all 16 rows AND on the joint-space confirmation -> the box is deleted; inert on the learned arm only -> it stays as a stated setting of the ablation arm; a learned row where cost moves > 5% or the feasible count falls > 3 -> the box earns its place, explained from `multiplier_clips_by_group` |
+| `clipoffjs` | `svgd_kernel=q` + `svgd_multiplier_max=1e300`, `--arms numerical`, Panda only (declared two factors, scoped as R20's `pin2kq`) | the box on the ablation arm, which leans on it (2.8e5 / 5.2e5 clips per grasp run, R20) | joint space has no latent to absorb a dual step; its multipliers on the `mug_xy` and `collision` groups climb to the box; unboxed they either keep climbing harmlessly or the swarm loses the grasp cells it only just holds at the pin | as `clipoff`, against R20's `pin2kq` | A: 480 / 480, `mu_inf_max` 1e5-1e7, cost within noise; B: grasp rows lose cells to the clock | decides whether `clipoff`'s deletion is licensed (above) |
+| `drop2` | `svgd_resample=drop` | the redraw from the native draw (item 7); a dropped particle is frozen out of the swarm, the minimal handling of a non-finite particle | at the pin the swarm is native-drawn under BOTH protocols, so almost no particle runs away (R18: 0.05-0.08 redraws per particle on paired, ~0 native); the redraw that carried the jittered V1 swarm (R11) has nothing left to carry | `n_dropped`, `n_live` at stop, against `n_resampled` on `pin2` for the same cells; feasible count | ties on all 16 rows; median `n_dropped` <= 3 of 64; cost and feasible within noise; the native rows close to `pin2` cell for cell where `n_resampled` was 0 | inert on all 16 rows -> the redraw never earns its place at the pin: propose deleting the `native` and `keep` modes, the frozen drop staying as the sole non-finite handling (his approval); a paired row that loses cells -> the redraw stays and the loss is reported with `n_dropped` |
+| `T0p1` | `svgd_temperature=0.1` | whether T earns a role: under the pinned H / T metric T sets ONLY the repulsion-to-drive ratio (bit-identical to the pin at T = 1) | 10x less repulsion moves the swarm toward kernel-off behaviour (R1K: keeps descending, lower cost, later stall stop); R14 found T = 0.1 ~ rho = 1e5 on `kz` at rho 1e3, so at rho 1e5 it may add little | `repulsion_ratio_median`, outer steps, `stop_reason` (clock stops as R1K), feasible count, cost | cost -0 to -10% on grasp, more outer steps, possibly clock stops on grasp; feasible count unchanged or lower | with `T10v2`: both within noise on all 16 rows -> **T is inert at the pin: T = 1 is fixed and `svgd_temperature` and `svgd_metric_temperature` are deleted** (the method then has no temperature); T = 0.1 lowers cost >= 10% at no loss of success or wall on >= 12 of 16 rows -> T earns a role, which is a tuning adoption AND phase-4 item 6 (T as coverage), so it goes to Thomas as a question, not fielded |
+| `T10v2` | `svgd_temperature=10` | the other side of the bracket | 10x more repulsion: fewer feasible particles, higher cost, more steps (R5's `T10` under the old metric form was also a 0.1x Newton step; here it is the clean repulsion effect) | as `T0p1` | cost up, feasible count down, success unchanged | as `T0p1` |
+
+**Not re-proposed, and why.** K (`svgd_inner_iters`): Thomas's 2026-10-11 ruling keeps the inner /
+outer split as a parameter to be understood; a K ladder at the pin runs only on his word. The
+gate-edge rule: fired 0 times in 9600 cells, costs nothing per step, is the exactness guarantee.
+The time reserve (`svgd_time_reserve = 0.1`, 18 s of 180): an execution setting, and no learned cell
+at the pin is within 129 s of the clock (the slowest cell is 51 s), so it never acts; it is left
+alone. A float64 polish: none exists (removed 2026-10-09; `_select` only clamps onto the bounds),
+so the residual question is R25 and needs code. The bandwidth floor (`svgd_bandwidth_floor = 0.05`)
+is read from R20's recorded `bandwidths` on all sixteen rows rather than re-run: see "Strips decided
+from the record" below.
+
+**Allotment.** 68 logical runs (4 learned variants x 4 robots x 2 tasks x 2 starts + the Panda
+joint-space set), 1632 items. The tool's figure (`gen_manifest.py --stage SVGD_R22 --allotment`,
+5 s per learned cell + 180 s per item) and R20's measured scaling (1.0-2.6 s per learned cell, 6
+node-hours for 480 items) are both stated in `cluster/SVGD_RUNBOOK.md`; the worst case puts every
+cell at the clock. The only variant with a clock risk is `T0p1` (kernel-off behaviour), so it is
+claimed after the other learned variants; the joint-space items go last.
+
+**Strips decided from the record, no compute** (filled from R20's `summary.json` on 2026-10-14):
+_pending the record read_.
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each
