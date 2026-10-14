@@ -1808,8 +1808,8 @@ paired the ablation.
 
 | token | override | what it strips or tests | mechanism | diagnostic | prediction | decision rule |
 | --- | --- | --- | --- | --- | --- | --- |
-| `clipoff` | `svgd_multiplier_max=1e300` (`inf` does not survive `literal_eval` and would arrive as a string; 1e300 is a float, `clamp` at +-1e300 is a no-op, float32 reads it as inf) | the multiplier box (item 6) | PHR multipliers on the learned arm are O(1e2-1e4); the box caps only the few particles whose rows are still large after a dual step, which are the ones about to be resampled or already infeasible; it cannot move a feasible particle | `n_multiplier_clipped` (0 by construction), `lam_inf_max` / `mu_inf_max` (how far unboxed multipliers run), `n_resampled`, feasible count | ties on all 16 rows; cost within noise; `mu_inf_max` reaches 1e5-1e7 on a few particles without moving the selected one | inert on all 16 rows AND on the joint-space confirmation -> the box is deleted; inert on the learned arm only -> it stays as a stated setting of the ablation arm; a learned row where cost moves > 5% or the feasible count falls > 3 -> the box earns its place, explained from `multiplier_clips_by_group` |
-| `clipoffjs` | `svgd_kernel=q` + `svgd_multiplier_max=1e300`, `--arms numerical`, Panda only (declared two factors, scoped as R20's `pin2kq`) | the box on the ablation arm, which leans on it (2.8e5 / 5.2e5 clips per grasp run, R20) | joint space has no latent to absorb a dual step; its multipliers on the `mug_xy` and `collision` groups climb to the box; unboxed they either keep climbing harmlessly or the swarm loses the grasp cells it only just holds at the pin | as `clipoff`, against R20's `pin2kq` | A: 480 / 480, `mu_inf_max` 1e5-1e7, cost within noise; B: grasp rows lose cells to the clock | decides whether `clipoff`'s deletion is licensed (above) |
+| `clipoff` | `svgd_multiplier_max=3e38` (`inf` does not survive `literal_eval` and would arrive as a string; 1e300 overflows the float32 scalar cast inside `torch.clamp` and errors every cell, found by the local smoke; 3e38 is float32-representable and `clamp` at +-3e38 is a no-op for any real multiplier) | the multiplier box (item 6) | PHR multipliers on the learned arm are O(1e2-1e4); the box caps only the few particles whose rows are still large after a dual step, which are the ones about to be resampled or already infeasible; it cannot move a feasible particle | `n_multiplier_clipped` (0 by construction), `lam_inf_max` / `mu_inf_max` (how far unboxed multipliers run), `n_resampled`, feasible count | ties on all 16 rows; cost within noise; `mu_inf_max` reaches 1e5-1e7 on a few particles without moving the selected one | inert on all 16 rows AND on the joint-space confirmation -> the box is deleted; inert on the learned arm only -> it stays as a stated setting of the ablation arm; a learned row where cost moves > 5% or the feasible count falls > 3 -> the box earns its place, explained from `multiplier_clips_by_group` |
+| `clipoffjs` | `svgd_kernel=q` + `svgd_multiplier_max=3e38`, `--arms numerical`, Panda only (declared two factors, scoped as R20's `pin2kq`) | the box on the ablation arm, which leans on it (2.8e5 / 5.2e5 clips per grasp run, R20) | joint space has no latent to absorb a dual step; its multipliers on the `mug_xy` and `collision` groups climb to the box; unboxed they either keep climbing harmlessly or the swarm loses the grasp cells it only just holds at the pin | as `clipoff`, against R20's `pin2kq` | A: 480 / 480, `mu_inf_max` 1e5-1e7, cost within noise; B: grasp rows lose cells to the clock | decides whether `clipoff`'s deletion is licensed (above) |
 | `drop2` | `svgd_resample=drop` | the redraw from the native draw (item 7); a dropped particle is frozen out of the swarm, the minimal handling of a non-finite particle | at the pin the swarm is native-drawn under BOTH protocols, so almost no particle runs away (R18: 0.05-0.08 redraws per particle on paired, ~0 native); the redraw that carried the jittered V1 swarm (R11) has nothing left to carry | `n_dropped`, `n_live` at stop, against `n_resampled` on `pin2` for the same cells; feasible count | ties on all 16 rows; median `n_dropped` <= 3 of 64; cost and feasible within noise; the native rows close to `pin2` cell for cell where `n_resampled` was 0 | inert on all 16 rows -> the redraw never earns its place at the pin: propose deleting the `native` and `keep` modes, the frozen drop staying as the sole non-finite handling (his approval); a paired row that loses cells -> the redraw stays and the loss is reported with `n_dropped` |
 | `T0p1` | `svgd_temperature=0.1` | whether T earns a role: under the pinned H / T metric T sets ONLY the repulsion-to-drive ratio (bit-identical to the pin at T = 1) | 10x less repulsion moves the swarm toward kernel-off behaviour (R1K: keeps descending, lower cost, later stall stop); R14 found T = 0.1 ~ rho = 1e5 on `kz` at rho 1e3, so at rho 1e5 it may add little | `repulsion_ratio_median`, outer steps, `stop_reason` (clock stops as R1K), feasible count, cost | cost -0 to -10% on grasp, more outer steps, possibly clock stops on grasp; feasible count unchanged or lower | with `T10v2`: both within noise on all 16 rows -> **T is inert at the pin: T = 1 is fixed and `svgd_temperature` and `svgd_metric_temperature` are deleted** (the method then has no temperature); T = 0.1 lowers cost >= 10% at no loss of success or wall on >= 12 of 16 rows -> T earns a role, which is a tuning adoption AND phase-4 item 6 (T as coverage), so it goes to Thomas as a question, not fielded |
 | `T10v2` | `svgd_temperature=10` | the other side of the bracket | 10x more repulsion: fewer feasible particles, higher cost, more steps (R5's `T10` under the old metric form was also a 0.1x Newton step; here it is the clean repulsion effect) | as `T0p1` | cost up, feasible count down, success unchanged | as `T0p1` |
@@ -1831,8 +1831,41 @@ node-hours for 480 items) are both stated in `cluster/SVGD_RUNBOOK.md`; the wors
 cell at the clock. The only variant with a clock risk is `T0p1` (kernel-off behaviour), so it is
 claimed after the other learned variants; the joint-space items go last.
 
-**Strips decided from the record, no compute** (filled from R20's `summary.json` on 2026-10-14):
-_pending the record read_.
+**Read from the record before the round, no compute** (R20's and R21's `summary.json`, every cell's
+`record["svgd"]`, 2026-10-14; this sharpens the predictions above and was written before any R22
+cell ran):
+
+- **The bandwidth floor is NOT inert, so it is not stripped here; it joins R24's bandwidth-rule
+  round.** `bandwidths` records the squared bandwidth `h = max(floor^2, med^2 / log N)`, so "at the
+  floor" is `h <= 0.0025`. The z block never touches it on any row of either arm (median h 0.22-0.28).
+  The c block does, on the POSE task only: Panda pose 9.2% / 10.8% of cells (native / paired), soft
+  PCS pose **98.5% / 99.2%**; every grasp row and the iiwa / screw pose rows 0%; the joint-space `q`
+  kernel never (h 1.2-12). Mechanism, to be tested in R24 rather than assumed: on the pose task every
+  particle conditions on the same target pose, so the swarm's c-spread collapses and the c factor of
+  the c x z product would become a delta without the floor -- the floor is what keeps the c block
+  from switching the kernel off on those rows. That makes the c block's role on pose a question for
+  the bandwidth round (per-block median against a shared bandwidth, or the z kernel alone on pose).
+- **The resample fires on most learned cells at the pin, not "almost never".** Median redraws per
+  cell (of 64 particles, cumulative over the solve): Panda 2-5, iiwa 8-9, screw 13-30, soft PCS 0-1;
+  p90 6-57; cells with any redraw 81-100% on the rigid arms, 12-93% on soft PCS; native and paired
+  alike (R18's "0.05-0.08 per particle" is the same 3-5 of 64 on the Panda). Joint space redraws on
+  **no** cell of any row. So `drop2`'s prediction is sharpened: median `n_dropped` 2-9 on Panda /
+  iiwa, 13-30 on the screw arm, 0-1 on soft PCS, and the screw grasp rows -- where a swarm would lose
+  up to a third of its particles -- are where a `drop2` loss, if any, will show. The decision rule
+  is unchanged.
+- **The multiplier box is active on the learned arm, on every row group.** `lam_inf_max` reaches the
+  1e4 box on the worst particle of the median cell on every iiwa, screw and Panda-pose row (Panda
+  grasp 131-164, soft PCS 2-18); the clips land on every group the arm has (task rows, collision,
+  joint limits, the z and c boxes, the trust row), 100-830 clipped entries per median cell. Joint
+  space clips only its task rows and the collision row, 1e5-1e6 entries per run (and never
+  resamples). So `clipoff` is a real test, not a formality: the prediction that the box does not move
+  the selected particle stands, and `mu_inf_max` / `lam_inf_max` will say how far the unboxed
+  multipliers run.
+- `repulsion_ratio_median` at the pin: 0.005-0.014 on the rigid grasp rows, 0.0002-0.001 on rigid
+  pose, 0.08-0.09 on soft PCS grasp -- the kernel's share of the step is small everywhere, which is
+  the baseline `T0p1` / `T10v2` move by 10x each way.
+- Every one of the 32 runs: 480 of 480 `converged`, `n_recheck_failures` 0 (the screw joint-space
+  rows: 17 / 20 / 3 / 3 `wall_clock`, as R21 reported).
 
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 

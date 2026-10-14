@@ -952,16 +952,16 @@ learned variant and one declared two-factor joint-space set:
 
 | token | override | arm / rows |
 | --- | --- | --- |
-| `clipoff` | `svgd_multiplier_max=1e300` | learned, all 16 rows |
+| `clipoff` | `svgd_multiplier_max=3e38` | learned, all 16 rows |
 | `drop2` | `svgd_resample=drop` | learned, all 16 rows |
 | `T10v2` | `svgd_temperature=10` | learned, all 16 rows |
 | `T0p1` | `svgd_temperature=0.1` | learned, all 16 rows (claimed last of the learned items: the one clock risk) |
-| `clipoffjs` | `svgd_kernel=q` + `svgd_multiplier_max=1e300` | joint space, Panda `n6` only, its own items after every learned item |
+| `clipoffjs` | `svgd_kernel=q` + `svgd_multiplier_max=3e38` | joint space, Panda `n6` only, its own items after every learned item |
 
 **The tokens are new on purpose**: `drop` (R11) and `T10` (R5) exist on the V1 pin, and the selftest
-holds a token to one (pin, overrides) across every round. `1e300` rather than `inf`: the benchmark's
+holds a token to one (pin, overrides) across every round. `3e38` rather than `inf`: the benchmark's
 `--set` parser is `literal_eval`, which does not parse `inf`, so the value would arrive as a string
-and `torch.clamp` would raise on every cell; `clamp` at +-1e300 is a no-op.
+and `torch.clamp` would raise on every cell; `1e300` overflows the float32 scalar cast inside `clamp` (the local smoke errored on every cell); `clamp` at +-3e38 is a no-op and the value is float32-representable.
 
 **No restage.** The staged tree is `7812715` (the analytic campaign's), whose `src/svgd/`,
 `src/generic_program.py`, `src/benchmark.py` and `cluster/*` are byte-identical to main's and to
@@ -974,7 +974,7 @@ scp $WT/cluster/manifest_stageSVGD_R22.txt tcohn@txe1-login.mit.edu:~/learned-ik
 md5sum $WT/cluster/manifest_stageSVGD_R22.txt; ssh tcohn@txe1-login.mit.edu 'md5sum ~/learned-ik/repo/cluster/manifest_stageSVGD_R22.txt; cat ~/learned-ik/repo/.staged-commit; grep -c "svgd_multiplier_max\|\"svgd_resample\": (\"native\", \"drop\", \"keep\")\|svgd_temperature" ~/learned-ik/repo/src/generic_program.py'
 ```
 
-**Local smoke before submitting** (the two values never run before, `svgd_multiplier_max=1e300` and
+**Local smoke before submitting** (the two values never run before, `svgd_multiplier_max=3e38` and
 `svgd_temperature=0.1`): 2 cells x 20 s, Panda pose paired, learned arm, one process under
 `systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0`; read `n_multiplier_clipped == 0`
 on `clipoff` and the override echoed in `metadata.overrides`. Not a result.
