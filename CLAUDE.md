@@ -19,12 +19,16 @@ of the repo is the three-way comparison of formulations for the same IK problem:
 | **numerical** (`...ProgramNumerical`) | joint angles `q` (7) | identity |
 | **analytic** (`Panda/Iiwa14IKProgramAnalytic`, `...MugProgramAnalytic`) | pose `xyz_rpy` (6) of the task frame + redundancy parameter `psi` (1) | closed-form IK (`src/*_analytic_ik.py`), branch fixed per solve |
 
-**Both rigid arms field the analytic arm since 2026-10-12** (branch `analytic-baseline`): the Panda's
-He-Liu map (`psi = q7`) on 4 or 8 branches (`analytic`, `analytic8`), the iiwa's Faria S-R-S map
-(`psi` = arm angle, `GC` = signs of q2/q4/q6, all 8) ported from `../codebase`. Shared machinery is
-`src/analytic_program.py`. **It is an UPPER-BOUND REFERENCE column, expected to beat both other arms**
-(the TRO result in `../codebase`); the paper's case is robots with no closed form, so learned v joint
-space stays the comparison of record and nothing the analytic column shows changes those verdicts.
+**Both rigid arms field the analytic arm since 2026-10-12** (merged 2026-10-14): the Panda's He-Liu
+map (`psi = q7`) on 4 or 8 branches (`analytic`, `analytic8`), the iiwa's Faria S-R-S map (`psi` = arm
+angle, `GC` = signs of q2/q4/q6, all 8) ported from `../codebase`. Shared machinery is
+`src/analytic_program.py`. **A reference TARGET to match, possibly not in the paper** (Thomas,
+2026-10-13); the paper's case is robots with no closed form, so learned v joint space stays the
+comparison of record. **Measured (stages ANALYTIC*, 96 runs on the record's cells, 2026-10-14) it is
+NOT an upper bound**: single start it loses success to learned on every IPOPT row and most SNOPT
+rows, leads under NLopt, is the fastest arm on 19 of 32 experiment x solver rows (its IPOPT / SNOPT /
+NLopt seconds are xeon-p8, the record's volta) and joint space is cheapest; with restarts over the 8
+starts it ties learned on success. Its failures end at targets the cell's fixed branch cannot reach.
 Rulings: `memory/analytic-baseline-rulings.md`; operations `cluster/ANALYTIC_RUNBOOK.md`; reader
 `scripts/report_analytic.py`.
 
