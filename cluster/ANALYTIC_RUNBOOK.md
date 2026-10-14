@@ -25,6 +25,8 @@ ik-tune session before sizing). Their items drop the record's learned-only `--co
 arms on xeon-p8. Only the two SVGD manifests go to `xeon-g6-volta`. So the analytic arm's
 IPOPT / SNOPT / NLopt seconds come from a different machine from the record's, and
 `report_analytic.py` prints a NOTE on every such row: compare its seconds within its own runs only.
+**TODO, deferred (Thomas, 2026-10-13):** a same-machine timing row (joint space re-run on xeon-p8)
+-- not now; the analytic arm is a target to match, and other work needs the compute more.
 
 Two clip ladders, both measured (Thomas, 2026-10-12): `ANALYTIC` is ../codebase's 1e-4 / 1e-3,
 `ANALYTICT` the tight 1e-8 / 1.1e-4.
