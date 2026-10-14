@@ -1333,13 +1333,11 @@ of uniform configurations; at the tight **1e-8 / 1.1e-4** (tag `ANALYTICT`) 5.6 
 are fielded. The arguments come from the SAME pass as `q` and are read through the `QAndPose` memo,
 and the pose-target and mug rows are linear constraints on the pose variables (../codebase's `PinVars`
 default encoding). SNOPT satisfies linear constraints in its first minors, so under the paired start
-iterate 0 jumps to the target pose with psi still at the start's value. **That is harmless on the
-iiwa and PANDA-ONLY trouble, from 4-cell smokes**: iiwa pose paired SNOPT 4/4 in 6 iterations (as
-../codebase's Arm on a Table, its best SNOPT row, 89.7 v 29.5, with the same start and pin), Panda 0/4
-on both charts in ~20 ms (INFO 13/41). Hypothesis, unmeasured: on S-R-S the elbow's reachability is
-set by the pose alone, while the Panda's psi is q7, so a target pose at the start's q7 is often outside
-the reach rows. ../codebase's nonlinear pin (`PIN_AS_NONLINEAR`) was measured only on its Bimanual row
-and dropped (Thomas, 2026-09-22); not fielded here. Read the 480-cell rows before believing any of it.
+iterate 0 jumps to the target pose with psi still at the start's value. **At 480 cells that is not a
+defect**: iiwa pose paired SNOPT is the analytic arm's best row (448, against IPOPT 376; as
+../codebase's Arm on a Table, 89.7 v 29.5), Panda pose paired SNOPT 212 against IPOPT 236 (the 4-cell
+smoke's 0/4 was noise). ../codebase's nonlinear pin (`PIN_AS_NONLINEAR`) was measured only on its
+Bimanual row and dropped (Thomas, 2026-09-22); not fielded here.
 
 **Two backends for the map, both measured (Thomas, 2026-10-13).** `analytic_backend="cpp"`
 (`cpp/`, ctypes, one g++ call; built on the cluster by `cluster/build_cpp_job.sh`, a stale build
