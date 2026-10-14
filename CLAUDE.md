@@ -1332,12 +1332,14 @@ grid). Those rows exclude a band ~sqrt(2 * reach) rad wide around every seam: at
 of uniform configurations; at the tight **1e-8 / 1.1e-4** (tag `ANALYTICT`) 5.6 / 4.3 / 3.0%. Both
 are fielded. The arguments come from the SAME pass as `q` and are read through the `QAndPose` memo,
 and the pose-target and mug rows are linear constraints on the pose variables (../codebase's `PinVars`
-default encoding). **Under SNOPT that makes the paired start a fixed-pose psi search**: SNOPT satisfies
-linear constraints in its first minors, so iterate 0 already sits at the target pose (or on the mug
-axis) and only psi (and orientation, on the grasp task) moves, where IPOPT moves pose and psi together.
-Diagnosed 2026-10-13 on the smoke's Panda pose paired cells (SNOPT INFO 13/41 in 1-9 majors on cells
-IPOPT solves; one stuck on the clip kink, u = 1 - clip); hiding the pin behind a generic constraint
-rescued 1 of 2. A solver property, as ../codebase's own `PIN_AS_NONLINEAR` note records, not a defect.
+default encoding). SNOPT satisfies linear constraints in its first minors, so under the paired start
+iterate 0 jumps to the target pose with psi still at the start's value. **That is harmless on the
+iiwa and PANDA-ONLY trouble, from 4-cell smokes**: iiwa pose paired SNOPT 4/4 in 6 iterations (as
+../codebase's Arm on a Table, its best SNOPT row, 89.7 v 29.5, with the same start and pin), Panda 0/4
+on both charts in ~20 ms (INFO 13/41). Hypothesis, unmeasured: on S-R-S the elbow's reachability is
+set by the pose alone, while the Panda's psi is q7, so a target pose at the start's q7 is often outside
+the reach rows. ../codebase's nonlinear pin (`PIN_AS_NONLINEAR`) was measured only on its Bimanual row
+and dropped (Thomas, 2026-09-22); not fielded here. Read the 480-cell rows before believing any of it.
 
 **Two backends for the map, both measured (Thomas, 2026-10-13).** `analytic_backend="cpp"`
 (`cpp/`, ctypes, one g++ call; built on the cluster by `cluster/build_cpp_job.sh`, a stale build
