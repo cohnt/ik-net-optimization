@@ -943,6 +943,64 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R22 (branch `svgd-tune`, 2026-10-14): stripping at the pin
+
+The first round of the tuning push (`docs/svgd-solver.md`, "The tuning push"). Stage `SVGD_R22`
+is R20's shape -- `SVGD_PINNED_V2`, the four record contexts, 480 cells at 180 s on seed 1, graphed,
+the lifted step cap, the clearance row, 24 shards, PROCS=2 with no MPS -- with one override per
+learned variant and one declared two-factor joint-space set:
+
+| token | override | arm / rows |
+| --- | --- | --- |
+| `clipoff` | `svgd_multiplier_max=1e300` | learned, all 16 rows |
+| `drop2` | `svgd_resample=drop` | learned, all 16 rows |
+| `T10v2` | `svgd_temperature=10` | learned, all 16 rows |
+| `T0p1` | `svgd_temperature=0.1` | learned, all 16 rows (claimed last of the learned items: the one clock risk) |
+| `clipoffjs` | `svgd_kernel=q` + `svgd_multiplier_max=1e300` | joint space, Panda `n6` only, its own items after every learned item |
+
+**The tokens are new on purpose**: `drop` (R11) and `T10` (R5) exist on the V1 pin, and the selftest
+holds a token to one (pin, overrides) across every round. `1e300` rather than `inf`: the benchmark's
+`--set` parser is `literal_eval`, which does not parse `inf`, so the value would arrive as a string
+and `torch.clamp` would raise on every cell; `clamp` at +-1e300 is a no-op.
+
+**No restage.** The staged tree is `7812715` (the analytic campaign's), whose `src/svgd/`,
+`src/generic_program.py`, `src/benchmark.py` and `cluster/*` are byte-identical to main's and to
+`svgd-tune`'s at this round; every option R22 sets exists there (`svgd_multiplier_max`,
+`svgd_resample` with `drop`, `svgd_temperature`). So the manifest is copied by hand and checked:
+
+```bash
+WT=~/Documents/programming/work/rlg/analytic-and-optimization-ik/learned-ik/.claude/worktrees/svgd-tune
+scp $WT/cluster/manifest_stageSVGD_R22.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/
+md5sum $WT/cluster/manifest_stageSVGD_R22.txt; ssh tcohn@txe1-login.mit.edu 'md5sum ~/learned-ik/repo/cluster/manifest_stageSVGD_R22.txt; cat ~/learned-ik/repo/.staged-commit; grep -c "svgd_multiplier_max\|\"svgd_resample\": (\"native\", \"drop\", \"keep\")\|svgd_temperature" ~/learned-ik/repo/src/generic_program.py'
+```
+
+**Local smoke before submitting** (the two values never run before, `svgd_multiplier_max=1e300` and
+`svgd_temperature=0.1`): 2 cells x 20 s, Panda pose paired, learned arm, one process under
+`systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0`; read `n_multiplier_clipped == 0`
+on `clipoff` and the override echoed in `metadata.overrides`. Not a result.
+
+**Submit** (all four nodes are this push's, Thomas 2026-10-14):
+
+```bash
+cd $WT
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R22.txt 4
+```
+
+**Allotment**: `python cluster/gen_manifest.py --stage SVGD_R22 --allotment` (5 s per learned cell,
+180 s per item; the joint-space items at R21's measured 1.5 / 0.9 s). R20 measured 6 node-hours for
+480 items against 25 allotted, so expect about a third of the tool's figure.
+
+**Read**:
+
+```bash
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows panda --variants pin2,pin2kq,clipoff,clipoffjs,drop2,T10v2,T0p1
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows iiwa --variants pin2,clipoff,drop2,T10v2,T0p1        # and screw7_p050, soft12
+```
+
+Promote with `cp -r <STAGING>/results/<robot>/benchmark/sc_SVGD_R22_* results/<robot>/benchmark/`
+(`grep -v _shard`). The decision rule per variant is in the pre-registration; a strip the rule
+licenses is removed in its own commit after Thomas's word.
+
 ## R21 (submitted 2026-10-12 16:18 EDT): the joint-space ablation at the pin on the other three robots
 
 Thomas, after R20's Panda ablation came in 480 / 480: *"Run the joint-space svgd ablation on the other
