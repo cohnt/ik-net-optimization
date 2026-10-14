@@ -1929,6 +1929,9 @@ Wednesday morning, nothing survives it. Next window: 2026-10-12 to 10-14.
 
 Everything here is genuinely open; closed questions live above.
 
+- **Analytic arm timing on one machine** (its IPOPT/SNOPT/NLopt seconds are xeon-p8, the record's
+  volta): deferred TODO (Thomas, 2026-10-13) -- it is a target to match, possibly not in the paper.
+
 - **A `q_c == 0` arm** (the draft's eq. 4) would quantify what the correction buys, now that the
   penalty has established the `c`/`q_c` redundancy is real.
 - **Non-dimensionalise the conditioning pose's translation against its rotation**, the way
