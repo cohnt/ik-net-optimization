@@ -115,7 +115,8 @@ import torch
 
 from src.svgd import al, fused
 from src.svgd.al import ALState
-from src.svgd.batched_program import EXTRA_ROW_KEYS, GENERIC_BINDING, BatchedProgram
+from src.svgd.batched_program import (EXTRA_ROW_KEYS, GENERIC_BINDING, BatchedProgram,
+                                      formulation_hint)
 from src.svgd.collision_backend import ParallelCollisionChecker, SceneSpec
 from src.svgd.result import (STATUS_CONVERGED, STATUS_INFEASIBLE, STATUS_NAN, STATUS_STEP_CAP,
                              STATUS_WALL_CLOCK, SvgdResult, SvgdSolverDetails, status_name,
@@ -198,7 +199,18 @@ def region_scale(bp):
     (`correction_bound`); on joint space half the range of each coordinate's true bound (the
     joint limits). Read from the program's own options and bounds, never assumed."""
     p, opts = bp.program, bp.options
-    if bp.is_learned:
+    if bp.is_analytic:
+        ## The analytic arm's `[xyz | rpy | psi]` (chosen 2026-10-13; A/B smoke in the commit).
+        ## Position: `c_position_slack`, the half-width the learned arm's conditioning
+        ## POSITION is normalised by -- the formulation-agnostic analogue (a task-frame
+        ## position either way); the grasp task's +-5 m variable bound is a safeguard far too
+        ## loose to be a scale, and the pose task has no position region at all (an equality).
+        ## Orientation: pi, as the learned arm's rpy. psi: pi too -- it is an angle on both
+        ## robots (q7 on the Panda, the periodic arm angle on the iiwa), and its variable bound
+        ## (+-5 / +-10) is a safeguard against IPOPT's unbounded variables, not a scale (on
+        ## the iiwa it spans ~3 periods). Thomas, 2026-10-13: no preference, my call.
+        s = np.asarray([float(opts.c_position_slack)] * 3 + [math.pi] * 4, dtype=float)
+    elif bp.is_learned:
         radius = p.LatentTrustRadius() if hasattr(p, "LatentTrustRadius") else None
         radius = LATENT_BOX if radius is None else float(radius)
         s = ([float(opts.c_position_slack)] * 3 + [math.pi] * 3 + [radius] * bp.width
@@ -215,18 +227,20 @@ def region_scale(bp):
 
 def radian_rows(bp, specs):
     """Which of `specs` are orientation-type rows -- in radians, EXCEPT the joint limits: the
-    pose task's rpy residual rows (group "rotation") and the c box's orientation rows (rows of
-    `CBoxConstraint` on the conditioning pose's rpy coordinates, lumped positions 3..5)."""
-    c_rpy_rows = set()
+    pose task's rpy residual rows (group "rotation"), the c box's orientation rows (rows of
+    `CBoxConstraint` on the conditioning pose's rpy coordinates, lumped positions 3..5) and,
+    on the analytic arm, the pose-target equality's rows on its rpy variables (also lumped
+    3..5)."""
+    rpy_rows = {}
     for blk in bp._blocks:
-        if blk.binding != "CBoxConstraint" or blk.kind != "linear":
+        if blk.binding not in ("CBoxConstraint", "PoseTargetConstraint") or blk.kind != "linear":
             continue
         A = blk.A.detach().cpu().numpy()
         idx = blk.var_idx.detach().cpu().numpy()
         for r in range(A.shape[0]):
             if int(idx[int(np.argmax(np.abs(A[r])))]) in (3, 4, 5):
-                c_rpy_rows.add(r)
-    return [r.group == "rotation" or (r.drake_binding == "CBoxConstraint" and r.drake_row in c_rpy_rows)
+                rpy_rows.setdefault(blk.binding, set()).add(r)
+    return [r.group == "rotation" or r.drake_row in rpy_rows.get(r.drake_binding, ())
             for r in specs]
 
 
@@ -325,10 +339,12 @@ class _Target:
                                        is_grads_batched=True, retain_graph=True)
         return J.transpose(0, 1)
 
-    def _extra_jacobian(self, X, N):
+    def _extra_jacobian(self, X, N, aux_jac=None):
         if self._n_extra == 0:
             return torch.zeros(N, 0, self.n, dtype=self.dtype, device=self.device)
-        return self.bp.extra_row_jacobian(X)                     # closed form, no autograd
+        if aux_jac is None:
+            return self.bp.extra_row_jacobian(X)                 # closed form, no autograd
+        return self.bp.extra_row_jacobian(X, aux_jac=aux_jac)    # the analytic map's J_u
 
     ## -- evaluation -------------------------------------------------------------------
     def evaluate(self, X, need_grad=True):
@@ -336,7 +352,7 @@ class _Target:
         finiteness flag. With `need_grad`, ANALYTIC mode keeps a graph through the flow only
         (none at all on joint space); AUTOGRAD mode keeps the full graph."""
         need_grad = bool(need_grad)
-        graph = need_grad and (self.bp.is_learned or not self.analytic)
+        graph = need_grad and (self.bp.has_map or not self.analytic)
         Xg = X.detach().requires_grad_(graph)
         with torch.set_grad_enabled(graph):
             out = self.bp.evaluate(Xg, detach_kinematics=self.analytic and graph,
@@ -366,7 +382,7 @@ class _Target:
     def pullback(self, ev, cots):
         """`[J_q^T v for v in cots]`, each `v [N, ndof]` -> `[N, n]`: ONE vmapped backward
         through the flow with all of them stacked; the identity on joint space."""
-        if not self.bp.is_learned:
+        if not self.bp.has_map:
             return [v.detach().clone() for v in cots]
         E = torch.stack([v.detach() for v in cots])                   # [k, N, ndof]
         with warnings.catch_warnings():
@@ -389,7 +405,7 @@ class _Target:
         """`dq/dx [N, ndof, n]` from the live graph (identity on joint space)."""
         bp = self.bp
         N = ev.Xg.shape[0]
-        if not bp.is_learned:
+        if not bp.has_map:
             return bp.jacobian_q(ev.Xg.detach())
         E = torch.eye(self.ndof, dtype=self.dtype, device=self.device).unsqueeze(1)
         J = self._batched_grad(ev.cfg, ev.Xg, E, N)
@@ -424,11 +440,11 @@ class _Target:
             Dq[:, self._col_rows[0]] = gcol
         return torch.nan_to_num(Dq, nan=0.0, posinf=0.0, neginf=0.0)
 
-    def _row_jacobians(self, Dq, X, J_q):
+    def _row_jacobians(self, Dq, X, J_q, aux_jac=None):
         """`(J_h [N, m_e, n], J_g [N, m_i, n])` of the rows IN THE AL'S UNITS w.r.t. X, from
         the generic rows' configuration Jacobian `Dq`, the flow's `J_q` and the closed-form
-        extra rows."""
-        J_stack = torch.cat([Dq @ J_q, self._extra_jacobian(X, X.shape[0])], dim=1)
+        extra rows (`aux_jac`: the analytic map's `J_u` for its reachability rows)."""
+        J_stack = torch.cat([Dq @ J_q, self._extra_jacobian(X, X.shape[0], aux_jac)], dim=1)
         J_h = J_stack[:, self.h_idx] * self.h_coef.view(1, -1, 1)
         J_g = J_stack[:, self.g_idx] * self.g_coef.view(1, -1, 1)
         return J_h, J_g
@@ -438,6 +454,8 @@ class _Target:
         step's stage 3 calls, having no `ev` namespace and no graph."""
         Dq = torch.nan_to_num(self.bp.generic_rows_jacobian_cfg(out), nan=0.0, posinf=0.0,
                               neginf=0.0)
+        if self.bp.is_analytic:
+            return self._row_jacobians(Dq, X, J_q, out.extras.get("aux_jac"))
         return self._row_jacobians(Dq, X, J_q)
 
     def row_jacobians_ev(self, ev, J_q):
@@ -570,7 +588,8 @@ class SvgdSolver:
         ## A kernel space naming a block the arm does not have is refused HERE, at
         ## construction (WarmUpSvgdStep builds a solver before the first cell), never in the step.
         fused.check_kernel_for_arm(str(opts.svgd_kernel), hasattr(program, "z"),
-                                   arm=type(program).__name__)
+                                   arm=type(program).__name__,
+                                   formulation=formulation_hint(program))
         self._sc = fused.StepConfig.from_options(opts)
         self._runner = None
         self.N = int(opts.svgd_n)
@@ -589,7 +608,8 @@ class SvgdSolver:
         if self._tg is not None:
             return
         bp = BatchedProgram.from_program(self.program, dtype=self.dtype)
-        fused.check_kernel_for_arm(self._sc.kernel, bp.is_learned, arm=type(self.program).__name__)
+        fused.check_kernel_for_arm(self._sc.kernel, bp.is_learned, arm=type(self.program).__name__,
+                                   formulation=bp.formulation)
         if bp.device.type == "cuda":
             ## cuSOLVER for the GN metric's batched `solve_ex`. PROCESS-WIDE, and deliberate:
             ## torch's default heuristic routes the [N, 20, 20] batches to MAGMA, whose
@@ -618,6 +638,13 @@ class SvgdSolver:
         """N particles from the arm's NATIVE start distribution (unprojected); `(X, stats)`."""
         bp = self._tg.bp
         stats = {}
+        if bp.is_analytic:
+            ## `SetNativeStart`'s draw minus the branch: the pose at its native value, psi
+            ## uniform over PSI_NATIVE_RANGE per particle; the branch is the cell's, fixed
+            ## for the whole swarm (a per-particle branch would be a multistart, out of scope).
+            lo, hi = bp.psi_native_range
+            u = torch.rand(N, 1, generator=gen, dtype=self.dtype, device=self.device)
+            return torch.cat([bp.native_analytic(N), lo + u * (hi - lo)], dim=1), stats
         if bp.is_learned:
             z = torch.randn(N, bp.width, generator=gen, dtype=self.dtype, device=self.device)
             c = bp.native_c().unsqueeze(0).expand(N, 6)
@@ -720,7 +747,7 @@ class SvgdSolver:
         J_q, kin = r.s2(X, cfg)
         if qp is not None:
             col = self._col.eval(qp, need_grad=True)
-        if bp.is_learned:
+        if bp.has_map:
             self._tg._count("map_jacobian")
         kw = dict(device=self.device, dtype=self.dtype)
         col_row = None if col[0] is None else torch.as_tensor(col[0]).to(**kw)

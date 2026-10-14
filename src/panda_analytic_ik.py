@@ -11,11 +11,24 @@ from pydrake.all import (
 )
 import numpy as np
 
+from src.iiwa_analytic_ik import ComposePose
+
 panda_a = np.array([0., 0., 0, 0.0825, -0.0825, 0, 0.088, 0., 0.])
 panda_d = np.array([0.333, 0., 0.316, 0., 0.384, 0., 0, 0.107, 0.1034])
 panda_alpha = np.array([0., -np.pi/2, np.pi/2, np.pi/2, -np.pi/2, np.pi/2, np.pi/2, 0., 0.])
 panda_limits_lower = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
 panda_limits_upper = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
+
+#: q6 is returned in [Q6_WRAP_SEAM, Q6_WRAP_SEAM + 2pi): the seam is the midpoint of q6's
+#: infeasible arc (3.7525, 2pi - 0.0175), written below zero.
+Q6_WRAP_SEAM = 0.5 * (panda_limits_upper[5] + panda_limits_lower[5] + 2 * np.pi) - 2 * np.pi
+
+#: How many pre-clip arguments `Solve` reports.
+NUM_REACH_VALUES = 4
+
+
+def _value(x):
+    return x.value() if isinstance(x, AutoDiffXd) else float(x)
 
 
 
@@ -118,18 +131,38 @@ class Analytic_IK_Panda:
 
         return gc
 
+    def BranchSet(self, branches=4):
+        """The discrete branch set: 4 is the historical chart (B x C, elbow branch A = +1
+        pinned), 8 adds the elbow branch A in {+1, -1} as a third index."""
+        bc = [(1, 1), (1, 2), (2, 1), (2, 2)]
+        if branches == 4:
+            return np.array(bc)
+        if branches == 8:
+            return np.array([(b, c, a) for b, c in bc for a in (1, -1)])
+        raise ValueError(f"analytic_branches must be 4 or 8, got {branches}")
+
     def _compose_pose(self, pose: RigidTransform, pose_offset: RigidTransform = None):
-        if pose_offset is None:
-            return pose.rotation().matrix(), pose.translation()
-
-        if not isinstance(pose_offset, RigidTransform):
+        if pose_offset is not None and not isinstance(pose_offset, RigidTransform):
             raise TypeError("pose_offset must be a pydrake RigidTransform")
-
-        rotation = pose.rotation().matrix() @ pose_offset.rotation().matrix()
-        translation = pose.translation() + pose.rotation().matrix() @ pose_offset.translation()
-        return rotation, translation
+        return ComposePose(pose.rotation().matrix(), pose.translation(), pose_offset)
 
     def IK(self, pose: RigidTransform, psi: float, GC: np.ndarray = None, return_unclipped_vals = False, return_singularity_vals = False, clip_stepback = 1e-6, pose_offset: RigidTransform = None):
+        """The historical entry point: the configuration, or the four pre-clip arguments.
+        `Solve` returns both from one pass and is what the programs call."""
+        target_rotation, target_translation = self._compose_pose(pose, pose_offset)
+        q, clipped_values = self.Solve(target_rotation, target_translation, psi, GC,
+                                       clip_stepback=clip_stepback)
+        return clipped_values if return_unclipped_vals else q
+
+    def Solve(self, target_rotation, target_translation, psi, GC, clip_stepback=1e-6, pose_offset=None):
+        """`(q[7], u[4])` for the analytic frame at `(R, p) @ pose_offset`, in one pass.
+
+        `u` holds the four quantities the map clips, BEFORE clipping: cos O2O4O6,
+        cos O2O6O4, the wrist arcsin argument, cos q2. (O4O2O6 is pi minus the other two
+        angles here, not an arccos of its own, so there is no fifth clip to watch --
+        pullback-metrics' C++ computes it by its own arccos and so reports five.)"""
+        target_rotation, target_translation = ComposePose(
+            np.asarray(target_rotation), np.asarray(target_translation), pose_offset)
         # GC has 2 or 3 elements. GC[0] picks the wrist branch (B1/B2), GC[1] the shoulder
         # branch (C1/C2), and the optional GC[2] = A in {+1, -1} picks the elbow branch:
         # A = +1 is the historical chart (elbow angle theta + q3_add - 2*pi), A = -1 the
@@ -140,10 +173,10 @@ class Analytic_IK_Panda:
         # A 2-element GC keeps the historical 4-branch behaviour (A = +1).
         A = int(GC[2]) if GC is not None and len(GC) > 2 else 1
         clip = 1 - clip_stepback
-        target_rotation, target_translation = self._compose_pose(pose, pose_offset)
-        clipped_values = np.zeros(4, dtype=AutoDiffXd if type(target_translation[0]) is AutoDiffXd else float)
-
-        ad = any(isinstance(x, AutoDiffXd) for x in np.ravel(target_translation)) or any(isinstance(x, AutoDiffXd) for x in np.ravel(target_rotation))
+        ad = (any(isinstance(x, AutoDiffXd) for x in np.ravel(target_translation))
+              or any(isinstance(x, AutoDiffXd) for x in np.ravel(target_rotation))
+              or isinstance(psi, AutoDiffXd))
+        clipped_values = np.zeros(4, dtype=AutoDiffXd if ad else float)
         q = np.zeros(7, dtype=AutoDiffXd if ad else float)
         q[6] = psi
 
@@ -184,6 +217,13 @@ class Analytic_IK_Panda:
             q[5] = np.pi - psi6 - phi6 # eq 22 B1
         else:
             q[5] = psi6 - phi6 # eq 22 B2
+        # q6 comes back anywhere in (-3pi/2, 5pi/2), so the same physical joint angle can
+        # land on a representative outside [-0.0175, 3.7525] that the joint-limit row then
+        # rejects (pullback-metrics' header wraps it the same way). Shifted by a multiple of
+        # 2pi chosen on the VALUE only, so the derivative is untouched; the seam sits in the
+        # middle of the infeasible arc rather than on a limit, where the jump would land on
+        # an active constraint boundary.
+        q[5] = q[5] - 2 * np.pi * np.floor((_value(q[5]) - Q6_WRAP_SEAM) / (2 * np.pi))
 
 
         #q[0] and q[1]
@@ -232,6 +272,4 @@ class Analytic_IK_Panda:
         q[4] = -atan2(O5S_vec[1], O5S_vec[0]) # equation 37
 
 
-        if return_unclipped_vals:
-            return clipped_values
-        return q
+        return q, clipped_values

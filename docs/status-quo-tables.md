@@ -75,7 +75,7 @@ AL-SVGD (PS): 16 of 16 rows, each TWO runs, one per arm -- learned from stage
 The GVS arm (gvs_pushrod9_o1) was measured in the same stage under identical
   conditions and is OUTSIDE the record: its rows print as a separate block at the end,
   with their own tally, and enter none of the record's tables, tally or flags.
-Arms: learned vs joint space (numerical). No analytic baseline is fielded.
+Arms: learned vs joint space (numerical). The analytic reference column is scripts/report_analytic.py.
 NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the
       network, so a moving JS column is a property of the problem, not drift.
 
@@ -498,7 +498,7 @@ AL-SVGD (PS): 16 of 16 rows, each TWO runs, one per arm -- learned from stage
   SVGD_R20 (_pin2), joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest) (_pin2kq, kernel
   q) -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the
   clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.
-Arms: learned vs joint space (numerical). No analytic baseline is fielded.
+Arms: learned vs joint space (numerical). The analytic reference column is scripts/report_analytic.py.
 NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the
       network, so a moving JS column is a property of the problem, not drift.
 

@@ -62,6 +62,20 @@ pulled back through `J_plant` (`generic_rows_jacobian_cfg`). The rigid arms neve
 path (their plant vector is the padded configuration and their `FrameChain` Jacobians are
 the closed form above it), so their step is unchanged op for op.
 
+THE THREE FORMULATIONS, DETECTED EXPLICITLY (`formulation_of`, 2026-10-12): learned (the
+program has a latent `z`: `[c6 | z | q_c]` through the flow), analytic (the program offers
+`TorchAnalyticMap`, i.e. `AnalyticProgramMixin`: `[xyz_rpy | psi]` through the robot's closed
+form, `src/svgd/batched_analytic.py`), joint space (`lumped_vars` ARE `program.q`, variable
+for variable); anything else raises by class name. An analytic program has 7 variables ==
+ndof, so before this it would have been silently replayed as joint space. The analytic map is
+differentiated like the flow (`has_map`): `jacobian_q` / `vjp_q` by autograd, the split
+step's stage 2 by one vmapped `jacrev` (`map_jacobians`), and it carries an AUX output -- the
+four pre-clip arguments `u` -- which feed the `ReachabilityConstraint` rows (Drake's generic
+binding, replayed here as an extra block of kind `map_aux`, key `reach`, with `u`'s Jacobian
+`J_u` from the same pass). The pose-target equality and the mug rows of this arm are LINEAR
+bindings on the pose variables and go through the linear extra-row path unchanged. The learned
+and joint-space paths are untouched: every analytic branch is guarded by `is_analytic`.
+
 House rules: explicit `dtype=`/`device=` on every tensor (`jrl.config` mutates torch's
 defaults at import); no Python loop over particles; no in-place ops on autograd tensors;
 `evaluate` never raises on a non-finite particle -- NaN propagates through the flow, the
@@ -98,6 +112,7 @@ EXTRA_ROW_KEYS = {
     "ZBoundingBoxConstraint": "z_box",
     "CBoxConstraint": "c_box",
     "LatentTrustRegion": "trust",
+    "ReachabilityConstraint": "reach",     # the analytic arm's pre-clip arguments (`map_aux`)
 }
 GENERIC_BINDING = "AllIKFlowConstraints"
 
@@ -207,6 +222,37 @@ def _rigid_to_pose(X: RigidTransform):
     return (tuple(float(v) for v in q), tuple(float(v) for v in X.translation()))
 
 
+def formulation_hint(program):
+    """`"learned" | "analytic" | "joint"` by the program's own markers, without raising: a
+    latent `z` is the learned arm, a `TorchAnalyticMap` hook the analytic arm, anything else
+    joint space. What `SvgdSolver.__init__` uses to refuse a kernel before anything is built
+    (it is handed stand-in programs by the tests); `formulation_of` is the strict check."""
+    if getattr(program, "TorchAnalyticMap", None) is not None:
+        return "analytic"
+    if hasattr(program, "z"):
+        return "learned"
+    return "joint"
+
+
+def formulation_of(program):
+    """The formulation a program replays as, detected EXPLICITLY (module docstring): analytic
+    (`TorchAnalyticMap`), learned (`z`), joint space (`lumped_vars` are `program.q`, variable
+    for variable). Anything else raises NotImplementedError naming the class -- never a guess
+    from the variable count."""
+    kind = formulation_hint(program)
+    if kind != "joint":
+        return kind
+    q = getattr(program, "q", None)
+    lumped = getattr(program, "lumped_vars", None)
+    if q is not None and lumped is not None:
+        ids = lambda vs: [v.get_id() for v in np.ravel(np.asarray(vs))]
+        if ids(q) == ids(lumped):
+            return "joint"
+    raise NotImplementedError(
+        f"{type(program).__name__}: not a formulation BatchedProgram replays (no latent `z`, "
+        f"no `TorchAnalyticMap`, and lumped_vars are not program.q)")
+
+
 ## ------------------------------------------------------------------------------------ ##
 ##                                      BatchedProgram                                   ##
 ## ------------------------------------------------------------------------------------ ##
@@ -245,7 +291,13 @@ class BatchedProgram:
         self.regions_as_rows = bool(regions_as_rows)
         prog = program.prog
 
-        self.is_learned = hasattr(program, "z")
+        self.formulation = formulation_of(program)
+        self.is_learned = self.formulation == "learned"
+        ## The analytic arm (module docstring): a differentiable map like the flow, with an
+        ## aux output. `has_map` is what every "identity on joint space" switch reads.
+        self.is_analytic = self.formulation == "analytic"
+        self.has_map = self.is_learned or self.is_analytic
+        self.amap = None
         self.is_mug = hasattr(program, "target_mug")
         self.ndof = int(program.num_arm_dof)
         self.num_pos = int(program.num_pos)
@@ -271,6 +323,20 @@ class BatchedProgram:
                 raise NotImplementedError(
                     f"{type(program).__name__}: lumped_vars has {self.nvars} entries, expected "
                     f"6 + {self.width} + {self.ndof} = [c6 | z | q_c]")
+        elif self.is_analytic:
+            if device is None:
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.device = _normalise_device(device)
+            self.flow = None
+            self.width = 0
+            if self.nvars != 7 or self.ndof != 7:
+                raise NotImplementedError(
+                    f"{type(program).__name__}: an analytic arm's lumped_vars should be "
+                    f"[xyz_rpy | psi] (7) on a 7-dof arm, got {self.nvars} on {self.ndof}")
+            self.amap = program.TorchAnalyticMap(dtype=dtype, device=self.device)
+            spec = program.SvgdNativeSpec()
+            self._native_pose = np.asarray(spec["pose"], dtype=float).reshape(6)
+            self.psi_native_range = tuple(float(v) for v in spec["psi_range"])
         else:
             if device is None:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -280,7 +346,7 @@ class BatchedProgram:
             if self.nvars != self.ndof:
                 raise NotImplementedError(
                     f"{type(program).__name__}: a joint-space arm's lumped_vars should be q "
-                    f"({self.ndof}), got {self.nvars}; analytic formulations are not replayed")
+                    f"({self.ndof}), got {self.nvars}")
 
         ## -- kinematics: body poses and the configuration -> plant map -----------------
         plant = program.plant
@@ -517,7 +583,19 @@ class BatchedProgram:
             ub = np.asarray(ev.upper_bound(), dtype=float).reshape(-1)
             key = EXTRA_ROW_KEYS.get(desc, desc or type(ev).__name__)
             var_idx = self._binding_var_idx(binding)
-            if isinstance(ev, LinearConstraint):
+            if desc == "ReachabilityConstraint" and self.is_analytic:
+                ## The map's aux output: Drake evaluates it through the program's memo of
+                ## the same closed-form pass that gives q; here it is `amap(X)[1]`. It reads
+                ## the whole decision vector, in lumped order.
+                size = lb.size
+                if not np.array_equal(var_idx.cpu().numpy(), np.arange(self.nvars)):
+                    raise NotImplementedError(f"{desc} on variables other than lumped_vars in order")
+                if size != 4:
+                    raise NotImplementedError(f"{desc} with {size} rows (the map reports 4)")
+                self._blocks.append(_RowBlock(
+                    desc, "map_aux", start, size, lb, ub, "", [f"{key}_{i}" for i in range(size)],
+                    key=key, var_idx=var_idx))
+            elif isinstance(ev, LinearConstraint):
                 A = np.asarray(ev.GetDenseA(), dtype=float)
                 size = A.shape[0]
                 self._blocks.append(_RowBlock(
@@ -746,7 +824,27 @@ class BatchedProgram:
         if self.is_learned:
             c6, z, qc = self._split(X)
             return self.flow.q(c6, z, qc)
+        if self.is_analytic:
+            return self.amap(X)[0]
         return X[:, :self.ndof]
+
+    def native_analytic(self, N) -> Tensor:
+        """The analytic arm's native pose variables, `[N, 6]` (`SvgdNativeSpec`)."""
+        pose = torch.as_tensor(self._native_pose, dtype=self.dtype, device=self.device)
+        return pose.unsqueeze(0).expand(N, 6)
+
+    def map_jacobians(self, X):
+        """The analytic arm's map Jacobians in ONE vmapped `jacrev` (`ndof + 4` reverse
+        passes; particles are independent through the map, as through the flow):
+        `(J_q [N, ndof, n], J_u [N, 4, n], u [N, 4])`. Not counted (the caller counts)."""
+        nd = self.ndof
+
+        def f(Xv):
+            q, u = self.amap(Xv)
+            return torch.cat([q, u], dim=1).sum(dim=0), u
+        J, u = torch.func.jacrev(f, has_aux=True)(X)          # [ndof + 4, N, n]
+        J = J.permute(1, 0, 2)
+        return J[:, :nd].contiguous(), J[:, nd:].contiguous(), u
 
     def _count(self, bucket):
         counts = getattr(self.program, "eval_counts", None)
@@ -799,13 +897,21 @@ class BatchedProgram:
         prof = self.profile
         t0 = time.perf_counter() if prof else 0.0
 
-        cfg = self._config(X)
+        if self.is_analytic:
+            cfg, aux_u = self.amap(X)
+        else:
+            cfg = self._config(X)
         self._count("map_forward")
         if prof:
             self._sync(); timing["flow"] = time.perf_counter() - t0; t0 = time.perf_counter()
 
         cfg_k = cfg.detach() if detach_kinematics else cfg
         kin = self.kinematics(cfg_k, row_jacobians)
+        if self.is_analytic:
+            ## The aux output rides on `kin` as a fifth entry `(u, J_u)` (J_u None here:
+            ## `extra_row_jacobian` takes it by jacrev when asked); the split step's stage 2
+            ## supplies both from one pass.
+            kin = kin + ((aux_u.detach() if detach_kinematics else aux_u, None),)
         if prof:
             self._sync(); timing["fk"] = time.perf_counter() - t0; t0 = time.perf_counter()
 
@@ -908,7 +1014,9 @@ class BatchedProgram:
         collision entries are NaN). Pure tensor arithmetic over a fixed block inventory --
         no Drake call, no host sync -- so a fused step can compile and capture it."""
         N = X.shape[0]
-        q_plant, pose_frame, pose_flow, frame_jac = kin
+        q_plant, pose_frame, pose_flow, frame_jac = kin[:4]
+        ## The analytic arm's aux `(u, J_u)` (`evaluate`, `fused.stage2`); absent elsewhere.
+        aux_u, aux_jac = kin[4] if len(kin) > 4 else (None, None)
 
         ## -- the stacked value vector, block by block, in Drake order --
         values = []
@@ -938,6 +1046,8 @@ class BatchedProgram:
             elif k == "quadratic":
                 xv = X[:, blk.var_idx]
                 values.append((0.5 * ((xv @ blk.Q) * xv).sum(dim=1) + xv @ blk.b).unsqueeze(1))
+            elif k == "map_aux":
+                values.append(aux_u if aux_u is not None else self.amap(X)[1])
             else:                                   # pragma: no cover
                 raise RuntimeError(k)
         V = torch.cat(values, dim=1)
@@ -975,6 +1085,8 @@ class BatchedProgram:
             c6, z, qc = self._split(X)
             extras["z_norm"] = z.detach().norm(dim=1)
             extras["qc_inf"] = qc.detach().abs().max(dim=1).values
+        if self.is_analytic:
+            extras["aux_jac"] = aux_jac
         return Evaluation(F=F, F_reported=F_rep, h=h, g=g, q=cfg, q_plant=q_plant,
                           pose_frame=pose_frame, pose_flow=pose_flow, collision_y=collision_y,
                           drake_rows=drake_rows, extra_rows=extra_rows, extras=extras)
@@ -1057,6 +1169,9 @@ class BatchedProgram:
                 continue
             if blk.kind == "linear":
                 vals.append(X[:, blk.var_idx] @ blk.A.T)
+            elif blk.kind == "map_aux":
+                with torch.no_grad():
+                    vals.append(self.amap(X)[1])
             else:
                 xv = X[:, blk.var_idx]
                 vals.append((0.5 * ((xv @ blk.Q) * xv).sum(dim=1) + xv @ blk.b).unsqueeze(1))
@@ -1243,10 +1358,12 @@ class BatchedProgram:
         """`[(key, size), ...]` of the extra bindings, in `extra_rows` key order."""
         return [(b.key, b.size) for b in self._blocks if b.key]
 
-    def extra_row_jacobian(self, X) -> Tensor:
+    def extra_row_jacobian(self, X, aux_jac=None) -> Tensor:
         """`d extra_rows / dX` in closed form, `[N, n_extra, nvars]`, extra bindings in
         `extra_blocks` order: a linear block is its `A` on `var_idx`, a quadratic block's
-        row is `Q x + b` on `var_idx`. No autograd, no graph."""
+        row is `Q x + b` on `var_idx`. No autograd, no graph. The analytic arm's `map_aux`
+        block is the map's `J_u`: `aux_jac` where the caller has it (the split step's stage 2),
+        else one `map_jacobians` pass."""
         X = self._as_X(X).detach()
         N = X.shape[0]
         n_extra = sum(b.size for b in self._blocks if b.key)
@@ -1257,6 +1374,11 @@ class BatchedProgram:
                 continue
             if blk.kind == "linear":
                 J[:, off:off + blk.size, blk.var_idx] = blk.A.unsqueeze(0).expand(N, -1, -1)
+            elif blk.kind == "map_aux":
+                if aux_jac is None:
+                    with torch.enable_grad():
+                        aux_jac = self.map_jacobians(X)[1]
+                J[:, off:off + blk.size, blk.var_idx] = aux_jac.detach()
             else:
                 xv = X[:, blk.var_idx]
                 J[:, off, blk.var_idx] = xv @ blk.Q + blk.b
@@ -1286,6 +1408,15 @@ class BatchedProgram:
         if q.dim() != 2 or q.shape[1] < self.ndof:
             raise ValueError(f"q_init must be [N, >= {self.ndof}], got {tuple(q.shape)}")
         q = q[:, :self.ndof]
+        if self.is_analytic:
+            ## `AnalyticProgramMixin.SetStartFromQ`: the pose of `program.frame` (the frame
+            ## the variables denote) and psi recovered, UNCLIPPED; the branch is the map's
+            ## (the cell's), not re-recovered per particle.
+            with torch.no_grad():
+                (quat, pos), _ = self._frame_poses(self.config_to_plant_q(q))
+                rpy = rpy_from_quat(canonical_quat(quat))
+                psi = self.amap.psi_of(q)
+            return torch.cat([pos, rpy, psi.unsqueeze(1)], dim=1)
         if not self.is_learned:
             return q.clone()
         with torch.no_grad():
@@ -1325,7 +1456,7 @@ class BatchedProgram:
         """
         X = self._as_X(X)
         N = X.shape[0]
-        if not self.is_learned:
+        if not self.has_map:
             eye = torch.eye(self.ndof, dtype=X.dtype, device=X.device)
             return eye.unsqueeze(0).expand(N, self.ndof, self.nvars).clone()
         Xg = X.detach().requires_grad_(True)
@@ -1341,7 +1472,7 @@ class BatchedProgram:
         """`R^T dq/dX` per particle (`R [N, ndof]`), one backward. Counted as a Jacobian."""
         X = self._as_X(X)
         R = torch.as_tensor(R, dtype=self.dtype, device=self.device)
-        if not self.is_learned:
+        if not self.has_map:
             return R[:, :self.nvars].clone()
         Xg = X.detach().requires_grad_(True)
         cfg = self._config(Xg)

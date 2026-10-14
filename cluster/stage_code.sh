@@ -121,6 +121,9 @@ EXCLUDES=(
     'results/' 'logs/' 'notebooks/artifacts/'
     '__pycache__/' '*.pyc' '.pytest_cache/'
     'workshop-paper-draft.pdf'
+    ## Built ON the cluster (cluster/build_cpp_job.sh), never pushed: a laptop .so links the
+    ## laptop's libstdc++. The loader refuses a stale one by its compiled-in source hash.
+    'cpp/build/'
 )
 
 ## STAGE_EXTRA_EXCLUDES adds to the list for one run, space-separated:

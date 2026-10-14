@@ -26,7 +26,15 @@ grasp scene with the target mug welded by `GenerateDiagramWithMug`), this file p
   4. `to_drake_x` / `from_drake_x`, including through `benchmark.verify`;
   5. `project` returns the exact clip distance, and `regions=True` clips the c and z boxes;
   6. a timing table (printed only): evaluate with and without the collision row, N in
-     {64, 256, 1024}, float32 and float64, with the flow / FK / collision split.
+     {64, 256, 1024}, float32 and float64, with the flow / FK / collision split;
+  7. THE ANALYTIC ARM (2026-10-12) on the two robots with a closed form -- Panda pose and
+     grasp at 4 and 8 branches, iiwa pose and grasp (8) -- the same program-as-oracle claims:
+     every binding (the generic rows, the pose-target / mug linear rows, the
+     `ReachabilityConstraint` rows the map's aux output feeds) against `EvalBinding`, the
+     Jacobians against the program's AutoDiffXd chain, `init_from_q` against
+     `SetStartFromQ`, the swarm's native draw against `SetNativeStart`'s distribution, and the
+     explicit formulation detection (an analytic program is never replayed as joint space;
+     a learned-only kernel is refused on it).
 
 The flow's runaway population (CLAUDE.md, the gain ceiling) amplifies last-ulp differences
 in the rpy -> quaternion conversion into 1e-9..1e-7 in q, so the tolerance assertions skip
@@ -57,20 +65,24 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 from pydrake.autodiffutils import InitializeAutoDiff                       # noqa: E402
 from pydrake.all import AutoDiffXd                                          # noqa: E402
+from pydrake.solvers import BoundingBoxConstraint                           # noqa: E402
 
 from src import benchmark                                                  # noqa: E402
 from src.flow_loading import LoadFlowSolver                                 # noqa: E402
 from src.generic_program import ProgramOptions                              # noqa: E402
-from src.iiwa_program import (Iiwa14IKProgram, Iiwa14IKProgramNumerical,    # noqa: E402
-                              IiwaMugProgram, IiwaMugProgramNumerical)
-from src.panda_program import (PandaIKProgram, PandaIKProgramNumerical,     # noqa: E402
-                               PandaMugProgram, PandaMugProgramNumerical)
+from src.iiwa_program import (Iiwa14IKProgram, Iiwa14IKProgramAnalytic,     # noqa: E402
+                              Iiwa14IKProgramNumerical, IiwaMugProgram,
+                              IiwaMugProgramAnalytic, IiwaMugProgramNumerical)
+from src.panda_program import (PandaIKProgram, PandaIKProgramAnalytic,      # noqa: E402
+                               PandaIKProgramNumerical, PandaMugProgram,
+                               PandaMugProgramAnalytic, PandaMugProgramNumerical)
 from src.screw_arm_program import (ScrewArmIKProgram, ScrewArmIKProgramNumerical,  # noqa: E402
                                    ScrewArmMugProgram, ScrewArmMugProgramNumerical)
 from src.soft_arm_program import (SoftArmIKProgram, SoftArmIKProgramNumerical,  # noqa: E402
                                   SoftArmMugProgram, SoftArmMugProgramNumerical)
-from src.svgd.batched_program import (GENERIC_BINDING, REGULARIZER_COSTS,   # noqa: E402
-                                      BatchedProgram, RowScaling)
+from src.svgd.batched_program import (EXTRA_ROW_KEYS, GENERIC_BINDING,     # noqa: E402
+                                      REGULARIZER_COSTS, BatchedProgram, RowScaling,
+                                      formulation_of)
 from src.target_screening import SceneFile                                  # noqa: E402
 from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints, RepoDir  # noqa: E402
 
@@ -806,7 +818,320 @@ def test_timing():
                   f"   {to:8.2f} [{so[0]:.2f} / {so[1]:.2f} / - / {so[3]:.2f}]")
 
 
+## ------------------------------------------------------------------------------------ ##
+##                                    the analytic arm                                   ##
+## ------------------------------------------------------------------------------------ ##
+
+ANALYTIC_CLASSES = {
+    ("panda", "pose"): PandaIKProgramAnalytic, ("panda", "mug"): PandaMugProgramAnalytic,
+    ("iiwa", "pose"): Iiwa14IKProgramAnalytic, ("iiwa", "mug"): IiwaMugProgramAnalytic,
+}
+## (robot, task, branches): the Panda on both of its charts, the iiwa on its one (8).
+ANALYTIC_KEYS = [("panda", "pose", 4), ("panda", "pose", 8), ("panda", "mug", 4),
+                 ("panda", "mug", 8), ("iiwa", "pose", 8), ("iiwa", "mug", 8)]
+_ANALYTIC = {}
+
+
+def _analytic_options(branches):
+    """The benchmark's analytic arm: joint space's centering weight (1.0)."""
+    return ProgramOptions(visualize=False, joint_centering_cost=1.0, mug_height=0.04,
+                          ik_constraint_tol=(1e-4, 0.01), analytic_branches=branches)
+
+
+def analytic_program(robot, task, branches, seed=31):
+    """An analytic program on `_scene(robot, task)`, its start set PAIRED at a collision-free
+    configuration (so its branch is that configuration's, as the benchmark leaves it)."""
+    key = (robot, task, branches)
+    if key in _ANALYTIC:
+        return _ANALYTIC[key]
+    diagram, target = _scene(robot, task)
+    with HiddenPrints():
+        p = ANALYTIC_CLASSES[(robot, task)](diagram, options=_analytic_options(branches),
+                                            model=_solver(robot))
+        if task == "pose":
+            p.create_prog(target)
+        else:
+            p.create_prog(target_mug=target)
+    q = collision_free_q(p, np.random.default_rng(seed), 1)[0]
+    p.SetStartFromQ(q)
+    _ANALYTIC[key] = p
+    return p
+
+
+def analytic_batch(p, rng, B):
+    """Decision vectors around the program's start: position +-5 cm, rpy +-0.3 rad, psi
+    +-1 rad -- mostly in reach, some in the clip band (both regimes of the map)."""
+    x0 = np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float)
+    width = np.array([0.05] * 3 + [0.3] * 3 + [1.0])
+    return x0[None] + rng.uniform(-1, 1, size=(B, 7)) * width[None]
+
+
+def _wrapped(a, b):
+    return np.abs(np.angle(np.exp(1j * (np.asarray(a) - np.asarray(b)))))
+
+
+def test_analytic_row_parity():
+    """Every binding of the analytic program against `EvalBinding` at B = 32 and B = 1."""
+    rng = np.random.default_rng(21)
+    print("  analytic arm: row parity (every binding vs EvalBinding):")
+    for robot, task, nb in ANALYTIC_KEYS:
+        p = analytic_program(robot, task, nb)
+        prog = p.prog
+        bp = BatchedProgram.from_program(p, dtype=torch.float64, device=DEVICE)
+        label = f"{robot}/{task}/analytic{nb}"
+        assert bp.formulation == "analytic" and bp.is_analytic and bp.has_map and not bp.is_learned
+        assert bp.has_analytic_row_jacobians, label
+        X_np = analytic_batch(p, rng, 32)
+        X = torch.tensor(X_np, dtype=torch.float64, device=bp.device)
+        ev = bp.evaluate(X)
+        rows = ev.drake_rows.detach().cpu().numpy()
+        ref = np.stack([np.asarray(prog.EvalBinding(p.all_constraints, bp.to_drake_x(x)),
+                                   dtype=float).reshape(-1) for x in X_np])
+        coll = next(b.start for b in bp._blocks if b.kind == "collision")
+        nonc = [r for r in range(bp.n_rows) if r != coll]
+        d_rows = float(np.abs(rows - ref)[:, nonc].max())
+        ## The collision row: bitwise at the batched plant vector (the map's q differs from
+        ## Drake's by its own last ulps, like the learned arm's), recorded against Drake's row.
+        same = np.array([p.options.collision_row_scale
+                         * np.ravel(p.collision_free_constraint_eval.Eval(qp))[0]
+                         for qp in ev.q_plant.detach().cpu().numpy()])
+        assert np.array_equal(rows[:, coll], same), label
+        d_coll = float(np.abs(rows[:, coll] - ref[:, coll]).max())
+        ev1 = [bp.evaluate(X[i:i + 1]) for i in range(4)]
+        d_b1 = max(float(np.abs(e.drake_rows.detach().cpu().numpy()[0] - ref[i])[nonc].max())
+                   for i, e in enumerate(ev1))
+        q_ref = np.stack([np.asarray(p.VarsToQ(x), dtype=float)[:7] for x in X_np])
+        d_q = float(_wrapped(ev.q.detach().cpu().numpy(), q_ref).max())
+        ## Every other binding, each against its own EvalBinding.
+        d_extra, seen = 0.0, set()
+        for binding in prog.GetAllConstraints():
+            desc = binding.evaluator().get_description()
+            if desc == GENERIC_BINDING or isinstance(binding.evaluator(), BoundingBoxConstraint):
+                continue
+            key = EXTRA_ROW_KEYS.get(desc, desc)
+            got = ev.extra_rows[key].detach().cpu().numpy()
+            exp = np.stack([np.asarray(prog.EvalBinding(binding, bp.to_drake_x(x)), dtype=float).reshape(-1)
+                            for x in X_np])
+            d_extra = max(d_extra, float(np.abs(got - exp).max()))
+            seen.add(desc)
+        expect = {"ReachabilityConstraint", "PoseTargetConstraint" if task == "pose" else "IKMugConstraint"}
+        assert seen == expect, (label, seen)
+        ## Costs: the joint-centering cost on q, all of it reported.
+        F_ref = np.array([sum(float(np.asarray(prog.EvalBinding(b, bp.to_drake_x(x))).sum())
+                              for b in prog.GetAllCosts()) for x in X_np])
+        d_F = float((np.abs(ev.F.detach().cpu().numpy() - F_ref) / np.maximum(1.0, np.abs(F_ref))).max())
+        assert torch.equal(ev.F, ev.F_reported), label
+        ## h / g: the row inventory by binding.
+        counts = {}
+        for sp in bp.h_spec + bp.g_spec:
+            counts[(sp.drake_binding, sp.kind)] = counts.get((sp.drake_binding, sp.kind), 0) + 1
+        assert counts[("ReachabilityConstraint", "lo")] == 4 and counts[("ReachabilityConstraint", "hi")] == 4
+        if task == "pose":
+            assert counts[("PoseTargetConstraint", "eq")] == 6, counts
+        else:
+            assert counts[("IKMugConstraint", "eq")] == 2 and counts[("IKMugConstraint", "lo")] == 1
+        assert counts[(GENERIC_BINDING, "lo")] == 7 and counts[(GENERIC_BINDING, "hi")] == 8
+        ## Variable bounds: psi's box, and the grasp task's pose box.
+        lo, hi = (t.cpu().numpy() for t in bp.bounds)
+        assert lo[6] == -p.PSI_BOUNDS and hi[6] == p.PSI_BOUNDS, label
+        assert (np.all(lo[:6] == -p.GRASP_POSE_BOUNDS) if task == "mug" else np.all(np.isinf(lo[:6]))), label
+        n_clip = int((np.abs(ev.extra_rows["reach"].detach().cpu().numpy())
+                      > 1 - p.options.analytic_clip_stepback).any(axis=1).sum())
+        print(f"    {label:24s} rows B=32 {d_rows:.1e}, B=1 {d_b1:.1e}; q vs VarsToQ {d_q:.1e}; "
+              f"collision bitwise at its q_plant ({d_coll:.1e} vs Drake); extra bindings "
+              f"{d_extra:.1e}; F rel {d_F:.1e}; {n_clip}/32 particles in the clip band")
+        assert d_rows <= 1e-10 and d_b1 <= 1e-10 and d_q <= 1e-10, (label, d_rows, d_b1, d_q)
+        ## (`d_coll` is recorded, not asserted, exactly as on the learned arm: the plant vectors
+        ## differ by the map's last ulps, and Drake's penalty can jump across that gap where a
+        ## witness feature switches -- the claim is the bitwise one above.)
+        assert d_extra <= 1e-12 and d_F <= 1e-10, (label, d_extra, d_F)
+    print("PASS analytic arm: every binding matches EvalBinding on 6 programs")
+
+
+def test_analytic_gradients():
+    """The rows' and the reachability rows' Jacobians against the AutoDiffXd chain; the
+    closed-form extra-row Jacobian (`map_jacobians`) against autograd; `jacobian_q`."""
+    rng = np.random.default_rng(22)
+    print("  analytic arm: gradients (relative to max(1, |J_Drake|_max)):")
+    for robot, task, nb in ANALYTIC_KEYS:
+        p = analytic_program(robot, task, nb)
+        bp = BatchedProgram.from_program(p, dtype=torch.float64, device=DEVICE)
+        reach = next(b for b in p.prog.GetAllConstraints()
+                     if b.evaluator().get_description() == "ReachabilityConstraint")
+        coll = next(b.start for b in bp._blocks if b.kind == "collision")
+        nonc = [r for r in range(bp.n_rows) if r != coll]
+        worst, worst_c, worst_u, worst_cf, worst_jq = 0.0, 0.0, 0.0, 0.0, 0.0
+        for x_np in analytic_batch(p, rng, 4):
+            x = torch.tensor(x_np, dtype=torch.float64, device=bp.device)
+            J = torch.autograd.functional.jacobian(lambda v: bp.evaluate(v[None]).drake_rows[0], x).cpu().numpy()
+            rows_ad = p.EvalAllConstraints(InitializeAutoDiff(x_np).reshape(-1))
+            J_ref = np.stack([r.derivatives() if isinstance(r, AutoDiffXd) and r.derivatives().size == 7
+                              else np.zeros(7) for r in rows_ad])
+            worst = max(worst, float(np.abs(J[nonc] - J_ref[nonc]).max() / max(1.0, np.abs(J_ref[nonc]).max())))
+            ## The collision row at the SAME plant vector: Drake's stored gradient through the
+            ## map's autograd d q_plant / dx (the learned arm's claim); against the program's
+            ## own chain it is recorded (the plant vectors differ by the map's last ulps).
+            qp = bp.evaluate(x[None], need_collision=False).q_plant[0].detach().cpu().numpy()
+            _, g_b = bp.collision.eval(qp[None])
+            Jp = torch.autograd.functional.jacobian(
+                lambda v: bp.evaluate(v[None], need_collision=False).q_plant[0], x).cpu().numpy()
+            ref_c = g_b[0] @ Jp
+            worst_c = max(worst_c, float(np.abs(J[coll] - ref_c).max() / max(1.0, np.abs(ref_c).max())))
+            ## The reachability rows (the map's aux output) against Drake's AutoDiffXd.
+            Ju = torch.autograd.functional.jacobian(
+                lambda v: bp.evaluate(v[None], need_collision=False).extra_rows["reach"][0], x).cpu().numpy()
+            u_ad = p.ReachabilityValues(InitializeAutoDiff(x_np).reshape(-1))
+            Ju_ref = np.stack([r.derivatives() if r.derivatives().size == 7 else np.zeros(7) for r in u_ad])
+            worst_u = max(worst_u, float(np.abs(Ju - Ju_ref).max() / max(1.0, np.abs(Ju_ref).max())))
+            ## The closed-form extra-row Jacobian the solver uses (map_aux block by jacrev).
+            ex_keys = [k for k, _ in bp.extra_blocks]
+            Jx = torch.autograd.functional.jacobian(
+                lambda v: torch.cat([bp.evaluate(v[None], need_collision=False).extra_rows[k][0]
+                                     for k in ex_keys]), x)
+            worst_cf = max(worst_cf, float((bp.extra_row_jacobian(x[None])[0] - Jx).abs().max()))
+            Jq = bp.jacobian_q(x[None])[0]
+            Jq_ref = torch.autograd.functional.jacobian(
+                lambda v: bp.evaluate(v[None], need_collision=False).q[0], x)
+            worst_jq = max(worst_jq, float((Jq - Jq_ref).abs().max()))
+            R = torch.tensor(rng.standard_normal((1, 7)), dtype=torch.float64, device=bp.device)
+            assert torch.allclose(bp.vjp_q(x[None], R), (R[0] @ Jq)[None], rtol=0, atol=1e-12)
+        label = f"{robot}/{task}/analytic{nb}"
+        print(f"    {label:24s} rows {worst:.1e}, collision at its q_plant {worst_c:.1e}, "
+              f"reachability {worst_u:.1e}, closed-form extra rows vs autograd {worst_cf:.1e}, "
+              f"jacobian_q {worst_jq:.1e}")
+        assert worst <= 1e-9 and worst_c <= 1e-12 and worst_u <= 1e-9, (label, worst, worst_c, worst_u)
+        assert worst_cf <= 1e-12 and worst_jq <= 1e-12, (label, worst_cf, worst_jq)
+    print("PASS analytic arm: Jacobians match the AutoDiffXd chain")
+
+
+def test_analytic_init_from_q():
+    """`init_from_q` against `SetStartFromQ` (pose of program.frame and psi, unclipped), and
+    the round trip `q(init_from_q(q)) == q` on q's own branch away from the clip band."""
+    rng = np.random.default_rng(23)
+    for robot, task, nb in ANALYTIC_KEYS:
+        p = analytic_program(robot, task, nb)
+        bp = BatchedProgram.from_program(p, dtype=torch.float64, device=DEVICE)
+        Q = collision_free_q(p, rng, 16)
+        X_b = bp.init_from_q(torch.tensor(Q, dtype=torch.float64, device=bp.device)).cpu().numpy()
+        refs = []
+        for q in Q:
+            p.SetStartFromQ(q)
+            refs.append(np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float))
+        refs = np.stack(refs)
+        d_pos = float(np.abs(X_b[:, :3] - refs[:, :3]).max())
+        d_ang = float(_wrapped(X_b[:, 3:], refs[:, 3:]).max())
+        rt, n_rt = 0.0, 0
+        kw = dict(dtype=torch.float64, device=bp.device)
+        saved = bp.amap.signs
+        for i, q in enumerate(Q):
+            bp.amap.signs = bp.amap.branch_signs(p.RecoverBranch(q), kw)
+            q_back, u = bp.amap(torch.tensor(X_b[i:i + 1], **kw))
+            if np.abs(u.cpu().numpy()).max() >= 1 - p.options.analytic_clip_stepback:
+                continue
+            err = float(_wrapped(q_back[0].cpu().numpy(), q).max())
+            if nb == 4 and err > 1e-3:          # the 4-branch chart's uncharted elbow half
+                continue
+            rt, n_rt = max(rt, err), n_rt + 1
+        bp.amap.signs = saved
+        print(f"    {robot}/{task}/analytic{nb}: |d xyz| {d_pos:.1e}, |d rpy, psi| {d_ang:.1e}; "
+              f"round trip {rt:.1e} on {n_rt}/16 (off the clip band, charted)")
+        assert d_pos <= 1e-12 and d_ang <= 1e-10, (robot, task, nb, d_pos, d_ang)
+        assert n_rt >= 8 and rt <= 1e-8, (robot, task, nb, n_rt, rt)
+        p.SetStartFromQ(Q[0])
+    print("PASS analytic arm: init_from_q matches SetStartFromQ")
+
+
+def test_analytic_native_draw():
+    """The swarm's native draw against `SetNativeStart`: the pose block is
+    `AnalyticNativePose()` exactly, psi is uniform over `PSI_NATIVE_RANGE` (moments of 4096
+    draws against the program's own draw), and the branch is the cell's -- `SetNativeStart`
+    draws it once, the swarm never redraws it."""
+    from src.svgd.solver import SvgdSolver
+    for robot, task, nb in (("panda", "mug", 8), ("iiwa", "pose", 8)):
+        p = analytic_program(robot, task, nb)
+        p.options = replace(p.options, svgd_kernel="x", svgd_dtype="float64")
+        rng = np.random.default_rng(24)
+        q = collision_free_q(p, rng, 1)[0]
+        prog_psi, gcs = [], set()
+        for k in range(256):
+            p.SetNativeStart(q, np.random.default_rng(k))
+            x = np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float)
+            assert np.array_equal(x[:6], p.AnalyticNativePose()), (robot, task)
+            prog_psi.append(x[6])
+            gcs.add(tuple(np.ravel(p.gc)))
+        p.SetNativeStart(q, np.random.default_rng(0))
+        gc_cell = tuple(np.ravel(p.gc))
+        solver = SvgdSolver(p)
+        solver._build()
+        bp = solver._tg.bp
+        X, _ = solver._draw_native(4096, solver._generator(0))
+        X = X.cpu().numpy()
+        d_pose = float(np.abs(X[:, :6] - p.AnalyticNativePose()[None]).max())
+        lo, hi = p.PSI_NATIVE_RANGE
+        psi = X[:, 6]
+        sig = bp.amap.branch_signs(gc_cell, dict(dtype=torch.float64, device=bp.device))
+        same_branch = all(float(a) == float(b) for a, b in zip(sig, bp.amap.signs))
+        print(f"    {robot}/{task}/analytic{nb}: pose block {d_pose:.1e}; psi in [{psi.min():.3f}, "
+              f"{psi.max():.3f}], mean {psi.mean():.3f} (program's {np.mean(prog_psi):.3f}), std "
+              f"{psi.std():.3f} (uniform {(hi - lo) / np.sqrt(12):.3f}); SetNativeStart drew "
+              f"{len(gcs)} branches over 256 cells, the swarm keeps the cell's: {same_branch}")
+        assert d_pose == 0.0 and psi.min() >= lo and psi.max() <= hi
+        assert abs(psi.mean() - 0.5 * (lo + hi)) < 0.1 and abs(psi.std() - (hi - lo) / np.sqrt(12)) < 0.05
+        assert same_branch and len(gcs) > 1
+        del solver
+    print("PASS analytic arm: the swarm's native draw is SetNativeStart's, branch fixed per cell")
+
+
+def test_analytic_detection_and_refusals():
+    """The formulation is detected explicitly: an analytic program (7 variables == ndof) is
+    never replayed as joint space, and a program that is none of the three is refused by
+    name; the learned-only kernels are refused on the analytic arm at solver construction."""
+    from src.svgd.solver import SvgdSolver
+    p = analytic_program("panda", "pose", 8)
+    assert formulation_of(p) == "analytic"
+    assert formulation_of(program("panda", "pose", "numerical")) == "joint"
+    assert formulation_of(program("panda", "pose", "learned")) == "learned"
+    p.TorchAnalyticMap = None                  # strip the hook: no longer recognisable
+    try:
+        BatchedProgram.from_program(p, dtype=torch.float64, device=DEVICE)
+    except NotImplementedError as exc:
+        assert type(p).__name__ in str(exc), str(exc)
+    else:
+        raise AssertionError("an analytic program without its hook must be refused, not "
+                             "replayed as joint space")
+    finally:
+        del p.TorchAnalyticMap
+    saved = p.options
+    try:
+        for space in ("z", "c", "cz", "qz"):
+            p.options = replace(saved, which_solver="svgd", svgd_kernel=space)
+            try:
+                SvgdSolver(p)
+            except ValueError as exc:
+                assert "analytic" in str(exc) and space in str(exc), str(exc)
+            else:
+                raise AssertionError(f"svgd_kernel={space} accepted on the analytic arm")
+        for space in ("x", "q", "pose", "none"):
+            p.options = replace(saved, which_solver="svgd", svgd_kernel=space)
+            SvgdSolver(p)._build()
+    finally:
+        p.options = saved
+    print("PASS analytic arm: detected explicitly; refused without its hook; z / c / cz / qz "
+          "refused, x / q / pose / none accepted")
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["analytic"]:            # the analytic arm's block alone
+        try:
+            test_analytic_row_parity()
+            test_analytic_gradients()
+            test_analytic_init_from_q()
+            test_analytic_native_draw()
+            test_analytic_detection_and_refusals()
+        finally:
+            close_all()
+        print("ALL PASS (analytic)")
+        sys.exit(0)
     try:
         test_row_parity_all_programs()
         test_gradients_match_autodiff()
@@ -815,6 +1140,11 @@ if __name__ == "__main__":
         test_to_drake_x_round_trips()
         test_project()
         test_robot_hooks()
+        test_analytic_row_parity()
+        test_analytic_gradients()
+        test_analytic_init_from_q()
+        test_analytic_native_draw()
+        test_analytic_detection_and_refusals()
         test_timing()
     finally:
         close_all()

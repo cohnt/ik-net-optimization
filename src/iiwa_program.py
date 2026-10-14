@@ -15,7 +15,8 @@ from pydrake.all import (
 import os
 import pydrake.math
 
-from src.iiwa_analytic_ik import iiwa_limits_lower, iiwa_limits_upper
+from src.iiwa_analytic_ik import Analytic_IK_7DoF, iiwa_limits_lower, iiwa_limits_upper
+from src.analytic_program import AnalyticProgramMixin
     
 
 
@@ -349,3 +350,54 @@ class IiwaMugProgramNumerical(IiwaMugProgram):
         self.QBoundingBoxConstraint(legacy_bounds=(iiwa_limits_lower, iiwa_limits_upper))
 
 
+
+
+class Iiwa14IKProgramAnalytic(AnalyticProgramMixin, Iiwa14IKProgram):
+    '''The analytic + optimization formulation on the iiwa14 (Faria et al.'s S-R-S closed
+    form, psi = the arm angle, GC = the signs of q2, q4, q6 -- all eight branches). Ported
+    from ../codebase's `IiwaIKProblemNewFormulation`; everything formulation-level is in
+    `src/analytic_program.py`.'''
+
+    ANALYTIC_IK_CLASS = Analytic_IK_7DoF
+    ANALYTIC_CPP_ROBOT = "iiwa"
+    #: ../codebase boxes the arm angle at +-10; it is periodic, so the box only keeps IPOPT
+    #: off an unbounded variable and never binds a start (the native draw is +-pi).
+    PSI_BOUNDS = 10.0
+
+    def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None,
+                 checkpoint = None, nb_nodes = 12):
+        super().__init__(diagram, options, model_instance=model_instance, model=model,
+                         checkpoint=checkpoint, nb_nodes=nb_nodes)
+        if options.analytic_branches != 8:
+            raise ValueError("the iiwa's analytic chart has exactly eight branches; "
+                             f"analytic_branches={options.analytic_branches} names another")
+        self._InitAnalytic()
+
+    def AnalyticFK(self, q_arm):
+        return self.analytic_ik.FK(np.asarray(q_arm, dtype=float))
+
+    def _AnalyticSolve(self, R, p, psi, gc, clip_stepback):
+        return self.analytic_ik.Solve(R, p, gc, psi, clip_stepback=clip_stepback)
+
+    def BranchSet(self):
+        return self.analytic_ik.BranchSet()
+
+    def RecoverBranch(self, q_arm):
+        return self.analytic_ik.GC(np.asarray(q_arm, dtype=float)[:7])
+
+    def RecoverPsi(self, q_arm):
+        return self.analytic_ik.psi(np.asarray(q_arm, dtype=float)[:7])
+
+
+class IiwaMugProgramAnalytic(Iiwa14IKProgramAnalytic):
+    '''The grasp task: `xyz_rpy` is the pose of `between_fingers`.'''
+
+    def __init__(self, diagram, options = ProgramOptions(), model_instance = None, model = None,
+                 checkpoint = None, nb_nodes = 12):
+        super().__init__(diagram, options, model_instance=model_instance, model=model,
+                         checkpoint=checkpoint, nb_nodes=nb_nodes)
+        self.frame = self.plant.GetFrameByName("between_fingers")
+        self.autodiff_frame = self.autodiff_plant.GetFrameByName("between_fingers")
+
+    def create_prog(self, target_mug = Mug(), q_nominal = None, pose_offset = None, gc = None):
+        self.create_grasp_prog(target_mug, q_nominal, pose_offset, gc)
