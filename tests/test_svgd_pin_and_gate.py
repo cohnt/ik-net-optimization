@@ -8,12 +8,16 @@
 Thomas's rulings (docs/svgd-solver.md, "RULINGS 2026-10-12" and "Gate-edge rule"): the defaults
 moved to c x z + rho = 1e5 + the H / T metric + the native-draw paired swarm, and a stall stop is
 accepted only once the float64 Drake re-check passes -- otherwise the swarm continues at a
-tightened internal feasibility level. What is pinned here:
+tightened internal feasibility level. On 2026-10-14 the temperature options (`svgd_temperature`,
+`svgd_metric_temperature`) were removed (stage SVGD_R22 measured T inert): the step is the T = 1
+one, at which the H / T metric was H bit for bit, so neither pin names a metric form any more.
+What is pinned here:
 
   (a) THE OLD PIN, SET EXPLICITLY, REPRODUCES THE PRE-CHANGE SOLVER BIT FOR BIT. Three cells
       (Panda pose learned and pose joint space under the default stop rule, grasp learned at a
-      10-check step cap; paired start, N = 64, eager step) solved at `svgd_kernel=q, svgd_rho=1000, svgd_metric_temperature=
-      off, svgd_paired_init=jitter` must return the point, the outer-step count, the best-merit
+      10-check step cap; paired start, N = 64, eager step) solved at `svgd_kernel=q, svgd_rho=1000,
+      svgd_paired_init=jitter` (and, when captured, `svgd_metric_temperature=off`, T = 1 -- the
+      step that is now the only one) must return the point, the outer-step count, the best-merit
       history, the selected particle and the Drake violation recorded in
       `tests/data/svgd_oldpin_reference.npz`, which was captured on the tree BEFORE the change
       (svgd d200121). So moving the defaults does not alter explicit-option behaviour, and the
@@ -25,11 +29,8 @@ tightened internal feasibility level. What is pinned here:
       candidate's Drake violation read as 1.0005e-4, just outside the 1e-4 gate), the swarm does
       not stop; it runs more outer steps than the uninjected solve, records one failure, stops at
       feasibility level 0.9, and returns a Drake-feasible point.
-  (c) `svgd_metric_temperature = on` at T = 1 is `off` bit for bit on the fused step of a real
-      program (eager, and compiled where CUDA is present); the unit-level twin is
-      tests/test_svgd_kernels_al.py's `test_metric_temperature`.
-  (d) Under the native-draw paired swarm (the new default) particle 0 is EXACTLY the shared
-      guess.
+  (c) Under the native-draw paired swarm (the new default) particle 0 is EXACTLY the shared
+      guess. (The old (c), metric `on` == `off` at T = 1 on the fused step, went with the option.)
 """
 import os
 import sys
@@ -50,14 +51,13 @@ REF = os.path.join(HERE, "data", "svgd_oldpin_reference.npz")
 #: The pin every svgd round through R19 ran (kernel q, metric off and init jitter through the
 #: then-defaults; rho 1000 named by the manifests).
 OLD_PIN = S.LEGACY_PIN
-#: The pin fielded 2026-10-12.
-NEW_PIN = dict(svgd_kernel="cz", svgd_rho=100000.0, svgd_metric_temperature="on",
-               svgd_paired_init="native")
+#: The pin fielded 2026-10-12 (it also named `svgd_metric_temperature=on`, removed 2026-10-14).
+NEW_PIN = dict(svgd_kernel="cz", svgd_rho=100000.0, svgd_paired_init="native")
 #: Every other svgd field a cell depends on, named so that options left on a cached test program
 #: by an earlier test (run_cell accumulates them) cannot leak into these solves.
 REST = dict(svgd_n=64, svgd_outer_iters=300, svgd_stop_patience=5, svgd_stop_rel=1e-3,
             svgd_inner_iters=10, svgd_recheck_topk=10, svgd_lr=0.3, svgd_gn_lm=10.0,
-            svgd_temperature=1.0, svgd_resample="native", svgd_compile=False,
+            svgd_resample="native", svgd_compile=False,
             svgd_cuda_graph=False, svgd_dtype="float32", svgd_seed=0, svgd_warmup="none",
             svgd_constraint_inside_kernel=False, svgd_metric="gn", svgd_multiplier_max=1e4,
             svgd_dual_lr=None, svgd_jitter=0.1, svgd_collision_backend="autodiff",
@@ -158,24 +158,8 @@ def test_gate_edge_rule_continues_after_a_failed_recheck():
             str(len(calls)))
 
 
-def test_metric_temperature_on_at_T1_is_off_on_the_fused_step():
-    print("\n--- (c) svgd_metric_temperature on vs off at T = 1, the fused step of a real program ---")
-    modes = [dict(svgd_compile=False)]
-    if torch.cuda.is_available():
-        modes.append(dict(svgd_compile=True))
-    for mode in modes:
-        res = {}
-        for flag in ("off", "on"):
-            out, _ = _solve("pose", "learned", dict(NEW_PIN, svgd_metric_temperature=flag),
-                            svgd_outer_iters=1, svgd_stop_patience=10 ** 6, **mode)
-            res[flag] = out
-        same = all(np.array_equal(np.asarray(res["off"][k]), np.asarray(res["on"][k])) for k in FIELDS)
-        S.check(f"metric on == off at T = 1, {'compiled' if mode['svgd_compile'] else 'eager'} "
-                f"(10 fused steps, point and history bit for bit)", same)
-
-
 def test_native_paired_swarm_keeps_particle_0_at_the_guess():
-    print("\n--- (d) the native-draw paired swarm: particle 0 is the shared guess ---")
+    print("\n--- (c) the native-draw paired swarm: particle 0 is the shared guess ---")
     for arm in ("learned", "numerical"):
         p = S.program_for("pose", arm)
         p.options = replace(p.options, which_solver="svgd", **REST,
@@ -190,7 +174,7 @@ def test_native_paired_swarm_keeps_particle_0_at_the_guess():
                 f"{np.abs(X0 - x0).max()}")
     S.check("defaults: the fielded pin of 2026-10-12",
             all(getattr(ProgramOptions(), k) == v for k, v in NEW_PIN.items())
-            and ProgramOptions().svgd_temperature == 1.0 and ProgramOptions().svgd_n == 64,
+            and ProgramOptions().svgd_n == 64,
             str({k: getattr(ProgramOptions(), k) for k in NEW_PIN}))
 
 
@@ -200,7 +184,6 @@ def main():
         return 0
     for t in (test_old_pin_reproduces_the_pre_change_solver,
               test_gate_edge_rule_continues_after_a_failed_recheck,
-              test_metric_temperature_on_at_T1_is_off_on_the_fused_step,
               test_native_paired_swarm_keeps_particle_0_at_the_guess):
         try:
             t()

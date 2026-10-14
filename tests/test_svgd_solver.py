@@ -56,13 +56,14 @@ import test_batched_program as T                                        # noqa: 
 WALL = 20.0
 N_SWEEP = 64
 #: The pin these tests were written against -- every svgd round through R19 ran it (kernel q,
-#: metric off and init jitter through the then-defaults, rho 1000 named by the manifests). The
+#: metric off and init jitter through the then-defaults, rho 1000 named by the manifests; the
+#: metric form is no longer an option, the temperature options having been removed 2026-10-14,
+#: and `off` at T = 1 is the only step). The
 #: defaults moved to c x z + rho 1e5 + H / T + the native-draw paired swarm on 2026-10-12, and
 #: `cz` is learned-only, so every solve here names the old pin explicitly: what each test pins
 #: is unchanged, and tests/test_svgd_pin_and_gate.py holds the old pin to the pre-change solver
 #: bit for bit and exercises the new one.
-LEGACY_PIN = dict(svgd_kernel="q", svgd_rho=1000.0, svgd_metric_temperature="off",
-                  svgd_paired_init="jitter")
+LEGACY_PIN = dict(svgd_kernel="q", svgd_rho=1000.0, svgd_paired_init="jitter")
 CONFIGS = [
     ("al_svgd N=1 kernel=q", dict(svgd_n=1, svgd_kernel="q")),
     ("al_svgd N=64 kernel=none", dict(svgd_n=64, svgd_kernel="none")),
@@ -540,19 +541,19 @@ def test_stop_reasons_and_log():
 def test_step_with_kernel_off_is_pgd_on_the_programs_L():
     """On the real pose programs (float64 swarm, collision row included), one step with
     `svgd_kernel = none` and `svgd_metric = identity` is projected gradient descent on the
-    program's own L_rho / T in the normalised coordinates,
-    `x <- clamp_B(x - (svgd_lr / ||H_i||_F) s^2 grad_x L_i / T)`, with the reference gradient
+    program's own L_rho in the normalised coordinates,
+    `x <- clamp_B(x - (svgd_lr / ||H_i||_F) s^2 grad_x L_i)`, with the reference gradient
     from FULL AUTOGRAD through the batched program (flow, kinematics and the collision row's
     autograd node) -- not from the closed forms the step uses -- on the rows in NATURAL units.
     Each particle carries its own random multipliers; rho (here 37) is the one shared scalar."""
-    print("\n--- one step with the kernel off == PGD on L_rho / T (full autograd reference) ---")
+    print("\n--- one step with the kernel off == PGD on L_rho (full autograd reference) ---")
     from dataclasses import replace as dc_replace
     for arm in ("learned", "numerical"):
         p = pose_program(arm)
         p.options = replace(p.options, which_solver="svgd",
                             **dict(LEGACY_PIN, svgd_kernel="none", svgd_rho=37.0),
                             svgd_n=8, svgd_dtype="float64", svgd_compile=False, svgd_cuda_graph=False,
-                            svgd_lr=0.7, svgd_temperature=0.5,
+                            svgd_lr=0.7,
                             svgd_metric="identity", acceptable_constr_viol_tol=1e-4)
         rng = np.random.default_rng(4)
         with HiddenPrints():
@@ -577,14 +578,13 @@ def test_step_with_kernel_off_is_pgd_on_the_programs_L():
         L = al.al_value(out.F, out.h * tg.sh, out.g * tg.sg, S, 37.0)
         (gx,) = torch.autograd.grad(L.sum(), Xg)
         fro = o["H"].flatten(1).norm(dim=1).unsqueeze(1)
-        ref, _ = bp.project(X - tg.s ** 2 * (p.options.svgd_lr / fro) * gx
-                            / p.options.svgd_temperature)
+        ref, _ = bp.project(X - tg.s ** 2 * (p.options.svgd_lr / fro) * gx)
         rel = float((o["X"] - ref).abs().max() / max(1e-30, float((ref - X).abs().max())))
         print(f"    {arm}: |x_step - x_PGD|_inf / |x_PGD - x|_inf = {rel:.2e}")
-        check(f"pgd/{arm}: the kernel-off identity step is PGD on the program's L_rho / T",
+        check(f"pgd/{arm}: the kernel-off identity step is PGD on the program's L_rho",
               rel < 1e-8, f"{rel}")
         p.options = replace(p.options, **LEGACY_PIN, svgd_dtype="float32", svgd_n=64,
-                            svgd_lr=ProgramOptions().svgd_lr, svgd_temperature=1.0,
+                            svgd_lr=ProgramOptions().svgd_lr,
                             svgd_metric=ProgramOptions().svgd_metric)
 
 

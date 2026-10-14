@@ -229,7 +229,6 @@ SVGD_ENUM_FIELDS = {
     "svgd_dtype": ("float32", "float64"),
     "svgd_paired_init": ("jitter", "native"),
     "svgd_kernel": ("q", "none", "x", "z", "c", "cz", "qz", "pose"),
-    "svgd_metric_temperature": ("off", "on"),
     "svgd_warmup": ("none", "cem"),
     "svgd_metric": ("gn", "identity"),
     "svgd_row_units": ("natural", "tolerance"),
@@ -239,8 +238,8 @@ SVGD_ENUM_FIELDS = {
 
 
 def CheckSvgdOptions(options):
-    """Refuse an svgd enum value outside its choices, a non-positive particle count,
-    temperature or step size, and the CUDA-graph switch without the compile switch."""
+    """Refuse an svgd enum value outside its choices, a non-positive particle count or
+    step size, and the CUDA-graph switch without the compile switch."""
     for name, allowed in SVGD_ENUM_FIELDS.items():
         value = getattr(options, name)
         if value not in allowed:
@@ -248,7 +247,7 @@ def CheckSvgdOptions(options):
     if int(options.svgd_n) < 1:
         raise ValueError(f"svgd_n must be >= 1, got {options.svgd_n!r} (N = 1 is the "
                          f"degenerate single-particle control, not 0)")
-    for name in ("svgd_temperature", "svgd_lr", "svgd_rho", "svgd_row_length_scale"):
+    for name in ("svgd_lr", "svgd_rho", "svgd_row_length_scale"):
         if not float(getattr(options, name)) > 0.0:
             raise ValueError(f"{name} must be > 0, got {getattr(options, name)!r}")
     if not float(options.svgd_gn_lm) >= 0.0:
@@ -689,7 +688,7 @@ class ProgramOptions:
     ## recorded in `emitted_solver_options["svgd"]` like the Drake solvers' options are.
     ##
     ## NO FORMULATION-SPECIFIC INFORMATION is encoded by any of these (Thomas, 2026-10-08).
-    ## The solver's target is exactly the program as written, -L_rho/T: no latent-prior
+    ## The solver's target is exactly the program as written, -L_rho: no latent-prior
     ## term, no assumption that the correction or any residual is zero-centred, no kernel or
     ## schedule that knows what one arm's variables mean. What IS allowed is
     ## formulation-agnostic: a kernel in configuration space (every arm has a q), row
@@ -705,16 +704,14 @@ class ProgramOptions:
     svgd_seed: int = field(default=0, metadata={"help": "svgd: base seed for the particle draws (combined with the cell's initial guess)"})
     svgd_paired_init: str = field(default="native", metadata={"help": "svgd: how the swarm is drawn around the program's initial guess (particle 0 is the guess, never clipped, either way) -- 'native' (fielded 2026-10-12; was 'jitter') draws the other N-1 from the arm's own start distribution, 'jitter' adds svgd_jitter * N(0, I) in the normalised coordinates (every svgd round through R19 ran it)"})
     svgd_jitter: float = field(default=0.1, metadata={"help": "svgd: paired-jitter sigma, as a fraction of each variable's region half-width (the normalised coordinates)"})
-    svgd_temperature: float = field(default=1.0, metadata={"help": "svgd: the temperature T of the target exp(-L_rho / T); fixed for the whole solve"})
     svgd_lr: float = field(default=0.3, metadata={"help": "svgd: the step, a dimensionless fraction of the metric's step -- under svgd_metric=gn dy_i = svgd_lr (H_i + svgd_gn_lm I)^-1 phi_i (Stein variational Newton), under identity dy_i = (svgd_lr / ||H_i||_F) phi_i, H_i the GN Hessian of the AL in the normalised coordinates (0.3: the 2026-10-10 screen at rho 1e3, delta 10 -- lr 0.3 solved 24/24 of 12 Panda cells x 2 arms, resampling 0.07 of N per check, against 22/24 and 0.12 at lr 1.0)"})
     svgd_metric: str = field(default="gn", metadata={"help": "svgd: 'gn' -- the block-diagonal Stein variational Newton step (Detommaso et al. 2018) with the per-particle Gauss-Newton Hessian of the AL; 'identity' -- the plain SVGD direction with the per-particle step svgd_lr / ||H_i||_F"})
-    svgd_metric_temperature: str = field(default="on", metadata={"help": "svgd: whether the Stein variational Newton metric carries the temperature -- 'on' (fielded 2026-10-12; was 'off', bit-identical at T = 1): the metric is H / T, dy_i = svgd_lr (H_i / T + svgd_gn_lm I)^-1 phi_i, matching the drive so T sets only the repulsion-to-drive ratio (under svgd_metric=identity, the step bound ||H_i / T||_F = ||H_i||_F / T); 'off': the metric is H, so the drive -grad L / T is not matched by it and the Newton step scales as 1/T (every svgd round through R19 ran it). Both are swept; neither is 'the' definition (Thomas, 2026-10-11)"})
     svgd_gn_lm: float = field(default=10.0, metadata={"help": "svgd: delta, the Levenberg damping added to the GN Hessian under svgd_metric=gn (10: the 2026-10-10 probe, most feasible of {1e-2, 1, 10} on 12 Panda cells)"})
     svgd_row_units: str = field(default="natural", metadata={"help": "svgd: 'natural' -- the AL is formed on the rows exactly as the program's bindings evaluate them (orientation-type rows times svgd_row_length_scale); 'tolerance' -- every row divided by acceptable_constr_viol_tol (the pre-2026-10-09 path, a control). Feasibility is per row against the tolerance either way"})
     svgd_row_length_scale: float = field(default=1.0, metadata={"help": "svgd: metres per radian on the orientation-type rows (rpy residuals, the c box's rpy rows; NOT joint limits) under svgd_row_units=natural"})
     svgd_kernel: str = field(default="cz", metadata={"help": "svgd: the space of the RBF kernel, median bandwidth per factor (floored by svgd_bandwidth_floor in that factor's units; fielded 2026-10-12: 'cz', was 'q') -- 'q' (the configuration; repulsion pulled back to y through the flow's VJP; every svgd round through R19 that does not name a kernel ran it); 'x' (all of the normalised decision vector y = x / s, repulsion directly in y; on joint space this is q divided by its half-range); 'z' / 'c' (the latent / conditioning-pose block of y alone, repulsion on that block only; learned arm only); 'cz' (fielded: the product of the c and z RBFs, each its own bandwidth; learned only -- the joint-space arm must name another space, e.g. 'q'); 'qz' (the product of the q RBF, pulled back, and the z RBF, direct; learned only); 'pose' (the task frame's [position; canonical quaternion wxyz], pulled back through d pose / d q and the VJP); 'none' (no interaction: both kernel terms dropped, the batched-AL control). z / c / cz / qz are refused on the joint-space arm at solver construction"})
     svgd_bandwidth_floor: float = field(default=0.05, metadata={"help": "svgd: floor on the median-heuristic kernel bandwidth"})
-    svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho / T), the whole AL gradient inside it -- an A/B"})
+    svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho), the whole AL gradient inside it -- an A/B"})
     svgd_rho: float = field(default=100000.0, metadata={"help": "svgd: the penalty rho of the augmented Lagrangian -- ONE scalar, fixed for the whole solve, shared by every particle (1e5: fielded 2026-10-12 with svgd_kernel=cz, rounds R14/R17/R17S/R17P/R18/R19; was 1000, the 2026-10-10 screen -- 10/1e3/1e4/1e5 solved 5/12/12/12 learned and 0/10/9/11 joint space of 12 Panda cells, 1e3 the smallest that works with the least resampling)"})
     svgd_dual_lr: float = field(default=None, metadata={"help": "svgd: alpha, the dual-ascent step taken every svgd_inner_iters steps on every particle (lam += alpha h~, mu = max(0, mu + alpha g~)); None = svgd_rho, the textbook step; 0 = a pure quadratic penalty (multipliers stay zero)"})
     svgd_multiplier_max: float = field(default=1e4, metadata={"help": "svgd: box on the magnitude of every multiplier; the clipped entries are counted"})
