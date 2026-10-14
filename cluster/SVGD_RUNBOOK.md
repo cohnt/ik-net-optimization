@@ -945,8 +945,7 @@ longer run into the round token. Promote as for R7 / R16:
 
 ## R23 (branch `svgd-tune`, 2026-10-14): the phase-1 conditioning exceptions at the pin
 
-**Not yet submitted: waits for Thomas's word on the pre-registration** (`docs/svgd-solver.md`,
-"Stage SVGD_R23"). Stage `SVGD_R23` is R22's shape (`SVGD_PINNED_V2`, the four record contexts,
+**Submitted 2026-10-14 18:25 EDT on Thomas's word (*"Queue them up. No wasted cluster compute time."*): jobs 5923288-5923291, four nodes, `DRAKE_ENV=crc PROCS=2`, staged 7812715, manifest md5 `8fe92f91`, queued behind R22 so the nodes hand over without a gap.** Pre-registration: `docs/svgd-solver.md`, "Stage SVGD_R23". Stage `SVGD_R23` is R22's shape (`SVGD_PINNED_V2`, the four record contexts,
 480 cells at 180 s on seed 1, graphed, the lifted step cap, the clearance row, 24 shards, PROCS=2,
 learned arm only, no joint-space set) with one override per variant:
 
