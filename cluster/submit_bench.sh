@@ -58,6 +58,29 @@ LOCAL="$(_sc_repo_root)/cluster/$MANIFEST"
 [ -f "$LOCAL" ] || { echo "no such local manifest: $LOCAL" >&2; exit 1; }
 echo "local:  $MANIFEST ($(grep -vc '^#' "$LOCAL") items)"
 
+## The node shape follows the partition. `xeon-g6-volta`: 40 cores and both V100s, held
+## exclusively. `xeon-p8`: 48 cores, no GPU -- for stages whose arms never touch the GPU (the
+## analytic arm under IPOPT / SNOPT / NLopt; Thomas, 2026-10-13: "those cells should be sent to
+## CPU nodes if available, leaving GPU nodes for GPU work"). A GPU-bound item on a CPU node
+## would not fail fast -- torch falls back to the CPU and the learned arm just measures something
+## else -- so the manifest is checked here and refused, as is MPS=1 (there is no GPU to share).
+case "$PARTITION" in
+    xeon-g6-volta) NODE_CPUS=40; GRES_DIRECTIVE="#SBATCH --gres=gpu:volta:2" ;;
+    xeon-p8)
+        NODE_CPUS=48; GRES_DIRECTIVE="## no GPU on $PARTITION"
+        [ "${MPS:-0}" = 0 ] || { echo "REFUSING: MPS=1 on $PARTITION, which has no GPU" >&2; exit 4; }
+        [ -z "$DRAKE_ENV" ] || { echo "REFUSING: DRAKE_ENV=$DRAKE_ENV is for the svgd (GPU) stages" >&2; exit 4; }
+        GPU_ITEMS=$(grep -vE '^[[:space:]]*(#|$)' "$LOCAL" \
+            | grep -cE -- '(--compile( |$)|flow_cuda_graph=True|--solver svgd|--arms [^ ]*learned)')
+        [ "$GPU_ITEMS" -eq 0 ] || {
+            echo "REFUSING: $GPU_ITEMS item(s) of $MANIFEST need a GPU (--compile, flow_cuda_graph," >&2
+            echo "  --solver svgd or a learned arm) and $PARTITION has none." >&2
+            exit 4; } ;;
+    *)
+        echo "REFUSING: unknown PARTITION='$PARTITION' (xeon-g6-volta or xeon-p8)" >&2; exit 4 ;;
+esac
+
+
 ## The Drake environment must match the manifest, both ways (header).
 N_ITEMS=$(grep -vcE '^[[:space:]]*(#|$)' "$LOCAL")
 N_CLR=$(grep -vE '^[[:space:]]*(#|$)' "$LOCAL" | grep -c -- 'svgd_collision_backend=clearances')
@@ -88,6 +111,16 @@ sc_run "test -f ~/$SC_ROOT/repo/cluster/$MANIFEST" || {
     echo "REFUSING: cluster/$MANIFEST is not staged. Run cluster/stage_code.sh first." >&2
     exit 2
 }
+
+## An analytic_backend=cpp item needs the C++ library BUILT ON THE CLUSTER from the staged
+## sources (cluster/build_cpp_job.sh writes the sentinel only after its parity test passes).
+## Without it every program construction raises and the run aborts after three cells.
+if grep -vE '^[[:space:]]*(#|$)' "$LOCAL" | grep -q -- 'analytic_backend=cpp'; then
+    sc_run "grep -q '^OK ' ~/$SC_ROOT/build_cpp.DONE" || {
+        echo "REFUSING: $MANIFEST uses analytic_backend=cpp and ~/$SC_ROOT/build_cpp.DONE is" >&2
+        echo "  missing or not OK. Run cluster/build_cpp_job.sh (after stage_code.sh) first." >&2
+        exit 3; }
+fi
 
 ## Refuse rather than measure a checkpoint that does not exist. A benchmark against a
 ## missing --checkpoint does not fail fast: the workers start, construct a program, and
@@ -126,8 +159,8 @@ sc_run "cat > $LAUNCH_R && chmod +x $LAUNCH_R" <<LAUNCH
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=40
-#SBATCH --gres=gpu:volta:2
+#SBATCH --cpus-per-task=$NODE_CPUS
+$GRES_DIRECTIVE
 #SBATCH --partition=$PARTITION
 #SBATCH --exclusive
 #SBATCH --time=$WALL

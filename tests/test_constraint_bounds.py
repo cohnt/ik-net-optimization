@@ -73,8 +73,56 @@ def stacked_rows(prog, label):
     return bounds_of(b)
 
 
+def check_analytic_rows(p, label, opts):
+    """The analytic arm's own rows: the reachability band, and the map run ONCE per iterate."""
+    b = find(p.prog, "ReachabilityConstraint")
+    bound = 1.0 - opts.analytic_reach_stepback
+    lb, ub = bounds_of(b) if b is not None else (None, None)
+    check(f"{label}: ReachabilityConstraint is the +-(1 - reach) band, strictly inside the clip",
+          b is not None and np.allclose(lb, -bound) and np.allclose(ub, bound)
+          and bound < 1.0 - opts.analytic_clip_stepback,
+          f"lb={lb} ub={ub} clip={opts.analytic_clip_stepback}")
+    ## Every binding that reaches q -- the stacked rows, the reachability rows, the cost --
+    ## at ONE AutoDiffXd iterate must cost ONE closed-form pass: the rule that no constraint
+    ## re-runs VarsToQ itself (the analytic reachability row used to).
+    from pydrake.all import InitializeAutoDiff
+    x = np.asarray(p.prog.GetInitialGuess(p.lumped_vars), dtype=float)
+    x_ad = InitializeAutoDiff(x)[:, 0]
+    p.ResetEvalCounts()
+    bindings = list(p.prog.generic_constraints()) + list(p.prog.generic_costs())
+    for binding in bindings:
+        binding.evaluator().Eval(x_ad)
+    check(f"{label}: one map pass serves all {len(bindings)} bindings at an iterate",
+          len(bindings) >= 2 and p.eval_counts["map_jacobian"] == 1
+          and p.eval_counts["memo_hits"] == len(bindings) - 1, p.eval_counts)
+
+
+def check_analytic_mug_rows(p, label, opts):
+    """The grasp rows as the LINEAR constraint they are: x = y = 0 in the mug frame exactly,
+    the height a band of 2h. Read back through the affine map rather than as raw bounds,
+    which now carry the mug's translation."""
+    b = find(p.prog, "IKMugConstraint")
+    if b is None:
+        check(f"{label}: IKMugConstraint present", False, "binding not found")
+        return
+    lb, ub = bounds_of(b)
+    A = b.evaluator().GetDenseA()
+    M_inv = p.target_mug.middle.inverse()
+    shift = M_inv.translation()
+    check(f"{label}: the mug rows are linear in the position variables only",
+          A.shape == (3, 3) and np.allclose(A, M_inv.rotation().matrix()), A)
+    check(f"{label}: axis rows x, y are an EQUALITY at 0 in the mug frame",
+          np.array_equal(lb[:2], ub[:2]) and np.allclose(lb[:2] + shift[:2], 0.0),
+          f"lb={lb[:2]} ub={ub[:2]}")
+    check(f"{label}: height row is the band +-mug_height",
+          np.isclose(ub[2] + shift[2], opts.mug_height)
+          and np.isclose(lb[2] + shift[2], -opts.mug_height), f"lb={lb[2]} ub={ub[2]}")
+
+
 def main():
-    opts = ProgramOptions(collision_avoidance=True, joint_limits=True, use_float64=True)
+    ## A nonzero centering weight so the cost binding exists and shares the map pass too.
+    opts = ProgramOptions(collision_avoidance=True, joint_limits=True, use_float64=True,
+                          joint_centering_cost=1.0)
 
     # ---------------------------------------------------------------- pose task
     print("\n--- pose task: the six IK rows ---")
@@ -113,11 +161,9 @@ def main():
     # zero -- it was solving an easier problem, and it used all of it (median rpy_error
     # 8.5e-3, p90 exactly on the bound).
     print("\n--- pose task: the analytic arm's pose target ---")
-    from scripts.panda.panda_benchmark import AnalyticPoseOffset
     with HiddenPrints():
-        offset = AnalyticPoseOffset(sampler.plant, sampler.plant_context, "panda_hand")
         pa = PandaIKProgramAnalytic(diagram, options=opts, model=ik_solver)
-        pa.create_prog(target, pose_offset=offset)
+        pa.create_prog(target)  # the map's frame offset is measured by the program
     b = find(pa.prog, "PoseTargetConstraint")
     if b is None:
         check("analytic: PoseTargetConstraint present", False,
@@ -154,11 +200,7 @@ def main():
         check("numerical: every trailing row is a strict inequality, none tightened",
               bool(np.all(tail_ub > tail_lb)),
               f"equal rows at indices {np.flatnonzero(tail_ub <= tail_lb).tolist()}")
-    bb = find(pa.prog, "ReachabilityConstraint")
-    if bb is not None:
-        lb, ub = bounds_of(bb)
-        check("analytic: ReachabilityConstraint is the +-1 chart inequality",
-              np.allclose(lb, -1) and np.allclose(ub, 1), f"lb={lb} ub={ub}")
+    check_analytic_rows(pa, "analytic", opts)
 
     # ---------------------------------------------------------------- grasp task
     print("\n--- grasp task: mug-axis equality, height band ---")
@@ -191,13 +233,9 @@ def main():
 
     with HiddenPrints():
         pma = PandaMugProgramAnalytic(diagram_with_mug, options=opts, model=ik_solver)
-        pma.create_prog(target_mug=mug, pose_offset=offset)
-    b = find(pma.prog, "IKMugConstraint") or find(pma.prog, "MugConstraint")
-    if b is not None:
-        lb, ub = bounds_of(b)
-        check("mug analytic: axis rows x, y are an EQUALITY at 0",
-              np.array_equal(lb[:2], np.zeros(2)) and np.array_equal(ub[:2], np.zeros(2)),
-              f"lb={lb[:2]} ub={ub[:2]}")
+        pma.create_prog(target_mug=mug)
+    check_analytic_mug_rows(pma, "mug analytic", opts)
+    check_analytic_rows(pma, "mug analytic", opts)
     # The mug analytic arm's pose variables are NOT pinned to a target -- the grasp is
     # imposed through the mug rows -- so its +-5 box is a variable region and stays one.
     check("mug analytic: variable regions on xyz_rpy/psi are present",
@@ -206,12 +244,13 @@ def main():
           "this repo as behaving poorly on unbounded variables")
 
     # ------------------------------------------------------------------ iiwa
-    # The iiwa shares the base CreateIKConstraint, so the pose rows must move with it.
-    # It has no analytic arm -- no Iiwa14IKProgramAnalytic exists -- so only the learned
-    # and numerical arms do.
+    # The iiwa shares the base CreateIKConstraint, so the pose rows must move with it; its
+    # analytic arm (ported 2026-10-12) shares src/analytic_program.py with the Panda's.
     print("\n--- iiwa: the same base pose rows ---")
     try:
-        from src.iiwa_program import Iiwa14IKProgram, Iiwa14IKProgramNumerical
+        from src.iiwa_program import (Iiwa14IKProgram, Iiwa14IKProgramNumerical,
+                                      Iiwa14IKProgramAnalytic, IiwaMugProgram,
+                                      IiwaMugProgramAnalytic)
         with HiddenPrints():
             idiagram = BuildEnv(
                 meshcat=None,
@@ -235,6 +274,47 @@ def main():
             check(f"{label}: orientation rows are an EQUALITY at 0",
                   np.array_equal(lb[3:6], np.zeros(3)) and np.array_equal(ub[3:6], np.zeros(3)),
                   f"lb={lb[3:6]} ub={ub[3:6]}")
+
+        print("\n--- iiwa: the analytic arm ---")
+        iopts = ProgramOptions(collision_avoidance=True, joint_limits=True, use_float64=True,
+                               joint_centering_cost=1.0, analytic_branches=8)
+        with HiddenPrints():
+            ipa = Iiwa14IKProgramAnalytic(idiagram, options=iopts, model=isampler.ik_solver)
+            ipa.create_prog(itarget)
+        b = find(ipa.prog, "PoseTargetConstraint")
+        lb, ub = bounds_of(b) if b is not None else (None, None)
+        check("iiwa analytic: pose target is an EQUALITY at the target",
+              b is not None and np.array_equal(lb, ub) and np.allclose(lb, ipa.target_rpy),
+              f"lb={lb} target={ipa.target_rpy}")
+        check_analytic_rows(ipa, "iiwa analytic", iopts)
+        ## The paired harness's clip-band exemption (src/benchmark.py, run_grid): a start
+        ## 0.005 rad from the straight elbow puts the elbow's arccos argument inside the
+        ## 1e-4 clip, so the CLIPPED map lands ~0.01 rad away while the closed form itself
+        ## reproduces it -- matched, infeasible on the reachability rows, and solved.
+        q_band = np.array([0.3, 0.7, -0.2, 0.005, 0.4, 1.0, 0.1])
+        from src import benchmark as bm
+        with HiddenPrints():
+            ipa.SetStartFromQ(q_band)
+        err = bm.start_diagnostics(ipa, ipa.PadQ(q_band)).get("start_q_error")
+        unclipped = ipa.UnclippedStartError(q_band)
+        check("iiwa analytic: a clip-band start is matched -- clipped error > 1e-3, "
+              f"closed-form error {unclipped:.1e}",
+              err is not None and err > 1e-3 and unclipped < 1e-9, f"{err} {unclipped}")
+        try:
+            Iiwa14IKProgramAnalytic(idiagram, options=opts, model=isampler.ik_solver)
+            check("iiwa analytic: refuses a 4-branch chart", False, "constructed")
+        except ValueError:
+            check("iiwa analytic: refuses a 4-branch chart", True)
+        with HiddenPrints():
+            imsampler = IiwaMugProgram(idiagram, options=iopts, model=isampler.ik_solver)
+            imsampler.create_prog()
+            idm, imug = GenerateDiagramWithMug(
+                q_i, imsampler,
+                os.path.join(REPO, "models/iiwa14/iiwa14_collision_hardened.yaml"), None)
+            ipma = IiwaMugProgramAnalytic(idm, options=iopts, model=isampler.ik_solver)
+            ipma.create_prog(target_mug=imug)
+        check_analytic_mug_rows(ipma, "iiwa mug analytic", iopts)
+        check_analytic_rows(ipma, "iiwa mug analytic", iopts)
     except (ImportError, FileNotFoundError, RuntimeError) as exc:
         # The iiwa checkpoint is a local pickle and gitignored; skipping is honest, but
         # it must SAY so rather than passing silently.

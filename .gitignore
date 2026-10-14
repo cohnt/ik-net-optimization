@@ -39,3 +39,6 @@ wandb/
 models/*/*__untrained__*
 ## The screw arm's rungs, same rule.
 models/screw7_p*/*.pkl
+
+## The analytic C++ backend's build output (cpp/build.sh); built per machine, never tracked.
+cpp/build/

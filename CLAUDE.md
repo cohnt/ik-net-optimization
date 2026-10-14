@@ -17,16 +17,20 @@ of the repo is the three-way comparison of formulations for the same IK problem:
 | --- | --- | --- |
 | **learned** (`Panda/IiwaIKProgram`, `...MugProgram`) | conditioning pose `c` (xyz+rpy, 6), latent `z` (`network_width`), `correction` (7) | forward pass of the IKFlow model + `correction` |
 | **numerical** (`...ProgramNumerical`) | joint angles `q` (7) | identity |
-| **analytic** (`PandaIKProgramAnalytic`, `PandaMugProgramAnalytic` — **Panda only**) | end-effector pose `xyz_rpy` (6) + redundancy parameter `psi` (1) | closed-form S-R-S IK (`src/*_analytic_ik.py`) |
+| **analytic** (`Panda/Iiwa14IKProgramAnalytic`, `...MugProgramAnalytic`) | pose `xyz_rpy` (6) of the task frame + redundancy parameter `psi` (1) | closed-form IK (`src/*_analytic_ik.py`), branch fixed per solve |
 
-**There is no iiwa analytic *program*, which is not a statement about the iiwa.** The iiwa14 is an
-S-R-S arm and has a closed-form solution (Faria et al.); what this repo lacks is an implementation of
-it. `src/iiwa_analytic_ik.py` is down to the joint limits -- the closed-form map was deleted rather
-than maintained unreached -- no `Iiwa14IKProgramAnalytic` exists, and `scripts/iiwa/iiwa_benchmark.py`
-registers only `learned` and `numerical`. Writing that arm is future work or possibly not done at all
-(Thomas, 2026-09-19). **Comparing against analytic IK is not the objective**: the Panda carries an
-analytic column only because we happen to have its solution implemented, so describe the asymmetry as
-an accident of implementation, never as three-way-vs-two-way being a property of the robots.
+**Both rigid arms field the analytic arm since 2026-10-12** (merged 2026-10-14): the Panda's He-Liu
+map (`psi = q7`) on 4 or 8 branches (`analytic`, `analytic8`), the iiwa's Faria S-R-S map (`psi` = arm
+angle, `GC` = signs of q2/q4/q6, all 8) ported from `../codebase`. Shared machinery is
+`src/analytic_program.py`. **A reference TARGET to match, possibly not in the paper** (Thomas,
+2026-10-13); the paper's case is robots with no closed form, so learned v joint space stays the
+comparison of record. **Measured (stages ANALYTIC*, 96 runs on the record's cells, 2026-10-14) it is
+NOT an upper bound**: single start it loses success to learned on every IPOPT row and most SNOPT
+rows, leads under NLopt, is the fastest arm on 19 of 32 experiment x solver rows (its IPOPT / SNOPT /
+NLopt seconds are xeon-p8, the record's volta) and joint space is cheapest; with restarts over the 8
+starts it ties learned on success. Its failures end at targets the cell's fixed branch cannot reach.
+Rulings: `memory/analytic-baseline-rulings.md`; operations `cluster/ANALYTIC_RUNBOOK.md`; reader
+`scripts/report_analytic.py`.
 
 All three go through the same `IKFlowProgram` machinery, so a change to constraints/costs affects
 all of them. `workshop-paper-draft.pdf` is the write-up — an early rough draft, orientation only,
@@ -618,8 +622,15 @@ can only represent a configuration its variables reach.
 | --- | --- | --- |
 | joint space | 0 exactly | its variables are the configuration |
 | learned, free `c` | ~1e-6 (pose task: 0.0 measured) | exact: unclipped `c` + inverted latent + correction |
-| analytic, 8 branches | 1e-11, or several radians on ~0.6% of starts | exact where the chart covers the configuration |
-| analytic, 4 branches | 1e-11, or several radians on ~10% of starts | the historical chart; the `analytic` column |
+| analytic, 8 branches (both robots) | 1e-11 | exact; a start inside the clip band is still matched (below) |
+| analytic, 4 branches (Panda) | 1e-11, or several radians on ~13% of starts | the uncharted elbow half (A = -1), scored `unrepresentable_start` |
+
+**A start inside the analytic clip band is matched, not unrepresentable.** Within ~sqrt(2 * clip) rad
+of a chart seam the CLIPPED map returns a configuration ~0.01 rad from `q_init` while the variables
+are exactly `q_init`'s pose, psi and branch; `run_grid` re-runs the closed form with the clip relaxed
+(`UnclippedStartError`) and solves such a cell as an infeasible start on the reachability rows, as
+`../codebase` does, flagging it `start_in_clip_band`. Before 2026-10-12 those cells were scored
+`unrepresentable_start` unsolved -- the "0.6%" of `analytic8`'s paired columns.
 
 Two projections that were once necessary have been removed — the learned arm's pre-clipping of `c`,
 and the pose analytic arm's clipping into its `xyz_rpy` box (which had it always beginning at the
@@ -1301,24 +1312,44 @@ cells 31 -> 7 for exactly 19/19 on success; `lift_q` reached zero runaways while
 Measured and refuted; the verdict and the per-cell instability finding are under the solver
 axis above, the evidence in `docs/closed-axes.md`.
 
-## The analytic chart: eight branches, and what the last 0.6% is
+## The analytic chart: eight branches, and the clip ladder
 
-The closed-form map's discrete set is three binary choices — wrist (B), shoulder (C), elbow (A) — and
-the implementation historically charted only A = +1, the half away from the joint limits. The missing
-half is a *single sign*: negate both triangle angles `O2O4O6` and `O2O6O4`. The measured elbow relations are `q3 = theta + q3_add - 2*pi`
-(A = +1) and `-theta + q3_add` (A = -1), partitioning at `q3 = q3_add - pi = -0.467`.
-`ProgramOptions.analytic_branches` selects the chart (default 4, so archived runs stay reproducible);
-`gc(q, branches=3)` recovers all three indices with zero mislabels in 4000 samples. Round-trip
-coverage of `IK(FK(q), psi(q), gc(q)) == q`: 89.4% (4 branches) against 99.40% (8) at 1e-6, rising to
-99.83% at 1e-2.
+The Panda map's discrete set is three binary choices — wrist (B), shoulder (C), elbow (A) — and it
+historically charted only A = +1. The missing half is a *single sign*: negate both triangle angles
+`O2O4O6` and `O2O6O4` (elbow relations `q3 = theta + q3_add - 2*pi` for A = +1, `-theta + q3_add` for
+A = -1, partitioning at `q3 = -0.467`). `ProgramOptions.analytic_branches` selects the chart (default
+4); `gc(q, branches=3)` recovers all three indices. The iiwa's Faria map charts all eight by GC signs,
+so analytic4-vs-analytic8 is a **Panda-only** experiment.
 
-**The residual is not singularities** (measure zero; this set has positive measure) **and not branch
-mislabelling** (the 24/4000 misses are reproduced by *no* branch of the eight). Two are off by ~4 rad
-and 22 by 1e-3 to 1e-2, clustered where the wrist arcsin argument approaches 1. Consistent with the
-<=16 self-motion-manifold bound (Burdick/Luck). **Left as future work by decision** —
-arXiv:2503.03992 is the starting point — and until then coverage is reported as the curve above,
-never as "100% up to singularities". The iiwa needs no such column: its Faria/SRS implementation
-already charts all eight branches, so analytic4-vs-analytic8 is a **Panda-only** experiment.
+**The old "residual 0.6%" was the arccos clip, not the chart** (2026-10-12): the same map at clip
+1e-6 reproduces 99.37% of uniform configurations to 1e-3, at clip 1e-8 100%. Uniform round trip at
+clip 1e-8 is **99.90% at 1e-6 and 100% at 1e-2 on the Panda's 8 branches, 99.95% / 100% on the
+iiwa** (`tests/test_analytic_ik.py` prints the curves). q6 is also now wrapped by 2pi into its window
+(seam mid-infeasible-arc), as pullback-metrics' header does. arXiv:2503.03992 is not needed for it.
+
+**The clip ladder (Thomas, 2026-10-12: measure both).** The map clips every arccos/arcsin argument
+into `+-(1 - analytic_clip_stepback)` with zero derivative; the `ReachabilityConstraint` rows hold the
+unclipped arguments inside `+-(1 - analytic_reach_stepback)`, so at any point the verifier passes the
+clip is inactive (`CheckClipCannotEscapeGate`: reach - clip >= the verifier's slack, raised before a
+grid). Those rows exclude a band ~sqrt(2 * reach) rad wide around every seam: at ../codebase's
+**1e-4 / 1e-3** (default; tag `ANALYTIC`) that is 15.8% (Panda 8), 11.8% (Panda 4) and 8.6% (iiwa)
+of uniform configurations; at the tight **1e-8 / 1.1e-4** (tag `ANALYTICT`) 5.6 / 4.3 / 3.0%. Both
+are fielded. The arguments come from the SAME pass as `q` and are read through the `QAndPose` memo,
+and the pose-target and mug rows are linear constraints on the pose variables (../codebase's `PinVars`
+default encoding). SNOPT satisfies linear constraints in its first minors, so under the paired start
+iterate 0 jumps to the target pose with psi still at the start's value. **At 480 cells that is not a
+defect**: iiwa pose paired SNOPT is the analytic arm's best row (448, against IPOPT 376; as
+../codebase's Arm on a Table, 89.7 v 29.5), Panda pose paired SNOPT 212 against IPOPT 236 (the 4-cell
+smoke's 0/4 was noise). ../codebase's nonlinear pin (`PIN_AS_NONLINEAR`) was measured only on its
+Bimanual row and dropped (Thomas, 2026-09-22); not fielded here.
+
+**Two backends for the map, both measured (Thomas, 2026-10-13).** `analytic_backend="cpp"`
+(`cpp/`, ctypes, one g++ call; built on the cluster by `cluster/build_cpp_job.sh`, a stale build
+refused by its source hash) equals the Python AutoDiffXd path bit for bit and the float path to
+~4e-12 (numpy's BLAS), so IPOPT trajectories are not bitwise (iterations equal on 44 of 108 local
+cells, 5 verdicts differ: the per-cell instability any setting change shows). Its ms/it is level
+with joint space's (2.2-4.3 against 2.1-2.9 on the same cells; Python 4.7-9.2). Stage ANALYTIC_CPP
+fields it on the default ladder's IPOPT / SNOPT rows; everything else runs the Python reference.
 
 **`analytic8` against `analytic4` is the unbalanced-bundle pathology, both signs intact.** Under
 `paired` the 8-branch chart wins the grasp task (418 against 376) because it can represent starts the
@@ -1831,7 +1862,11 @@ minutes — **run it after any change to sharding, the merger, or grid construct
 have to use GPU. We've tried this before."*). So benchmark jobs and chart training compete for the
 same 4-node cap, and the lever when the cluster is saturated is **ordering the queued work**, never
 relocating benchmarks to `xeon-p8`. Datagen is the exception and does not generalise: it is pure
-CPU and `build_dataset_job.sh` runs on `xeon-p8`.
+CPU and `build_dataset_job.sh` runs on `xeon-p8`. **So are arms that never touch the GPU**
+(Thomas, 2026-10-13): the analytic arm's IPOPT / SNOPT / NLopt stages run on `xeon-p8`
+(`PARTITION=xeon-p8`; `submit_bench.sh` refuses `--compile`, CUDA graphs, svgd and learned arms
+there), so their seconds come from another machine than the record's; only its AL-SVGD stage uses
+the GPUs.
 
 **Two cluster facts that shaped the design.** The account's `xeon-g6-volta` limit is a Slurm
 **`GrpTRES` group** cap (`node=4`, `MaxSubmit=240`), not a per-job `MaxNodes`: work beyond it is
@@ -1898,13 +1933,15 @@ Wednesday morning, nothing survives it. Next window: 2026-10-12 to 10-14.
 
 Everything here is genuinely open; closed questions live above.
 
+- **Analytic arm timing on one machine** (its IPOPT/SNOPT/NLopt seconds are xeon-p8, the record's
+  volta): deferred TODO (Thomas, 2026-10-13) -- it is a target to match, possibly not in the paper.
+
 - **A `q_c == 0` arm** (the draft's eq. 4) would quantify what the correction buys, now that the
   penalty has established the `c`/`q_c` redundancy is real.
 - **Non-dimensionalise the conditioning pose's translation against its rotation**, the way
   `eaik-experiment` scales its Jacobian rows by a 1.12 m length scale. Never tried.
 - **Least-squares domain extension**, from Thomas's unreleased IFT-IK paper, is deferred but belongs
   to *this* project. (Trust-region *solving* belongs to a different project and is out of scope.)
-- **The analytic chart's residual 0.6%** — future work by decision; arXiv:2503.03992.
 - **Fold a small optimization smoke run into checkpoint validation.** Thomas's idea, explicitly
   deferred (*"Obviously, not worth it right now, but a cool idea for the future"*).
   `cluster/export_and_screen_job.sh` screens on intrinsic metrics only, and those do not predict

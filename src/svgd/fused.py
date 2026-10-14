@@ -86,11 +86,18 @@ KERNEL_SPACES = ("none", "q", "x", "z", "c", "cz", "qz", "pose")
 LATENT_KERNELS = ("z", "c", "cz", "qz")
 
 
-def check_kernel_for_arm(kernel, is_learned, arm=""):
+def check_kernel_for_arm(kernel, is_learned, arm="", formulation=None):
     """Refuse, at construction, a kernel space the arm has no block for: `z`, `c`, `cz` and
-    `qz` name the learned arm's latent / conditioning blocks, which joint space does not have."""
+    `qz` name the learned arm's latent / conditioning blocks, which neither joint space nor the
+    analytic arm (`formulation="analytic"`: decision variables `[xyz_rpy | psi]`) has."""
     if kernel not in KERNEL_SPACES:
         raise ValueError(f"svgd_kernel={kernel!r} is not one of {KERNEL_SPACES}")
+    if kernel in LATENT_KERNELS and not is_learned and formulation == "analytic":
+        raise ValueError(f"svgd_kernel={kernel!r} needs the learned arm's conditioning-pose / "
+                         f"latent blocks; the analytic arm {arm} has neither (its decision "
+                         f"variables are the pose xyz_rpy and the redundancy parameter psi). "
+                         f"Use x (the normalised [xyz_rpy | psi]) or q (the configuration, "
+                         f"pulled back through the map), pose or none")
     if kernel in LATENT_KERNELS and not is_learned:
         raise ValueError(f"svgd_kernel={kernel!r} needs the learned arm's conditioning-pose / "
                          f"latent blocks; the joint-space arm {arm} has neither (its decision "
@@ -535,17 +542,26 @@ def stage2(tg, X, cfg):
     """`(J_q [N, ndof, n], kin)`: the flow Jacobian (one `jacrev`, `ndof` reverse passes,
     vmapped -- the particles are independent through the flow, so the Jacobian of the
     batch-sum is the per-particle one) and the kinematics with the frame Jacobians at the
-    stage-1 configuration. Identity on joint space."""
+    stage-1 configuration. Identity on joint space. On the analytic arm the closed form's
+    Jacobian the same way, and `kin` carries a fifth entry `(u, J_u)`, the map's aux output."""
     bp = tg.bp
     N = X.shape[0]
+    aux = None
     if bp.is_learned:
         J = torch.func.jacrev(lambda Xv: bp._config(Xv).sum(dim=0))(X)     # [ndof, N, n]
         J_q = J.permute(1, 0, 2).contiguous()
+    elif bp.is_analytic:
+        ## The closed-form map and its aux output (the reachability rows' pre-clip arguments)
+        ## from one vmapped jacrev; `(u, J_u)` rides on `kin` (`BatchedProgram.assemble`).
+        J_q, J_u, u = bp.map_jacobians(X)
+        aux = (u.detach(), J_u.detach())
     else:
         eye = torch.eye(bp.ndof, bp.nvars, dtype=X.dtype, device=X.device)
         J_q = eye.unsqueeze(0).expand(N, -1, -1).contiguous()
     with torch.no_grad():
         kin = bp.kinematics(cfg.detach(), row_jacobians=True)
+    if aux is not None:
+        kin = kin + (aux,)
     return J_q, kin
 
 

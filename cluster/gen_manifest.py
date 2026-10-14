@@ -41,8 +41,9 @@ SCRIPTS = {"panda": "scripts/panda/panda_benchmark.py",
 SOFT_RUNGS = ("soft9", "soft12", "soft16")
 SCRIPTS.update({rung: "scripts/soft_arm/soft_arm_benchmark.py" for rung in SOFT_RUNGS})
 
-# Arms per robot. The iiwa has no analytic arm: no Iiwa14IKProgramAnalytic exists, and
-# writing one is future work or possibly not done at all (Thomas, 2026-09-19).
+# Arms per robot, as the OLD stages fielded them -- frozen so their manifests regenerate
+# byte-identically. The iiwa's analytic arm (2026-10-12) is fielded only by the ANALYTIC
+# stages, through ANALYTIC_ARMS.
 ALL_ARMS = {"panda": "learned,numerical,analytic,analytic8", "iiwa": "learned,numerical"}
 ## Two arms, for a stronger reason than the iiwa's: a redundant continuum arm has no
 ## closed-form IK to write an analytic column from.
@@ -3657,6 +3658,225 @@ def paper_allotment():
     print("  (REMEASURE ran these exact shards inside ITEM_TIMEOUT).")
 
 
+## ---------------------------------------------------------------------------- ANALYTIC --
+##
+## The analytic + optimization arm on the two robots with a closed form (Thomas, 2026-10-12):
+## the Panda's He-Liu map on 4 and 8 branches (`analytic`, `analytic8`) and the iiwa's Faria
+## S-R-S map on its 8 (`analytic`). An UPPER-BOUND REFERENCE column, expected to beat both arms
+## (the TRO result); the record's learned v joint-space verdicts are untouched by it.
+##
+## Each item is the record's item for the same row with ONLY `--arms` and the tag changed:
+## same seed, grid, scene, chart, --compile, CUDA graphs and lifted budgets, so `grid_hash` and
+## `scene_fingerprint` match the record's run and the reader pairs the analytic arm cell for
+## cell against the record's learned and joint-space arms (scripts/report_analytic.py). The
+## grid is drawn from the script's own generator before any arm is built, so it cannot depend
+## on which arms run.
+##
+## TWO CLIP LADDERS, both measured (Thomas, 2026-10-12, "measure both"): the default
+## 1e-4 / 1e-3 (../codebase's), tag token ANALYTIC; the tight 1e-8 / 1.1e-4, tag token
+## ANALYTICT. Conditions as the record: IPOPT / SNOPT at PAPER conditions (PROCS=2, no MPS);
+## NLopt at PROCS=8 like the record's own NLopt rows (Thomas), under its own tag tokens
+## (ANALYTICN / ANALYTICNT) because PROCS is a submit-time setting and lives in the tag.
+## Not submitted before Thomas says go.
+##
+## ON CPU NODES (Thomas, 2026-10-13: "the analytic baseline doesn't use GPU (except AL-SVGD), so
+## those cells should be sent to CPU nodes if available, leaving GPU nodes for GPU work"). The
+## IPOPT / SNOPT / NLopt items (and their smoke) are submitted with PARTITION=xeon-p8, and so drop
+## the two learned-only GPU switches the record's items carry -- `--compile` (the flow's compiled
+## jacrev) and `flow_cuda_graph=True` -- which no analytic arm reaches and which a GPU-less node
+## cannot honour. Neither touches the grid, the scene or the tag. submit_bench.sh refuses either
+## switch, `--solver svgd` or a learned arm on xeon-p8. AL-SVGD (ANALYTIC_SVGD) stays on the GPUs.
+
+ANALYTIC_ARMS = {"panda": "analytic,analytic8", "iiwa": "analytic"}
+ANALYTIC_LADDERS = {
+    ## token suffix: extra --set
+    "": [],
+    "T": ["--set", "analytic_clip_stepback=1e-08", "--set", "analytic_reach_stepback=0.00011"],
+}
+ANALYTIC_PROCS = {"ANALYTIC": 2, "ANALYTIC_NLOPT": 8}
+#: MEASURED mean seconds per cell, summed over the run's analytic arms, per (robot, task, start,
+#: solver). Laptop sample 2026-10-13: 12 cells of each record grid at the record's lifted budgets,
+#: joint space timed alongside (cluster/laptop wall on its cells 0.95-1.13, so unscaled); a cell
+#: reaching the local 30 s clock is charged the full 180 s, so these are upper-ish bounds. They
+#: replaced a "2x the record's joint space" guess that over-charged by ~1.6x.
+ANALYTIC_CELL_S = {
+    ("panda", "mug", "native", "ipopt"): 7.4, ("panda", "mug", "paired", "ipopt"): 13.2,
+    ("panda", "pose", "native", "ipopt"): 2.1, ("panda", "pose", "paired", "ipopt"): 0.6,
+    ("panda", "mug", "native", "snopt"): 31.9, ("panda", "mug", "paired", "snopt"): 35.8,
+    ("panda", "pose", "native", "snopt"): 0.2, ("panda", "pose", "paired", "snopt"): 0.2,
+    ("iiwa", "mug", "native", "ipopt"): 3.9, ("iiwa", "mug", "paired", "ipopt"): 16.5,
+    ("iiwa", "pose", "native", "ipopt"): 0.1, ("iiwa", "pose", "paired", "ipopt"): 0.3,
+    ("iiwa", "mug", "native", "snopt"): 15.5, ("iiwa", "mug", "paired", "snopt"): 16.0,
+    ("iiwa", "pose", "native", "snopt"): 0.1, ("iiwa", "pose", "paired", "snopt"): 0.1,
+}
+#: NLopt is not sampled: charged the clock per arm (its record joint space sits at it), an upper bound.
+#: The record's learned-only GPU switches, dropped from the CPU-node items (header).
+ANALYTIC_GPU_ONLY = (["--compile"], ["--set", "flow_cuda_graph=True"])
+
+
+def _strip_gpu_only(args):
+    """`args` without the learned-only GPU switches (each removed where it occurs)."""
+    a = list(args)
+    for tokens in ANALYTIC_GPU_ONLY:
+        for i in range(len(a) - len(tokens), -1, -1):
+            if a[i:i + len(tokens)] == tokens:
+                del a[i:i + len(tokens)]
+    return a
+
+
+def stage_ANALYTIC(variant="ANALYTIC"):
+    """The analytic arms on the record's Panda and iiwa rows, both clip ladders."""
+    source = {"ANALYTIC": "REMEASURE", "ANALYTIC_NLOPT": "REMEASURE_NLOPT"}[variant]
+    stem = {"ANALYTIC": "ANALYTIC", "ANALYTIC_NLOPT": "ANALYTICN"}[variant]
+    items = []
+    for ladder, extra in ANALYTIC_LADDERS.items():
+        token = stem + ladder
+        for it in stage_REMEASURE(source):
+            if it["robot"] not in ANALYTIC_ARMS:
+                continue
+            a = _strip_gpu_only(it["args"])
+            a[a.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
+            i = a.index("--tag")
+            old = a[i + 1]
+            new = old.replace("sc_REMEASURE_", f"sc_{token}_", 1)
+            a[i + 1] = new
+            a += extra
+            task, start, solver = (a[a.index(k) + 1] for k in ("--task", "--start", "--solver"))
+            shards = int(a[a.index("--shard") + 1].split("/")[1]) if "--shard" in a else 1
+            n_arms = len(ANALYTIC_ARMS[it["robot"]].split(","))
+            per_cell = (n_arms * 180.0 if solver == "nlopt"
+                        else ANALYTIC_CELL_S[(it["robot"], task, start, solver)])
+            seconds = 480 * per_cell / shards + REMEASURE_ITEM_OVERHEAD_S
+            items.append(dict(it, args=a, id=it["id"].replace(old, new, 1), seconds=seconds,
+                              order=it["order"] + (0 if ladder == "" else 1000)))
+    return items
+
+
+def stage_ANALYTIC_CPP():
+    """The default clip ladder's IPOPT / SNOPT items again on the C++ backend (Thomas,
+    2026-10-13: measure both backends). Tag token ANALYTICC; one extra --set. The tight ladder,
+    NLopt and AL-SVGD (which never calls this map: it has its own torch twins) stay on the
+    Python reference. Needs cluster/build_cpp_job.sh's sentinel (submit_bench.sh checks)."""
+    items = []
+    for it in stage_ANALYTIC("ANALYTIC"):
+        a = list(it["args"])
+        i = a.index("--tag")
+        if not a[i + 1].startswith("sc_ANALYTIC_"):
+            continue  # the tight ladder
+        old = a[i + 1]
+        a[i + 1] = old.replace("sc_ANALYTIC_", "sc_ANALYTICC_", 1)
+        a += ["--set", "analytic_backend=cpp"]
+        items.append(dict(it, args=a, id=it["id"].replace(old, a[i + 1], 1)))
+    return items
+
+
+def stage_ANALYTIC_SMOKE():
+    """2 targets x 2 guesses at 60 s: every robot x task x protocol x solver x ladder, one item
+    each, unsharded -- the cluster pipeline end to end before the real stages."""
+    items = []
+    for it in stage_ANALYTIC("ANALYTIC") + stage_ANALYTIC("ANALYTIC_NLOPT") + stage_ANALYTIC_CPP():
+        a = list(it["args"])
+        if "--shard" in a:
+            k = a.index("--shard")
+            if a[k + 1].split("/")[0] != "0":
+                continue
+            del a[k:k + 2]
+        for flag, value in (("--targets", "2"), ("--guesses", "2"), ("--wall-time", "60")):
+            a[a.index(flag) + 1] = value
+        i = a.index("--tag")
+        tag = a[i + 1].replace("sc_ANALYTIC", "sc_ANALYTICSMOKE", 1)
+        a[i + 1] = tag
+        items.append(dict(it, args=a, id=tag, seconds=4 * 60 * 3 + REMEASURE_ITEM_OVERHEAD_S))
+    return items
+
+
+#: The analytic arm under AL-SVGD: R20's `pin2` items (the fielded pin, clearance row, crc venv,
+#: PROCS=2) on the Panda and iiwa contexts with --arms swapped and the kernel named, as the
+#: analytic arm must (`cz` is learned-only): `pin2kx` its own normalised decision vector, `pin2kq`
+#: the configuration (Thomas, 2026-10-12: run both). Both clip ladders (tags ANALYTICS /
+#: ANALYTICST). Submit with DRAKE_ENV=crc PROCS=2; R20's IPOPT twins are the record's PAPER rows.
+ANALYTIC_SVGD_KERNELS = {"pin2kx": "x", "pin2kq": "q"}
+#: MEASURED mean seconds per cell, summed over the run's analytic arms, per (robot, task, start):
+#: laptop smokes 2026-10-13 (8 cells, 30 s clock, kernels x and q alike), a clock stop charged the
+#: full 180 s. A failing swarm never stalls on a feasible objective, so it runs to the clock: Panda
+#: `analytic8` (the native 8-branch pathology) is nearly all of it. Replaced a flat 5 s (~5x low).
+ANALYTIC_SVGD_CELL_S = {
+    ("panda", "mug", "native"): 144.0, ("panda", "mug", "paired"): 77.0,
+    ("panda", "pose", "native"): 183.0, ("panda", "pose", "paired"): 116.0,
+    ("iiwa", "mug", "native"): 4.0, ("iiwa", "mug", "paired"): 4.5,
+    ("iiwa", "pose", "native"): 2.2, ("iiwa", "pose", "paired"): 2.4,
+}
+
+
+def stage_ANALYTIC_SVGD():
+    items = []
+    for it in stage_SVGD("SVGD_R20"):
+        a = list(it["args"])
+        tag = a[a.index("--tag") + 1]
+        if it["robot"] not in ANALYTIC_ARMS or not tag.endswith("_pin2"):
+            continue
+        for ladder, extra in ANALYTIC_LADDERS.items():
+            for variant, kernel in ANALYTIC_SVGD_KERNELS.items():
+                b = list(a)
+                b[b.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
+                k = b.index("svgd_kernel=cz")
+                b[k] = f"svgd_kernel={kernel}"
+                new = tag.replace("sc_SVGD_R20_", f"sc_ANALYTICS{ladder}_", 1)[:-len("_pin2")] \
+                    + f"_{variant}"
+                b[b.index("--tag") + 1] = new
+                b += extra
+                shards = int(b[b.index("--shard") + 1].split("/")[1]) if "--shard" in b else 1
+                items.append(dict(it, args=b, id=it["id"].replace(tag, new, 1),
+                                  seconds=480 * ANALYTIC_SVGD_CELL_S[
+                                      (it["robot"], "mug" if "mug" in tag else "pose",
+                                       "paired" if "paired" in tag else "native")] / shards
+                                  + REMEASURE_ITEM_OVERHEAD_S,
+                                  order=it.get("order", 0) + (0 if ladder == "" else 1000)))
+    return items
+
+
+def stage_ANALYTIC_SVGD_SMOKE():
+    """Shard 0 of each ANALYTIC_SVGD run at 2 x 2 cells and 60 s, unsharded: 32 items."""
+    out = []
+    for it in stage_ANALYTIC_SVGD():
+        a = list(it["args"])
+        k = a.index("--shard")
+        if a[k + 1].split("/")[0] != "0":
+            continue
+        del a[k:k + 2]
+        for flag, value in (("--targets", "2"), ("--guesses", "2"), ("--wall-time", "60")):
+            a[a.index(flag) + 1] = value
+        i = a.index("--tag")
+        a[i + 1] = a[i + 1].replace("sc_ANALYTICS", "sc_ANALYTICSMOKES", 1)
+        out.append(dict(it, args=a, id=a[i + 1], seconds=4 * 60 * 2 + REMEASURE_ITEM_OVERHEAD_S))
+    return out
+
+
+def analytic_allotment():
+    print("ANALYTIC ALLOTMENT -- the analytic arms, both clip ladders, per robot x solver.")
+    print("  Seconds per cell: MEASURED on the laptop 2026-10-13 (ANALYTIC_CELL_S, ANALYTIC_SVGD_CELL_S;")
+    print(f"  clock stops charged 180 s); NLopt charged the clock; +{REMEASURE_ITEM_OVERHEAD_S:g} s per item.")
+    print(f"\n  {'stage':<16}{'PROCS':>6}{'runs':>6}{'items':>7}{'solve-h':>9}{'node-h':>8}")
+    for variant in ("ANALYTIC", "ANALYTIC_NLOPT"):
+        its = stage_ANALYTIC(variant)
+        runs = {i["id"].rsplit("_shard", 1)[0] for i in its}
+        secs = sum(i["seconds"] for i in its)
+        procs = ANALYTIC_PROCS[variant]
+        print(f"  {variant:<16}{procs:>6}{len(runs):>6}{len(its):>7}{secs / 3600:>9.1f}"
+              f"{secs / 3600 / procs:>8.1f}")
+    cp = stage_ANALYTIC_CPP()
+    secs = sum(i["seconds"] for i in cp)
+    print(f"  {'ANALYTIC_CPP':<16}{2:>6}{len({i['id'].rsplit('_shard', 1)[0] for i in cp}):>6}"
+          f"{len(cp):>7}{secs / 3600:>9.1f}{secs / 3600 / 2:>8.1f}   (charged as Python: an upper bound)")
+    sv = stage_ANALYTIC_SVGD()
+    secs = sum(i["seconds"] for i in sv)
+    print(f"  {'ANALYTIC_SVGD':<16}{2:>6}{len({i['id'].rsplit('_shard', 1)[0] for i in sv}):>6}"
+          f"{len(sv):>7}{secs / 3600:>9.1f}{secs / 3600 / 2:>8.1f}   (DRAKE_ENV=crc)")
+    sm = stage_ANALYTIC_SMOKE()
+    print(f"  {'ANALYTIC_SMOKE':<16}{2:>6}{len(sm):>6}{len(sm):>7}"
+          f"{sum(i['seconds'] for i in sm) / 3600:>9.1f}{sum(i['seconds'] for i in sm) / 3600 / 2:>8.1f}")
+
+
 def stage_SCREWCHART(wall, targets, guesses, shards, only=None, tag="SCREWCHART", seed=1,
                      starts="paired,native"):
     """The chart ladder on the primary rung: nb_nodes 4 / 6 / 8, IPOPT only.
@@ -5903,6 +6123,86 @@ def selftest():
         print("ok   stage PAPER: 28 logical runs / 224 items, REMEASURE's primary items re-tagged "
               "sc_PAPER_, no GVS / NLopt / controls / Panda IPOPT, Panda SNOPT first")
 
+    ## Stages ANALYTIC / ANALYTIC_NLOPT / ANALYTIC_SMOKE: each item is the record's item for the
+    ## same row with ONLY --arms, the tag and (tight ladder) the two clip --sets changed, so the
+    ## grid and the scene fingerprint pair with the record; Panda and iiwa only; the counts.
+    an_fails = []
+    for variant, source, n_runs, n_items in (("ANALYTIC", "REMEASURE", 32, 256),
+                                             ("ANALYTIC_NLOPT", "REMEASURE_NLOPT", 16, 384)):
+        its = stage_ANALYTIC(variant)
+        src = {it["id"]: it for it in stage_REMEASURE(source)}
+        runs = {it["id"].rsplit("_shard", 1)[0] for it in its}
+        if len(runs) != n_runs or len(its) != n_items or len({i["id"] for i in its}) != len(its):
+            an_fails.append(f"{variant}: {len(runs)} runs / {len(its)} items, expected "
+                            f"{n_runs} / {n_items}, unique ids")
+        for it in its:
+            a = it["args"]
+            tag = a[a.index("--tag") + 1]
+            m = re.match(r"sc_(ANALYTICN?)(T?)_", tag)
+            if m is None or it["robot"] not in ANALYTIC_ARMS:
+                an_fails.append(f"{it['id']}: bad tag or robot")
+                continue
+            twin = src.get(it["id"].replace(m.group(0), "sc_REMEASURE_", 1))
+            if twin is None:
+                an_fails.append(f"{it['id']}: no REMEASURE twin")
+                continue
+            extra = ANALYTIC_LADDERS[m.group(2)]
+            b = _strip_gpu_only(twin["args"])
+            b[b.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
+            b[b.index("--tag") + 1] = tag
+            if a != b + extra or it["script"] != twin["script"] or it["env"] != twin["env"]:
+                an_fails.append(f"{it['id']} is not its REMEASURE twin modulo arms / tag / ladder "
+                                f"/ the GPU-only switches")
+            if "--compile" in a or "flow_cuda_graph=True" in a or "svgd" in a:
+                an_fails.append(f"{it['id']}: a GPU-only switch on a CPU-node item")
+    sm = stage_ANALYTIC_SMOKE()
+    cpp = stage_ANALYTIC_CPP()
+    if len(cpp) != 128 or len({i["id"].rsplit("_shard", 1)[0] for i in cpp}) != 16 or any(
+            i["args"][-2:] != ["--set", "analytic_backend=cpp"] or "analytic_clip_stepback=1e-08"
+            in i["args"] or not i["id"].startswith("sc_ANALYTICC_") for i in cpp):
+        an_fails.append(f"ANALYTIC_CPP: {len(cpp)} items, expected 128 (16 runs), default ladder, "
+                        f"the one --set")
+    if len(sm) != 64 or any("--shard" in i["args"] for i in sm) or \
+            any(not i["id"].startswith("sc_ANALYTICSMOKE") for i in sm) or \
+            any("--compile" in i["args"] or "flow_cuda_graph=True" in i["args"] for i in sm):
+        an_fails.append(f"ANALYTIC_SMOKE: {len(sm)} items (expected 64, unsharded, sc_ANALYTICSMOKE*, "
+                        f"no GPU-only switch)")
+    if ALL_ARMS["iiwa"] != "learned,numerical":
+        an_fails.append("ALL_ARMS changed: the old stages' manifests would not regenerate")
+    r20 = {it["id"]: it for it in stage_SVGD("SVGD_R20")}
+    asv = stage_ANALYTIC_SVGD()
+    if len(asv) != 2 * 4 * 24 * 2 * 2 or len({i["id"] for i in asv}) != len(asv):
+        an_fails.append(f"ANALYTIC_SVGD: {len(asv)} items, expected {2 * 4 * 24 * 2 * 2}, unique")
+    for it in asv:
+        a = it["args"]
+        tag = a[a.index("--tag") + 1]
+        m = re.match(r"sc_ANALYTICS(T?)_(.+)_(pin2k[xq])$", tag)
+        if m is None:
+            an_fails.append(f"{it['id']}: bad tag")
+            continue
+        twin_tag = f"sc_SVGD_R20_{m.group(2)}_pin2"
+        twin = r20.get(it["id"].replace(tag, twin_tag, 1))
+        if twin is None:
+            an_fails.append(f"{it['id']}: no R20 pin2 twin")
+            continue
+        b = list(twin["args"])
+        b[b.index("--arms") + 1] = ANALYTIC_ARMS[it["robot"]]
+        b[b.index("svgd_kernel=cz")] = f"svgd_kernel={ANALYTIC_SVGD_KERNELS[m.group(3)]}"
+        b[b.index("--tag") + 1] = tag
+        if a != b + ANALYTIC_LADDERS[m.group(1)] or it["env"] != twin["env"] or \
+                "svgd_collision_backend=clearances" not in a:
+            an_fails.append(f"{it['id']} is not its R20 pin2 twin modulo arms / tag / kernel / ladder")
+    if len(stage_ANALYTIC_SVGD_SMOKE()) != 32:
+        an_fails.append("ANALYTIC_SVGD_SMOKE is not 32 items")
+    for msg in an_fails[:12]:
+        print(f"FAIL stage ANALYTIC: {msg}")
+    fails += len(an_fails)
+    if not an_fails:
+        print("ok   stages ANALYTIC / ANALYTIC_NLOPT / ANALYTIC_CPP / ANALYTIC_SMOKE / ANALYTIC_SVGD(_SMOKE): "
+              "32 / 16 / 16 / 64 / 32 / 32 runs, the record's Panda and iiwa items (svgd: R20's pin2) with only the "
+              "arms, tag, kernel and clip ladder changed (and, on the CPU-node stages, the "
+              "learned-only GPU switches dropped)")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -5928,6 +6228,8 @@ def main():
                                  "SVGD_R15", "SVGD_R16", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT",
                                  "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
                                  "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21",
+                                 "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
+                                 "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -5993,6 +6295,9 @@ def main():
         raise SystemExit(selftest())
     if args.allotment and args.stage == "PAPER":
         paper_allotment()
+        raise SystemExit(0)
+    if args.allotment and args.stage.startswith("ANALYTIC"):
+        analytic_allotment()
         raise SystemExit(0)
     if args.allotment and args.stage in SVGD_STAGES:
         svgd_allotment()
@@ -6074,6 +6379,12 @@ def main():
              ## rows in their SVGD_STAGE_CONTEXT, and the smokes' shape is SVGD_SMOKE_SHAPE.
              **{s: (lambda s=s: stage_SVGD(s)) for s in SVGD_STAGES},
              "PAPER": lambda: stage_PAPER(),
+             "ANALYTIC": lambda: stage_ANALYTIC("ANALYTIC"),
+             "ANALYTIC_NLOPT": lambda: stage_ANALYTIC("ANALYTIC_NLOPT"),
+             "ANALYTIC_CPP": lambda: stage_ANALYTIC_CPP(),
+             "ANALYTIC_SMOKE": lambda: stage_ANALYTIC_SMOKE(),
+             "ANALYTIC_SVGD": lambda: stage_ANALYTIC_SVGD(),
+             "ANALYTIC_SVGD_SMOKE": lambda: stage_ANALYTIC_SVGD_SMOKE(),
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
