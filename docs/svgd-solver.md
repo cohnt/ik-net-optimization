@@ -2100,8 +2100,31 @@ outer steps (10x the pin's on the w >= 1 rungs) the real figure is 8-12 h on 4 n
 R22's pace; no restage (`latent_cost_weight`, `latent_trust_region` and `svgd_gn_lm` all exist in
 the staged 7812715).
 
-**R28 (the correction regulariser) is pre-registered after R26 and R27 read**, since it runs on
-their better term.
+### Stage SVGD_R28, part 1: the correction regulariser at the pin (pre-registered 2026-10-14 night, before any cell)
+
+**What it tests.** The weight-10 penalty on `q_c` is a STATED part of the learned formulation
+(Thomas 2026-09-02: the draft says `q_c ~ 0` without saying how, and the penalty imposes it), so
+this is not a strip but a dose ladder of a formulation setting, read under svgd. Part 1 runs the
+ladder at the pin alone; **part 2 (the ladder on R26 / R27's better density term, as a declared
+second factor, and the zero-centred `q_c` prior replacing penalty and box, which needs code and
+Thomas's call) is pre-registered after those rounds read.** `correction_cost_weight` is in the
+pin's own `--set` list (10.0), so each variant REPLACES it; the reported cost excludes the penalty
+by name on every solver, so the cost column is comparable across the ladder. At `w_c = 0` the
+program adds no `CorrectionCost` binding at all (the `> 0` guard) and `q_c` is held only by its
++-0.1 box.
+
+R22's shape: the learned arm, the record's sixteen rows, 480 cells, 180 s, seed 1, the V3 pin, 24
+shards; read against `pin2` (= `w_c = 10`, the control) on the same cells and the IPOPT twin.
+
+| token | override | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- |
+| `qc0` | `correction_cost_weight=0` | with no penalty the correction is a free +-0.1 rad per joint added to the chart's output: the task rows and the joint-centering cost can use it directly, so the learned arm becomes, within the box, a reparameterised joint-space arm (the pre-registered flag of the campaign); the shared objective (joint centering) can fall because the box gives it 7 extra directions | `median_correction_inf` and `correction_binding` (how much of the box solutions use; pin: `|q_c|` ~2e-5, 0 on the box), cost on shared cells, feasible count, `z_norm`, residual | `|q_c|` median 0.03-0.1 with a large fraction on the box; cost DOWN 5-15% (the extra freedom), success unchanged; `z` barely moves (the correction absorbs the task, not the latent) | cost down with `|q_c|` on the box -> the penalty is what keeps the learned arm from solving in joint space through the correction: it earns its place for the formulation's meaning, not for success, and the cost gain is reported as what the box buys, never adopted; cost within noise with `|q_c|` still ~0 -> the penalty is doing nothing the task does not already do, and part 2's prior question gains weight |
+| `qc1` | `correction_cost_weight=1` | one decade below the pin: the penalty's pull against the joint-centering cost (weight 1) is level, so the solver trades the two | as `qc0` | `|q_c|` ~1e-3 to 1e-2, cost within noise or -0 to -5% | the ladder's monotonicity in `|q_c|` and cost is the mechanism's signature; a rung within noise on cost with `|q_c|` an order of magnitude larger than the pin's is a question for Thomas (the formulation's `q_c ~ 0` has no stated tolerance) |
+| `qc100` | `correction_cost_weight=100` | one decade above: `q_c` pinned harder, the arm closer to the chart's bare output; cost up if the correction was doing work | as `qc0` | `|q_c|` ~2e-6, cost within noise (the correction does no work at the pin), outer steps unchanged | within noise -> the correction is inert at the record's solutions and 10 stands as the stated value; cost up -> the correction earns its place in the formulation (what `q_c` buys over eq. (4)'s `q_c = 0` arm, the open item in CLAUDE.md) |
+
+**Allotment.** 3 variants x 16 rows = 48 runs, 1152 items; the tool's ~45 node-h, R22's pace
+~4 h on 4 nodes. Local parse smoke (2 Panda grasp native cells, 60 s) of `w_c` 0 and 100 (never
+run under svgd; 1 likewise) before the manifest. No new code; runs on either staged tree.
 
 ### Stage SVGD_R27: the flow as an exact density (phase 3 / 4; pre-registered 2026-10-14 night, before any cell; code ac4f5c2)
 
