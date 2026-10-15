@@ -1050,6 +1050,19 @@ cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_
 
 ## R23 (branch `svgd-tune`, 2026-10-14): the phase-1 conditioning exceptions at the pin
 
+**Finished 2026-10-15 05:33 EDT (9.9 h on 4 nodes), 1144 of 1152 items. Eight items died with a
+segmentation fault (status 139) and were re-queued as a mop-up on the OLD tree (jobs 5932386-87,
+two nodes, 05:41) before the restage.** All eight are screw-arm `lm1` shards (grasp native 11 / 16 /
+19 of 24, pose native 4 / 12, pose paired 4 / 5 / 9), dying 57 s to 1727 s into the item with nothing
+in the log after "warmed up the svgd step" (no Python traceback: the crash is in C++); every other
+R23 item of those workers ran cleanly before and after. With R22's one segfault (screw pose native
+`T0p1`) that is nine of nine segfaults in this push on the screw arm, eight of them under
+`svgd_gn_lm=1`. Mechanism not yet established; a deterministic crash would repeat in the mop-up at
+the same cell, so the mop-up doubles as the reproduction test. The restage watcher was stopped and
+restarted waiting for 5924933 and 5932386-87 (`~/.cache/learned-ik-svgd-tune/restage_watch.sh`);
+the R24 / R26 / R28 holds are untouched. Until the mop-up lands the three screw `lm1` rows have 420
+/ 440 / 420 of 480 cells and are read as incomplete.
+
 **Submitted 2026-10-14 18:25 EDT on Thomas's word (*"Queue them up. No wasted cluster compute time."*): jobs 5923288-5923291, four nodes, `DRAKE_ENV=crc PROCS=2`, staged 7812715, manifest md5 `8fe92f91`, queued behind R22 so the nodes hand over without a gap.** Pre-registration: `docs/svgd-solver.md`, "Stage SVGD_R23". Stage `SVGD_R23` is R22's shape (`SVGD_PINNED_V2`, the four record contexts,
 480 cells at 180 s on seed 1, graphed, the lifted step cap, the clearance row, 24 shards, PROCS=2,
 learned arm only, no joint-space set) with one override per variant:
