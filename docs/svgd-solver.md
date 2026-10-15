@@ -1993,6 +1993,40 @@ What the screen says against the predictions, before the 480-cell round:
 Manifest `cluster/manifest_stageSVGD_R23.txt` (48 runs, 1152 items: `ident`, `lm1`, `lm100` on
 the sixteen rows) was generated after this table was written; it is submitted on Thomas's word.
 
+### Stage SVGD_R24: tuning wall and cost at fixed success (pre-registered 2026-10-14 evening, before any manifest)
+
+**What it is.** Phase-2's last round: the settings that R22 / R23 leave standing, each pushed one
+step from the pin to find out whether the pin's VALUE earns its place or only the piece. Every
+variant is a single `--set` on the pin **`SVGD_PINNED_V3`** (= V2 without the removed
+`svgd_metric_temperature=on`; bit-identical to V2, and identical on the staged cluster tree, where
+that option's default is `on`), the learned arm, the record's sixteen rows, R22's shape, read
+against R20's `pin2` on the same cells and the IPOPT twin. No joint-space items. Success is at
+the ceiling, so every rule below reads cost / wall / feasible / steps / residual with the push's
+noise band, and a variant that moves wall or cost by less than the band on 16 rows is reported
+inert and the pin's value stands with its reason.
+
+| token | override | what it tests | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `N16`, `N32` | `svgd_n=16`, `svgd_n=32` | the swarm size (64), the wall lever | the step is GPU-batched over N, but the collision row (clearances, 92-96% of a step at N = 64-256 before the batched row; still the largest share) and the dual check scale with N, so wall per outer step falls with N; the latent kernel keeps the swarm on the manifold at any N (R14 / R18: N does not add to `cz`); the selection picks the best feasible particle, so fewer particles = a smaller pool, cost up slightly and the paired start carried by fewer draws | ms per outer step, outer steps, feasible count (scaled: fraction of N), cost, `n_resampled` | wall 0.4-0.7x at N 16, 0.6-0.85x at N 32; cost +0-5%; success unchanged (R-early: N 1-256 within a cell at V1); feasible fraction unchanged | N 32 within the cost band and wall <= 0.85x on >= 12 rows -> a tuning adoption question for Thomas (the pin's N is 64 for no measured reason beyond "works"); cost outside the band on any rigid row -> 64 earns its place as the selection pool |
+| `rho1e6` | `svgd_rho=1e6` | the penalty (1e5), one decade further along the lever that bought the record's cost (1e3 -> 1e5) | with the SVN metric a larger rho costs no conditioning (the metric absorbs `rho J^T J`), only churn: the PHR active set hardens, the dual step `alpha = rho` moves multipliers faster, particles overshoot the rows more and are redrawn more; the objective is weighed less against the rows, so cost may fall again (as 1e3 -> 1e5 did) or saturate | cost, `n_resampled`, residual (should fall ~10x), `lam_inf_max` / `mu_inf_max` (box at 1e4 bites harder), feasible count | cost within noise (the lever saturated at 1e5) or -0 to -5%; resamples up 2x; residual 1e-6 | cost <= 0.95x on >= 12 rows at no success / wall loss -> a question for Thomas (and R26-R28's structure then runs at 1e6); within noise -> 1e5 stands as the saturation point; resamples > +3 per cell or any row losing cells -> 1e5 earns its place |
+| `pat2`, `pat3` | `svgd_stop_patience=2`, `=3` | the stall patience (5): of the 8-19 median outer steps per cell, 5 are the stall itself | the stop fires when the best feasible objective has not improved by `svgd_stop_rel` for `patience` checks (then the float64 re-check); a shorter patience saves (5 - p) outer steps on every cell and risks stopping during a plateau the swarm would have left | outer steps (prediction: exactly -3 / -2 medians), wall, cost (the price of stopping early), `n_recheck_failures` | wall 0.7-0.85x (`pat2`), 0.8-0.9x (`pat3`); cost +0-3%; success unchanged | `pat3` (or `pat2`) within the cost band on all 16 rows with wall <= 0.85x on >= 12 -> adoption question; cost outside the band anywhere -> 5 earns its place as the plateau guard |
+| `alpha0p1`, `alpha10`, `alpha0` | `svgd_dual_lr=1e4`, `=1e6`, `=0` (the dual step; default `None` = rho, the exact PHR update) | the dual-ascent step: declared "pending the alpha ladder" on 2026-10-09 and never swept | `alpha = rho` is the method-of-multipliers step that makes the AL's stationary point the KKT point in one shot per check; alpha < rho converges the multipliers geometrically slower (more outer steps to the same residual), alpha > rho overshoots them (oscillation, more resamples); **`alpha = 0` is the pure quadratic penalty**, whose minimiser violates the rows by `|lam*| / rho` = 1e-3 to 1e-1 at the record's multipliers (1e2-1e4) against the 1e-4 gate, so it should fail most cells -- the multipliers earning their place in one row | outer steps, residual, `lam_inf_median` (0 by construction under `alpha0`), `n_resampled`, success | `alpha0p1`: steps +2 to +5, cost within noise; `alpha10`: resamples up, cost within noise or worse; **`alpha0`: success collapses on the task-row-bound cells (grasp first)** | `alpha0` losing cells on every row -> the multipliers earn their place (phase 2's cleanest "why"); `alpha0p1` / `alpha10` within noise -> alpha = rho is not a knob and stays implied (the option could go); either beating the pin on cost at no wall loss -> question |
+| `floor1e-3`, `floor0p2`, `kz` | `svgd_bandwidth_floor=0.001`, `=0.2`, `svgd_kernel=z` | the c x z bandwidth rule and its floor (0.05), which R20's record shows binding on the pose task's c block (Panda 9-11% of cells, soft PCS 98-99%) and nowhere else | per block `h = max(floor^2, med^2 / log N)`; on the pose task every particle conditions near one target, the c-spread is below the floor and the c factor is held flat by it. `floor1e-3` lets the median rule run (a sharper c kernel on pose: more repulsion in c), `floor0p2` holds the c factor flat on far more cells (grasp rows too, where the c-spread is 0.1-0.3), and `kz` drops the c factor altogether (the latent kernel alone, R14's `kz` at the pin's rho) | `bandwidths` (the floor's binding fraction per block), `repulsion_ratio_median`, `feasible_q_spread`, feasible count, cost | `kz` ~ pin on the pose rows (the floor already makes the c factor ~1 there) and within noise on grasp; `floor1e-3` within noise on grasp, pose rows: repulsion share up, feasible count down a few; `floor0p2` within noise | `kz` within noise on all 16 -> **the c factor earns nothing and `cz` is simplified to `z`** (one bandwidth, no floor question on pose; a question for Thomas since `cz` was his sweep's winner at rho 1e3); the floor variants say whether 0.05 is a value or an accident |
+
+**Not proposed.** `svgd_lr` (0.3): a damped Newton fraction, chosen by the 2026-10-10 screen at
+rho 1e3; a ladder at the pin is a numerical knob with no structural question and R23's delta
+ladder covers the same axis (how far the objective directions move per step). `svgd_stop_rel`
+(1e-3): paired with the patience, one of the two is enough. `svgd_recheck_topk` (10): an execution
+setting of the gate-edge rule. `svgd_inner_iters` (K): not re-proposed.
+
+**Allotment.** 11 variants x 16 rows = 176 runs, 4224 items; the tool's figure (5 s per cell +
+180 s per item) ~165 node-h, R22's measured pace (1632 items in 5.5 h on 4 nodes) ~14 h on 4 nodes;
+`alpha0` may run its failing cells to the clock (16 rows x up to 480 x 180 s = 48 node-h worst),
+which the cap rule then reads as a result at the fielded clock. Local smoke of every value never
+run before (`svgd_n` 16 / 32 at the pin, rho 1e6, patience 2 / 3, the three alpha values, the two
+floors) on 2 Panda pose cells each before the manifest; `kz` ran in R14. No restage: every option
+exists in the staged 7812715 and V3 omits only a setting whose staged default is the pin's value.
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each
