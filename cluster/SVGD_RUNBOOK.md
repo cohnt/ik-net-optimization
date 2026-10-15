@@ -982,7 +982,13 @@ removed `svgd_metric_temperature=on` (v2 pin) and would fail loudly on the new t
    `generic_program.py`, and that >= 4 exported checkpoints remain; only then `scontrol release`
    on the eight held jobs, scp + md5 of the R27 manifest, and `DRAKE_ENV=crc PROCS=2
    submit_bench.sh manifest_stageSVGD_R27.txt 4`. Any failed check leaves the holds in place.
-3. Expected order on the nodes: R23 -> R22 mop-up -> (restage, minutes) -> R24 -> R26 -> R27.
+3. Expected order on the nodes: R23 -> R22 mop-up -> (restage, minutes) -> R24 -> R26 -> R27 -> R28.
+
+**2026-10-15 00:01 EDT: the laptop rebooted (an OOM, not this session's: only two idle ssh-polling
+scripts were mine), which wiped the tmpfs scratchpad holding the watchers and the staging clone.
+Rebuilt at 00:10 under `~/.cache/learned-ik-svgd-tune/` (clone at the tip 0ecb1ad, which the
+restage now stamps; `restage_watch.sh`, `release_r28.sh`, their logs), restarted; the cluster
+queue was untouched by the crash (R23 running, every hold in place).**
 
 ## R26 (branch `svgd-tune`, 2026-10-14): the latent prior N(0, I) on z
 
