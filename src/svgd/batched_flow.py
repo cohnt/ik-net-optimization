@@ -168,6 +168,18 @@ class BatchedFlow:
             q = q + self.chart_error_scale * torch.sin(inputs @ self._W + self._b).to(q.dtype)
         return q
 
+    def q_and_logdet(self, c6: Tensor, z: Tensor, qc: Tensor):
+        """`(q [B, ndof], log|det dx/dz| [B])` from ONE network call: the log-det is the
+        FrEIA forward pass's second return, which `q` discards. `q` is `self.q`'s
+        expression; the program's `flow_logdet_weight` term is refused with
+        `chart_error_scale`, so the perturbation is not carried here."""
+        if self.chart_error_scale:
+            raise NotImplementedError("the flow log-det is not defined under chart_error_scale")
+        cond = self.conditioning(c6)
+        output, logdet = self.model(z, c=cond, rev=True)
+        q = output[:, :self.ndof] + qc
+        return q, logdet.reshape(-1).to(q.dtype)
+
     def q_from_vars(self, X: Tensor) -> Tensor:
         """Lumped particles `[c6 | z | q_c]` [B, >= 6 + width + ndof] -> q [B, ndof]."""
         if X.dim() != 2 or X.shape[1] < self.nvars:

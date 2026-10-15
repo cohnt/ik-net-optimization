@@ -359,6 +359,11 @@ class ProgramOptions:
     # gap the draft itself names ("outside the reachable set IKFlow's gradients explode").
     latent_trust_region: float = field(default=None, metadata={"help": "Bound on ||z||; None keeps the per-component box only"})
     latent_cost_weight: float = field(default=0.0, metadata={"help": "Weight on ||z||^2, keeping the latent in the flow's typical set"})
+    ## The other half of the chart's own density (stage R27): with `latent_cost_weight = w`
+    ## the pair is `w (|z|^2/2 + log|det dx/dz|) = -w log p(x | c)` up to a constant. The
+    ## log-det is the FrEIA forward pass's second return, so the term costs one extra
+    ## jacrev row and no second network pass (`MakeFlowInference(with_logdet=True)`).
+    flow_logdet_weight: float = field(default=0.0, metadata={"help": "learned-only: w times log|det dx/dz| of the flow at the decision point; with latent_cost_weight = w the pair is -w log p(x|c), the chart's own density; excluded from the reported cost; on the iiwa the map is 8-wide against 7 joints so this is the joint density of (q, pad)"})
     correction_bound: float = field(default=0.1, metadata={"help": "Half-width of the box on the joint-space correction"})
     ## The trust-region RULE, as an alternative to a per-robot constant. Every robot but the
     ## Panda sizes its region as `round(sqrt(dim_latent) + 1.5, 2)` (iiwa 4.3 by hand, soft
@@ -753,6 +758,18 @@ class ProgramOptions:
         ## else would be a third configuration nobody measured.
         if self.flow_cuda_graph and not self.compile_flow_jacobian:
             raise ValueError("flow_cuda_graph requires compile_flow_jacobian (--compile)")
+        ## The log-det is the density of `flow(c, z)`. Under `lift_q` the configuration is a
+        ## separate variable tied to the flow by an equality, and under `chart_error_scale`
+        ## the map is the flow plus a perturbation whose Jacobian the FrEIA log-det does not
+        ## carry: under either the term would not be the density it is named for.
+        if not float(self.flow_logdet_weight) >= 0.0:
+            raise ValueError(f"flow_logdet_weight must be >= 0, got {self.flow_logdet_weight!r}")
+        if self.flow_logdet_weight > 0.0 and self.lift_q:
+            raise ValueError("flow_logdet_weight > 0 is refused under lift_q (the log-det is "
+                             "the density of flow(c, z), not of the lifted q)")
+        if self.flow_logdet_weight > 0.0 and self.chart_error_scale:
+            raise ValueError("flow_logdet_weight > 0 is refused with chart_error_scale != 0 "
+                             "(the perturbed chart's log-det is not FrEIA's)")
         if self.analytic_branches not in (4, 8):
             raise ValueError(f"analytic_branches must be 4 or 8, got {self.analytic_branches}")
         if self.analytic_backend not in ("python", "cpp"):
@@ -825,7 +842,8 @@ ORIENTATION_ERROR_FORMS = ("rpy", "rpy_boxed")
 # the penalty was per instance because the compiled thing was per instance.)
 
 
-def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.0):
+def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.0,
+                      with_logdet=False):
     """`vars -> (q, q)`, the shape `jacrev(..., has_aux=True)` wants.
 
     Returning q twice is what lets one reverse pass yield both dq/dvars and q, instead of
@@ -840,6 +858,13 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
     dose-response experiment: the Panda's 3.8 mm chart pushed through the iiwa's
     16.6-64 mm regime). It is a function of the conditioning pose and latent only, so the
     correction's analytic identity block in the Jacobian is untouched.
+
+    `with_logdet` (only when `flow_logdet_weight > 0`) returns `y = [q, log|det dx/dz|]`
+    in place of `q`, the log-det being the FrEIA call's second return (the reverse map's,
+    summed over the coupling blocks), which the default path discards. It is a STRUCTURAL
+    flag rather than an always-on extra row: an `ndof + 1`-row jacrev is not bit-identical
+    to the `ndof`-row one in its q rows (~1e-14), and every run without the term must stay
+    exactly what it was.
     """
     if chart_error_scale:
         # Explicit device="cpu": ikflow installs a global default-device override that
@@ -854,6 +879,11 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
         c, z, correction = vars[:7], vars[7:7 + width], vars[7 + width:]
         c_torch = torch.cat(
             [c.unsqueeze(0), torch.zeros((1, 1), dtype=vars.dtype, device=device)], dim=1)
+        if with_logdet:
+            output, logdet = nn_model(z.unsqueeze(0), c=c_torch, rev=True)
+            y = torch.cat([output[0, :num_arm_dof] + correction,
+                           logdet.reshape(1).to(output.dtype)])
+            return y, y
         output, _ = nn_model(z.unsqueeze(0), c=c_torch, rev=True)
         q = output[0, :num_arm_dof] + correction
         if chart_error_scale:
@@ -936,13 +966,15 @@ class GraphedFlowCall:
         return tuple(t.clone() for t in self.static_out)
 
 
-def _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale):
+def _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet=False):
+    ## `with_logdet` changes the function's output, so it must key the compiled-jacrev and
+    ## CUDA-graph caches: without it one variant would be handed the other's graph.
     return (id(nn_model), width, num_arm_dof, str(device),
-            next(nn_model.parameters()).dtype, float(chart_error_scale))
+            next(nn_model.parameters()).dtype, float(chart_error_scale), bool(with_logdet))
 
 
 def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_error_scale=0.0,
-                    cuda_graph=False):
+                    cuda_graph=False, with_logdet=False):
     """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked, and
     replayed as a CUDA graph on top of that if asked.
 
@@ -950,11 +982,12 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
     which 13 reach the network -- and the measurements behind that are in CLAUDE.md.
     """
     jacobian_gen = torch.func.jacrev(
-        MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale),
+        MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale,
+                          with_logdet=with_logdet),
         has_aux=True)
     if not compile_it:
         return jacobian_gen
-    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale)
+    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet)
     if key not in _COMPILED_JACOBIANS:
         _COMPILED_JACOBIANS[key] = torch.compile(jacobian_gen)
     if not cuda_graph:
@@ -965,15 +998,18 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
     return _FLOW_GRAPHS[graph_key]
 
 
-def FlowValueGen(nn_model, width, num_arm_dof, device, chart_error_scale=0.0):
+def FlowValueGen(nn_model, width, num_arm_dof, device, chart_error_scale=0.0,
+                 with_logdet=False):
     """`vars -> (q, q)` for the plain forward pass: compiled, under no_grad, CUDA-graphed.
 
     Used only under `flow_cuda_graph`; otherwise the forward pass stays the eager
     `MakeFlowInference`, so a run without the switch is exactly what it always was.
     """
-    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale) + ("value",)
+    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale,
+                   with_logdet) + ("value",)
     if key not in _FLOW_GRAPHS:
-        infer = MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale)
+        infer = MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale,
+                                  with_logdet=with_logdet)
 
         def forward(vars):
             with torch.no_grad():
@@ -1091,6 +1127,9 @@ class IKFlowProgram:
         ## bit-identical, which is what the A/B test checks.
         if self.options.joint_limit_penalty_weight > 0.0 and hasattr(self, "z"):
             self.JointLimitPenaltyCost()
+        ## Learned-only (the latent is the flow's), guarded like the rest.
+        if getattr(self.options, "flow_logdet_weight", 0.0) > 0.0 and hasattr(self, "z"):
+            self.FlowLogDetCost()
 
     def LatentCost(self):
         '''A quadratic pull towards the centre of the latent prior.
@@ -1287,16 +1326,108 @@ class IKFlowProgram:
         if fn is None:
             make = (FlowValueGen if getattr(self.options, "flow_cuda_graph", False)
                     else MakeFlowInference)
-            fn = self._flow_inference = make(
-                self.ik_solver.nn_model, self.ik_solver.network_width,
-                self.num_arm_dof, DEVICE, self.options.chart_error_scale)
+            on = self._FlowLogDetOn()
+            fn = make(self.ik_solver.nn_model, self.ik_solver.network_width,
+                      self.num_arm_dof, DEVICE, self.options.chart_error_scale,
+                      with_logdet=on)
+            if on:
+                fn = self._StashingFlowCall(fn, jacobian=False)
+            self._flow_inference = fn
         return fn
 
     def MakeJacobianGen(self):
-        return FlowJacobianGen(
+        on = self._FlowLogDetOn()
+        gen = FlowJacobianGen(
             self.ik_solver.nn_model, self.ik_solver.network_width, self.num_arm_dof,
             DEVICE, self.options.compile_flow_jacobian, self.options.chart_error_scale,
-            cuda_graph=getattr(self.options, "flow_cuda_graph", False))
+            cuda_graph=getattr(self.options, "flow_cuda_graph", False), with_logdet=on)
+        return self._StashingFlowCall(gen, jacobian=True) if on else gen
+
+    ## ------------------- the flow's log-det (flow_logdet_weight) ------------------- ##
+    ##
+    ## With the term on, the flow call returns `[q, logdet]` (and the jacrev one extra row).
+    ## The robots' VarsToQ / VarsToConfigAndQ call sites are left exactly as they are: they
+    ## receive the first `ndof` rows through `_StashingFlowCall`, which leaves the log-det's
+    ## value and its row `d logdet / d flow_vars` in `_logdet_stash`, and `QAndPose` files
+    ## the stash in its memo beside `(q, pose, cfg)`. So the cost costs no network pass of
+    ## its own -- the rule this file was built around.
+
+    def _FlowLogDetOn(self):
+        return float(getattr(self.options, "flow_logdet_weight", 0.0)) > 0.0
+
+    def _StashingFlowCall(self, fn, jacobian):
+        n = self.num_arm_dof
+
+        def call(vars):
+            a, y = fn(vars)
+            ld = float(y[n].detach())
+            if jacobian:
+                self._logdet_stash = (ld, a[n].detach().cpu().numpy())
+                return a[:n], y[:n]
+            self._logdet_stash = (ld, None)
+            return y[:n], y[:n]
+        return call
+
+    def _FlowVars(self, rpy_vars, autodiff):
+        """`[xyz | wxyz | z | correction]`, the layout `MakeFlowInference` consumes, from the
+        lumped decision vector: the same lumping every robot's `VarsToQ` performs."""
+        width = self.ik_solver.network_width
+        n = self.num_task_vars
+        vars = np.zeros(7 + width + self.num_arm_dof,
+                        dtype=AutoDiffXd if autodiff else np.float64)
+        xyz, quaternion = self.TaskVarsToPose7(
+            rpy_vars[:n], AutoDiffXd if autodiff else float)
+        vars[:3] = xyz
+        vars[3:7] = quaternion
+        vars[7:7 + width] = rpy_vars[n:n + width]
+        vars[7 + width:] = rpy_vars[n + width:n + width + self.num_arm_dof]
+        return vars
+
+    def FlowLogDet(self, vars):
+        """`(value, d value / d flow_vars or None)` at an iterate `QAndPose` has evaluated."""
+        key = self._FlowCacheKey(vars)
+        cache = getattr(self, "_flow_cache", None)
+        if cache is not None:
+            hit = cache.get(key)
+            if hit is not None and len(hit) > 3 and hit[3] is not None:
+                return hit[3]
+        last = getattr(self, "_last_logdet", None)
+        if last is not None and last[0] == key and last[1] is not None:
+            return last[1]
+        raise RuntimeError("FlowLogDet: no log-det memoised at this iterate (QAndPose first, "
+                           "with flow_logdet_weight > 0)")
+
+    def FlowLogDetCost(self):
+        self.flow_logdet_cost = self.prog.AddCost(
+            func=self.EvalFlowLogDetCost, vars=self.lumped_vars)
+        self.flow_logdet_cost.evaluator().set_description("FlowLogDetCost")
+
+    def EvalFlowLogDetCost(self, vars):
+        """`w * log|det dx/dz|` of the flow at the iterate, from `QAndPose`'s memo (no second
+        network pass). The AutoDiffXd row is chain-ruled through the same lumping
+        (`_FlowVars`: rpy -> quaternion) VarsToQ applies to the flow's Jacobian."""
+        self.QAndPose(vars)
+        value, row = self.FlowLogDet(vars)
+        w = float(self.options.flow_logdet_weight)
+        if isinstance(vars[0], AutoDiffXd):
+            flow_vars = self._FlowVars(vars, True)
+            gradients = np.array([v.derivatives() for v in flow_vars])
+            return AutoDiffXd(w * value, w * (row @ gradients))
+        return w * value
+
+    def FlowNegLogDensity(self, lumped):
+        """`|z|^2/2 + log|det dx/dz|` at a plain lumped decision vector: the chart's own
+        `-log p(x | c)` up to a constant (on the iiwa, of `(q, pad)`). One eager forward
+        pass, outside any solve -- a recorded diagnostic, never part of a program, so it
+        neither reads nor fills the memo and never touches a CUDA graph."""
+        flow_vars = self._FlowVars(np.asarray(lumped, dtype=float), False)
+        infer = MakeFlowInference(self.ik_solver.nn_model, self.ik_solver.network_width,
+                                  self.num_arm_dof, DEVICE, with_logdet=True)
+        with torch.no_grad():
+            y, _ = infer(torch.tensor(flow_vars, dtype=self.torch_dtype, device=DEVICE))
+        width = self.ik_solver.network_width
+        z = flow_vars[7:7 + width]
+        return 0.5 * float(z @ z) + float(y[self.num_arm_dof])
 
     def WarmUpJacobian(self):
         """Pay torch.compile's one-off cost outside any timed solve.
@@ -1427,10 +1558,15 @@ class IKFlowProgram:
             q = self.LiftedQ(vars)
             self._last_config = (None, q)
             return q, self.fk(q)
+        ## `_logdet_stash` is filled by the flow call inside VarsToConfigAndQ when
+        ## `flow_logdet_weight > 0` (`_StashingFlowCall`) and stays None otherwise.
         if not getattr(self.options, "share_flow_evaluations", False):
             counts[bucket] += 1
+            self._logdet_stash = None
             cfg, q = self.VarsToConfigAndQ(vars)
-            self._last_config = (self._FlowCacheKey(vars), cfg)
+            key = self._FlowCacheKey(vars)
+            self._last_config = (key, cfg)
+            self._last_logdet = (key, self._logdet_stash)
             return q, self.fk(q)
         cache = getattr(self, "_flow_cache", None)
         if cache is None:
@@ -1439,8 +1575,9 @@ class IKFlowProgram:
         hit = cache.get(key)
         if hit is None:
             counts[bucket] += 1
+            self._logdet_stash = None
             cfg, q = self.VarsToConfigAndQ(vars)
-            hit = (q, self.fk(q), cfg)
+            hit = (q, self.fk(q), cfg, self._logdet_stash)
             cache[key] = hit
             while len(cache) > 4:
                 cache.pop(next(iter(cache)))

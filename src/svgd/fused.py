@@ -152,7 +152,8 @@ _SKIP_CLASS_ATTRS = {("RowSpec", "lb"), ("RowSpec", "ub")}
 ## form is what the stages read and what `copy_constants` rebinds; recording those values
 ## made every mug target a new structure. Ints, bools, strings and None (sizes, slots,
 ## kinds, flags) are always recorded. Adding a float read to a stage means adding its name.
-_READ_FLOATS = {"_w_centering", "w_cfg", "collision_scale", "c", "correction_bound", "mug_height"}
+_READ_FLOATS = {"_w_centering", "w_cfg", "collision_scale", "c", "correction_bound", "mug_height",
+                "_w_logdet"}
 
 
 def _walk(obj, path, tensors, scalars, seen):
@@ -530,11 +531,23 @@ def stage2(tg, X, cfg):
     vmapped -- the particles are independent through the flow, so the Jacobian of the
     batch-sum is the per-particle one) and the kinematics with the frame Jacobians at the
     stage-1 configuration. Identity on joint space. On the analytic arm the closed form's
-    Jacobian the same way, and `kin` carries a fifth entry `(u, J_u)`, the map's aux output."""
+    Jacobian the same way, and `kin` carries a fifth entry `(u, J_u)`, the map's aux output.
+
+    With the flow log-det term (`bp.has_flow_logdet`) the jacrev takes ONE extra row, the
+    log-det's, from the same network call, and a third entry `(ld [N], J_ld [N, n])` is
+    returned for stage 3. Only then: an extra row is not bit-identical in the q rows."""
     bp = tg.bp
     N = X.shape[0]
     aux = None
-    if bp.is_learned:
+    flow_ld = None
+    if bp.is_learned and bp.has_flow_logdet:
+        def f(Xv):
+            cfg_v, ld_v = bp._config_and_logdet(Xv)
+            return torch.cat([cfg_v, ld_v.unsqueeze(1)], dim=1).sum(dim=0), ld_v
+        J, ld = torch.func.jacrev(f, has_aux=True)(X)                       # [ndof + 1, N, n]
+        J_q = J[:bp.ndof].permute(1, 0, 2).contiguous()
+        flow_ld = (ld.detach(), J[bp.ndof].contiguous())
+    elif bp.is_learned:
         J = torch.func.jacrev(lambda Xv: bp._config(Xv).sum(dim=0))(X)     # [ndof, N, n]
         J_q = J.permute(1, 0, 2).contiguous()
     elif bp.is_analytic:
@@ -549,6 +562,8 @@ def stage2(tg, X, cfg):
         kin = bp.kinematics(cfg.detach(), row_jacobians=True)
     if aux is not None:
         kin = kin + (aux,)
+    if flow_ld is not None:
+        return J_q, kin, flow_ld
     return J_q, kin
 
 
@@ -563,17 +578,26 @@ def _scale(tg, out):
     return tg.scale(out)
 
 
-def stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S):
+def stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S, flow_ld=None):
     """The rest of one step: the rows and costs, their scaling, the gradients (closed form
     downstream of the configuration, the flow's `J_q` from stage 2), the kernel, the SVGD
     direction and the GN Hessian (`direction_and_hessian`), and the step (`step_from`). `H`
-    is returned for the solver's eager lambda_max diagnostic at the checks."""
+    is returned for the solver's eager lambda_max diagnostic at the checks. `flow_ld = (ld,
+    J_ld)` is stage 2's third entry, present exactly when the program carries the flow
+    log-det term."""
     bp = tg.bp
     S = ALState(**S)
-    out = bp.assemble(X, cfg, cfg, kin, col_row, col_grad)
+    ld, J_ld = flow_ld if flow_ld is not None else (None, None)
+    out = bp.assemble(X, cfg, cfg, kin, col_row, col_grad, ld=ld)
     h, g, finite, infeas = _scale(tg, out)
     dFc, dFx = bp.cost_gradient_parts(X, cfg)
     gF = _bmv(J_q.transpose(1, 2), dFc) + dFx
+    if J_ld is not None:
+        ## The log-det enters the DRIVE only, with NO block in the SVN metric (option (a)):
+        ## its Hessian would need second derivatives through the flow, and the `|z|^2/2`
+        ## half of the density (`latent_cost_weight`, when set) already enters `H_fx`
+        ## through `LatentCost`'s quadratic.
+        gF = gF + bp._w_logdet * J_ld
     J_h, J_g = tg.row_jacobians_out(out, X, J_q)
     live = live_mask(sc, S)
     pose = pose_jac = None
@@ -688,8 +712,8 @@ def _make_fns(tg, sc, mode):
     def f2(X, cfg):
         return stage2(tg, X, cfg)
 
-    def f3(X, cfg, J_q, kin, col_row, col_grad, S):
-        return stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S)
+    def f3(X, cfg, J_q, kin, col_row, col_grad, S, *flow_ld):
+        return stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S, *flow_ld)
 
     fns = {"s1": f1, "s2": f2, "s3": f3}
     if mode == "eager":
