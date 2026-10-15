@@ -2056,9 +2056,25 @@ both tasks, 180 s; rule: fewer than 6 of 12 solved or 3 or more clock stops = de
 reported from the screen). `lp1`, `lp10` and `lp1notr` go to the sixteen rows after a 2-cell
 parse smoke each.
 
-**Allotment.** 4 variants x 16 rows = 64 runs, 1536 items (R22's shape): the tool's ~60 node-h,
-R22's measured pace ~5 h on 4 nodes; no restage (`latent_cost_weight`, `latent_trust_region` and
-`svgd_gn_lm` all exist in the staged 7812715).
+**Added after the parse smoke, before the manifest (2026-10-14 20:50 EDT): a fifth variant
+`lp0p1`, `latent_cost_weight=0.1`.** The 2-cell smoke (Panda pose native, targets 0-1, 60 s)
+already shows the dose at w = 1 is strong: the selected particle's `|z|` falls from 3.9 (the pin
+on the same two cells) to 0.34 / 0.34 (`lp1`), 0.12 / 0.18 (`lp10`), 0.27 / 0.36 (`lp1notr`),
+against the prior's typical `sqrt(7) = 2.65`; outer steps rise from 4-8 to 85-132 (`lp1`), 68-74
+(`lp10`), 79-81 (`lp1notr`); cost 3.73 / 5.48 against 3.35 / 4.62; feasible particles 44-58 of
+64; 2 / 2 solved everywhere. The mechanism is visible already: at a typical latent the prior is
+worth `|z|^2 / 2 ~ 3.5`, larger than the task cost itself (2-5), so the target's descent along the
+self-motion is dominated by the prior and the stall rule (on the full target) keeps the swarm
+walking toward the prior's MODE at z = 0 rather than its typical set, at 10x the outer steps. The
+prediction "`|z|` down 10-30%" was therefore wrong in size before the round; the round measures
+the dose. The 0.1 rung is the one IPOPT's sweep found helpful on the Panda (CLAUDE.md) and the one
+at which the prior (~0.35 at a typical z) is small against the task cost. Decision rules are
+unchanged, read per rung.
+
+**Allotment.** 5 variants x 16 rows = 80 runs, 1920 items: the tool's ~75 node-h; by the smoke's
+outer steps (10x the pin's on the w >= 1 rungs) the real figure is 10-15 h on 4 nodes rather than
+R22's pace; no restage (`latent_cost_weight`, `latent_trust_region` and `svgd_gn_lm` all exist in
+the staged 7812715).
 
 **R27 (the flow as exact density: `+ w (|z|^2/2 + log|det dq/dz|)`) and R28 (the correction
 regulariser) are pre-registered after R26 reads**, since R27 is read against `lp1` and R28 runs on
