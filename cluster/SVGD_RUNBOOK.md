@@ -943,6 +943,29 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R27 (branch `svgd-tune`, 2026-10-14): the flow as an exact density -- the restage and the queue order
+
+Stage `SVGD_R27` (`ld1` = `flow_logdet_weight=1`; `fd0p1` = `latent_cost_weight=0.1` +
+`flow_logdet_weight=0.1`; `fd1` = `1` + `1`; learned arm, the four record contexts, 24 shards; 48
+runs / 1152 items; manifest md5 `d7e9f817`; pre-registration `docs/svgd-solver.md` "Stage
+SVGD_R27") needs the cluster tree RESTAGED at `00f6b27` (the term is new code, behind
+`flow_logdet_weight`; bit-identical at 0 by the pin test and the term-off graphed smoke). The
+staged `7812715` cannot change while R23 and the R22 mop-up run, because their items `--set` the
+removed `svgd_metric_temperature=on` (v2 pin) and would fail loudly on the new tree. So, 22:47 EDT:
+
+1. `scontrol hold` on the pending R24 (5925276-79) and R26 (5925565-68) jobs -- their v3 items
+   set no removed option and run bit for bit on either tree, but holding them keeps every round on
+   ONE tree.
+2. A local watcher (`scratchpad/restage_watch.sh`, log `restage_watch.log`) polls the queue every
+   10 min; once 5923288-91 and 5924933 are gone it runs `stage_code.sh` from the clone at
+   `00f6b27` (`BRANCH=svgd-tune cluster/make_staging_clone.sh`; the cluster-side `*__step*.pkl`
+   checkpoints survive the rsync's `--delete` by the PROTECT filters), checks `.staged-commit`,
+   that `svgd_metric_temperature` is gone and `flow_logdet_weight` present in the staged
+   `generic_program.py`, and that >= 4 exported checkpoints remain; only then `scontrol release`
+   on the eight held jobs, scp + md5 of the R27 manifest, and `DRAKE_ENV=crc PROCS=2
+   submit_bench.sh manifest_stageSVGD_R27.txt 4`. Any failed check leaves the holds in place.
+3. Expected order on the nodes: R23 -> R22 mop-up -> (restage, minutes) -> R24 -> R26 -> R27.
+
 ## R26 (branch `svgd-tune`, 2026-10-14): the latent prior N(0, I) on z
 
 **Submitted 2026-10-14 21:12 EDT under the standing "Queue them up": jobs 5925565-5925568, four
