@@ -2084,6 +2084,17 @@ regularises is the whole soft subspace, not only its z part; a term that would r
 act on c too (the conditioning pose has no prior in the formulation), so delta stays, with this as
 its reason. `lp1lm0` is not run at 480 cells.
 
+*The pose half, read after the paragraph above was committed (21:05-21:08 EDT): ALIVE.* 6 of 6
+converged, 7-31 outer steps, wall 3.7-12.9 s against the pin's 1.2, feasible particles 20-40 of
+64, redraws 5-26 per cell, `lambda_max` median 2.6e6-1.7e7 (a real Hessian, not the substituted
+identity), `|z|` 0.7-1.4. So the prior DOES fix the gauge where the six pose rows pin `q` (the
+soft subspace is then the (c, z) fibre alone, and `I` on z is enough for the float32 solve), and
+does not where the grasp leaves a self-motion in `q` (the soft subspace gains the self-motion's
+pull-back into (c, z), on which the prior has no hold and delta is the only damping). The variant
+stays off the cluster by the rule (6 clock stops on grasp), and the narrowed claim reads: the
+formulation's prior replaces the damping exactly on the task that has no redundancy left for it
+to damp.
+
 **Allotment.** 4 variants x 16 rows = 64 runs, 1536 items: the tool's ~60 node-h; by the smoke's
 outer steps (10x the pin's on the w >= 1 rungs) the real figure is 8-12 h on 4 nodes rather than
 R22's pace; no restage (`latent_cost_weight`, `latent_trust_region` and `svgd_gn_lm` all exist in
