@@ -1065,6 +1065,26 @@ cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_
 # read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,N16,N32,rho1e6,pat2,pat3,alpha0p1,alpha10,alpha0,floor1em3,floor0p2,kz3
 ```
 
+**Running 2026-10-15 from 07:03 (jobs 5925276-79, restaged 0ecb1ad). The seven remaining `alpha10`
+POSE rows are HELD (Thomas, 15:45 EDT, "Do proposal 1").** The grasp rows finished at 1-5 min per
+shard (`alpha10` 480 / 480 everywhere, resamples 40-60x the pin's). On the pose rows the variant runs
+EVERY cell to the clock: iiwa pose native `alpha10`, first 8 shards, 0 of 128 cells feasible, all
+`wall_clock` at 162 s, ~2300 outer steps and 16k-20k resamples per cell, residual ~1e-3 against the
+1e-4 gate, 43-65 min per shard. Its other seven pose rows (168 shards) would have cost ~15 h of all
+four nodes and pushed R26-R28 back a day for a mechanism one row settles, so the iiwa native row runs
+to completion (24 shards, the 480-cell evidence) and the other seven are skipped by PRE-CLAIMING:
+`mkdir <id>.claim` with an `owner` file reading "HELD by hand ..." for each of the 168 items (a worker
+skips an existing claim; `run_items.sh` lines 225-245). **Consequences**: (1) R24's collection
+reports those 168 items INCOMPLETE and the reporter refuses the seven rows (read `alpha10` on the
+iiwa native row only, per-cell reader); (2) `collect_results.sh --reclaim manifest_stageSVGD_R24`
+clears HELD claims along with crashed ones, so a mop-up for any genuine crash must re-hold them
+first (`grep -l "HELD by hand" *.claim/owner` lists them) unless Thomas wants the full ladder run;
+(3) the mid-run segfault signal is an ORPHANED claim (claims - done - held - 2 x running jobs > 0),
+NOT `state/<manifest>/logs` -- this tree copies worker logs there only when the job ends, so a grep
+over it mid-run reads 0 regardless. Early note for the read: `alpha0` (pure quadratic penalty,
+predicted to collapse) is 480 / 480 with 0 clock stops on every row run so far, so the multipliers'
+place is read on residual.
+
 ## R23 (branch `svgd-tune`, 2026-10-14): the phase-1 conditioning exceptions at the pin
 
 **Finished 2026-10-15 05:33 EDT (9.9 h on 4 nodes), 1144 of 1152 items. Eight items died with a
