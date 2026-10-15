@@ -2044,8 +2044,15 @@ two-joint family rather than a ray. The mechanism is not established; the candid
 batched clearance query on a non-finite float32 configuration between resample checks (the only
 native code the swarm calls per inner step) and a CUDA-graph replay fault, and the first is the
 one a local probe can settle (feed `CollisionEvaluator` a swarm with inf / nan rows on the screw
-arm). Until then every screw-arm round carries the risk of a lost shard, which a mop-up re-run
-recovers at 50%. The three `lm1` screw rows and R22's `T0p1` screw pose native row stay at 22-23
+arm). **The first candidate is refuted locally (2026-10-15 07:30, Thomas's Drake build, which
+carries the same `CalcRobotClearances`)**: `ClearanceEvaluator` on the screw arm's pose and grasp
+scenes, fed every joint in turn and all seven at once at 1e2 to 3.4e38 rad (the float32 range the
+swarm can reach before the resample sees it; non-finite rows never reach Drake, the evaluator
+drops them), returns a finite row and gradient on all 300 evaluations with no fault. So a large
+but finite configuration does not crash the clearance query; what is left is a race or a fault
+that needs the cluster's own wheel, two processes per node and the CUDA-graphed step together,
+which the single-process `faulthandler` run did not reproduce. Until it is found every screw-arm
+round carries the risk of a lost shard, which a mop-up re-run recovers at about 50%. The three `lm1` screw rows and R22's `T0p1` screw pose native row stay at 22-23
 of 24 shards: `lm1` is dead on every criterion with or without them, and `T0p1` is a removed option.
 
 ### Stage SVGD_R24: tuning wall and cost at fixed success (pre-registered 2026-10-14 evening, before any manifest)
