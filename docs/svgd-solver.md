@@ -2071,8 +2071,21 @@ the dose. The 0.1 rung is the one IPOPT's sweep found helpful on the Panda (CLAU
 at which the prior (~0.35 at a typical z) is small against the task cost. Decision rules are
 unchanged, read per rung.
 
-**Allotment.** 5 variants x 16 rows = 80 runs, 1920 items: the tool's ~75 node-h; by the smoke's
-outer steps (10x the pin's on the w >= 1 rungs) the real figure is 10-15 h on 4 nodes rather than
+**The `lp1lm0` screen (laptop, 2026-10-14 20:48-21:05 EDT, grasp half; the pose half ran after
+this was written): DEAD at the pin.** 2 of 6 grasp cells solved and all 6 stopped on the clock
+(556-765 outer steps, 35,000-49,000 redraws per cell, 0-1 feasible particles at stop, the
+substituted identity H on 5 of 6 cells) -- the same signature as R23's `lm0` (0 of 6, 560-617
+steps, 36,000-39,000 redraws) with two cells landing on a feasible particle before the clock. So
+**the prior on z does not replace the Levenberg delta, and the structural claim is narrowed**: the
+prior adds `I` on the z block, which makes the (c, z) block nonsingular in exact arithmetic (no
+fibre direction is purely in c), but a fibre direction whose z component is small keeps a
+curvature of order `|dz|^2`, and the undamped float32 step along it is still enormous. What delta
+regularises is the whole soft subspace, not only its z part; a term that would replace it has to
+act on c too (the conditioning pose has no prior in the formulation), so delta stays, with this as
+its reason. `lp1lm0` is not run at 480 cells.
+
+**Allotment.** 4 variants x 16 rows = 64 runs, 1536 items: the tool's ~60 node-h; by the smoke's
+outer steps (10x the pin's on the w >= 1 rungs) the real figure is 8-12 h on 4 nodes rather than
 R22's pace; no restage (`latent_cost_weight`, `latent_trust_region` and `svgd_gn_lm` all exist in
 the staged 7812715).
 
