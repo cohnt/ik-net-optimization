@@ -963,6 +963,23 @@ to 1.6e-2. Runs on either staged tree (no new code). Allotment: tool 45 node-h, 
 
 ## R27 (branch `svgd-tune`, 2026-10-14): the flow as an exact density -- the restage and the queue order
 
+**Done 2026-10-15 06:33-07:05 EDT, by hand.** The watcher refused at 06:31 (`stage_code.sh`
+counted my one-node diagnostic job 5932481 as a live campaign job of the tree and exited 3; the
+holds stayed). That job had already imported everything it runs, so the restage was forced
+(`FORCE_STAGE=1 bash $CLONE/cluster/stage_code.sh`, clone at 0ecb1ad; the script then sits for
+40+ min in its post-rsync `du -sh` of the Lustre results tree, so verify by hand rather than wait):
+staged commit `0ecb1ad`, 0 `svgd_metric_temperature`, 1 `flow_logdet_weight: float`, 24 step
+checkpoints, every manifest md5 equal on both sides (R24 763a308b, R26 23d8cf92, R27 d7e9f817,
+R28 ceb1a71b). Then `scontrol release` R24 / R26 (R24 started at once on all four nodes),
+`DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R27.txt 4` -> **jobs
+5932634-5932637**, `scontrol release` R28, and R28's four jobs chained `afterany` on R27's four
+(5926659 -> 5932634, 5926666 -> 5932635, 5926667 -> 5932636, 5926668 -> 5932637), because a
+released hold's eligible time is later than R27's submit time and the FIFO would otherwise be
+uncertain. Order on the nodes: R24 (running 07:03) -> R26 -> R27 -> R28. The R23 read is in
+`docs/svgd-solver.md`; the diagnostic job ran the twice-crashed `lm1` shard clean under
+`faulthandler` (20 min, no fault), see the R23 section below.
+
+
 Stage `SVGD_R27` (`ld1` = `flow_logdet_weight=1`; `fd0p1` = `latent_cost_weight=0.1` +
 `flow_logdet_weight=0.1`; `fd1` = `1` + `1`; learned arm, the four record contexts, 24 shards; 48
 runs / 1152 items; manifest md5 `d7e9f817`; pre-registration `docs/svgd-solver.md` "Stage
@@ -1052,7 +1069,13 @@ cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_
 
 **Finished 2026-10-15 05:33 EDT (9.9 h on 4 nodes), 1144 of 1152 items. Eight items died with a
 segmentation fault (status 139) and were re-queued as a mop-up on the OLD tree (jobs 5932386-87,
-two nodes, 05:41) before the restage.** All eight are screw-arm `lm1` shards (grasp native 11 / 16 /
+two nodes, 05:41-06:25) before the restage: 4 completed, 4 died again, and the R22 mop-up item
+(5924933) died again too, so the three screw `lm1` rows stand at 23 / 22 / 23 shards and R22's
+screw pose native `T0p1` at 23, for good (the old tree is gone and `T0p1` is a removed option).
+Collected 05:42 (1144 items; the 17 iiwa grasp native `ident` shards written before the 19:45
+watermark were fetched by a fresh-connection rsync and re-merged) and 06:30 (the mop-up's 4), 45 of
+48 runs promoted; read with the per-cell reader against `pin2` (`docs/svgd-solver.md`, "R23
+results"). Nothing stripped: the metric, delta 10 and the natural units all earn their place.** All eight are screw-arm `lm1` shards (grasp native 11 / 16 /
 19 of 24, pose native 4 / 12, pose paired 4 / 5 / 9), dying 57 s to 1727 s into the item with nothing
 in the log after "warmed up the svgd step" (no Python traceback: the crash is in C++); every other
 R23 item of those workers ran cleanly before and after. With R22's one segfault (screw pose native
