@@ -987,13 +987,24 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   redundancy** (`dq / d(c, z)` is 7 x 13, so the GN block is rank-deficient wherever the region rows
   are inactive), the phase-3 candidate R26's latent prior replaces; the identity metric, delta 1
   and delta 100 solve the screen but cost +24-27% (identity, delta 1) or 2x the steps (delta 100).
-  Stage SVGD_R23 (those three on the 16 rows, 1152 items) is running (jobs 5923288-91).
+- **R23 (2026-10-15, identity metric / delta 1 / delta 100 on the 16 rows, 9.9 h on 4 nodes):
+  NOTHING IS STRIPPED -- the SVN metric, delta 10 and the natural row units all earn their place.**
+  Identity: cost +13-100% on grasp and +41-280% on pose (rigid arms), ONE feasible particle and
+  240-294 outer steps on pose (25-30 s); level only on the soft PCS arm, whose row curvature is
+  smallest. Delta 1: cost up on all 16 rows, 1-2 feasible particles, 7-100x the resamples, the
+  clock on six rows -- **cost FALLS with delta (1 -> 10 -> 100) on every row, the opposite of the
+  prediction: delta keeps particles on the manifold along the (c, z) fibre, it does not brake the
+  objective.** Delta 100: 480 / 480 everywhere, residual a decade BELOW the pin, cost -1 to -27%,
+  at 1.3-2.8x the grasp wall -- a trade, 10 stands. **Twelve screw-arm items segfaulted** (R22 1,
+  R23 8 + 3 on re-run; native code, not deterministic per cell, clean under faulthandler alone on a
+  node), concentrated on the runaway-heavy variants; mechanism open (local probe of the clearance
+  query on non-finite particles). R24 / R26 / R27 / R28 are queued behind it (restaged 0ecb1ad).
 
 **Still open**: the paper tables from R20 (`report_svgd` stage mode; the multistart column via
 `scripts/svgd/cross/`; Thomas writes every word -- numbers and verdicts only from here);
 the GVS arm under svgd is DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU,
 and a dlpack bridge would not remove the batched root-find's cost; what to do with R14's
-combinations. The staged cluster tree is 86efbb0.
+combinations. The staged cluster tree is 0ecb1ad (svgd-tune).
 
 ## Results: the campaign of record
 

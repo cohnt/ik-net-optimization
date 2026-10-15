@@ -1993,6 +1993,61 @@ What the screen says against the predictions, before the 480-cell round:
 Manifest `cluster/manifest_stageSVGD_R23.txt` (48 runs, 1152 items: `ident`, `lm1`, `lm100` on
 the sixteen rows) was generated after this table was written; it is submitted on Thomas's word.
 
+**R23 results (ran 19:40 EDT 2026-10-14 to 05:33 EDT 2026-10-15 on four nodes, 9.9 h; jobs
+5923288-91; 1152 items, of which 8 died with a segmentation fault and 4 of those completed on a
+re-run, so the screw arm's three `lm1` rows read on 23 / 22 / 23 of 24 shards; the crash is its own
+paragraph below).** Reader: `scripts/report_svgd.py --stage SVGD --rows <robot> --variants
+pin2,ident,lm1,lm100` (`--rows screw7_p050` for the screw arm). The table's conventions are R22's:
+cost is the median over cells of the per-cell ratio to `pin2` on cells both solved; wall the ratio
+of cap-clamped means; outer steps, feasible particles and resamples medians over cells, as deltas
+from `pin2` where marked. **Cap check: `lm100` has 0 cells at the clock or the step cap on every
+row and 0 re-check failures; `ident` stops on the clock on 1 / 2 Panda pose and 6 / 5 screw pose
+cells (native / paired), 1 re-check failure on seven rows; `lm1` stops on the clock on 35-38 Panda
+pose, 22-23 iiwa pose, 64-72 screw grasp and 44-52 screw pose cells per row, so on those six rows
+it carries no success verdict (>= 24 at a budget) -- the clock stop itself is its diagnostic.**
+Every row's residual is in the table; the pin's is 4e-6 to 2.7e-5.
+
+| variant | success (16 rows, vs `pin2`) | cost ratio to pin | wall ratio | feasible of 64 (pin 36-61) | outer steps (pin 8-19) | residual | the diagnostic | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `ident` | 480 / 480 on the 8 grasp rows and iiwa / soft PCS pose; Panda pose 479 / 478, **screw pose 474 / 475** (-6 / -5, p = 0.031 / 0.062) | **grasp: Panda 1.21, iiwa 1.13-1.16, screw 1.90-2.02**, soft PCS 0.97; **pose: Panda 1.41, iiwa 2.35-2.38, screw 3.77-3.82**, soft PCS 1.00-1.02 | grasp 0.38-0.86 (stalls early); **pose 22-29x on the rigid arms (25-30 s), 4.8x on soft PCS (7.3 s)** | grasp: Panda 26-27, iiwa 16, screw 5-6, soft PCS 47-48; **pose: 1 on every row** | grasp 10-12 (-9 to 0); **pose 242-294 on the rigid arms (+232 to +282), 40 on soft PCS** | grasp 1.8e-5 to 2.7e-5 rigid, 4.2e-6 soft PCS; **pose 7.5e-5 to 8.0e-5 everywhere** (a decade above the pin, at the gate's edge) | `frobenius_over_lambda` 1.00-1.07 on the rigid arms (the per-particle step is the Lipschitz step, as predicted); `repulsion_ratio` 1e-4 to 1e-2; zero resamples | **the Newton metric earns its place** (cost > 5% above the pin on 12 of 16 rows, success lost on screw pose), by the predicted mechanism: the scalar step reaches the rows and then descends the objective at the rate the row curvature allows, so on pose it crawls (one feasible particle for 250 steps) and on grasp it stalls early at a cost 13-100% above the pin. The soft PCS arm is the stated exception (cost within noise on all four rows; its row curvature is the smallest, `lambda_max` 1.7e4 grasp against 5e4-1e6, so the spread the metric absorbs is smallest there) |
+| `lm1` | 480 / 480 on 6 grasp rows and soft PCS pose; **no verdict on 6 rows (clock)**: Panda pose 442 / 445, iiwa pose 457 / 458, screw grasp 400 of 464 / 408, screw pose 396 of 440 / 404 of 456 | **above the pin on every row**: grasp Panda 1.16-1.17, iiwa 1.47-1.51, **screw 4.03-4.09**, soft PCS 1.38-1.40; pose Panda 1.71-1.75, iiwa 2.42-2.55, screw 3.49-3.71, soft PCS 1.40-1.42 | grasp 0.43-0.80 on Panda / iiwa / soft PCS, **screw 23-25x (40-45 s)**; **pose 16-20x on the rigid arms (15-26 s)**, 1.34-1.37 soft PCS | **grasp 16-17 Panda, 11 iiwa, 1 screw, 37-38 soft PCS; pose 1-2 rigid, 27 soft PCS** | grasp 10-11 Panda / iiwa, 8 soft PCS, **114-116 screw**; pose +5 Panda, +16 iiwa, +25 screw | 3.8e-5 to 6.9e-5 on every rigid row, 1.8e-5 / 4.9e-5 soft PCS: a decade above the pin | **resamples per cell: grasp 17-19 Panda, 40-43 iiwa, 2600-3100 screw, 4-5 soft PCS; pose 70 Panda, 250 iiwa, 390-420 screw, 28-30 soft PCS** (pin 0-30); `lambda_max_median` 1e8 on every rigid pose row and screw grasp (the swarm sits in the chart's high-gain regions) | **delta 10 earns its place against delta 1, and the cost prediction had the wrong sign on all 16 rows**: a smaller delta does not buy objective descent, it lets particles overshoot along the (c, z) fibre, where they are redrawn (7-100x the pin's resamples), so the swarm never settles: one or two feasible particles, cost up, the clock on the rigid pose rows and the screw arm. The screen's reading at 12 cells is the 480-cell reading |
+| `lm100` | **480 / 480 on all 16 rows**, 0 clock stops, 0 re-check failures | grasp Panda 1.03, iiwa 0.99-1.00, screw 0.96-0.99, soft PCS 0.96; **pose Panda 0.98, iiwa 0.97, screw 0.95-0.96, soft PCS 0.73-0.74** | **grasp 1.3-2.8x (Panda 6.3-6.9 s against 2.5, iiwa 2.6 against 1.3-1.4, screw 2.6-3.5 against 1.8-2.0, soft PCS 3.8-4.3 against 2.5)**, a tail of 40-90 s cells at unchanged median steps; pose 0.95 Panda, 1.33-1.37 iiwa, 1.38-1.61 screw, 1.03-1.04 soft PCS | **53-63 on every row (+1 to +22)** | Panda grasp 26-28 (+8 / +9); every other row within +-2 | **5e-7 to 6e-6 on every row: a decade BELOW the pin** | resamples 0-13 per cell (below the pin on the screw arm: 12-13 against 28-30); `repulsion_ratio` 0.1-0.9 on grasp against the pin's 0.005-0.09 (the damped drive leaves the kernel a larger share of the step, as on the screen) | **neither branch of the rule**: cost >= 5% below the pin on 3 rows (soft PCS pose x2, screw pose paired), not 12, and wall outside +15% on 11. A TRADE along a monotone ladder, not an adoption: over delta 1 -> 10 -> 100 cost, residual and resamples fall on every row and feasible particles rise, while grasp wall rises 1.3-2.8x. Delta 10 stands; the ladder's lower-residual end is R24 / R25 material if the residual matters to Thomas |
+
+Read against the mechanisms, every outcome is explained and two predictions were wrong in a way
+that sharpens the explanation. **The metric**: the identity step's failure is exactly the row /
+objective curvature spread (1e5-1e7 at rho 1e5) that the Newton step absorbs; the soft PCS arm, with
+the smallest spread, is where the identity step is level on cost. **The delta**: the pre-registered
+mechanism ("delta slows the objective directions, so a smaller delta descends faster and a larger
+one slower") predicted cost rising with delta; measured, cost FALLS with delta on all sixteen rows,
+and so do the residual and the resamples, while feasible particles rise. So delta is not a brake on
+the objective; it is the term that keeps particles on the manifold along the learned formulation's
+(c, z) redundancy (the screen's `lm0` reading), and 10 is the value at which the swarm is
+regularised enough to settle (57-61 feasible particles) without the extra wall that 100 costs on
+grasp. That is the structural reading R26 tests: a latent prior gives the z block curvature of its
+own, so the gauge is fixed by the formulation rather than by damping. **Nothing is stripped by
+R23**: the Stein variational Newton metric, the Levenberg delta at 10 and the natural row units all
+earn their place, each with a measured mechanism, and the per-particle step stays as the metric's
+implementation (no global-step ablation was run, as pre-registered).
+
+**The screw-arm segmentation fault (an implementation finding, not a verdict).** Nine of the
+push's items died with status 139 in R22 / R23, all on the screw arm: R22's screw pose native
+`T0p1` shard 6 and eight R23 `lm1` shards (grasp native 11 / 16 / 19, pose native 4 / 12, pose
+paired 4 / 5 / 9), 57 s to 1727 s into the item, with nothing in the log after the warm-up (no Python
+traceback: the crash is in native code). Re-run on the same tree: 4 of the 8 `lm1` shards completed
+and 4 died again (two at the same second as before, two at a different one), the R22 item died again
+(619 s against 113 s), and the shard that had died twice fastest (pose native 12) ran clean to the
+end under `python -X faulthandler` as the only process on its node (job 5932481, 20 min, no fault).
+So the crash is not deterministic per cell and is concentrated on the variants with the most runaway
+particles (`lm1` redraws 390-3100 particles per screw cell, `T0p1` 26-41 against the pin's 13-30),
+on the one robot whose joint-limit row is repaired by hand (the screw joint) and whose runaway is a
+two-joint family rather than a ray. The mechanism is not established; the candidates are the
+batched clearance query on a non-finite float32 configuration between resample checks (the only
+native code the swarm calls per inner step) and a CUDA-graph replay fault, and the first is the
+one a local probe can settle (feed `CollisionEvaluator` a swarm with inf / nan rows on the screw
+arm). Until then every screw-arm round carries the risk of a lost shard, which a mop-up re-run
+recovers at 50%. The three `lm1` screw rows and R22's `T0p1` screw pose native row stay at 22-23
+of 24 shards: `lm1` is dead on every criterion with or without them, and `T0p1` is a removed option.
+
 ### Stage SVGD_R24: tuning wall and cost at fixed success (pre-registered 2026-10-14 evening, before any manifest)
 
 **What it is.** Phase-2's last round: the settings that R22 / R23 leave standing, each pushed one
