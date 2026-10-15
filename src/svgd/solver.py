@@ -397,7 +397,12 @@ class _Target:
         """`(dF/dcfg [N, ndof], dF/dx|direct [N, n])`: closed form in analytic mode; in
         autograd mode the whole gradient lands in the direct part."""
         if self.analytic:
-            return self.bp.cost_gradient_parts(ev.Xg, ev.cfg)
+            dFc, dFx = self.bp.cost_gradient_parts(ev.Xg, ev.cfg)
+            ld = ev.out.extras.get("flow_logdet")
+            if ld is not None:          # the flow log-det term: its row from the live graph
+                (gl,) = torch.autograd.grad(ld.sum(), ev.Xg, retain_graph=True)
+                dFx = dFx + self.bp._w_logdet * gl
+            return dFc, dFx
         (g,) = torch.autograd.grad(ev.F.sum(), ev.Xg, retain_graph=True)
         return torch.zeros_like(ev.cfg), g
 
@@ -744,7 +749,8 @@ class SvgdSolver:
         self._tg._count("map_forward")
         col = (None, None)
         qp = q_plant.to("cpu", torch.float64).numpy() if bp._has_collision else None
-        J_q, kin = r.s2(X, cfg)
+        out2 = r.s2(X, cfg)          # (J_q, kin), plus (ld, J_ld) with the flow log-det term
+        J_q, kin = out2[0], out2[1]
         if qp is not None:
             col = self._col.eval(qp, need_grad=True)
         if bp.has_map:
@@ -752,7 +758,7 @@ class SvgdSolver:
         kw = dict(device=self.device, dtype=self.dtype)
         col_row = None if col[0] is None else torch.as_tensor(col[0]).to(**kw)
         col_grad = None if col[1] is None else torch.as_tensor(col[1]).to(**kw)
-        o = r.s3(X, cfg, J_q, kin, col_row, col_grad, fused.state_dict(S))
+        o = r.s3(X, cfg, J_q, kin, col_row, col_grad, fused.state_dict(S), *out2[2:])
         lam, fro_ratio = self._diagnose(o["H"], want_lam)
         return o["X"], o["clip"], o["n_clip"], lam, fro_ratio, o["ratio"], o["bw"]
 
