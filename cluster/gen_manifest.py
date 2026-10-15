@@ -2974,8 +2974,10 @@ SVGD_RECORD_CONTEXTS = ((SVGD_ROBOT, SVGD_RUNG, SVGD_SEED), ("iiwa", "n4", SVGD_
 #: `pin2kq` on the three record contexts R20 ran it without -- joint space at the pin, kernel q.
 #: R22 (SVGD_PINNED_V2 tuning round, below): the four record robots again, as R20.
 #: R23 (the phase-1 conditioning strips at SVGD_PINNED_V2, below): the four record robots again, as R20 / R22.
+#: R24 (the SVGD_PINNED_V3 tuning round, below): the four record robots again, as R20 / R22 / R23.
 SVGD_STAGE_CONTEXTS = {"SVGD_R20": SVGD_RECORD_CONTEXTS, "SVGD_R21": SVGD_RECORD_CONTEXTS[1:],
-                       "SVGD_R22": SVGD_RECORD_CONTEXTS, "SVGD_R23": SVGD_RECORD_CONTEXTS}
+                       "SVGD_R22": SVGD_RECORD_CONTEXTS, "SVGD_R23": SVGD_RECORD_CONTEXTS,
+                       "SVGD_R24": SVGD_RECORD_CONTEXTS}
 #: Every chart an svgd context may run on: (robot, rung) -> (checkpoint, the builder of its record
 #: IPOPT rows). The status quo's two adopted rungs (stage_STATUSQUO), plus the screw arm's and the
 #: soft PCS arm's fielded rungs, whose record rows stage REMEASURE / PAPER build from stage_SCREW /
@@ -3016,7 +3018,7 @@ SVGD_PINNED_V2 = ["--set", "svgd_kernel=cz", "--set", "svgd_rho=100000",
                   "--set", "svgd_gn_lm=10", "--set", "svgd_lr=0.3"]
 #: The pin for stages from R24 on: SVGD_PINNED_V2 without `svgd_metric_temperature=on`, the option having
 #: been removed 2026-10-14 (the step it named is now the only step, so V3 runs what V2 ran, bit for bit).
-#: No stage takes it yet.
+#: SVGD_R24 is the first stage that takes it.
 SVGD_PINNED_V3 = ["--set", "svgd_kernel=cz", "--set", "svgd_rho=100000",
                   "--set", "svgd_paired_init=native",
                   "--set", "svgd_gn_lm=10", "--set", "svgd_lr=0.3"]
@@ -3073,7 +3075,8 @@ SVGD_CLEARANCE_STAGES = ("SVGD_R11", "SVGD_R12", "SVGD_SMOKE_IIWA", "SVGD_R7",
                          "SVGD_R13", "SVGD_R14", "SVGD_R15", "SVGD_R16",
                          "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT",
                          "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
-                         "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23")
+                         "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23",
+                         "SVGD_R24")
 #: (b): the lifted step budget. ONE knob; the IPOPT `max_iter` is removed from svgd items.
 SVGD_STEP_CAP = 1000000
 SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
@@ -3184,6 +3187,26 @@ SVGD_ROUNDS = {
     "SVGD_R23": {"ident": (["svgd_metric=identity"], 24, SVGD_BOTH),
                 "lm1": (["svgd_gn_lm=1"], 24, SVGD_BOTH),
                 "lm100": (["svgd_gn_lm=100"], 24, SVGD_BOTH)},
+    ## R24, the SVGD_PINNED_V3 tuning round (the first v3 stage) on the four record robots
+    ## (SVGD_RECORD_CONTEXTS, as R20 / R22 / R23): wall and cost at fixed success -- the swarm size
+    ## (N16, N32), the penalty one decade past the pin (rho1e6), the stall patience (pat2, pat3),
+    ## the dual-ascent step ladder including the pure penalty (alpha0p1, alpha10, alpha0), and the
+    ## c x z bandwidth rule's floor plus dropping the c factor altogether (floor1em3, floor0p2,
+    ## kz3 -- `kz3` not `kz`, which R14 already uses as a token at the V1 pin, and a token is unique
+    ## across rounds). Each a single factor on the pin, undeclared. Learned arm only, no
+    ## joint-space variant. `docs/svgd-solver.md` "Stage SVGD_R24" pre-registers mechanism,
+    ## diagnostic, prediction and decision rule for each.
+    "SVGD_R24": {"N16": (["svgd_n=16"], 24, SVGD_BOTH),
+                "N32": (["svgd_n=32"], 24, SVGD_BOTH),
+                "rho1e6": (["svgd_rho=1000000"], 24, SVGD_BOTH),
+                "pat2": (["svgd_stop_patience=2"], 24, SVGD_BOTH),
+                "pat3": (["svgd_stop_patience=3"], 24, SVGD_BOTH),
+                "alpha0p1": (["svgd_dual_lr=10000"], 24, SVGD_BOTH),
+                "alpha10": (["svgd_dual_lr=1000000"], 24, SVGD_BOTH),
+                "alpha0": (["svgd_dual_lr=0"], 24, SVGD_BOTH),
+                "floor1em3": (["svgd_bandwidth_floor=0.001"], 24, SVGD_BOTH),
+                "floor0p2": (["svgd_bandwidth_floor=0.2"], 24, SVGD_BOTH),
+                "kz3": (["svgd_kernel=z"], 24, SVGD_BOTH)},
 }
 #: Variants allowed MORE than one factor: round -> {variant: its factors}, each factor the overrides
 #: that make it up, so a variant's factor count is the length of its declaration. The selftest holds
@@ -3307,6 +3330,9 @@ SVGD_ALLOWED_SETS = {
                 "svgd_outer_iters", "svgd_kernel", "svgd_rho", "svgd_metric_temperature",
                 "svgd_paired_init", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend",
                 "svgd_metric"},
+    "SVGD_R24": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                "svgd_outer_iters", "svgd_kernel", "svgd_rho",                 "svgd_paired_init", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend",
+                "svgd_n", "svgd_stop_patience", "svgd_dual_lr", "svgd_bandwidth_floor"},
 }
 #: ProgramOptions defaults, as source text, that the manifests RELY ON rather than set (checked from
 #: src/generic_program.py's text, torch-free). The current defaults, the 2026-10-12 pin's; the four
@@ -3619,6 +3645,13 @@ def svgd_allotment():
              / int(_svgd_flag(i["args"], "--shard").split("/")[1]) * STATUSQUO_WALL
              + SVGD_ITEM_OVERHEAD_S for i in stage_SVGD("SVGD_R23")]
     print(f"\n  SVGD_R23 WORST CASE (every cell at the clock, one arm per item): "
+          f"{sum(worst) / 3600:.1f} solve-h, {sum(worst) / 3600 / SVGD_PROCS:.1f} node-h, "
+          f"{sum(worst) / 3600 / SVGD_PROCS / SVGD_NODES:.1f} h on {SVGD_NODES} idle nodes; "
+          f"longest item {max(worst) / 3600:.2f} h.")
+    worst = [int(_svgd_flag(i["args"], "--targets")) * int(_svgd_flag(i["args"], "--guesses"))
+             / int(_svgd_flag(i["args"], "--shard").split("/")[1]) * STATUSQUO_WALL
+             + SVGD_ITEM_OVERHEAD_S for i in stage_SVGD("SVGD_R24")]
+    print(f"\n  SVGD_R24 WORST CASE (every cell at the clock, one arm per item): "
           f"{sum(worst) / 3600:.1f} solve-h, {sum(worst) / 3600 / SVGD_PROCS:.1f} node-h, "
           f"{sum(worst) / 3600 / SVGD_PROCS / SVGD_NODES:.1f} h on {SVGD_NODES} idle nodes; "
           f"longest item {max(worst) / 3600:.2f} h.")
@@ -5842,10 +5875,10 @@ def selftest():
              "SVGD_R16": (4, 96), "SVGD_R17": (8, 192), "SVGD_R17S": (8, 192),
              "SVGD_R18": (6, 144), "SVGD_R19": (4, 96), "SVGD_R17P": (8, 192),
              "SVGD_R20": (20, 480), "SVGD_R21": (12, 288), "SVGD_R22": (68, 1632),
-             "SVGD_R23": (48, 1152)} or \
+             "SVGD_R23": (48, 1152), "SVGD_R24": (176, 4224)} or \
             sv_expected["SVGD_SMOKE_R20"] != (8, 8):
-        sv_fails.append("rounds R3-R23 are not 8/8/8/12/12/12/2/8/4/4/16/16/4/4/8/8/6/4/8/20/12/68/48 runs, "
-                        "128/192/160/288/288/288/48/192/96/96/384/384/96/96/192/192/144/96/192/480/288/1632/1152 "
+        sv_fails.append("rounds R3-R24 are not 8/8/8/12/12/12/2/8/4/4/16/16/4/4/8/8/6/4/8/20/12/68/48/176 runs, "
+                        "128/192/160/288/288/288/48/192/96/96/384/384/96/96/192/192/144/96/192/480/288/1632/1152/4224 "
                         "items, or SMOKE_R20 is not 8 items")
     ## R20's scope: `pin2` (learned) on exactly the four record contexts, `pin2kq` (joint space) on
     ## the Panda only, as its own items; every other round variant the rounds' learned arm on its
@@ -5863,12 +5896,12 @@ def selftest():
             if (svgd_variant_arms(r, v), svgd_variant_contexts(r, v)) != want_scope:
                 sv_fails.append(f"{r}: variant {v} runs {svgd_variant_arms(r, v)} on "
                                 f"{svgd_variant_contexts(r, v)}, expected {want_scope}")
-    if set(SVGD_STAGE_CONTEXTS) != {"SVGD_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23"} or \
+    if set(SVGD_STAGE_CONTEXTS) != {"SVGD_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23", "SVGD_R24"} or \
             sorted(r for r, _, _ in SVGD_RECORD_CONTEXTS) != sorted(
                 ["panda", "iiwa", SCREW_PRIMARY, "soft12"]) or \
             any(c not in SVGD_TWIN_OF for c in SVGD_RECORD_CONTEXTS):
-        sv_fails.append("SVGD_STAGE_CONTEXTS is not R20 (and R21, R22, R23) on the four record robots, "
-                        "each with a twin")
+        sv_fails.append("SVGD_STAGE_CONTEXTS is not R20 (and R21, R22, R23, R24) on the four record "
+                        "robots, each with a twin")
     ## The declared multi-factor variants: each one's overrides are EXACTLY its declared
     ## factors' (as a multiset, so nothing missing and nothing extra), on disjoint option names,
     ## at least two factors each, every declared variant one its round runs, and each declared
@@ -6342,6 +6375,7 @@ def main():
                                  "SVGD_R15", "SVGD_R16", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT",
                                  "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
                                  "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23",
+                                 "SVGD_R24",
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "A", "B", "B2", "B3",
