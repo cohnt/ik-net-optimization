@@ -943,6 +943,36 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R24 (branch `svgd-tune`, 2026-10-14): wall and cost at fixed success
+
+**Submitted 2026-10-14 20:30 EDT under Thomas's standing "Queue them up. No wasted cluster compute
+time": jobs 5925276-5925279, four nodes, `DRAKE_ENV=crc PROCS=2`, staged 7812715, manifest md5
+`763a308b`, PENDING behind R23 (and R22's mop-up job 5924933) under the 4-node cap. The variant
+table (`docs/svgd-solver.md`, "Stage SVGD_R24") was committed before the manifest and is in front
+of him before it runs; `scancel 5925276 5925277 5925278 5925279` withdraws it.** The first stage on
+`SVGD_PINNED_V3` (V2 minus the removed `svgd_metric_temperature=on`); on the staged 7812715 that
+option still exists with default `on`, so the items are the pin bit for bit and no restage is
+needed. Learned arm only, the four record contexts, 24 shards, one override per variant:
+
+| token | override | token | override |
+| --- | --- | --- | --- |
+| `N16` / `N32` | `svgd_n=16` / `32` | `alpha0p1` / `alpha10` / `alpha0` | `svgd_dual_lr=10000` / `1000000` / `0` |
+| `rho1e6` | `svgd_rho=1000000` (replaces the pin's) | `floor1em3` / `floor0p2` | `svgd_bandwidth_floor=0.001` / `0.2` |
+| `pat2` / `pat3` | `svgd_stop_patience=2` / `3` | `kz3` | `svgd_kernel=z` (replaces the pin's `cz`; `kz` was R14's V1 token) |
+
+176 logical runs, 4224 items. Local smoke (2 Panda pose native cells each at 60 s, the pin, every
+value never run before: ten of the eleven, `kz` ran in R14): 2 / 2 on all ten, 0 error cells, the
+override echoed in `metadata.overrides`, `n_particles` 16 / 32 on the N variants, `lam_inf_median` 0
+under `alpha0`. **Allotment**: the tool's 164 node-h (5 s per cell + 180 s per item, 41 h on 4
+nodes); R22's measured pace (1632 items in 5.5 h) gives ~14 h on 4 nodes; worst case 2218 node-h
+(every cell at the clock), with `alpha0` the only variant expected to run cells to the clock.
+
+```bash
+scp $WT/cluster/manifest_stageSVGD_R24.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/   # md5 763a308b
+cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R24.txt 4
+# read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,N16,N32,rho1e6,pat2,pat3,alpha0p1,alpha10,alpha0,floor1em3,floor0p2,kz3
+```
+
 ## R23 (branch `svgd-tune`, 2026-10-14): the phase-1 conditioning exceptions at the pin
 
 **Submitted 2026-10-14 18:25 EDT on Thomas's word (*"Queue them up. No wasted cluster compute time."*): jobs 5923288-5923291, four nodes, `DRAKE_ENV=crc PROCS=2`, staged 7812715, manifest md5 `8fe92f91`, queued behind R22 so the nodes hand over without a gap.** Pre-registration: `docs/svgd-solver.md`, "Stage SVGD_R23". Stage `SVGD_R23` is R22's shape (`SVGD_PINNED_V2`, the four record contexts,
