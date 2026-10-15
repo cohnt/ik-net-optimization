@@ -2027,6 +2027,44 @@ run before (`svgd_n` 16 / 32 at the pin, rho 1e6, patience 2 / 3, the three alph
 floors) on 2 Panda pose cells each before the manifest; `kz` ran in R14. No restage: every option
 exists in the staged 7812715 and V3 omits only a setting whose staged default is the pin's value.
 
+### Stage SVGD_R26: the latent prior N(0, I) on z (phase 3 / 4; pre-registered 2026-10-14 evening, before any cell)
+
+**Why this round needs no new code, and what that means.** The formulation already carries the
+term: `ProgramOptions.latent_cost_weight = w` adds Drake's `QuadraticCost` `0.5 w |z|^2` on the
+learned arm's latent (`LatentCost`, description `LatentRegularizerCost`), excluded by name from
+`reported_cost`; the svgd batched program folds every quadratic cost into its target and its
+constant Hessian into the SVN metric. So **`latent_cost_weight = 1` is exactly `|z|^2 / 2`, the
+negative log density of the flow's latent prior N(0, I)**, up to a constant, inside the augmented
+Lagrangian -- the structure the chart was trained to invert, entering the LEARNED arm's target
+only (joint space has no z). It was swept once under IPOPT (CLAUDE.md: `latent_cost_weight` helps
+the Panda at 0.1, hurts the iiwa; a settled negative there) and never under svgd. R25 (the float64
+polish) is skipped in sequence because it needs code and Thomas's call; R26 runs first.
+
+**What runs.** R22's shape (the learned arm, the record's sixteen rows, 480 cells, 180 s, seed 1,
+`SVGD_PINNED_V3`, 24 shards), four variants read against R20's `pin2` (= `w = 0`) on the same
+cells and the IPOPT twin; two are declared two-factor variants:
+
+| token | override | the term | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `lp1` | `latent_cost_weight=1` | `+ \|z\|^2 / 2`: the exact log prior | the flow is accurate where the latent is typical (`\|z\| ~ sqrt(d)` = 2.65 Panda, 2.83 iiwa); the task rows leave the self-motion free and the kernel's repulsion spreads particles along it; the prior gives every particle an objective-side drive toward the typical set, so the feasible swarm sits where the chart is trustworthy and the selected particle is a configuration the chart represents well. On the objective it is one more quadratic, so cost (which excludes it) may rise slightly where the prior and the task cost disagree | `z_norm` of the selected particle and the swarm (recorded; R20's selected `\|z\|` is 2.2-2.6), `n_resampled` (a particle drifting toward the runaway has atypical z: prediction, fewer redraws), feasible count, cost, residual | `\|z\|` of the selected particle down 10-30%; resamples down on the rigid arms (Panda 2-5 -> 1-3, screw 13-30 -> under 10); cost within noise or +0-5%; success unchanged | resamples down >= 30% on the screw rows at cost within noise -> the prior does structurally what the resample does numerically, and it is the candidate to field (a question for Thomas, with R27's log-det as the stronger form); within noise everywhere -> inert, reported, not fielded |
+| `lp10` | `latent_cost_weight=10` | a 10x prior, the dose | as `lp1`, with the prior now competing with the task cost: cost up, `\|z\|` down further, possibly feasible particles down where the typical set and the grasp manifold are far apart | as `lp1` | cost +5-15%, `\|z\|` 1.5-2.0, resamples down further | says whether the effect is monotone in w (the mechanism's signature) |
+| `lp1notr` | `latent_cost_weight=1` + `latent_trust_region=None` (two factors) | the soft prior REPLACING the hard latent trust region (`\|z\| <= 4.0 / 4.3`, a stated deviation from eq. (6) that IPOPT keeps because a nonbinding row still shapes an interior-point trajectory; svgd has no barrier, so that reason does not transfer) | with the row gone the swarm's only hold on z is the prior (and the +-5 component box, a region of last resort); if the prior suffices, the formulation moves TOWARD eq. (6) at no cost | `z_norm` max over the swarm (does any particle leave the old radius?), `bound_clip` on the z box, feasible count, cost, resamples | within noise of `lp1` on all 16 rows; `\|z\|` max 3-4, no particle at the +-5 box | within noise of `lp1` everywhere -> the trust region earns nothing under svgd once the prior is in: a phase-3 replacement, Thomas's call since it changes the program the arm is measured on; a row losing cells or resampling more -> the row stays |
+| `lp1lm0` | `latent_cost_weight=1` + `svgd_gn_lm=0` (two factors) | the prior REPLACING the Levenberg delta (R23's screen: delta 0 is dead because the (c, z) block of the GN Hessian is rank <= 7 of 13 along the formulation's redundancy fibre; the prior adds `I` on the z block, and no fibre direction is purely in c because `dq / dc` has full column rank, so the block becomes nonsingular by structure, not by damping) | if alive, the structural reading of R23 is confirmed: the formulation's own prior fixes the gauge the damping was fixing | `lambda_max_median` (no longer the substituted 1), `frobenius_over_lambda_median`, `n_resampled`, outer steps, cost | ALIVE on the screen; outer steps and cost near `lp1`'s; if resamples are high the undamped step overshoots on the c directions, which the prior does not touch | alive and within noise of `lp1` -> **delta is replaced by structure** (phase 3, the cleanest result this push can produce; fielding it is Thomas's call); alive but worse -> delta stays with the prior; dead -> the c directions need damping too and the structural claim is narrowed to the z block |
+
+**A laptop screen gates `lp1lm0` only** (12 Panda cells, as R23's: targets 0-5 guess 0, native,
+both tasks, 180 s; rule: fewer than 6 of 12 solved or 3 or more clock stops = dead at the pin,
+reported from the screen). `lp1`, `lp10` and `lp1notr` go to the sixteen rows after a 2-cell
+parse smoke each.
+
+**Allotment.** 4 variants x 16 rows = 64 runs, 1536 items (R22's shape): the tool's ~60 node-h,
+R22's measured pace ~5 h on 4 nodes; no restage (`latent_cost_weight`, `latent_trust_region` and
+`svgd_gn_lm` all exist in the staged 7812715).
+
+**R27 (the flow as exact density: `+ w (|z|^2/2 + log|det dq/dz|)`) and R28 (the correction
+regulariser) are pre-registered after R26 reads**, since R27 is read against `lp1` and R28 runs on
+R26 / R27's better term; R27 needs code (the log-det from the coupling blocks' `s`, its gradient
+and GN block).
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each
