@@ -2100,10 +2100,60 @@ outer steps (10x the pin's on the w >= 1 rungs) the real figure is 8-12 h on 4 n
 R22's pace; no restage (`latent_cost_weight`, `latent_trust_region` and `svgd_gn_lm` all exist in
 the staged 7812715).
 
-**R27 (the flow as exact density: `+ w (|z|^2/2 + log|det dq/dz|)`) and R28 (the correction
-regulariser) are pre-registered after R26 reads**, since R27 is read against `lp1` and R28 runs on
-R26 / R27's better term; R27 needs code (the log-det from the coupling blocks' `s`, its gradient
-and GN block).
+**R28 (the correction regulariser) is pre-registered after R26 and R27 read**, since it runs on
+their better term.
+
+### Stage SVGD_R27: the flow as an exact density (phase 3 / 4; pre-registered 2026-10-14 night, before any cell; code ac4f5c2)
+
+**The term.** `flow_logdet_weight = w` adds `w log|det dx/dz|` of the IKFlow map `x = flow(c, z)`
+to the learned arm's objective (Drake cost `FlowLogDetCost`, excluded from `reported_cost` by
+name; svgd cost kind `flow_logdet`, in the target and the drive). With `latent_cost_weight = w`
+beside it the pair is `w (|z|^2 / 2 + log|det dx/dz|) = -w log p(x | c)` up to a constant: the
+density of configurations the chart actually represents, the conditional the flow was trained to
+model. Facts that shape the reading, found while building it (the scoping and the parity tests):
+- The log-det is a free by-product of the forward pass (FrEIA returns it; IKFlow discards it), and
+  its gradient is one extra row of the existing reverse pass, taken only when `w > 0` -- the extra
+  row perturbs the q rows at 1e-16, so the flag keeps the pin bit for bit (pin test untouched; the
+  term-off graphed smoke equals the pre-change reference on every field).
+- **On the iiwa the map is 8-wide against 7 joints** (the eighth output is the training-time
+  padding), so there the term is the joint density of `(q, pad)`, not `p(q | c)`; the Panda, screw
+  and soft PCS maps are square. It is the density of `flow(c, z)`, not of `q = flow + q_c`
+  (exact to `|q_c| ~ 2e-5` at the approved penalty), and not a density under `chart_error_scale`
+  or `lift_q` (both refused with it).
+- **The gradient is dominated by the conditioning pose**: on a sample point ~20 on c's position,
+  1-2 on its orientation, 0.003-0.5 on z. The term is a conditional density optimised over a free
+  c: it moves the conditioning pose to where the configuration is typical, more than it moves the
+  latent. The latent half (`|z|^2 / 2`) is what R26 measures alone.
+- **The term's size shifts the stall rule.** The log-det is -23 to -34 on the Panda against a
+  task cost of 2-5, so with the term on the target is large and negative; the stall test
+  `f_best < best_seen - rel |best_seen|` then has a threshold ~6-10x looser in absolute terms (and
+  ill-defined where the target crosses zero). The stop rule is left exactly as it is (the term
+  joins the target as `LatentRegularizerCost` does), and outer steps are read with this in mind:
+  a stall reached in fewer steps than `lp1`'s is partly the rule, not only the term. Changing the
+  rule (stalling on the shared objective) is a separate candidate, not folded in here.
+- SVN metric: no block for the log-det (its curvature is indefinite and a second-order pass is
+  2-3x a flow Jacobian per step); the `|z|^2 / 2` half enters through `LatentCost`'s constant
+  Hessian as in R26. The exact-Hessian metric is a possible second rung, only if the term matters.
+- The 2-cell smoke (Panda pose native, compiled + graphed, `w = 1` on both halves): 2 / 2
+  converged in 31 / 33 outer steps (pin ~8, `lp1` 85 / 132), `|z|` 0.64 / 0.79 (`lp1` 0.34 / 0.34),
+  cost 3.68 / 4.81 (pin 3.35 / 4.62, `lp1` 3.73 / 5.48), the negative log density at the returned
+  point -32.8 / -33.7, 60-61 feasible particles, 0-2 redraws.
+
+**What runs.** R22's shape (the learned arm, the record's sixteen rows, 480 cells, 180 s, seed 1,
+24 shards, the V3 pin), **on a RESTAGED cluster tree** (the term is new code; the restage waits
+until R26 has drained so no queued item changes tree mid-round, and the pin test's bit-identity is
+what licenses running R24 / R26's pending items on it if that ever happens). Three variants, read
+against `pin2`, R26's `lp0p1` / `lp1` on the same cells, and the IPOPT twin:
+
+| token | override | the term | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ld1` | `flow_logdet_weight=1` | the log-det alone (the Jacobian-volume half, no prior) | high-gain regions of the chart are where `log|det dx/dz|` is large, so the term penalises a particle BEFORE its `q` explodes, where the resample acts only after (`|q|_inf > 10`): the structural answer to the screw arm's runaway R22 showed the resample still carries. Alone it also rewards low-volume regions, which with a free c can pull the conditioning pose rather than the latent | `n_resampled` / `n_dropped` (prediction: down on the screw rows, 13-30 -> under 10 per cell), `flow_neg_log_density` at the returned point (recorded for every learned cell, pin included), `z_norm`, `|q|_inf` excursions, feasible count, cost, outer steps | resamples down >= 30% on the screw rows; cost within noise or +0-5%; success unchanged; `|z|` near the pin's (the latent half is absent) | resamples down >= 30% on the screw rows at cost within noise -> the log-det does structurally what the resample does numerically (then R26's resample question is re-asked with the term in); within noise everywhere -> inert, reported, not fielded |
+| `fd0p1` | `latent_cost_weight=0.1` + `flow_logdet_weight=0.1` (declared two factors) | `-0.1 log p(x | c)`, the full density at the dose R26's `lp0p1` carries | as `ld1` plus the prior's pull toward the typical set; read against `lp0p1` to separate the log-det's contribution from the prior's | as `ld1`, plus `z_norm` against `lp0p1`'s | within noise of `lp0p1` on cost and wall; resamples below `lp0p1`'s on the screw rows if the log-det does the work the prior does not | the pair of readings (`fd0p1` - `lp0p1`, `fd1` - `lp1`) attributes the effect to the log-det or to the prior; the candidate to field is whichever rung lowers resamples on the screw rows at cost and wall within noise -- a question for Thomas |
+| `fd1` | `latent_cost_weight=1` + `flow_logdet_weight=1` (declared two factors) | `-log p(x | c)`, the exact density | as above at the smoke's dose; `lp1`'s 10x outer steps may shrink (the smoke: 31-33 against 85-132) partly through the stall rule's shifted threshold | as above, plus outer steps against `lp1` | cost between the pin's and `lp1`'s (+5-10%), `|z|` ~0.6-0.8, outer steps 3-5x the pin, resamples down on the screw rows | as `fd0p1` |
+
+**Allotment.** 3 variants x 16 rows = 48 runs, 1152 items: the tool's ~45 node-h; by the smoke's
+outer steps (4x the pin on `fd1`) ~5-8 h on 4 nodes. Restage first (`BRANCH=svgd-tune
+cluster/make_staging_clone.sh`, after R26 drains), then the usual scp / md5 / submit.
 
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
