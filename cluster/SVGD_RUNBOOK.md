@@ -943,6 +943,24 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R28 part 1 (branch `svgd-tune`, 2026-10-14): the correction penalty ladder at the pin
+
+**Submitted 2026-10-14 23:27 EDT and HELD: jobs 5926659, 5926666-5926668**, four nodes,
+`DRAKE_ENV=crc PROCS=2`, manifest md5 `ceb1a71b`; a second local watcher
+(`scratchpad/release_r28.sh`, log `release_r28.log`) releases them once the restage watcher logs
+"R27 submitted", so the order on the nodes is R24, R26, R27, R28 (Thomas: jobs queued through
+Friday morning). Pre-registration: `docs/svgd-solver.md`, "Stage SVGD_R28, part 1". Learned arm,
+the four record contexts, 24 shards, the V3 pin, three single-factor variants that REPLACE the
+pin's `correction_cost_weight=10.0`: `qc0` (0), `qc1` (1), `qc100` (100); 48 runs, 1152 items.
+`gen_manifest.py` gained `_svgd_drop_named_sets` for this (a variant overriding a setting the base
+IPOPT row carries, not the svgd pin list); every earlier manifest regenerates byte-identically.
+Local smoke (2 Panda grasp native cells, 60 s): 2 / 2 at each weight, 0 error cells, `|q_c|` 3e-4
+to 1.6e-2. Runs on either staged tree (no new code). Allotment: tool 45 node-h, R22's pace ~4 h.
+
+```bash
+# read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,qc0,qc1,qc100
+```
+
 ## R27 (branch `svgd-tune`, 2026-10-14): the flow as an exact density -- the restage and the queue order
 
 Stage `SVGD_R27` (`ld1` = `flow_logdet_weight=1`; `fd0p1` = `latent_cost_weight=0.1` +
