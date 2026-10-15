@@ -943,6 +943,34 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R26 (branch `svgd-tune`, 2026-10-14): the latent prior N(0, I) on z
+
+**Submitted 2026-10-14 21:12 EDT under the standing "Queue them up": jobs 5925565-5925568, four
+nodes, `DRAKE_ENV=crc PROCS=2`, staged 7812715, manifest md5 `23d8cf92`, PENDING behind R23, the
+R22 mop-up and R24.** Pre-registration and the laptop reads: `docs/svgd-solver.md`, "Stage
+SVGD_R26". Phase 3 of the push and manifest-only: the term is the program's own
+`latent_cost_weight` (`0.5 w |z|^2`, excluded from `reported_cost` by name), which the svgd batched
+program folds into the target and the SVN metric; `latent_trust_region=None` and `svgd_gn_lm`
+likewise exist in the staged tree. Learned arm only, the four record contexts, 24 shards:
+
+| token | override | arm / rows |
+| --- | --- | --- |
+| `lp0p1` / `lp1` / `lp10` | `latent_cost_weight=0.1` / `1` / `10` | learned, all 16 rows |
+| `lp1notr` | `latent_cost_weight=1` + `latent_trust_region=None` (declared two factors) | learned, all 16 rows |
+
+`lp1lm0` (`latent_cost_weight=1` + `svgd_gn_lm=0`) was pre-registered, screened on the laptop
+(12 Panda cells) and read DEAD at the pin on grasp (6 clock stops) while alive on pose, so it is
+reported from the screen and not run. 64 logical runs, 1536 items. Local parse smoke (2 Panda pose
+native cells, 60 s): 2 / 2 on `lp1`, `lp10`, `lp1notr`, 0 error cells, `|z|` 0.1-0.4 and 68-132
+outer steps against the pin's 3.9 and 4-8 -- the w >= 1 rungs will run ~10x the pin's wall, so
+expect 8-12 h on 4 nodes rather than R22's pace (tool: 60 node-h; worst case 806 node-h).
+
+```bash
+scp $WT/cluster/manifest_stageSVGD_R26.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/   # md5 23d8cf92
+cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R26.txt 4
+# read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,lp0p1,lp1,lp10,lp1notr
+```
+
 ## R24 (branch `svgd-tune`, 2026-10-14): wall and cost at fixed success
 
 **Submitted 2026-10-14 20:30 EDT under Thomas's standing "Queue them up. No wasted cluster compute
