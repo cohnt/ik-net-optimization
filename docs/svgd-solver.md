@@ -146,10 +146,10 @@ are reported as the collision row's share of the wall.
 | `svgd_seed` | 0 | particle draws, mixed with a CRC of the initial guess |
 | `svgd_paired_init` | `native` (fielded 2026-10-12; was `jitter`) | 11: `jitter` or `native`; particle 0 is the shared guess exactly under either |
 | `svgd_jitter` | 0.1 | 11: jitter sigma in the normalised coordinates |
-| `svgd_temperature` | 1.0 | 2: T, fixed |
+| `svgd_temperature` | **REMOVED 2026-10-14** (R22; T = 1, the only value ever fielded) | 2: T, fixed |
 | `svgd_lr` | 0.3 | 4: a fraction of the metric's step: `svgd_lr (H + delta I)^-1 phi` (gn) or `svgd_lr / \|\|H\|\|_F` (identity). Chosen 2026-10-10 by the screen at rho 1e3, delta 10 on 6 grasp + 6 pose Panda cells, most feasible cells with ties to the larger lr: lr 0.3 solved 24/24 (learned 12/12, joint space 12/12) resampling 0.07 of N per check, lr 1.0 solved 22/24 resampling 0.12 |
 | `svgd_metric` | `gn` | 4: `gn` (Stein variational Newton) or `identity` |
-| `svgd_metric_temperature` | `on` (fielded 2026-10-12; was `off`) | 4: `off`: the metric is H, so the drive `-grad L / T` is not matched by it and the Newton step scales as 1/T. `on`: the metric is H / T, `dy_i = svgd_lr (H_i / T + delta I)^-1 phi_i`, so T sets only the repulsion-to-drive ratio; under `identity` the step bound becomes `\|\|H_i\|\|_F / T` (the analogue, not refused). Both are swept and neither is "the" definition (Thomas, 2026-10-11). `on` at T = 1 is `off` bit for bit |
+| `svgd_metric_temperature` | **REMOVED 2026-10-14** with `svgd_temperature` (R22: T inert at the pin; the step is the T = 1 form below, bit for bit) -- was `on` (fielded 2026-10-12; `off` before) | 4: `off`: the metric is H, so the drive `-grad L / T` is not matched by it and the Newton step scales as 1/T. `on`: the metric is H / T, `dy_i = svgd_lr (H_i / T + delta I)^-1 phi_i`, so T sets only the repulsion-to-drive ratio; under `identity` the step bound becomes `\|\|H_i\|\|_F / T` (the analogue, not refused). Both are swept and neither is "the" definition (Thomas, 2026-10-11). `on` at T = 1 is `off` bit for bit |
 | `svgd_gn_lm` | 10 | 4: delta, the Levenberg damping of the GN metric. Chosen 2026-10-10 by the most feasible cells (learned + joint space) on 6 grasp + 6 pose Panda cells, ties to the larger: delta 1e-2 / 1 / 10 gave 2 / 3 / 6 (1e-4 diverged); then svgd_lr 1.0 / 0.3 / 0.1 at delta 10 gave 6 / 0 / 0 -- all at rho 10, and the 0.3 / 0.1 cells were mostly `error` records from the since-fixed eigvalsh crash, so that lr reading is void; `svgd_lr` was chosen later by the screen at rho 1e3 (its row) |
 | `svgd_row_units` | `natural` | 1: `natural` or `tolerance` (the control) |
 | `svgd_row_length_scale` | 1.0 | 1: metres per radian on the orientation-type rows |
@@ -1868,6 +1868,38 @@ cell ran):
   the baseline `T0p1` / `T10v2` move by 10x each way.
 - Every one of the 32 runs: 480 of 480 `converged`, `n_recheck_failures` 0 (the screw joint-space
   rows: 17 / 20 / 3 / 3 `wall_clock`, as R21 reported).
+
+**R22 results (ran 14:12-19:40 EDT 2026-10-14 on four nodes, 5.5 h; jobs 5918035-38; 1631 of
+1632 items, the screw pose native `T0p1` shard 6 of 24 lost to a one-off segmentation fault and
+resubmitted as job 5924933, so that row reads on 23 shards until it lands).** Reader:
+`scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2[,pin2kq],clipoff[,clipoffjs],drop2,T10v2,T0p1`.
+Cost below is the median over cells of the per-cell ratio to `pin2` on cells both solved; wall is
+the ratio of cap-clamped means; outer steps and feasible particles are medians, as differences from
+`pin2`. **Cap check: 0 learned cells at the step cap or the clock on every row of every variant;
+`n_recheck_failures` 0 on all 67 runs; residual in the same decade as the pin (2e-6 to 3e-5) on
+every row. Every learned variant keeps the pin's verdict against the IPOPT twin on every row (8
+wins / 8 ties, cell for cell 480 / 480 except `drop2` on the screw arm).**
+
+| variant | success (16 rows) | cost ratio to pin | wall ratio | feasible of 64, delta | outer steps, delta | the diagnostic | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `clipoff` | 480 / 480 on all 16 | 0.999-1.001 | 0.97-1.07 | -1 to +2 | -1 to +1 | `n_multiplier_clipped` 0 by construction; unboxed multipliers run to `lam_inf_max` 1.3e5-1.2e6 and `mu_inf_max` 1.2e6-1.2e11 on the worst particle without moving the selected one | **inert on the learned arm on all 16 rows**, as predicted |
+| `clipoffjs` (joint space, Panda) | grasp **464 / 480** both protocols against `pin2kq`'s 480 (McNemar +0 / -16, p = 3.1e-5), 16 clock stops each; pose 479 / 480 (+0 / -1, p = 1), 1 clock stop each | 0.946 grasp (on the 433 shared cells), 1.000 pose | **4.6-4.7 grasp**, 1.55-1.58 pose | 3 v 4 grasp, 10 v 16 pose | +1 / 0 | `mu_inf_max` 1.6-1.8e8 grasp, 5-6e7 pose; the swarm loses the grasp cells it holds at the pin to the clock | **prediction B: the box is NOT inert on the ablation arm**, so by the rule it stays as a stated setting of that arm (the learned arm never needs it: no clip in 30,720 learned cells moved a selected particle) |
+| `drop2` | 480 / 480 on 12 rows; **screw arm 477 / 477 / 477 / 478** (grasp native / paired, pose native / paired), every loss a swarm with every particle dropped (`stop_reason = all_dead`), McNemar vs `pin2` +0 / -3, -3, -3, -2 (p = 0.25-0.5 per row, 11 cells over the four rows) | 0.998-1.002 on 12 rows; screw grasp **1.037 / 1.018** | 0.93-1.02 | Panda / iiwa -2 to -6, soft PCS -1, **screw -16 / -17 grasp, -7 pose** | 0 to -1 | median `n_dropped` per cell: Panda 2-4, iiwa 7-9, soft PCS 0-1, **screw 20-22 grasp, 11-12 pose** (R20's `n_resampled` medians, as predicted) | **the resample earns its place, on the screw arm only, for the runaway it was built for**; inert elsewhere. The prediction's "ties on all 16" held on 12 and failed where the pre-round record read said a loss would show. Nothing deleted; R27's density term is the structural answer to the screw arm's runaway |
+| `T10v2` | 480 / 480 on all 16 | 0.994-1.011 on 15 rows, screw grasp native **1.041** | 0.85-1.07 | -3 to +1 on 15 rows, screw grasp **-10** | -2 to +1 | `repulsion_ratio_median` 10x the pin's on every row (e.g. Panda grasp 0.16 v 0.016, soft PCS grasp 0.8 v 0.09) | within noise on 15 of 16 rows (screw grasp native at the band's edge on cost and outside it on feasible particles); the predicted cost-up / feasible-down shows only on the screw arm |
+| `T0p1` | 480 / 480 on all 15 rows read (screw pose native pending) | 0.984-1.008 | **1.01-1.58**: outside +15% on 4 rows (Panda pose native 1.22 / paired 1.17, iiwa grasp native 1.16, screw pose paired 1.58) | -3 to +2 | 0 to +3 | `repulsion_ratio_median` 0.1x the pin's on every row; no clock stop anywhere (the kernel-off clock stops of R1K do not appear at rho 1e5) | never lowers cost by 10% on any row, so T does not earn a role; T = 0.1 only costs wall. The rule's letter ("both within noise on all 16") is missed by `T0p1`'s wall on 4 rows; its conclusion, that nothing is gained from T in either direction, holds. **Thomas ruled the removal 2026-10-14; `svgd_temperature` and `svgd_metric_temperature` are deleted in c308934** (the T = 1 step is bit-identical: two-cell reference and the pin test's pre-change npz) |
+
+Read against the mechanisms: every outcome matches its pre-registered mechanism, none is "outcome
+without mechanism". The box's learned-arm inertness is the dual-step argument (the clip touches
+particles about to be redrawn); its joint-space activity is the missing latent (no z to absorb a
+dual step, multipliers climb to 1e8, the swarm drifts to the clock). The resample's single
+dependency is the screw arm's runaway population, which R20 had already measured as 13-30 redraws
+per cell; `drop2` converts those redraws into dead particles and, three cells per row, into dead
+swarms. The temperature moves only the repulsion share, by exactly its factor, and the repulsion
+share at the pin (0.0002-0.09) is too small for a 10x either way to reach the selected particle.
+
+**What R22 strips, and what stays with a reason**: the temperature (two options, gone); the
+multiplier box stays for the ablation arm and is documented as inert on the learned arm; the
+resample stays for the screw arm. CLAUDE.md's svgd section carries the verdicts.
 
 ### Stage SVGD_R23: the phase-1 conditioning exceptions at the pin (pre-registered 2026-10-14, before any screen cell was read)
 

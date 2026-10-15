@@ -940,7 +940,8 @@ Compute footprint (GPU + 40 threads vs one core) is a paper explanation, not a f
 
 **Rulings, 2026-10-12 -- THE FIELDED PIN (`SVGD_PINNED_V2`, R20 on).** Thomas: *"Agree re 1 and 2.
 Native draw is the method and paired is the ablation."* `ProgramOptions` defaults are now
-`svgd_kernel=cz`, `svgd_rho=1e5`, `svgd_metric_temperature=on` (H / T; bit-identical at T = 1) and
+`svgd_kernel=cz`, `svgd_rho=1e5`, `svgd_metric_temperature=on` (H / T; bit-identical at T = 1;
+**the temperature was removed outright on 2026-10-14**, R22 below) and
 `svgd_paired_init=native` (particle 0 at the shared guess, the rest from the native draw); N, T, lr,
 gn_lm, K, the resample and the stop rule are unchanged. **Native is the method's primary row and
 paired its ablation.** `cz` is learned-only, so **a joint-space svgd run must name its kernel**
@@ -956,6 +957,37 @@ solve's feasibility level (`v <= feas_level`, 1.0 = the gate, used by the stop r
 the selection) is tightened x0.9, and it re-tests at the next stall. Recorded per cell as
 `n_recheck_failures` and `feas_level`. Rejected on the way: a per-step float64 check (1 ms per outer
 step for a 0.04% event) and a fixed margin.
+
+**The tuning push (branch `svgd-tune`, from 2026-10-14): strip, then replace with structure.**
+Thomas's end goal: a high-performing AL-SVGD solver for the LEARNED formulation that leverages the
+formulation's structure, with a clear reason for every piece. His order: strip what does not earn
+its place (phase 2), replace special treatment with formulation insight (3), add insight (4). Every
+round pre-registers mechanism + diagnostic + prediction + decision rule in `docs/svgd-solver.md`
+("The tuning push") BEFORE its manifest; success is at the ceiling, so rounds read on cost (cells
+shared with the pin, ratio within [0.95, 1.05] = noise), wall (+-15%), feasible particles (+-3),
+outer steps (+-2), residual (same decade); K is not re-proposed (his 10-11 ruling). Roadmap: R22
+strips, R23 the phase-1 conditioning exceptions, R24 tuning (N, rho 1e6, stall patience, dual
+step, c x z bandwidth rule incl. the floor, which R20's record shows binding on the pose task's c
+block), R25 float64 polish (code, his call), R26 latent prior N(0, I) on z, R27 the flow as exact
+density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
+- **R22 (2026-10-14, 16 rows x 4 strips at the pin + a Panda joint-space check; 5.5 h on 4 nodes).**
+  Every learned variant keeps the pin's 480 / 480 and its verdict against IPOPT on every row. **The
+  temperature is inert** (T = 10 within noise on 15 of 16 rows, T = 0.1 buys nothing and costs wall
+  on 4) -- **`svgd_temperature` and `svgd_metric_temperature` are REMOVED (Thomas; c308934)**, the
+  T = 1 step bit-identical. **The multiplier box is inert on the learned arm on all 16 rows**
+  (unboxed multipliers run to 1e11 without moving the selected particle) **but not on the
+  joint-space ablation** (Panda grasp 464 v 480 to the clock, p = 3e-5, wall 4.6x), so it stays as
+  a stated setting of that arm. **The resample earns its place on the screw arm only**: `drop`
+  loses 2-3 cells per screw row (whole swarms dead, 20-22 of 64 particles dropped per grasp cell),
+  inert on the other three robots; R27's density term is the structural answer. Everything matched
+  its pre-registered mechanism. One item segfaulted (one-off, resubmitted).
+- **R23 screen (12 Panda cells, laptop) before its 480-cell round**: delta 0 (`svgd_gn_lm=0`) and
+  tolerance row units are DEAD at the pin (every particle redrawn at every check, clock stops) --
+  **the Levenberg delta is what fixes the gauge along the learned formulation's own 6-fold (c, z)
+  redundancy** (`dq / d(c, z)` is 7 x 13, so the GN block is rank-deficient wherever the region rows
+  are inactive), the phase-3 candidate R26's latent prior replaces; the identity metric, delta 1
+  and delta 100 solve the screen but cost +24-27% (identity, delta 1) or 2x the steps (delta 100).
+  Stage SVGD_R23 (those three on the 16 rows, 1152 items) is running (jobs 5923288-91).
 
 **Still open**: the paper tables from R20 (`report_svgd` stage mode; the multistart column via
 `scripts/svgd/cross/`; Thomas writes every word -- numbers and verdicts only from here);
