@@ -347,7 +347,8 @@ def test_stage_tag_parsing_every_variant():
         for v in GM.SVGD_ROUNDS[r]:
             want = tuple(GM.svgd_variant_arms(r, v).split(","))
             assert variants[v]["arms"] == want, (v, variants[v]["arms"])
-            assert want == (("numerical",) if (r, v) == ("SVGD_R20", "pin2kq")
+            assert want == (("numerical",) if (r, v) in (("SVGD_R20", "pin2kq"),
+                                                          ("SVGD_R22", "clipoffjs"))
                             else tuple(GM.SVGD_ROUND_ARMS.split(","))), (r, v, want)
     ## Not stage tags: the smoke's, the cluster smoke's, the record's, a twin with a variant token.
     for bad in (M.make_tag("panda", "mugshelf", "paired", "al64", 10, 20),
@@ -516,7 +517,8 @@ def test_stage_catalogue_robots_and_seeds():
     _, iiwa, _ = _stage_tags("iiwa")
     ## The iiwa: its twin (stage PAPER's IPOPT run, the record's rows at paper conditions), the
     ## primary, then R17's kernel-space variants, learned arm only, on the n4 chart at seed 1.
-    assert list(iiwa) == [R.STAGE_TWIN, "kq", "kcz", "kczrho1e5", "pin2", "pin2kq"], list(iiwa)
+    assert list(iiwa) == [R.STAGE_TWIN, "kq", "kcz", "kczrho1e5", "pin2", "pin2kq",
+                          "clipoff", "drop2", "T10v2", "T0p1", "ident", "lm1", "lm100"], list(iiwa)
     assert iiwa[R.STAGE_TWIN]["manifest"] == "PAPER" and iiwa["kq"]["manifest"] == "SVGD_R12"
     ## R21: the joint-space ablation at the pin on the three non-Panda record contexts.
     assert iiwa["pin2kq"]["manifest"] == "SVGD_R21" and iiwa["pin2kq"]["arms"] == ("numerical",)
@@ -645,9 +647,15 @@ def test_stage_seed2_pairs_its_own_twin_only():
 OTHER_ROBOTS = {"screw7_p050": ("n6", "SVGD_R15"), "soft12": ("n6", "SVGD_R16")}
 ## The rounds after the primary on each of those robots: R17S's / R17P's kernel-space variants.
 OTHER_ROBOT_ROUNDS = {"screw7_p050": {"kcz": "SVGD_R17S", "kczrho1e5": "SVGD_R17S",
-                                      "pin2": "SVGD_R20", "pin2kq": "SVGD_R21"},
+                                      "pin2": "SVGD_R20", "pin2kq": "SVGD_R21",
+                                      "clipoff": "SVGD_R22", "drop2": "SVGD_R22",
+                                      "T10v2": "SVGD_R22", "T0p1": "SVGD_R22",
+                                      "ident": "SVGD_R23", "lm1": "SVGD_R23", "lm100": "SVGD_R23"},
                       "soft12": {"kcz": "SVGD_R17P", "kczrho1e5": "SVGD_R17P", "pin2": "SVGD_R20",
-                                 "pin2kq": "SVGD_R21"}}
+                                 "pin2kq": "SVGD_R21",
+                                 "clipoff": "SVGD_R22", "drop2": "SVGD_R22",
+                                 "T10v2": "SVGD_R22", "T0p1": "SVGD_R22",
+                                 "ident": "SVGD_R23", "lm1": "SVGD_R23", "lm100": "SVGD_R23"}}
 
 
 def test_stage_kernel_and_two_factor_rounds():
