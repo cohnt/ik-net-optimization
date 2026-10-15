@@ -2138,6 +2138,10 @@ model. Facts that shape the reading, found while building it (the scoping and th
   converged in 31 / 33 outer steps (pin ~8, `lp1` 85 / 132), `|z|` 0.64 / 0.79 (`lp1` 0.34 / 0.34),
   cost 3.68 / 4.81 (pin 3.35 / 4.62, `lp1` 3.73 / 5.48), the negative log density at the returned
   point -32.8 / -33.7, 60-61 feasible particles, 0-2 redraws.
+- The same two cells under IPOPT with the term on (the Drake cost path, 60 s): both feasible at
+  the returned point, 559 / 384 majors to the clock, cost 6.43 / 4.79, `|z|` 1.3 / 0.78, density
+  -31.2 / -34.2; 0 error cells. The term is a stated deviation from the measured learned formulation
+  and is NOT fielded on the Drake solvers; the smoke only shows the shared cost evaluator runs.
 
 **What runs.** R22's shape (the learned arm, the record's sixteen rows, 480 cells, 180 s, seed 1,
 24 shards, the V3 pin), **on a RESTAGED cluster tree** (the term is new code; the restage waits
