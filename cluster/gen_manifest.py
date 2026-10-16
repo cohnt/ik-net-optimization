@@ -2986,10 +2986,18 @@ SVGD_RECORD_CONTEXTS = ((SVGD_ROBOT, SVGD_RUNG, SVGD_SEED), ("iiwa", "n4", SVGD_
 #: as R20 / R22 / R23 / R24 / R26.
 #: R28, part 1 (the correction-penalty ladder at the pin, below): the four record robots again,
 #: as R20 / R22 / R23 / R24 / R26 / R27.
+#: R29 (the stop / select objective round, the first v4 stage, below) and R30 (the V4 pin's record
+#: re-measure, below): the four record robots again. R30's `pin4s2` runs on the SEED-2 record contexts
+#: instead (SVGD_VARIANT_SCOPE), as R7 / R19 ran the Panda's.
 SVGD_STAGE_CONTEXTS = {"SVGD_R20": SVGD_RECORD_CONTEXTS, "SVGD_R21": SVGD_RECORD_CONTEXTS[1:],
                        "SVGD_R22": SVGD_RECORD_CONTEXTS, "SVGD_R23": SVGD_RECORD_CONTEXTS,
                        "SVGD_R24": SVGD_RECORD_CONTEXTS, "SVGD_R26": SVGD_RECORD_CONTEXTS,
-                       "SVGD_R27": SVGD_RECORD_CONTEXTS, "SVGD_R28": SVGD_RECORD_CONTEXTS}
+                       "SVGD_R27": SVGD_RECORD_CONTEXTS, "SVGD_R28": SVGD_RECORD_CONTEXTS,
+                       "SVGD_R29": SVGD_RECORD_CONTEXTS, "SVGD_R30": SVGD_RECORD_CONTEXTS}
+#: The four record robots at their fielded rungs on grid SEED 2 (R30's `pin4s2`, the V4 pin's seed-2
+#: replication). The Panda's is R7 / R19's context, twinned with SVGD_R7IPOPT; the other three have
+#: no IPOPT twin at seed 2 (SVGD_TWINLESS_CONTEXTS).
+SVGD_RECORD_CONTEXTS_SEED2 = tuple((robot, rung, 2) for robot, rung, _ in SVGD_RECORD_CONTEXTS)
 #: Every chart an svgd context may run on: (robot, rung) -> (checkpoint, the builder of its record
 #: IPOPT rows). The status quo's two adopted rungs (stage_STATUSQUO), plus the screw arm's and the
 #: soft PCS arm's fielded rungs, whose record rows stage REMEASURE / PAPER build from stage_SCREW /
@@ -3005,6 +3013,12 @@ SVGD_TWIN_STAGES = {"SVGD_R2": "SVGD_R2", "SVGD_R7IPOPT": "SVGD_R7"}
 SVGD_TWIN_OF = {("panda", "n6", 1): "SVGD_R2", ("panda", "n6", 2): "SVGD_R7IPOPT",
                 ("iiwa", "n4", 1): "PAPER", (SCREW_PRIMARY, SCREW_ADOPTED[0], 1): "PAPER",
                 ("soft12", SOFT_ADOPTED["soft12"][0], 1): "PAPER"}
+#: Contexts an svgd row may run on WITHOUT an IPOPT twin, declared rather than assumed (every other
+#: context names one in SVGD_TWIN_OF; the selftest refuses a round context in neither): the seed-2
+#: record contexts but the Panda's, which R30's `pin4s2` runs on (2026-10-16). Their rows replicate the
+#: svgd column across grids; the LEAD table prints them "not paired: the twin is MISSING" until an IPOPT
+#: run on that grid exists (scripts/report_svgd.py reads this set).
+SVGD_TWINLESS_CONTEXTS = frozenset(c for c in SVGD_RECORD_CONTEXTS_SEED2 if c not in SVGD_TWIN_OF)
 #: The cluster smokes: tiny grids that pair with nothing. The per-robot ones (every row, both arms,
 #: in their SVGD_STAGE_CONTEXT) are SVGD_ROBOT_SMOKES.
 SVGD_ROBOT_SMOKES = ("SVGD_SMOKE_IIWA", "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT")
@@ -3036,7 +3050,7 @@ SVGD_PINNED_V3 = ["--set", "svgd_kernel=cz", "--set", "svgd_rho=100000",
                   "--set", "svgd_gn_lm=10", "--set", "svgd_lr=0.3"]
 #: The pin for stages from R29 on: SVGD_PINNED_V3 plus the stall patience 3 (Thomas adopted R24's `pat3`,
 #: 2026-10-16; the default moved 5 -> 3 the same day). Named, like every setting that has moved, so a v4
-#: item does not depend on ProgramOptions' default. No stage takes it yet.
+#: item does not depend on ProgramOptions' default. SVGD_R29 and SVGD_R30 are the first stages that take it.
 SVGD_PINNED_V4 = SVGD_PINNED_V3 + ["--set", "svgd_stop_patience=3"]
 #: Options removed from ProgramOptions that EXISTING stages still name (they ran on the staged tree that
 #: has them, and their manifests must regenerate byte-identically), each with the values those stages
@@ -3098,7 +3112,7 @@ SVGD_CLEARANCE_STAGES = ("SVGD_R11", "SVGD_R12", "SVGD_SMOKE_IIWA", "SVGD_R7",
                          "SVGD_SMOKE_SCREW", "SVGD_SMOKE_SOFT",
                          "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
                          "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23",
-                         "SVGD_R24", "SVGD_R26", "SVGD_R27", "SVGD_R28")
+                         "SVGD_R24", "SVGD_R26", "SVGD_R27", "SVGD_R28", "SVGD_R29", "SVGD_R30")
 #: (b): the lifted step budget. ONE knob; the IPOPT `max_iter` is removed from svgd items.
 SVGD_STEP_CAP = 1000000
 SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
@@ -3271,6 +3285,27 @@ SVGD_ROUNDS = {
     "SVGD_R28": {"qc0": (["correction_cost_weight=0"], 24, SVGD_BOTH),
                 "qc1": (["correction_cost_weight=1"], 24, SVGD_BOTH),
                 "qc100": (["correction_cost_weight=100"], 24, SVGD_BOTH)},
+    ## R29, the stop / select objective round (pre-registered 2026-10-16; the first v4 stage,
+    ## SVGD_PINNED_V4) on the four record robots (SVGD_RECORD_CONTEXTS): R26 showed a regulariser inside
+    ## the STALL RULE and the SELECTION delays the stop and relocates the selection, so
+    ## `svgd_stop_select_objective=shared` has both read the shared objective (the learned-only
+    ## regularisers excluded by name, as benchmark.reported_cost) while the DRIVE keeps the full one.
+    ## `pin4` is the V4 pin with zero overrides (the control: the record rows at patience 3), `so` the
+    ## shared objective alone (one factor), and `lp0p1so` / `lp1so` R26's `lp0p1` / `lp1` latent-prior
+    ## doses with the shared objective (DECLARED two-factor, SVGD_DECLARED_FACTORS; `pin4` declared at
+    ## zero, as R20's `pin2`). Learned arm only, no joint-space variant.
+    "SVGD_R29": {"pin4": ([], 24, SVGD_BOTH),
+                "so": (["svgd_stop_select_objective=shared"], 24, SVGD_BOTH),
+                "lp0p1so": (["latent_cost_weight=0.1", "svgd_stop_select_objective=shared"], 24, SVGD_BOTH),
+                "lp1so": (["latent_cost_weight=1", "svgd_stop_select_objective=shared"], 24, SVGD_BOTH)},
+    ## R30, the V4 pin's record re-measure (2026-10-16): `pin4kq`, the joint-space ablation at V4
+    ## (exactly R20 / R21's `pin2kq` shape on the V4 pin: kernel q, `--arms numerical`, its own items)
+    ## on the four record contexts; `pin4s2`, the V4 pin (zero overrides) learned arm on the SEED-2
+    ## record contexts (SVGD_RECORD_CONTEXTS_SEED2), the seed-2 replication -- the Panda's pairs with
+    ## SVGD_R7IPOPT, the other three have no seed-2 twin (SVGD_TWINLESS_CONTEXTS). Both scoped in
+    ## SVGD_VARIANT_SCOPE and declared (one and zero factors) in SVGD_DECLARED_FACTORS.
+    "SVGD_R30": {"pin4kq": (["svgd_kernel=q"], 24, SVGD_BOTH),
+                "pin4s2": ([], 24, SVGD_BOTH)},
 }
 #: Variants allowed MORE than one factor: round -> {variant: its factors}, each factor the overrides
 #: that make it up, so a variant's factor count is the length of its declaration. The selftest holds
@@ -3312,6 +3347,12 @@ SVGD_DECLARED_FACTORS = {
         "fd0p1": (("latent_cost_weight=0.1",), ("flow_logdet_weight=0.1",)),
         "fd1": (("latent_cost_weight=1",), ("flow_logdet_weight=1",)),
     },
+    "SVGD_R29": {
+        "pin4": (),
+        "lp0p1so": (("latent_cost_weight=0.1",), ("svgd_stop_select_objective=shared",)),
+        "lp1so": (("latent_cost_weight=1",), ("svgd_stop_select_objective=shared",)),
+    },
+    "SVGD_R30": {"pin4kq": (("svgd_kernel=q",),), "pin4s2": ()},
 }
 #: The rounds' allotment base, (learned, joint space) seconds per cell -- an ASSUMPTION from the
 #: cluster smoke (pose paired, 4 cells, 60 s: learned 4-7 s, joint space 9-42 s), not a measurement.
@@ -3329,7 +3370,9 @@ SVGD_VARIANT_SCOPE = {"SVGD_R20": {"pin2kq": dict(arms="numerical",
                                                   contexts=((SVGD_ROBOT, SVGD_RUNG, SVGD_SEED),))},
                       "SVGD_R21": {"pin2kq": dict(arms="numerical")},   # contexts: the stage's three
                       "SVGD_R22": {"clipoffjs": dict(arms="numerical",
-                                                     contexts=((SVGD_ROBOT, SVGD_RUNG, SVGD_SEED),))}}
+                                                     contexts=((SVGD_ROBOT, SVGD_RUNG, SVGD_SEED),))},
+                      "SVGD_R30": {"pin4kq": dict(arms="numerical"),     # contexts: the stage's four
+                                   "pin4s2": dict(contexts=SVGD_RECORD_CONTEXTS_SEED2)}}
 
 
 def svgd_variant_arms(stage, variant):
@@ -3424,6 +3467,17 @@ SVGD_ALLOWED_SETS = {
     "SVGD_R28": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
                 "svgd_outer_iters", "svgd_kernel", "svgd_rho",
                 "svgd_paired_init", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend"},
+    ## SVGD_R29 / R30 (v4): R28's set plus the V4 pin's svgd_stop_patience; R29 adds the two options
+    ## its variants name (svgd_stop_select_objective, latent_cost_weight). R30's `pin4kq` names
+    ## svgd_kernel, already a pin name.
+    "SVGD_R29": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                "svgd_outer_iters", "svgd_kernel", "svgd_rho",
+                "svgd_paired_init", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend",
+                "svgd_stop_patience", "svgd_stop_select_objective", "latent_cost_weight"},
+    "SVGD_R30": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                "svgd_outer_iters", "svgd_kernel", "svgd_rho",
+                "svgd_paired_init", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend",
+                "svgd_stop_patience"},
 }
 #: ProgramOptions defaults, as source text, that the manifests RELY ON rather than set (checked from
 #: src/generic_program.py's text, torch-free). The current defaults, the 2026-10-12 pin's; the four
@@ -3638,8 +3692,8 @@ def _svgd_seconds(stage, args):
                     SVGD_R20_MEAN_WALL[_svgd_r20_robot(args)][(task, start)])
     elif stage == "SVGD_R21":                     # joint space only, the Panda's R20 measure
         per_cell = SVGD_R21_JS_CELL_S[task]
-    elif stage == "SVGD_R22" and _svgd_flag(args, "--arms") == "numerical":
-        per_cell = SVGD_R21_JS_CELL_S[task]       # clipoffjs: the same joint-space measure as R21
+    elif stage in ("SVGD_R22", "SVGD_R30") and _svgd_flag(args, "--arms") == "numerical":
+        per_cell = SVGD_R21_JS_CELL_S[task]       # clipoffjs / pin4kq: the same joint-space measure as R21
     elif stage in SVGD_ROUNDS:
         per_cell = SVGD_ROUND_CELL_S[0]           # learned arm only
     else:                                         # the smoke: charged at the clock, every arm
@@ -3792,6 +3846,14 @@ def svgd_allotment():
           f"{sum(worst) / 3600:.1f} solve-h, {sum(worst) / 3600 / SVGD_PROCS:.1f} node-h, "
           f"{sum(worst) / 3600 / SVGD_PROCS / SVGD_NODES:.1f} h on {SVGD_NODES} idle nodes; "
           f"longest item {max(worst) / 3600:.2f} h.")
+    for stage in ("SVGD_R29", "SVGD_R30"):
+        worst = [int(_svgd_flag(i["args"], "--targets")) * int(_svgd_flag(i["args"], "--guesses"))
+                 / int(_svgd_flag(i["args"], "--shard").split("/")[1]) * STATUSQUO_WALL
+                 + SVGD_ITEM_OVERHEAD_S for i in stage_SVGD(stage)]
+        print(f"\n  {stage} WORST CASE (every cell at the clock, one arm per item): "
+              f"{sum(worst) / 3600:.1f} solve-h, {sum(worst) / 3600 / SVGD_PROCS:.1f} node-h, "
+              f"{sum(worst) / 3600 / SVGD_PROCS / SVGD_NODES:.1f} h on {SVGD_NODES} idle nodes; "
+              f"longest item {max(worst) / 3600:.2f} h.")
     print("  Read the smoke's mean wall per cell against its 60 s clock before trusting the R1 lines.")
     print("\nMAINTENANCE: SuperCloud compute is down Mon 2026-10-12 evening to Wed 10-14 morning;")
     print("running jobs are killed and queued jobs do not survive. --reclaim and resubmit after.")
@@ -6028,34 +6090,43 @@ def selftest():
              "SVGD_R18": (6, 144), "SVGD_R19": (4, 96), "SVGD_R17P": (8, 192),
              "SVGD_R20": (20, 480), "SVGD_R21": (12, 288), "SVGD_R22": (68, 1632),
              "SVGD_R23": (48, 1152), "SVGD_R24": (176, 4224), "SVGD_R26": (64, 1536),
-             "SVGD_R27": (48, 1152), "SVGD_R28": (48, 1152)} or \
+             "SVGD_R27": (48, 1152), "SVGD_R28": (48, 1152), "SVGD_R29": (64, 1536),
+             "SVGD_R30": (32, 768)} or \
             sv_expected["SVGD_SMOKE_R20"] != (8, 8):
-        sv_fails.append("rounds R3-R28 are not 8/8/8/12/12/12/2/8/4/4/16/16/4/4/8/8/6/4/8/20/12/68/48/176/64/48/48 runs, "
-                        "128/192/160/288/288/288/48/192/96/96/384/384/96/96/192/192/144/96/192/480/288/1632/1152/4224/1536/1152/1152 "
+        sv_fails.append("rounds R3-R30 are not 8/8/8/12/12/12/2/8/4/4/16/16/4/4/8/8/6/4/8/20/12/68/48/176/64/48/48/64/32 runs, "
+                        "128/192/160/288/288/288/48/192/96/96/384/384/96/96/192/192/144/96/192/480/288/1632/1152/4224/1536/1152/1152/1536/768 "
                         "items, or SMOKE_R20 is not 8 items")
     ## R20's scope: `pin2` (learned) on exactly the four record contexts, `pin2kq` (joint space) on
     ## the Panda only, as its own items; every other round variant the rounds' learned arm on its
     ## round's one context. R22's `clipoffjs` (joint space, the multiplier-box confirmation) is
-    ## scoped like `pin2kq`, Panda only.
+    ## scoped like `pin2kq`, Panda only. R30's `pin4kq` (joint space) runs the four record contexts,
+    ## its `pin4s2` (learned) the four SEED-2 record contexts.
+    scoped = {("SVGD_R20", "pin2"): ("learned", list(SVGD_RECORD_CONTEXTS)),
+              ("SVGD_R20", "pin2kq"): ("numerical", [(SVGD_ROBOT, SVGD_RUNG, SVGD_SEED)]),
+              ("SVGD_R21", "pin2kq"): ("numerical", list(SVGD_RECORD_CONTEXTS[1:])),
+              ("SVGD_R22", "clipoffjs"): ("numerical", [(SVGD_ROBOT, SVGD_RUNG, SVGD_SEED)]),
+              ("SVGD_R30", "pin4kq"): ("numerical", list(SVGD_RECORD_CONTEXTS)),
+              ("SVGD_R30", "pin4s2"): ("learned", [(r, g, 2) for r, g, _ in SVGD_RECORD_CONTEXTS])}
     for r, variants in SVGD_ROUNDS.items():
         for v in variants:
-            want_scope = ((SVGD_ROUND_ARMS, svgd_contexts(r)) if (r, v) not in
-                          {("SVGD_R20", "pin2"), ("SVGD_R20", "pin2kq"), ("SVGD_R21", "pin2kq"),
-                           ("SVGD_R22", "clipoffjs")} else
-                          ("learned", list(SVGD_RECORD_CONTEXTS)) if v == "pin2" else
-                          ("numerical", [(SVGD_ROBOT, SVGD_RUNG, SVGD_SEED)])
-                          if r in ("SVGD_R20", "SVGD_R22") else
-                          ("numerical", list(SVGD_RECORD_CONTEXTS[1:])))
+            want_scope = scoped.get((r, v), (SVGD_ROUND_ARMS, svgd_contexts(r)))
             if (svgd_variant_arms(r, v), svgd_variant_contexts(r, v)) != want_scope:
                 sv_fails.append(f"{r}: variant {v} runs {svgd_variant_arms(r, v)} on "
                                 f"{svgd_variant_contexts(r, v)}, expected {want_scope}")
     if set(SVGD_STAGE_CONTEXTS) != {"SVGD_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23", "SVGD_R24",
-                                    "SVGD_R26", "SVGD_R27", "SVGD_R28"} or \
+                                    "SVGD_R26", "SVGD_R27", "SVGD_R28", "SVGD_R29", "SVGD_R30"} or \
             sorted(r for r, _, _ in SVGD_RECORD_CONTEXTS) != sorted(
                 ["panda", "iiwa", SCREW_PRIMARY, "soft12"]) or \
             any(c not in SVGD_TWIN_OF for c in SVGD_RECORD_CONTEXTS):
-        sv_fails.append("SVGD_STAGE_CONTEXTS is not R20 (and R21, R22, R23, R24, R26, R27, R28) on "
-                        "the four record robots, each with a twin")
+        sv_fails.append("SVGD_STAGE_CONTEXTS is not R20 (and R21, R22, R23, R24, R26, R27, R28, R29, "
+                        "R30) on the four record robots, each with a twin")
+    ## The twinless contexts: exactly the seed-2 record contexts with no SVGD_TWIN_OF entry (the
+    ## Panda's has SVGD_R7IPOPT), each one some round variant runs.
+    round_ctxs = {c for r, vs in SVGD_ROUNDS.items() for v in vs for c in svgd_variant_contexts(r, v)}
+    if SVGD_TWINLESS_CONTEXTS != {(r, g, 2) for r, g, _ in SVGD_RECORD_CONTEXTS if r != SVGD_ROBOT} \
+            or SVGD_TWINLESS_CONTEXTS & set(SVGD_TWIN_OF) or not SVGD_TWINLESS_CONTEXTS <= round_ctxs:
+        sv_fails.append(f"SVGD_TWINLESS_CONTEXTS {sorted(SVGD_TWINLESS_CONTEXTS)} is not the seed-2 "
+                        f"record contexts but the Panda's, each run by a round and none with a twin")
     ## The declared multi-factor variants: each one's overrides are EXACTLY its declared
     ## factors' (as a multiset, so nothing missing and nothing extra), on disjoint option names,
     ## at least two factors each, every declared variant one its round runs, and each declared
@@ -6079,9 +6150,12 @@ def selftest():
              "SVGD_R20": {"pin2": 0, "pin2kq": 1}, "SVGD_R21": {"pin2kq": 1},
              "SVGD_R22": {"clipoffjs": 2},
              "SVGD_R26": {"lp1notr": 2},
-             "SVGD_R27": {"fd0p1": 2, "fd1": 2}}:
+             "SVGD_R27": {"fd0p1": 2, "fd1": 2},
+             "SVGD_R29": {"pin4": 0, "lp0p1so": 2, "lp1so": 2},
+             "SVGD_R30": {"pin4kq": 1, "pin4s2": 0}}:
         sv_fails.append("the declared factor counts are not R14's 2/2/2/2, R17 / R17S's 2, "
-                        "R18's 3/3, R19 / R17P's 2, R20's 0 / 1, R22's 2, R26's 2 and R27's 2/2")
+                        "R18's 3/3, R19 / R17P's 2, R20's 0 / 1, R22's 2, R26's 2, R27's 2/2, "
+                        "R29's 0 / 2 / 2 and R30's 1 / 0")
     ## A variant token means one setting wherever it runs (the reporter keys a robot's columns by
     ## token, and `kcz` on the iiwa is read as R13's `kcz` carried there): same overrides in every
     ## round that runs it, ON THE SAME PIN (a token's overrides mean nothing without the pin under
@@ -6109,11 +6183,16 @@ def selftest():
         sv_fails.append("SVGD_RUNGS is not the adopted rungs plus the screw and soft PCS arms' "
                         "fielded charts")
     for stage in SVGD_STAGES:
-        for ctx in svgd_contexts(stage):
+        ## The stage's contexts and, for a round, every variant's own (R30's `pin4s2`: seed 2).
+        ctxs = svgd_contexts(stage) + ([c for v in SVGD_ROUNDS[stage]
+                                        for c in svgd_variant_contexts(stage, v)]
+                                       if stage in SVGD_ROUNDS else [])
+        for ctx in dict.fromkeys(ctxs):
             if ctx[:2] not in rung_ckpt:
                 sv_fails.append(f"{stage}: context {ctx} is not a fielded rung (SVGD_RUNGS)")
-            if stage not in SVGD_SMOKES and ctx not in SVGD_TWIN_OF:
-                sv_fails.append(f"{stage}: context {ctx} has no IPOPT twin in SVGD_TWIN_OF")
+            if stage not in SVGD_SMOKES and ctx not in SVGD_TWIN_OF and ctx not in SVGD_TWINLESS_CONTEXTS:
+                sv_fails.append(f"{stage}: context {ctx} has no IPOPT twin in SVGD_TWIN_OF (and is "
+                                f"not declared in SVGD_TWINLESS_CONTEXTS)")
     for ctx, st in SVGD_TWIN_OF.items():
         if st != "PAPER" and (st not in SVGD_TWIN_STAGES or svgd_context(st) != ctx):
             sv_fails.append(f"SVGD_TWIN_OF[{ctx}] = {st} does not run on {ctx}")
@@ -6128,7 +6207,6 @@ def selftest():
     r2_items = {it["id"]: it for it in stage_SVGD("SVGD_R2")}
     strip = lambda x: x[:x.index("--tag")] + x[x.index("--tag") + 2:]
     for stage, (want_runs, want_items) in sv_expected.items():
-        stage_ctx = {c[0]: c for c in svgd_contexts(stage)}
         rnd = SVGD_ROUND_SMOKES.get(stage, stage)     # whose variants a stage runs (rounds, round smokes)
         items = stage_SVGD(stage)
         ids = [it["id"] for it in items]
@@ -6145,13 +6223,19 @@ def selftest():
         for it in items:
             a = it["args"]
             tag = _svgd_flag(a, "--tag")
+            ## The variant an svgd item carries (the tag's last field), and the --arms it must run:
+            ## a round's (or round smoke's) variant scope, else both arms.
+            item_variant = tag.rsplit("_", 1)[1] if _svgd_flag(a, "--solver") == "svgd" else None
+            ## The item's context, by robot: a round variant's own scope (one context per robot
+            ## within a variant -- R30's `pin4s2` at seed 2 beside `pin4kq` at seed 1), else the
+            ## stage's.
+            stage_ctx = {c[0]: c for c in (
+                svgd_variant_contexts(stage, item_variant)
+                if stage in SVGD_ROUNDS and item_variant in SVGD_ROUNDS[stage] else svgd_contexts(stage))}
             if it["robot"] not in stage_ctx:
                 sv_fails.append(f"{stage}: {it['id']} runs {it['robot']}, not one of its contexts")
                 continue
             robot, rung, seed = stage_ctx[it["robot"]]
-            ## The variant an svgd item carries (the tag's last field), and the --arms it must run:
-            ## a round's (or round smoke's) variant scope, else both arms.
-            item_variant = tag.rsplit("_", 1)[1] if _svgd_flag(a, "--solver") == "svgd" else None
             if rnd in SVGD_ROUNDS and item_variant in SVGD_ROUNDS[rnd]:
                 want_arms = svgd_variant_arms(rnd, item_variant)
                 if stage in SVGD_ROUNDS and (robot, rung, seed) not in \
@@ -6389,6 +6473,10 @@ def selftest():
               "joint space, its own items) on the Panda, 16 + 4 logical runs / 480 items, each context "
               "twinned (SVGD_R2 / PAPER); SVGD_SMOKE_R20: both, Panda, 8 items; tokens R20's alone; "
               "SVGD_R21: pin2kq on the other three record contexts, 12 logical runs / 288 items")
+        print("ok   stages SVGD_R29 (v4: pin4 / so / declared lp0p1so, lp1so on the four record "
+              "contexts, learned, 64 logical runs / 1536 items) and SVGD_R30 (v4: pin4kq joint space "
+              "on the four record contexts + pin4s2 learned on their seed-2 grids, 32 logical runs / "
+              "768 items; seed-2 twins: the Panda's SVGD_R7IPOPT, the other three declared twinless)")
         print(f"ok   the clearance collision row (svgd_collision_backend=clearances) on exactly "
               f"{'/'.join(SVGD_CLEARANCE_STAGES)}, every svgd item of each, none elsewhere "
               f"(submit those with DRAKE_ENV=crc)")
@@ -6548,6 +6636,7 @@ def main():
                                  "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
                                  "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23",
                                  "SVGD_R24", "SVGD_R26", "SVGD_R27", "SVGD_R28",
+                                 "SVGD_R29", "SVGD_R30",
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "A", "B", "B2", "B3",
