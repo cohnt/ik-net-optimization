@@ -965,6 +965,15 @@ DEPENDENCY=afterok:<swap job> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh
 DEPENDENCY=afterany:<R29 jobs, colon-separated> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R30.txt 4
 ```
 
+**Done 2026-10-16 17:05 EDT: side tree `repo-next` staged at f312793 (from the refreshed staging clone,
+`BRANCH=svgd-tune bash cluster/make_staging_clone.sh ~/.cache/learned-ik-svgd-tune/stage-svgd`, then
+`STAGE_SUBDIR=repo-next bash $CLONE/cluster/stage_code.sh`; the worktree itself is refused, exit 4);
+manifests R29 `e1066b43` / R30 `0886ce3a` in both trees; swap job **5943005** (afterany R28's
+5926659/66/67/68), R29 **5943006-5943009** (afterok 5943005), R30 **5943010-5943013** (afterany R29).
+Local 2-cell smoke (Panda pose native, 60 s): `so` 2 / 2 at the pin's cost and steps; `lp1so` 2 / 2,
+cost 3.354 / 4.610 against the pin's 3.35 / 4.62 at 6-11 steps and `|z|` 0.90 / 3.17 (R26's `lp1` on the
+same cells: 3.73 / 5.48 at 85-132 steps, `|z|` 0.34) -- the pre-registered prediction, on two cells.**
+
 `swap_staged_tree.sh` refuses if anything still runs out of `repo/`, OVERLAYS `repo-next/` onto
 `repo/` (no `--delete`, so the cpp build and cluster-only checkpoints survive), copies
 `.staged-commit`, and `cmp`s the three files that matter; `afterok` means R29 never starts on an
