@@ -538,6 +538,86 @@ def test_stop_reasons_and_log():
                         svgd_multiplier_max=ProgramOptions().svgd_multiplier_max)
 
 
+def _latent_pose_program(weight):
+    """A Panda pose LEARNED program on `pose_program`'s scene and target, built with
+    `latent_cost_weight = weight`: the costs are fixed at `create_prog`, so the regulariser
+    needs its own program (cached by weight)."""
+    key = ("learned", "latent", float(weight))
+    if key not in _POSE:
+        pose_program("learned")                                # the shared diagram and target
+        with HiddenPrints():
+            p = PandaIKProgram(_POSE["diagram"], model=T._solver("panda"),
+                               options=replace(T._options("panda", "pose", "learned"),
+                                               latent_cost_weight=float(weight)))
+            p.create_prog(_POSE["target"])
+        _POSE[key] = p
+    return _POSE[key]
+
+
+def test_stop_select_objective():
+    """`svgd_stop_select_objective` (stage SVGD_R29): which objective the stall rule and the
+    selection read. On a Panda pose learned cell with `latent_cost_weight = 1` (so the full
+    objective and the shared one differ by a material regulariser), the final selection's
+    candidates are re-derived from an INDEPENDENT batched evaluation of the selection's own
+    swarm: under 'shared' the selected particle is the argmin of `F_reported` among those
+    feasible at the solve's `feas_level`, under 'full' the argmin of `F`. The selection is
+    captured by wrapping `SvgdSolver._select` (its last call is the one returned). An unknown
+    value is refused at options construction."""
+    print("\n--- stop / select objective: 'shared' vs 'full' (latent_cost_weight=1) ---")
+    try:
+        ProgramOptions(svgd_stop_select_objective="bogus")
+        refused = False
+    except ValueError:
+        refused = True
+    check("stop/select objective: an unknown value raises at ProgramOptions construction", refused)
+    p = _latent_pose_program(1.0)
+    names = {b.evaluator().get_description() for b in p.prog.GetAllCosts()}
+    check("stop/select objective: the program carries the latent regulariser",
+          "LatentRegularizerCost" in names, str(names))
+    orig = SvgdSolver._select
+    for mode in ("shared", "full"):
+        captured = {}
+
+        def spy(self, X, S, stop, feas_level):
+            sel = orig(self, X, S, stop, feas_level)
+            captured.update(X=X.detach().clone(), sel=sel, bp=self._tg.bp, feas_level=feas_level)
+            return sel
+        SvgdSolver._select = spy
+        try:
+            _, d, _ = run_cell(p, "pose", f"objective={mode}",
+                               dict(svgd_n=32, svgd_kernel="q", svgd_outer_iters=300,
+                                    svgd_stop_select_objective=mode), wall=30.0, quiet=True)
+        finally:
+            SvgdSolver._select = orig
+        tag = f"stop/select objective={mode}"
+        check(f"{tag}: the solve stops on the stall rule (converged)",
+              d.stop_reason == "converged" and d.status_name == "converged",
+              f"{d.stop_reason} {d.status_name}")
+        sel, bp = captured["sel"], captured["bp"]
+        with torch.no_grad():
+            ev = bp.evaluate(captured["X"])
+        F_full = torch.nan_to_num(ev.F, nan=float("inf")).cpu().double().numpy()
+        F_shared = torch.nan_to_num(ev.F_reported, nan=float("inf")).cpu().double().numpy()
+        feas = np.asarray(sel.feas, dtype=bool)
+        chosen, other = (F_shared, F_full) if mode == "shared" else (F_full, F_shared)
+        amin = int(np.argmin(np.where(feas, chosen, np.inf)))
+        amin_other = int(np.argmin(np.where(feas, other, np.inf)))
+        print(f"    [{mode}] n_feasible {sel.n_feasible} at feas_level {captured['feas_level']:.3g}; "
+              f"selected {sel.selected}, candidates {sel.cands}; argmin of the chosen objective "
+              f"{amin}, of the other {amin_other}; F {F_full[sel.selected]:.6g} "
+              f"F_reported {F_shared[sel.selected]:.6g}; outer {d.iterations}")
+        check(f"{tag}: F_reported is finite wherever F is",
+              bool(np.all(np.isfinite(F_shared[np.isfinite(F_full)]))))
+        check(f"{tag}: the candidates are the feasible particles in order of the chosen objective",
+              sel.n_feasible > 0 and sel.cands == [int(i) for i in np.argsort(
+                  np.where(feas, chosen, np.inf), kind="stable")[:min(len(sel.cands), sel.n_feasible)]],
+              f"{sel.cands}")
+        ## The first candidate is selected unless the exact Drake re-check rejected it.
+        check(f"{tag}: the selected particle is the argmin of the chosen objective among the "
+              f"feasible", sel.selected == amin or (sel.cands[0] == amin and sel.selected in sel.cands[1:]),
+              f"selected {sel.selected} argmin {amin} candidates {sel.cands}")
+
+
 def test_step_with_kernel_off_is_pgd_on_the_programs_L():
     """On the real pose programs (float64 swarm, collision row included), one step with
     `svgd_kernel = none` and `svgd_metric = identity` is projected gradient descent on the
@@ -753,7 +833,7 @@ def main():
     if "short" in which:
         tests += [test_closed_form_derivatives_match_autograd, test_scaled_rows_map_back_to_drake_rows,
                   test_grasp_cells, test_determinism, test_wall_clock_stop, test_nan_injection,
-                  test_cem_warmup_toggle, test_stop_reasons_and_log,
+                  test_cem_warmup_toggle, test_stop_reasons_and_log, test_stop_select_objective,
                   test_step_with_kernel_off_is_pgd_on_the_programs_L, test_graph_replay_is_bitwise,
                   test_benchmark_subprocess]
     if "sweep" in which:

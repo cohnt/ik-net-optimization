@@ -234,6 +234,7 @@ SVGD_ENUM_FIELDS = {
     "svgd_row_units": ("natural", "tolerance"),
     "svgd_collision_backend": ("autodiff", "clearances"),
     "svgd_resample": ("native", "drop", "keep"),
+    "svgd_stop_select_objective": ("full", "shared"),
 }
 
 
@@ -728,6 +729,7 @@ class ProgramOptions:
     svgd_time_reserve: float = field(default=0.1, metadata={"help": "svgd: fraction of `max_wall_time` held back from the swarm for the selection and the Drake re-check"})
     svgd_stop_patience: int = field(default=3, metadata={"help": "svgd: once a particle is feasible at the gate, stop (converged) after this many consecutive outer checks at which the best feasible particle's objective improved by less than svgd_stop_rel (3: adopted 2026-10-16 from round R24's `pat3`; rounds R1-R28 ran 5)"})
     svgd_stop_rel: float = field(default=1e-3, metadata={"help": "svgd: the relative improvement of the best feasible objective that counts as progress for the stop rule"})
+    svgd_stop_select_objective: str = field(default="full", metadata={"help": "svgd: which objective the STALL RULE and the SELECTION read -- 'full' (the pin: every cost binding, the learned-only regularisers included) or 'shared' (the shared objective only, the regularisers excluded by name as in benchmark.reported_cost; the DRIVE is unchanged either way). Pre-registered as stage SVGD_R29 (2026-10-16)"})
     svgd_warmup: str = field(default="none", metadata={"help": "svgd: 'none' or 'cem' -- a forward-only Cross-Entropy phase on the penalised merit before the gradient phase; a phase of the population method, named in full in every table and A/B tested"})
     svgd_warmup_iters: int = field(default=10, metadata={"help": "svgd: CEM warm-up iterations"})
     svgd_warmup_elite: float = field(default=0.1, metadata={"help": "svgd: CEM elite fraction"})

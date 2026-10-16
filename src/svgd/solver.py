@@ -54,7 +54,9 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
  7. Stop: the clock (`max_wall_time` less `svgd_time_reserve`), the outer-step cap
     (`svgd_outer_iters`, or `max_iter`), or -- once a particle is feasible at the gate --
     `svgd_stop_patience` consecutive checks at which the best feasible particle's objective
-    improved by less than `svgd_stop_rel` (relative): `stop_reason` converged / wall_clock /
+    improved by less than `svgd_stop_rel` (relative) -- the objective `svgd_stop_select_objective`
+    names, the full one (the pin) or the shared one (`F_reported`), as in step 8; the drive
+    always steps on the full one: `stop_reason` converged / wall_clock /
     step_cap; or every particle dropped: `all_dead`, scored infeasible (the returned point is
     NaN, so the harness scores the last recorded iterate under `recovered_*`).
     THE GATE-EDGE RULE (2026-10-12): a stall stop stands only if step 8's float64 re-check
@@ -62,7 +64,7 @@ THE METHOD, every part named (`docs/svgd-solver.md` carries the option table):
     feasibility level `v <= feas_level` (1.0 = the gate) tightened x0.9, and re-tests at the
     next stall (`n_recheck_failures`, `feas_level`). Nothing float64 runs except at a stop.
  8. Select: the particles feasible on the batched rows (at the solve's feasibility level), by
-    objective; the top `svgd_recheck_topk` re-checked exactly in Drake (`prog.EvalBinding`,
+    objective (`svgd_stop_select_objective`); the top `svgd_recheck_topk` re-checked exactly in Drake (`prog.EvalBinding`,
     float64, same x); the first passer is returned, else the smallest Drake violation, scored
     infeasible. A stall stop's selection is the one the gate-edge rule already made.
 
@@ -274,6 +276,9 @@ class _Target:
             raise ValueError(f"row units must be 'natural' or 'tolerance', got {units!r}")
         self.m_e, self.m_i = len(bp.h_spec), len(bp.g_spec)
         self.s = torch.tensor(region_scale(bp), **kw)
+        ## The trace's `min_F_feasible` reads the objective the stall rule reads
+        ## (`svgd_stop_select_objective`; the solver sets this after construction).
+        self.shared_objective = False
         ## The objective's GN Hessian: `w_cfg I` in the configuration (the joint-centering
         ## term, through dq/dx) plus the constant Hessian of the costs quadratic in x.
         _, _, self.H_fx = bp.cost_x_parts(torch.zeros(1, self.n, **kw))
@@ -509,7 +514,8 @@ class _Target:
 
         def med_group(mask, count):
             return nan if count == 0 else habs[:, mask].amax(dim=1).median()
-        F = torch.nan_to_num(ev.F.detach(), nan=float("inf"))
+        F = torch.nan_to_num((ev.out.F_reported if self.shared_objective else ev.F).detach(),
+                             nan=float("inf"))
         minF = torch.where(feas, F, torch.full_like(F, float("inf"))).min()
         minF = torch.where(torch.isfinite(minF), minF, nan)
         ## A particle with a non-finite row has NaN multipliers until it is redrawn at this
@@ -541,7 +547,8 @@ class _Target:
 
         def med_group(mask, count):
             return nan if count == 0 else torch.nanmedian(dead_nan(habs[:, mask].amax(dim=1)))
-        F = torch.nan_to_num(ev.F.detach(), nan=float("inf"))
+        F = torch.nan_to_num((ev.out.F_reported if self.shared_objective else ev.F).detach(),
+                             nan=float("inf"))
         minF = torch.where(feas, F, torch.full_like(F, float("inf"))).min()
         minF = torch.where(torch.isfinite(minF), minF, nan)
         lam = dead_nan(S.lam.abs().amax(dim=1) if S.lam.shape[1] else torch.zeros_like(v))
@@ -607,6 +614,10 @@ class SvgdSolver:
         self._rho = float(opts.svgd_rho)
         self._alpha = self._rho if opts.svgd_dual_lr is None else float(opts.svgd_dual_lr)
         self._resample = str(getattr(opts, "svgd_resample", "native"))
+        ## `svgd_stop_select_objective`: which objective the stall rule and the selection read
+        ## ('full', the pin, the drive's own; or 'shared', `Evaluation.F_reported`). The drive
+        ## never reads it.
+        self._shared_objective = str(getattr(opts, "svgd_stop_select_objective", "full")) == "shared"
 
     ## ----------------------------------- setup ----------------------------------------
     def _build(self):
@@ -627,6 +638,7 @@ class SvgdSolver:
         opts = self.options
         self._tg = _Target(bp, self.tol, units=opts.svgd_row_units,
                            length_scale=float(opts.svgd_row_length_scale))
+        self._tg.shared_objective = self._shared_objective
         self.device = bp.device
         self.n = bp.nvars
 
@@ -830,6 +842,10 @@ class SvgdSolver:
         ## `svgd_resample`: the runaway threshold (`keep` never treats a finite particle as
         ## runaway) and the live set's host mirror (`n_live`; the device copy is `S.live`).
         mode = self._resample
+        ## The objective the stall rule reads (`svgd_stop_select_objective`): the full one under
+        ## 'full' (the pin), the shared one under 'shared'. `best_history`, the trace's
+        ## `min_F_feasible` and the recorded best particle all follow it.
+        shared_obj = self._shared_objective
         q_max = math.inf if mode == "keep" else float(opts.svgd_resample_q_max)
         n_live = N
         live_b = torch.ones(N, dtype=torch.bool, device=self.device)
@@ -876,8 +892,9 @@ class SvgdSolver:
                 live_b = live_b & ~die
                 feas = (v <= feas_level) & ~mask & live_b
                 v = torch.where(live_b, v, torch.full_like(v, float("inf")))
-            F = torch.where(feas, torch.nan_to_num(ev.F, nan=float("inf")),
-                            torch.full_like(ev.F, float("inf")))
+            F_obj = ev.out.F_reported if shared_obj else ev.F
+            F = torch.where(feas, torch.nan_to_num(F_obj, nan=float("inf")),
+                            torch.full_like(F_obj, float("inf")))
             if n_live - n_die > 0:
                 i_best = int(torch.argmin(F).item()) if bool(feas.any()) else int(torch.argmin(v).item())
                 record(X[i_best])
@@ -1004,7 +1021,10 @@ class SvgdSolver:
         with torch.no_grad():
             evf = tg.evaluate(X, need_grad=False)
         v = torch.nan_to_num(evf.infeas, nan=float("inf")).cpu().double().numpy()
-        Fv = torch.nan_to_num(evf.F, nan=float("inf")).cpu().double().numpy()
+        ## Ordered by the objective `svgd_stop_select_objective` names: `evf.F` (the full one,
+        ## the pin) or `evf.out.F_reported` (the shared one); `Fv` is that one.
+        F_sel = evf.out.F_reported if self._shared_objective else evf.F
+        Fv = torch.nan_to_num(F_sel, nan=float("inf")).cpu().double().numpy()
         ## A dropped particle is never feasible and never selected (`svgd_resample`).
         live_np = (S.live > 0).cpu().numpy() if S.live is not None else np.ones(N, dtype=bool)
         n_live = int(live_np.sum())
