@@ -1035,12 +1035,20 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   and a decade lower residual, for 13-18x the wall** -- a trade carried, not adopted. Open question to
   Thomas: whether a structural term belongs in the drive only, not the stop rule or the selection. R27
   running (its `fd` rungs carry the prior; `ld1` is the informative one), R28 part 1 queued; part 2 waits.
+- **R29 / R30 queued 2026-10-16 (Thomas: pre-register the drive-only round; compute through the weekend).**
+  `svgd_stop_select_objective` = `full` (pin) | `shared`: the stall rule and the selection read the shared
+  objective (regularisers excluded by name, as `reported_cost`), the drive unchanged -- a solver rule about
+  regularisers as a class, approved as a kernel-space-kind exception. R29: `pin4` (the V4 control), `so`,
+  `lp0p1so`, `lp1so` (16 rows each); R30: `pin4kq` (joint-space ablation at V4) and `pin4s2` (seed 2).
+  Pre-registration: `docs/svgd-solver.md` "Stage SVGD_R29" / "R30". Restage between rounds without a
+  laptop: `STAGE_SUBDIR=repo-next` + `cluster/swap_staged_tree.sh` chained after the running round.
 
 **Still open**: the paper tables from R20 (`report_svgd` stage mode; the multistart column via
 `scripts/svgd/cross/`; Thomas writes every word -- numbers and verdicts only from here);
 the GVS arm under svgd is DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU,
 and a dlpack bridge would not remove the batched root-find's cost; what to do with R14's
-combinations. The staged cluster tree is 0ecb1ad (svgd-tune).
+combinations. The staged cluster tree is 0ecb1ad (svgd-tune) until the chained swap job 5943005 (after R28)
+overlays f312793 (patience 3, `svgd_stop_select_objective`); R29 / R30 run on it (`cluster/SVGD_RUNBOOK.md`).
 
 ## Results: the campaign of record
 
