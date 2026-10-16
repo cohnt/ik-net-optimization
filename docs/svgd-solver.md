@@ -2237,6 +2237,56 @@ outer steps (10x the pin's on the w >= 1 rungs) the real figure is 8-12 h on 4 n
 R22's pace; no restage (`latent_cost_weight`, `latent_trust_region` and `svgd_gn_lm` all exist in
 the staged 7812715).
 
+**R26 results (ran 2026-10-15 22:16 to 2026-10-16 15:20 EDT on four nodes, jobs 5925565-68, 17 h --
+the soft PCS rows took 9-20 min per shard; read 2026-10-16 against R20's `pin2` on the same cells with
+the push's noise band).** 64 of 64 runs complete. **Cap check**: 0 cells at the step cap; clock stops
+0-10 per row (soft PCS grasp `lp0p1` 10 / 9, `lp1` 3 / 9, `lp1notr` 3 / 4; every other row 0-2), all
+under 24, so every verdict stands; recheck failures 0. **Success 480 / 480 on all 64 rows.** Per-cell
+numbers: `scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,lp0p1,lp1,lp10,lp1notr`.
+
+| variant | cost ratio to `pin2` (shared cells, the prior EXCLUDED from both) | wall ratio | outer steps | feasible particles | `\|z\|` of the selection (pin 2.5-4.4) | resamples (pin: Panda 2-5, iiwa 8-9, screw 13-30, soft PCS 0-1) | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `lp0p1` | **rigid arms 1.16-4.35** (Panda grasp 1.72-1.77, pose 1.26-1.30; iiwa 2.59-2.63 / 2.14-2.25; screw 4.27-4.35 / 3.63-3.69); soft PCS grasp 1.35-1.41, **soft PCS pose 0.78-0.80** | rigid grasp 3.8-6.6, rigid pose 1.7-3.3, soft PCS 17-22 (26-58 s) | rigid grasp +12 to +54, rigid pose +1 to +5, soft PCS +170 to +241 | +2 to +6 | 1.0-1.6 | Panda 3-5, iiwa 8.5-14.5, screw 12-34, soft PCS 0-1: not down | not within noise, not the mechanism: **a cost and wall loss on the twelve rigid rows at the smallest dose** |
+| `lp1` | rigid 1.22-4.18 (Panda 1.72 / 1.22, iiwa 2.58-2.62 / 2.23-2.28, screw 4.08-4.18 / 3.71-3.86); soft PCS grasp 1.20-1.21, **soft PCS pose 0.62** | rigid grasp 4.6-7.3, rigid pose 2.8-7.7, soft PCS 15-16 | rigid grasp +69 to +100, rigid pose +15 to +80, soft PCS +126 to +146 | -8 to +9 | 0.2-0.9 | Panda 4-6, iiwa 9-23, **screw 12-41 (grasp +30-37%)**, soft PCS 0-1 | the rule's gate (resamples down >= 30% on the screw rows at cost within noise) FAILS on both counts: **the prior does not do what the resample does, and it is not inert** |
+| `lp10` | rigid 1.16-4.26 (Panda 1.67-1.73 / 1.16-1.20, iiwa 2.70-2.79 / 2.16-2.28, screw 4.26 / 3.68-3.89); soft PCS grasp 1.22-1.25, soft PCS pose 0.61-0.62 | rigid grasp 2.0-4.0, rigid pose 3.1-7.4, soft PCS 9-13 | +17 to +103 | **-11 to -36 on the rigid arms** | 0.1-0.5 | as `lp1`; `lam_inf` 5-25 on the rigid arms (pin 0.2-4.5) | the dose is monotone in `\|z\|` (1.0-1.6 -> 0.2-0.9 -> 0.1-0.5) and NOT in cost, which is saturated from w = 0.1 (Panda grasp 1.72 / 1.72 / 1.67); at 10 the task rows fight the prior (multipliers up, feasible count down) |
+| `lp1notr` | within [0.95, 1.05] of `lp1` on 14 of 16 rows (iiwa pose native 0.95, screw pose paired 0.94 at the band's edge); same soft PCS pose 0.62 | as `lp1` | as `lp1` | as `lp1` | 0.2-0.9, **max over 480 cells 1.2-2.2 per row** against radii 4.0 / 4.33 / 4.15 / 4.96 | as `lp1` | as predicted, **the trust region earns nothing once the prior is in**; moot, because the prior is not fielded |
+
+**What the round says.** The latent prior N(0, I) on z, entering the learned arm's target, is **refuted
+as a fielded term** at every dose: on the twelve rigid rows it raises the reported cost 16-335% and the
+wall 2-8x, at success unchanged, residual in the same decade, feasible particles unchanged at w <= 1,
+and resamples NOT reduced (the screw rows resample 7-37% MORE under `lp1`), so neither the mechanism
+it was pre-registered on (the swarm held where the chart is trustworthy, fewer runaway redraws) nor the
+phase-3 replacement it was meant to license (the trust region, or R23's delta -- dead on the laptop
+screen) survives. The dose curve is the diagnosis: `|z|` of the selection falls monotonically with w
+(1.0-1.6 / 0.2-0.9 / 0.1-0.5 against the pin's 2.5-4.4 and the prior's own typical `sqrt(d)` = 2.6-3.5),
+while the cost penalty is already saturated at w = 0.1. So the prior does not "shape" where the swarm
+sits; it RELOCATES the selection to the prior's mode. The mechanism, visible in the 2-cell smoke and
+confirmed on 30,720 cells: the term enters the stall rule and the selection, both of which read the
+full target, so the swarm keeps walking down the prior along the formulation's (c, z) self-motion after
+the task rows and the task cost have stalled (outer steps 2-30x), and the particle selected is the one
+nearest z = 0, which on the rigid arms is NOT where the task cost (joint centering about the ready
+pose) is small. The pre-registered prediction (`|z|` down 10-30%, resamples down, cost within noise or
++0-5%) was wrong in sign on cost and in size on `|z|`, and the smoke said so before the round; the
+round measured the dose as promised.
+
+**The soft PCS pose rows are the exception, and the one finding to carry forward.** There the prior at
+any w >= 0.1 cuts the reported cost 20-39% (w = 1: 0.62x the pin, i.e. 0.62 / 0.83x the IPOPT twin
+native / paired, where the pin sits at 1.005 / 1.331x -- the one place in the record where the learned
+arm under svgd is dearer than under IPOPT), keeps 64 / 64 particles feasible and lands a decade lower
+in residual (3e-7), at a wall of 20-27 s (13-18x) and 110-180 outer steps. Hypothesis, not established:
+on this robot the prior's mode and the task cost agree -- its `q_nominal` is the straight rod and the
+chart's z = 0 at a given tip pose maps near it -- so the descent along the fibre lowers both, where on
+the rigid arms the ready pose and the chart's mode are different configurations. With R24's `kz3` /
+`floor0p2` (0.81-0.83x on the same rows at 1-2 s) this makes two levers that recover the soft PCS pose
+premium; both are trades (feasible particles, or wall), neither adopted. **Not pre-registered, a
+question for Thomas rather than a plan: the structural term may belong in the DRIVE (the objective-side
+direction each particle descends) and not in the stall rule or the selection** -- the measurements
+above cannot say, because the three roles are one target here.
+
+**Consequences for the queue.** R27's `fd0p1` / `fd1` carry `|z|^2 / 2` inside the density term and
+should be expected to inherit this; `ld1` (the log-det alone) is R27's informative rung. R28 part 2
+was to run on "R26 / R27's winner": R26 has none, so part 2 waits on R27's `ld1`.
+
 ### Stage SVGD_R28, part 1: the correction regulariser at the pin (pre-registered 2026-10-14 night, before any cell)
 
 **What it tests.** The weight-10 penalty on `q_c` is a STATED part of the learned formulation

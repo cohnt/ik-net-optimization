@@ -1009,6 +1009,11 @@ queue was untouched by the crash (R23 running, every hold in place).**
 
 ## R26 (branch `svgd-tune`, 2026-10-14): the latent prior N(0, I) on z
 
+**Finished 2026-10-16 15:20 EDT (17 h on 4 nodes, jobs 5925565-68; the soft PCS rows took 9-20 min per
+shard, the rigid 2-6), 1536 / 1536, 0 crashed. Collected 2026-10-16 14:24 (62 runs) and 15:28 (the last
+2), 64 promoted. Read 2026-10-16: `docs/svgd-solver.md` "R26 results" -- the prior as a target term is
+refuted on the rigid arms (cost +16-335%, wall 2-8x); soft PCS pose 0.62x at 13-18x wall, a trade.**
+
 **Submitted 2026-10-14 21:12 EDT under the standing "Queue them up": jobs 5925565-5925568, four
 nodes, `DRAKE_ENV=crc PROCS=2`, staged 7812715, manifest md5 `23d8cf92`, PENDING behind R23, the
 R22 mop-up and R24.** Pre-registration and the laptop reads: `docs/svgd-solver.md`, "Stage
