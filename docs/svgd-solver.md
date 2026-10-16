@@ -2379,6 +2379,65 @@ against `pin2`, R26's `lp0p1` / `lp1` on the same cells, and the IPOPT twin:
 outer steps (4x the pin on `fd1`) ~5-8 h on 4 nodes. Restage first (`BRANCH=svgd-tune
 cluster/make_staging_clone.sh`, after R26 drains), then the usual scp / md5 / submit.
 
+### Stage SVGD_R29: the regulariser's three roles -- drive, stall rule, selection (pre-registered 2026-10-16 17:30 EDT, before any code ran a cell and before the manifest)
+
+**Why.** The augmented Lagrangian target is used in three roles inside the solver: the DRIVE (each
+particle's SVN step), the STALL RULE (`solve`: stop when the best feasible particle's objective has
+not improved by `svgd_stop_rel` over `svgd_stop_patience` checks) and the SELECTION (`_select`: the
+feasible particle with the best objective, re-checked in float64). Under the pin all three read the
+FULL objective, every cost binding, the learned-only regularisers included (`CorrectionCost` at the
+pin; `LatentRegularizerCost` whenever the prior is on). R26 showed what a regulariser does in roles 2
+and 3: the swarm keeps walking down `|z|^2 / 2` along the (c, z) self-motion after the task has
+stalled (steps 2-30x), and the particle returned is the one nearest the prior's mode, not the one with
+the lowest task cost (cost +16-335% on the rigid rows, saturated from w = 0.1). What the prior does in
+role 1 alone -- bend every particle's trajectory toward typical latents while the stop and the
+selection keep reading the shared objective -- R26 could not say, because the roles were one target.
+Thomas, 2026-10-16: *"Pre-register the drive-only round and queue it after R28."*
+
+**The rule, and why it is general.** One `ProgramOptions` field, `svgd_stop_select_objective`:
+`full` (the pin, bit-identical) or `shared`, under which the stall rule and the selection read
+`F_reported`, the shared objective with every regulariser excluded BY NAME (`REGULARIZER_COSTS` =
+`benchmark._REGULARIZER_COSTS`, exactly what `reported_cost` measures), while the drive is untouched.
+It is a solver rule about regularisers as a class, not a special case for the prior: it applies to the
+pin's own `CorrectionCost` too, which is why the round carries the rule ALONE as a variant. It is
+solver-side (the program's costs, rows and bounds are unchanged), it carries no formulation-specific
+information beyond the regulariser names the benchmark already uses, and it is a declared exception
+of the kernel-space kind, approved by Thomas.
+
+**What runs.** R22's shape (the learned arm, the record's sixteen rows, 480 cells, 180 s, seed 1,
+24 shards, the clearance row, `DRAKE_ENV=crc PROCS=2`), **the first stage on `SVGD_PINNED_V4`**
+(= V3 + `svgd_stop_patience=3`, adopted 2026-10-16 from R24), so it carries its own control:
+
+| token | override | what it tests | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `pin4` | none (the V4 pin) | the control, and the fielded pin's first sixteen rows at patience 3 | R24's `pat3` against `pin2`: cost within 1%, wall 0.66-0.81x, 2-6 fewer feasible particles | the same, read against `pin2` (R20) on the same cells | reproduces R24's `pat3` row for row (same pin, same seed): cost within the band, wall 0.66-0.81x | if it does not reproduce `pat3` within the noise band, the round is read against `pat3` and the discrepancy is reported before anything else |
+| `so` | `svgd_stop_select_objective=shared` | the rule alone at the pin: does the correction penalty do any work in the stop or the selection? | `CorrectionCost` = `10 * |q_c|^2 / 2` at the pin's `|q_c|_inf` ~ 0.05 is ~0.01-0.1, under 1% of the task cost (2-5), so excluding it from the stop and the selection should change neither | `median_correction_inf`, cost, steps, feasible count, the selected index | within noise of `pin4` on all 16 rows; `|q_c|` within 10% | within noise on all 16 -> the rule is safe as a general rule (and R28 part 1's `qc*` rows are read knowing the penalty's stop / selection role is nil); outside the band anywhere -> the correction penalty earns a role in the stop or the selection, reported, and `lp*so` are read with that confound stated |
+| `lp0p1so` | `latent_cost_weight=0.1` + `shared` (two factors) | the prior in the drive only, small dose | the drive pulls every particle toward typical z while the stop fires on the task cost's stall and the selection picks the cheapest feasible particle: the prior shapes WHERE the swarm explores, not when it stops or what is returned | `z_norm` of the selection (pin 2.5-4.4, R26's `lp0p1` 1.0-1.6), steps, wall, cost, feasible count, `n_resampled`, and on soft PCS pose the cost against `pin4` | steps within +-2 of `pin4`, wall within the band; cost within the band on the rigid rows; `|z|` of the selection BETWEEN `pin4`'s and R26's (1.6-3.5); resamples unchanged (R26 found no reduction with the prior in every role) | see `lp1so` |
+| `lp1so` | `latent_cost_weight=1` + `shared` (two factors) | the exact log prior in the drive only | as above, full dose | as above; read against `pin4` first and against R26's `lp1` (patience 5, so wall carries the 0.66-0.81 factor) for the direction of `|z|` and cost | as above, `|z|` lower than `lp0p1so`'s; **soft PCS pose: if R26's 0.62x came from the drive (particles descending the fibre to cheaper configurations) it survives at the pin's wall; if it came from the stop and the selection (walking longer, returning the mode) it disappears** | within noise of `pin4` on cost and wall with `|z|` lower -> the prior is a drive-only term that costs nothing; it is a candidate to FIELD as structure (a question for Thomas) only if it buys something measurable: soft PCS pose cost <= 0.95x, or resamples down >= 30% on the screw rows; within noise on everything including `|z|` -> inert as a drive, reported, not fielded; cost or wall outside the band -> the prior is refuted in every role |
+
+Noise band, cap check and the per-cell metrics as the push's rules (R22). Allotment: 64 runs, 1536
+items; at the pin's pace (1-3 min per shard) 5-6 h on four nodes; if the `lp*so` rows still walk as
+R26's did (9-20 min per soft PCS shard) up to 15 h. The round needs code (the option) and a RESTAGE
+carrying it and the patience default: staged beside the live tree (`STAGE_SUBDIR=repo-next`) and
+swapped in by a chained cluster job between R28 and R29 (`cluster/swap_staged_tree.sh`), so the
+queue never idles and no laptop has to be awake. Local 2-cell smoke of `so` and `lp1so` before the
+manifest; the pin test (`tests/test_svgd_pin_and_gate.py`) must pass unchanged with the option at
+its default.
+
+### Stage SVGD_R30: the V4 pin's record re-measure (pre-registered 2026-10-16, before the manifest)
+
+Patience 3 is the fielded pin from 2026-10-16. Two measurements the record kept for every earlier pin
+and does not yet have for this one, queued behind R29 so the four nodes stay busy through the weekend
+(Thomas: *"As long as the compute is being used all the way through, I'm happy."*):
+
+| token | what | shape | read against | prediction | what it is for |
+| --- | --- | --- | --- | --- | --- |
+| `pin4kq` | the joint-space ablation at V4: `svgd_kernel=q`, `--arms numerical` | the sixteen rows, seed 1 | R20 / R21's `pin2kq` on the same cells, and the joint-space IPOPT twin | success within one cell of `pin2kq` on every row (the clock-bound screw grasp rows may move a few cells either way), wall 0.7-0.9x, cost within the band | the ablation column of the record at the fielded pin (joint space under svgd is an ablation, never tuned: it takes the pin's patience as it took every other pin setting) |
+| `pin4s2` | the V4 pin, learned arm, seed 2 | the sixteen rows on a second grid | R29's `pin4` (seed 1) by target-level success rate and the push's per-row medians (NOT cell-paired: a different grid) | 480 / 480 on every row; cost / wall / feasible medians within the band of seed 1 | the seed-to-seed band at the fielded pin (R19's 3-5% was measured at V1), which is what the push's noise band rests on |
+
+Allotment: 32 runs, 768 items; `pin4kq`'s screw grasp rows run their clock-bound cells (R21: 7.5-8.5 s
+mean wall), so ~6-10 h on four nodes. No new code beyond R29's.
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each

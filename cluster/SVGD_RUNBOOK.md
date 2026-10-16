@@ -943,6 +943,37 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R29 / R30 (branch `svgd-tune`, 2026-10-16): the regulariser's three roles, and the V4 pin's record re-measure
+
+**Pre-registered 2026-10-16 (`docs/svgd-solver.md`, "Stage SVGD_R29" / "Stage SVGD_R30") on Thomas's
+"Pre-register the drive-only round and queue it after R28" and "As long as the compute is being used
+all the way through, I'm happy."** R29: `pin4` / `so` / `lp0p1so` / `lp1so` (64 runs, 1536 items,
+the first v4 stage: `SVGD_PINNED_V4` names `svgd_stop_patience=3`); R30: `pin4kq` (joint space,
+kernel q) and `pin4s2` (seed 2, learned), 32 runs, 768 items.
+
+**The restage between rounds, without a laptop.** Both need code the live tree 0ecb1ad lacks (the
+option `svgd_stop_select_objective`, the patience default 3). Since R28 runs until ~23:00 and a round
+queued behind it starts the instant it drains, the new tree is staged BESIDE the live one and swapped
+in by a chained job:
+
+```bash
+STAGE_SUBDIR=repo-next bash cluster/stage_code.sh                      # to ~/learned-ik/repo-next (no guard: nothing runs there)
+scp cluster/manifest_stageSVGD_R29.txt cluster/manifest_stageSVGD_R30.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/   # submit_bench needs them in the live tree
+# the swap job: afterany on R28's four jobs, submitted from ~/learned-ik (its %Z must not be repo/)
+ssh tcohn@txe1-login.mit.edu 'cd ~/learned-ik && sbatch --dependency=afterany:5926659:5926666:5926667:5926668 repo-next/cluster/swap_staged_tree.sh'
+DEPENDENCY=afterok:<swap job> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R29.txt 4
+DEPENDENCY=afterany:<R29 jobs, colon-separated> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R30.txt 4
+```
+
+`swap_staged_tree.sh` refuses if anything still runs out of `repo/`, OVERLAYS `repo-next/` onto
+`repo/` (no `--delete`, so the cpp build and cluster-only checkpoints survive), copies
+`.staged-commit`, and `cmp`s the three files that matter; `afterok` means R29 never starts on an
+unswapped tree (a failed swap leaves R29 and R30 pending for a manual restage). Items re-read the
+tree's `.py` files when they start, so the swap must land in the gap -- the dependency chain
+guarantees it. Reads: `scripts/report_svgd.py --stage SVGD --rows <robot> --variants
+pin2,pat3,pin4,so,lp0p1so,lp1so` (R29) and `--variants pin2kq,pin4kq` / `pin4,pin4s2` (R30; `pin4s2`
+is a seed-2 grid, compared by target-level rates, never cell-paired).
+
 ## R28 part 1 (branch `svgd-tune`, 2026-10-14): the correction penalty ladder at the pin
 
 **Submitted 2026-10-14 23:27 EDT and HELD: jobs 5926659, 5926666-5926668**, four nodes,

@@ -20,6 +20,12 @@
 set -uo pipefail
 source "$(dirname "$0")/ssh_common.sh"
 REPO_ROOT="$(_sc_repo_root)"
+## STAGE_SUBDIR (default `repo`, the live tree): `STAGE_SUBDIR=repo-next` stages the same tree
+## BESIDE the live one, to be swapped in between two campaigns by `cluster/swap_staged_tree.sh`
+## (a cluster job chained after the running campaign) -- the laptop-independent way to restage
+## between rounds that are queued back to back (2026-10-16). The live-campaign guard below applies
+## to the live tree only; nothing runs out of a side tree.
+STAGE_SUBDIR="${STAGE_SUBDIR:-repo}"
 
 COMMIT=$(git -C "$REPO_ROOT" rev-parse HEAD)
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]; then
@@ -61,7 +67,7 @@ fi
 ## `lik_train_soft12_n4`, `lik_train_soft12_n8` and `lik_train_soft16_n6` all render as
 ## `lik_train_soft1` and every rung of a ladder collapses into one string. Measured.
 RUNNING=$(sc_run "squeue -u \$USER -h -o '%Z %j' 2>/dev/null | awk -v d=\"\$HOME/$SC_ROOT/repo\" '\$1==d && \$2 !~ /_cal_/ && \$2 != \"smoke.sh\"' | wc -l" 2>/dev/null | tr -dc '0-9')
-if [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
+if [ "$STAGE_SUBDIR" = "repo" ] && [ -n "${RUNNING:-}" ] && [ "${RUNNING:-0}" -gt 0 ] && [ "${FORCE_STAGE:-0}" != "1" ]; then
     echo "REFUSING: $RUNNING campaign job(s) of THIS tree (~/$SC_ROOT) are running." >&2
     echo "Restaging would change the code later items import mid-stage." >&2
     echo "Wait for the stage to drain, or re-run with FORCE_STAGE=1 if you are sure." >&2
@@ -99,7 +105,7 @@ if [ "${LINKS:-0}" -gt 0 ]; then
     exit 5
 fi
 
-sc_run "mkdir -p ~/$SC_ROOT/repo ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/home/.cache"
+sc_run "mkdir -p ~/$SC_ROOT/$STAGE_SUBDIR ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/home/.cache"
 
 ## PROTECT filters, not excludes: cluster-side exported checkpoints must survive
 ## --delete, but locally-held ones (lemon-haze-7, ddp-r1) must still be PUSHED.
@@ -145,11 +151,11 @@ sc_rsync -az --delete \
     --filter='P models/*/*__step*.pkl' --filter='P models/*/*__step*.arch.json' \
     --filter='P models/*/*__global_step*.pkl' --filter='P models/*/*__global_step*.arch.json' \
     "${EXCLUDE_ARGS[@]}" \
-    "$REPO_ROOT/" "$SC_DEST:$SC_ROOT/repo/"
+    "$REPO_ROOT/" "$SC_DEST:$SC_ROOT/$STAGE_SUBDIR/"
 
-sc_run "echo $COMMIT > ~/$SC_ROOT/repo/.staged-commit
-echo 'staged commit:' \$(cat ~/$SC_ROOT/repo/.staged-commit)
-du -sh ~/$SC_ROOT/repo
+sc_run "echo $COMMIT > ~/$SC_ROOT/$STAGE_SUBDIR/.staged-commit
+echo 'staged commit:' \$(cat ~/$SC_ROOT/$STAGE_SUBDIR/.staged-commit)
+du -sh ~/$SC_ROOT/$STAGE_SUBDIR
 IIWA=~/$SC_ROOT/repo/models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl
 if [ -f \"\$IIWA\" ]; then
     echo \"iiwa checkpoint: \$(du -h \"\$IIWA\" | cut -f1)  sha256 \$(sha256sum \"\$IIWA\" | cut -c1-16)\"
