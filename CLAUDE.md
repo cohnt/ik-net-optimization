@@ -1013,8 +1013,8 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   `alpha0` (no multiplier update, the pure quadratic penalty) TIES the pin on every metric on all 16
   rows** -- the prediction's premise (multipliers 1e2-1e4) was the pin's maxima; the medians scale with
   rho, so they are `rho * c` one-step estimates and the true multipliers are ~0.2-3, which the penalty
-  alone puts inside the gate (the AL at alpha = rho stays the method, Thomas 2026-10-16; the multipliers
-  are a safeguard this record never needs); alpha = rho / 10 stalls earlier with 8-28 fewer feasible particles and
+  alone puts inside the gate (**the AL at alpha = rho stays the method, Thomas 2026-10-16: more flexible and principled than a
+  penalty, and it keeps ADMM-like directions open; the multipliers are a safeguard this record never needs**); alpha = rho / 10 stalls earlier with 8-28 fewer feasible particles and
   dearer selections, alpha = 10 rho destroys the swarm (1 feasible particle, 80-750 resamples) and runs
   every pose cell to the clock (iiwa native 3 / 480; **its other seven pose rows HELD by Thomas**, 168
   items pre-claimed). alpha = rho is kept as the formulation's value; whether the pure penalty is a
