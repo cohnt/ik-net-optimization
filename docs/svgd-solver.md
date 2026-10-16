@@ -2164,9 +2164,15 @@ is below the floor. Not adopted (a 16-row trade), but R26's latent prior, which 
 than c, is read with it in view. **Nothing deleted by rule; two questions to Thomas: `pat3`, and
 the status of the pure penalty.** *Thomas, 2026-10-16: "Patience 3 sounds good."* **ADOPTED: `svgd_stop_patience` defaults
 to 3 from the next pin, `SVGD_PINNED_V4` (= V3 + `svgd_stop_patience=3`), for every stage after R28;
-R1-R28 ran 5, and R27 / R28 are read against `pin2` at 5 as pre-registered.** The pure penalty: the
-augmented Lagrangian at alpha = rho stays the method, with this finding as the explanation that at
-rho = 1e5 the penalty does the work and the multipliers are a safeguard.
+R1-R28 ran 5, and R27 / R28 are read against `pin2` at 5 as pre-registered.** The pure penalty: **the augmented
+Lagrangian at alpha = rho stays the method (Thomas, 2026-10-16: *"I prefer augmented Lagrangian from a
+story perspective as well, it's a more flexible (and arguably more principled) framework than a pure
+penalty method. It also leaves a lot of future directions open, like ADMM, whereas jumping from
+penalty to those methods is more of a change"*)**, with this finding as the explanation: at rho = 1e5
+in natural row units the penalty alone parks inside the gate, the dual update is correct and inert on
+this record, and it keeps the feasibility guarantee independent of the objective's scale. `svgd_dual_lr`
+stays at its default (alpha = rho) and is not a tuning knob: both rho / 10 and 10 rho are worse than
+either endpoint.
 
 ### Stage SVGD_R26: the latent prior N(0, I) on z (phase 3 / 4; pre-registered 2026-10-14 evening, before any cell)
 
