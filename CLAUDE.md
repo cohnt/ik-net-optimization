@@ -1020,7 +1020,18 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   0.05 is a value on the soft PCS grasp rows (1e-3 costs +10%) and 0.2 loses 8-16 feasible particles
   everywhere. One trade carried into R26's reading: a flat or absent c factor cuts the soft PCS POSE
   cost 18% (to 0.83 / 1.11x the IPOPT twin from 1.005 / 1.33x), the one place svgd is dearer than IPOPT.
-  R26 finished 2026-10-16 15:20 (16 h: the soft PCS rows ran 9-20 min per shard); R27 running, R28 queued.
+- **R26 (2026-10-15/16, the latent prior N(0, I) on z at w = 0.1 / 1 / 10 and w = 1 without the trust
+  region, 16 rows, 17 h on 4 nodes; `docs/svgd-solver.md` "R26 results"): the prior as a target term is
+  REFUTED as a fielded piece.** 480 / 480 everywhere, but on the twelve rigid rows cost +16-335% and
+  wall 2-8x at every dose, resamples NOT reduced (screw +7-37%), `|z|` of the selection 1.0-1.6 / 0.2-0.9 /
+  0.1-0.5 against the pin's 2.5-4.4: the term enters the stall rule and the selection, so the swarm walks
+  down the prior along the (c, z) self-motion after the task has stalled and the selection relocates to
+  the prior's mode, which on the rigid arms is not where the task cost is small (saturated from w = 0.1).
+  The trust region earns nothing once the prior is in (`lp1notr` = `lp1`, selection `|z|` max 1.2-2.2),
+  moot. **Exception: soft PCS pose, cost 0.62x the pin (0.62 / 0.83x the IPOPT twin) at 64 / 64 feasible
+  and a decade lower residual, for 13-18x the wall** -- a trade carried, not adopted. Open question to
+  Thomas: whether a structural term belongs in the drive only, not the stop rule or the selection. R27
+  running (its `fd` rungs carry the prior; `ld1` is the informative one), R28 part 1 queued; part 2 waits.
 
 **Still open**: the paper tables from R20 (`report_svgd` stage mode; the multistart column via
 `scripts/svgd/cross/`; Thomas writes every word -- numbers and verdicts only from here);
