@@ -998,7 +998,29 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   at 1.3-2.8x the grasp wall -- a trade, 10 stands. **Twelve screw-arm items segfaulted** (R22 1,
   R23 8 + 3 on re-run; native code, not deterministic per cell, clean under faulthandler alone on a
   node), concentrated on the runaway-heavy variants; mechanism open (local probe of the clearance
-  query on non-finite particles). R24 / R26 / R27 / R28 are queued behind it (restaged 0ecb1ad).
+  query on non-finite particles: huge finite configurations do not crash it; a race at PROCS=2 is
+  what is left). R24 ran clean (0 of 4056 items crashed).
+- **R24 (2026-10-15, eleven single-`--set` tuning variants on the 16 rows, 15 h on 4 nodes; `docs/svgd-solver.md`
+  "R24 results"): NOTHING DELETED BY RULE, two questions to Thomas.** 480 / 480 on every complete row.
+  **N = 64 is the selection pool**: cost rises monotonically as the swarm shrinks (N 32 +2-32%, N 16
+  +16-125% on the rigid rows) for wall 0.34-0.89x. **rho = 1e5 is the saturation point**: 1e6 moves
+  cost < 1.2%, adds 5-10 resamples per cell on the rigid pose rows, and leaves the residual in the same
+  decade -- the residual is set by the stall stop, not the penalty. **Stall patience 3 meets its
+  adoption rule** (cost within 1% on 16 of 16, wall 0.66-0.81x on 16 of 16, 2-6 fewer feasible particles on
+  five rows) -- a QUESTION; patience 2 crosses into cost and feasible count. **The dual step has a corner:
+  `alpha0` (no multiplier update, the pure quadratic penalty) TIES the pin on every metric on all 16
+  rows** -- the prediction's premise (multipliers 1e2-1e4) was the pin's maxima; the medians scale with
+  rho, so they are `rho * c` one-step estimates and the true multipliers are ~0.2-3, which the penalty
+  alone puts inside the gate; alpha = rho / 10 stalls earlier with 8-28 fewer feasible particles and
+  dearer selections, alpha = 10 rho destroys the swarm (1 feasible particle, 80-750 resamples) and runs
+  every pose cell to the clock (iiwa native 3 / 480; **its other seven pose rows HELD by Thomas**, 168
+  items pre-claimed). alpha = rho is kept as the formulation's value; whether the pure penalty is a
+  legitimate simplification of the METHOD is his question. **`cz` earns its place**: `kz` costs 9-26% on
+  every grasp row with 10-26 fewer feasible particles and `|z|` at the trust-region radius; the floor
+  0.05 is a value on the soft PCS grasp rows (1e-3 costs +10%) and 0.2 loses 8-16 feasible particles
+  everywhere. One trade carried into R26's reading: a flat or absent c factor cuts the soft PCS POSE
+  cost 18% (to 0.83 / 1.11x the IPOPT twin from 1.005 / 1.33x), the one place svgd is dearer than IPOPT.
+  R26 finished 2026-10-16 15:20 (16 h: the soft PCS rows ran 9-20 min per shard); R27 running, R28 queued.
 
 **Still open**: the paper tables from R20 (`report_svgd` stage mode; the multistart column via
 `scripts/svgd/cross/`; Thomas writes every word -- numbers and verdicts only from here);
