@@ -743,8 +743,9 @@ def stage_catalogue(family="SVGD"):
                     assert t["variant"] in G.SVGD_ROUNDS[stage], f"{tag}: not a variant of {stage}"
             sets = manifest_sets(a)
             ## What the run RAN, not only what it named: a v1 stage (the old pin) left kernel q,
-            ## metric off and init jitter to the then-defaults, which have since moved
-            ## (gen_manifest's SVGD_HISTORICAL_DEFAULTS); the IPOPT twins carry no svgd setting.
+            ## metric off and init jitter to the then-defaults, and every stage through R28 the stall
+            ## patience 5, all since moved (gen_manifest's SVGD_HISTORICAL_DEFAULTS); the IPOPT twins
+            ## carry no svgd setting.
             settings = (sets if t["solver"] != "svgd" else
                         {**G.svgd_unnamed_settings(stage), **sets})
             arms = tuple(_flag(a, "--arms").split(","))

@@ -518,7 +518,7 @@ def test_stage_catalogue_robots_and_seeds():
     ## The iiwa: its twin (stage PAPER's IPOPT run, the record's rows at paper conditions), the
     ## primary, then R17's kernel-space variants, learned arm only, on the n4 chart at seed 1.
     assert list(iiwa) == [R.STAGE_TWIN, "kq", "kcz", "kczrho1e5", "pin2", "pin2kq",
-                          "clipoff", "drop2", "T10v2", "T0p1", "ident", "lm1", "lm100"], list(iiwa)
+                          "clipoff", "drop2", "T10v2", "T0p1", "ident", "lm1", "lm100"] + LATER_ROUNDS, list(iiwa)
     assert iiwa[R.STAGE_TWIN]["manifest"] == "PAPER" and iiwa["kq"]["manifest"] == "SVGD_R12"
     ## R21: the joint-space ablation at the pin on the three non-Panda record contexts.
     assert iiwa["pin2kq"]["manifest"] == "SVGD_R21" and iiwa["pin2kq"]["arms"] == ("numerical",)
@@ -643,6 +643,12 @@ def test_stage_seed2_pairs_its_own_twin_only():
         assert any(tag in m and "seed 1 != the manifest's 2" in m for m in rep.refused), rep.refused
         assert STAGE_ROW + ("kq@seed2",) not in rep.blocks and rep.status == 2
 
+## The tuning push's rounds after R23 (R24 / R26 / R27 / R28), in catalogue order, on every record robot.
+LATER_ROUNDS = ['N16', 'N32', 'rho1e6', 'pat2', 'pat3', 'alpha0p1', 'alpha10', 'alpha0', 'floor1em3', 'floor0p2', 'kz3', 'lp0p1', 'lp1', 'lp10', 'lp1notr', 'ld1', 'fd0p1', 'fd1', 'qc0', 'qc1', 'qc100']
+LATER_ROUND_OF = {**{v: "SVGD_R24" for v in LATER_ROUNDS[:11]}, **{v: "SVGD_R26" for v in LATER_ROUNDS[11:15]},
+                  **{v: "SVGD_R27" for v in LATER_ROUNDS[15:18]}, **{v: "SVGD_R28" for v in LATER_ROUNDS[18:]}}
+
+
 ## ------------------------------------------- R13 / R14 and the screw / soft PCS arms --
 OTHER_ROBOTS = {"screw7_p050": ("n6", "SVGD_R15"), "soft12": ("n6", "SVGD_R16")}
 ## The rounds after the primary on each of those robots: R17S's / R17P's kernel-space variants.
@@ -650,12 +656,14 @@ OTHER_ROBOT_ROUNDS = {"screw7_p050": {"kcz": "SVGD_R17S", "kczrho1e5": "SVGD_R17
                                       "pin2": "SVGD_R20", "pin2kq": "SVGD_R21",
                                       "clipoff": "SVGD_R22", "drop2": "SVGD_R22",
                                       "T10v2": "SVGD_R22", "T0p1": "SVGD_R22",
-                                      "ident": "SVGD_R23", "lm1": "SVGD_R23", "lm100": "SVGD_R23"},
+                                      "ident": "SVGD_R23", "lm1": "SVGD_R23", "lm100": "SVGD_R23",
+                                      **LATER_ROUND_OF},
                       "soft12": {"kcz": "SVGD_R17P", "kczrho1e5": "SVGD_R17P", "pin2": "SVGD_R20",
                                  "pin2kq": "SVGD_R21",
                                  "clipoff": "SVGD_R22", "drop2": "SVGD_R22",
                                  "T10v2": "SVGD_R22", "T0p1": "SVGD_R22",
-                                 "ident": "SVGD_R23", "lm1": "SVGD_R23", "lm100": "SVGD_R23"}}
+                                 "ident": "SVGD_R23", "lm1": "SVGD_R23", "lm100": "SVGD_R23",
+                                 **LATER_ROUND_OF}}
 
 
 def test_stage_kernel_and_two_factor_rounds():
@@ -857,7 +865,10 @@ def test_stage_r20_record_rows_at_the_pin():
         cols = variants[robot]
         assert cols["pin2"]["round"] == "R20" and cols["pin2"]["manifest"] == "SVGD_R20", robot
         assert cols["pin2"]["sets"] == {**EXEC, **PIN} and cols["pin2"]["arms"] == ("learned",), robot
-        assert cols["pin2"]["settings"] == cols["pin2"]["sets"], "a v2 stage relies on no default"
+        ## A v2 stage names every default that moved by 2026-10-12, but ran the stall patience at the
+        ## then-default 5 (moved to 3 on 2026-10-16, named from SVGD_PINNED_V4 on).
+        assert cols["pin2"]["settings"] == {**cols["pin2"]["sets"], "svgd_stop_patience": "5"}, \
+            "a v2 stage relies on no default but the patience"
         ## pin2kq: R20 on the Panda, R21 on the other three (same token, pin and overrides).
         assert cols["pin2kq"]["round"] == ("R20" if robot == "panda" else "R21"), (robot, cols["pin2kq"])
         assert cols["pin2kq"]["arms"] == ("numerical",) and cols["pin2kq"]["sets"] == {**EXEC, **PIN, "svgd_kernel": "q"}

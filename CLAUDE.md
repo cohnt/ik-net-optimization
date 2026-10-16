@@ -1007,11 +1007,14 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   cost < 1.2%, adds 5-10 resamples per cell on the rigid pose rows, and leaves the residual in the same
   decade -- the residual is set by the stall stop, not the penalty. **Stall patience 3 meets its
   adoption rule** (cost within 1% on 16 of 16, wall 0.66-0.81x on 16 of 16, 2-6 fewer feasible particles on
-  five rows) -- a QUESTION; patience 2 crosses into cost and feasible count. **The dual step has a corner:
+  five rows) -- **ADOPTED (Thomas, 2026-10-16): `svgd_stop_patience=3` is the default and the pin is
+  `SVGD_PINNED_V4` (= V3 + that setting) for every stage after R28; R1-R28 ran 5**; patience 2 crosses
+  into cost and feasible count. **The dual step has a corner:
   `alpha0` (no multiplier update, the pure quadratic penalty) TIES the pin on every metric on all 16
   rows** -- the prediction's premise (multipliers 1e2-1e4) was the pin's maxima; the medians scale with
   rho, so they are `rho * c` one-step estimates and the true multipliers are ~0.2-3, which the penalty
-  alone puts inside the gate; alpha = rho / 10 stalls earlier with 8-28 fewer feasible particles and
+  alone puts inside the gate (the AL at alpha = rho stays the method, Thomas 2026-10-16; the multipliers
+  are a safeguard this record never needs); alpha = rho / 10 stalls earlier with 8-28 fewer feasible particles and
   dearer selections, alpha = 10 rho destroys the swarm (1 feasible particle, 80-750 resamples) and runs
   every pose cell to the clock (iiwa native 3 / 480; **its other seven pose rows HELD by Thomas**, 168
   items pre-claimed). alpha = rho is kept as the formulation's value; whether the pure penalty is a

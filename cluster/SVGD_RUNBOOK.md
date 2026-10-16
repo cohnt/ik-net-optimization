@@ -1074,7 +1074,10 @@ cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_
 items done, 168 held, 0 crashed (the eight worker logs carry 0 nonzero exits). Collected 2026-10-16
 14:24 (`collect_20261016-142413`, 40 min in the remote tar: 4056 shard dirs), 169 runs merged and
 promoted (`sc_SVGD_R24_*`), the seven held rows absent. Read 2026-10-16: `docs/svgd-solver.md` "R24
-results" -- nothing deleted by rule; `pat3` and the pure-penalty question go to Thomas.** The seven
+results" -- nothing deleted by rule; `pat3` and the pure-penalty question went to Thomas. **Patience 3
+ADOPTED 2026-10-16** (`svgd_stop_patience` default 3, pin `SVGD_PINNED_V4`): the staged tree 0ecb1ad still
+has 5, so R27 / R28 run at 5 (as pre-registered, read against `pin2` at 5) and the NEXT RESTAGE carries 3;
+any stage submitted after it must be generated as v4.** The seven
 remaining `alpha10` POSE rows are HELD (Thomas, 15:45 EDT, "Do proposal 1").** The grasp rows finished at 1-5 min per
 shard (`alpha10` 480 / 480 everywhere, resamples 40-60x the pin's). On the pose rows the variant runs
 EVERY cell to the clock: iiwa pose native `alpha10`, first 8 shards, 0 of 128 cells feasible, all
