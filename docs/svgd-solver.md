@@ -2089,6 +2089,81 @@ run before (`svgd_n` 16 / 32 at the pin, rho 1e6, patience 2 / 3, the three alph
 floors) on 2 Panda pose cells each before the manifest; `kz` ran in R14. No restage: every option
 exists in the staged 7812715 and V3 omits only a setting whose staged default is the pin's value.
 
+**R24 results (ran 2026-10-15 07:03-22:16 EDT on four nodes, jobs 5925276-79, staged 0ecb1ad; read
+2026-10-16 against R20's `pin2` on the same cells with the push's noise band: cost ratio [0.95, 1.05]
+on shared cells, wall +-15%, feasible particles +-3, outer steps +-2, residual the same decade).**
+169 of 176 runs complete; the seven `alpha10` POSE rows other than iiwa native were HELD by Thomas
+(2026-10-15 15:45, "Do proposal 1") after that row ran every cell to the clock -- 168 items
+pre-claimed, reversible by `--reclaim` (`cluster/SVGD_RUNBOOK.md`). **Cap check**: 0 cells at the
+step cap anywhere; 0 clock stops on 168 of the 169 rows; iiwa pose native `alpha10` has 477 of 480
+at the clock (a result at the fielded clock, no success verdict). Gate-edge re-check failures: 5 in
+81,120 cells (iiwa grasp paired `alpha10` 2, iiwa pose paired `alpha0p1` 2, screw pose paired
+`alpha0p1` 1). **Success is 480 / 480 on every complete row but that one** (3 / 480), so every
+verdict below is on cost, wall, feasible particles, steps and residual. Per-cell numbers:
+`scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,N16,N32,rho1e6,pat2,pat3,alpha0p1,alpha10,alpha0,floor1em3,floor0p2,kz3`.
+
+| variant | cost ratio to `pin2` (shared cells) | wall ratio | feasible particles at stop (pin 36-61 of 64) | outer steps | residual | diagnostic | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `N16` | **1.16-2.25 on the twelve rigid rows** (Panda 1.16-1.24, iiwa 1.40-1.66, screw 1.94-2.25), 1.29-1.31 soft PCS | 0.34-0.80 | 4-14 of 16 | +-1 | up to 3x | the pool: fewer feasible particles to select from on every row | **64 earns its place** (cost outside the band on every row) |
+| `N32` | 1.02-1.32: within the band on Panda pose (1.02) and Panda grasp (1.04-1.05) only; iiwa 1.08-1.11, screw 1.20-1.32, soft PCS 1.09-1.12 | 0.58-0.89 | 14-30 of 32 | +-1 | same decade | cost is monotone in N on all 16 rows (64 -> 32 -> 16): the swarm is the selection pool, and the latent kernel does not make a smaller one as good | **64 earns its place** (outside the band on 13 of 16) |
+| `rho1e6` | 0.988-1.003 on all 16 (within) | 0.95-1.20 (screw pose 1.15 / 1.20 outside) | +-3 | +-1 | **same decade, NOT a decade lower** | resamples +1 to +2 per cell on grasp, **+5 to +10 on the six rigid pose rows**; recorded `lam_inf` 8-13x the pin's | **1e5 stands**: the cost lever is saturated and the resample churn exceeds +3 on six rows. The residual does not follow rho: it is set by the stop rule (the stall at gate level), not by the penalty |
+| `pat2` | 0.981-1.057 (screw grasp native 1.057 outside; soft PCS pose 0.98) | 0.49-0.68 | -1 to -15 (outside +-3 on ten rows) | -3 to -8 | same decade | stops during plateaus the swarm leaves: feasible count down, screw grasp cost up | **5 earns its place against 2** |
+| **`pat3`** | **0.991-1.001 on all 16 (within)** | **0.66-0.81 on all 16** | -0 to -6 (within +-3 on 11 rows; screw grasp -6 / -6, iiwa grasp native -4, Panda pose -4 / -4, screw pose native -4) | -2 to -4 | same decade | the (5 - 3) saved checks are the whole wall gain; the prediction was exactly -2 steps and the pin stalls more than once on many cells, hence -2 to -4 | **meets the adoption-question rule** (cost within the band on 16 of 16, wall <= 0.85 on 16 of 16): a QUESTION for Thomas, with the feasible-count cost stated |
+| `alpha0p1` | Panda and soft PCS within; iiwa grasp within, **iiwa pose 1.12-1.14, screw grasp 1.01-1.03, screw pose 1.31-1.33** | 0.78-0.97 | **-8 to -28 on the ten rigid grasp / pose rows but Panda grasp** | **-1 to -3** (predicted +2 to +5) | 2-4x up, same decade mostly | `lam_inf` 2-9x the pin's at stop | not within noise: alpha = rho / 10 stalls EARLIER with fewer feasible particles and dearer selections. Prediction (slower multiplier convergence, more steps) refuted |
+| `alpha10` | grasp: **1.43-4.26** (Panda 1.64, iiwa 2.8, screw 4.0-4.3, soft PCS 1.43-1.46); pose: iiwa native **3 / 480**, 477 at the clock | grasp 0.7-2.7; pose 162 s per cell | **1 feasible particle** (soft PCS 3) on every grasp row; 0 on pose | grasp +8 to +29 (iiwa, screw, soft PCS); pose ~2290 | grasp 5-7e-5; pose 1.1e-3 (outside the gate) | resamples 82-754 per cell on grasp (pin 0-30), 16k-20k on pose | the overshoot in its extreme form: alpha = 10 rho destroys the swarm on every row and convergence on pose. Seven pose rows held, not run |
+| `alpha0` | **0.995-1.003 on all 16 (within)** | 0.84-0.99 | -0 to -4 | -1 to -2 | same decade (soft PCS pose 1.5-1.9e-6 against 1.6e-6) | `lam_inf` = 0 by construction; resamples as the pin's | **the prediction (success collapses on the task-row-bound cells) is REFUTED on all 16 rows**: the pure quadratic penalty at rho = 1e5 ties the pin on every metric |
+| `floor1em3` | rigid arms 0.999-1.012; **soft PCS grasp 1.097 / 1.102**; soft PCS pose 0.974 / 0.977 | 0.97-1.10 | +-2 | +-1 | same decade | the floor's binding fraction (R20: soft PCS 98-99% of pose cells) is where it moves | **0.05 is a value, not an accident, on the soft PCS grasp rows** (removing the floor costs +10%); inert on the rigid arms |
+| `floor0p2` | Panda 1.00-1.01, iiwa 1.01-1.02, screw 1.03-1.07, soft PCS grasp 1.14-1.16, **soft PCS pose 0.821** | 0.67-1.06 | **-8 to -16 on 15 rows** | +-1 | up to one decade (soft PCS pose 1.1e-5 against 1.6e-6) | `z_norm` of the selection up 0.5-0.9 on the rigid arms (3.3-3.9 against 2.5-3.2) | a flat c factor spreads the swarm in z and off the feasible set: the floor's value is not 0.2 |
+| `kz3` | **grasp 1.09-1.26 on every robot** (Panda 1.16, iiwa 1.09-1.10, screw 1.21-1.26, soft PCS 1.14-1.15), screw pose 1.15-1.18, Panda / iiwa pose 0.99-1.01, **soft PCS pose 0.806 / 0.819** | 0.59-1.26 | **-10 to -26 on every row** | +-1 | up to one decade on soft PCS pose | `z_norm` of the selection **3.8-4.3**, at the latent trust region's radius (4.0 Panda, 4.33 iiwa, 4.15 screw) against 2.5-3.2 under `cz` | **the c factor earns its place on all eight grasp rows and screw pose**: `cz` stands, `kz` is not a simplification. The prediction (`kz` ~ pin on pose, within noise on grasp) holds on Panda and iiwa pose only |
+
+**What the round says, in the order the pre-registration asked.** (1) **N = 64 is the selection
+pool, not a convenience.** Cost rises monotonically as the swarm shrinks on all sixteen rows, so the
+wall that N 16 / 32 buy (0.34-0.89x) is paid in cost on every rigid row; R14 / R18's "N does not
+add to the latent kernel" was a statement about success, which is at the ceiling, and it stands.
+(2) **rho = 1e5 is the saturation point and the residual is not rho's to set.** Another decade
+moves cost by under 1.2% on every row, raises the resample churn by 5-10 per cell on the rigid
+pose rows, and leaves the residual at stop in the same decade, because the swarm stops when the
+best feasible objective stalls at gate level, not when the penalty's stationary point is reached;
+the recorded `lam_inf` scales 8-13x with rho, which is the signature of a one-step estimate
+`rho * c` rather than a converged multiplier (below). (3) **The stall patience is worth 19-34% of
+the wall at no cost**: `pat3` meets its adoption rule on all sixteen rows (cost within 1%, wall
+0.66-0.81x), at 2-6 fewer feasible particles at stop on the screw and Panda rows; `pat2` crosses
+into cost (screw grasp +5.7%) and feasible count (-15). **A question for Thomas, not adopted.**
+(4) **The dual step is a knob with a corner, and the multipliers do no measurable work at the pin.**
+`alpha0` (no dual update: the pure quadratic penalty at rho = 1e5) ties the pin on success, cost,
+wall, steps, feasible particles and residual on all sixteen rows, refuting the pre-registered
+prediction and its premise: the "record's multipliers of 1e2-1e4" were the pin's `lam_inf` /
+`mu_inf` MAXIMA, and the medians at stop (0.1-4.5) scale with rho, so they are `rho * c` one-step
+estimates, not lambda-star. The residual the penalty alone reaches (2e-6 to 3e-5) bounds the true
+multipliers of this objective at `rho * c` ~ 0.2-3, two decades below what the prediction assumed,
+which is why the pure penalty sits inside the 1e-4 gate. Around that corner the ladder is NOT
+monotone: alpha = rho / 10 keeps success but stalls earlier with 8-28 fewer feasible particles and
+dearer selections on the rigid pose and screw rows, and alpha = 10 rho destroys the swarm (one
+feasible particle, resamples 80-750 per cell on grasp) and convergence (477 / 480 at the clock on
+pose, residual 1e-3). A hypothesis for the rho / 10 corner, not established: a partial dual step
+moves the AL's minimiser every check without landing on it, so the feasible set the stall rule
+reads keeps shifting and the stop fires on a smaller one. **What is settled**: alpha = rho (the
+exact PHR step) is kept as the formulation's value -- the augmented Lagrangian is the method Thomas
+named, and dropping the multipliers buys no wall -- and the option stays because it is not inert;
+whether the pure penalty is a legitimate simplification of the METHOD is a formulation question for
+him, flagged, with the structure rounds (R26-R28) running on the AL as pre-registered. (5) **The
+c x z kernel earns its place on every grasp row, and the floor is a value on the soft PCS arm.**
+`kz` costs 9-26% on the eight grasp rows and 15-18% on screw pose, with 10-26 fewer feasible
+particles and the selection's `|z|` pushed to the trust region's radius: without the c factor,
+particles that share a latent but differ in conditioning pose read as duplicates and are repelled
+along z, off the feasible set. `floor1e-3` costs +10% on the soft PCS grasp rows (where R20 records
+the floor binding) and is inert on the rigid arms; `floor0p2` loses 8-16 feasible particles
+everywhere. So `cz` at floor 0.05 stands with a reason, not an accident. **One trade worth
+carrying into R26's reading**: on the soft PCS POSE rows a flat c factor (`floor0p2`) or no c
+factor (`kz3`) cuts the cost 18% (0.81-0.83 of the pin: from 1.005 / 1.331x the IPOPT twin to
+0.825 / 1.109x, native / paired), at 14-15 fewer feasible particles and one decade of residual
+(1e-5, inside the gate). That is the one place in the record where the learned arm under svgd is
+dearer than under IPOPT (R20: soft PCS 1.26-1.45x on three rows), and it says the premium is the
+c-kernel's repulsion holding the swarm's conditioning poses apart on a robot whose c-spread at stop
+is below the floor. Not adopted (a 16-row trade), but R26's latent prior, which drives z rather
+than c, is read with it in view. **Nothing deleted by rule; two questions to Thomas: `pat3`, and
+the status of the pure penalty.**
+
 ### Stage SVGD_R26: the latent prior N(0, I) on z (phase 3 / 4; pre-registered 2026-10-14 evening, before any cell)
 
 **Why this round needs no new code, and what that means.** The formulation already carries the

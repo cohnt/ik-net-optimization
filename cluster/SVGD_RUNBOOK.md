@@ -1065,8 +1065,12 @@ cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_
 # read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,N16,N32,rho1e6,pat2,pat3,alpha0p1,alpha10,alpha0,floor1em3,floor0p2,kz3
 ```
 
-**Running 2026-10-15 from 07:03 (jobs 5925276-79, restaged 0ecb1ad). The seven remaining `alpha10`
-POSE rows are HELD (Thomas, 15:45 EDT, "Do proposal 1").** The grasp rows finished at 1-5 min per
+**Finished 2026-10-15 22:16 EDT (15.0 h on 4 nodes, jobs 5925276-79, restaged 0ecb1ad): 4056 of 4224
+items done, 168 held, 0 crashed (the eight worker logs carry 0 nonzero exits). Collected 2026-10-16
+14:24 (`collect_20261016-142413`, 40 min in the remote tar: 4056 shard dirs), 169 runs merged and
+promoted (`sc_SVGD_R24_*`), the seven held rows absent. Read 2026-10-16: `docs/svgd-solver.md` "R24
+results" -- nothing deleted by rule; `pat3` and the pure-penalty question go to Thomas.** The seven
+remaining `alpha10` POSE rows are HELD (Thomas, 15:45 EDT, "Do proposal 1").** The grasp rows finished at 1-5 min per
 shard (`alpha10` 480 / 480 everywhere, resamples 40-60x the pin's). On the pose rows the variant runs
 EVERY cell to the clock: iiwa pose native `alpha10`, first 8 shards, 0 of 128 cells feasible, all
 `wall_clock` at 162 s, ~2300 outer steps and 16k-20k resamples per cell, residual ~1e-3 against the
