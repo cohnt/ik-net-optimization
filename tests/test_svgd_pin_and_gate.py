@@ -55,6 +55,7 @@ OLD_PIN = S.LEGACY_PIN
 NEW_PIN = dict(svgd_kernel="cz", svgd_rho=100000.0, svgd_paired_init="native")
 #: Every other svgd field a cell depends on, named so that options left on a cached test program
 #: by an earlier test (run_cell accumulates them) cannot leak into these solves.
+#: The fielded stall patience is 3 since 2026-10-16; the reference was recorded at 5, named here.
 REST = dict(svgd_n=64, svgd_outer_iters=300, svgd_stop_patience=5, svgd_stop_rel=1e-3,
             svgd_inner_iters=10, svgd_recheck_topk=10, svgd_lr=0.3, svgd_gn_lm=10.0,
             svgd_resample="native", svgd_compile=False,
