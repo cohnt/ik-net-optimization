@@ -974,6 +974,10 @@ Local 2-cell smoke (Panda pose native, 60 s): `so` 2 / 2 at the pin's cost and s
 cost 3.354 / 4.610 against the pin's 3.35 / 4.62 at 6-11 steps and `|z|` 0.90 / 3.17 (R26's `lp1` on the
 same cells: 3.73 / 5.48 at 85-132 steps, `|z|` 0.34) -- the pre-registered prediction, on two cells.**
 
+**R29 finished 2026-10-17 07:21 EDT (5.6 h on 4 nodes, jobs 5943006-09), 1536 / 1536, 0 crashed, 0 error
+cells; collected 07:22-08:20 (`collect_20261017-072208`, 64 runs promoted). Read: `docs/svgd-solver.md`
+"R29 results". R30 (5943010-13) started 07:21.**
+
 `swap_staged_tree.sh` refuses if anything still runs out of `repo/`, OVERLAYS `repo-next/` onto
 `repo/` (no `--delete`, so the cpp build and cluster-only checkpoints survive), copies
 `.staged-commit`, and `cmp`s the three files that matter; `afterok` means R29 never starts on an

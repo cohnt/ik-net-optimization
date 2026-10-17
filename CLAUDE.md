@@ -1050,6 +1050,18 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   the reparameterised-joint-space flag never fires. The dose shows only on soft PCS pose (0.71 / 0.88 / 1.00 /
   1.15), the third round singling out that robot's pose task. w = 100 stops the swarm sooner (grasp wall
   0.63-0.85). Part 2 dropped: no density winner, and a `q_c` prior would replace a box that never binds.
+- **R29 (2026-10-17, the regulariser's three roles: `svgd_stop_select_objective=shared` alone and with the
+  latent prior at 0.1 / 1 in the drive only, against the V4 control `pin4`, 16 rows, 5.6 h; `docs/svgd-solver.md`
+  "R29 results"): the drive-only prior is INERT on the rigid arms, and the roles are not free to separate.**
+  480 / 480 everywhere. `pin4` reproduces `pat3` on every row median (cost within 0.3%) and on 51% of cells
+  (the same-configuration band: median 0.5%, p90 26%, 131 of 7,680 cells > 50%). With the stop and the
+  selection on the shared objective, the prior keeps rigid cost within the band (12 / 12 rows at w = 0.1,
+  10 / 12 at w = 1), `|z|` between the pin's and R26's, resamples unchanged (the runaway prediction fails a
+  third time), feasible particles -7 to -16 at w = 1. `shared` alone costs wall on every grasp row
+  (+10-60%: the correction penalty earns a role in the stall rule) and returns R28's `qc0` point on soft PCS
+  pose (0.70): the pin stays `full`. **Soft PCS pose: the drive-only prior at w = 1 gives 0.50x the pin's
+  cost (0.50 / 0.69x the IPOPT twin) at 63 / 64 feasible for 6 s against 1.1 s** -- the push's largest cost
+  result, one robot, not fielded by the rule; a question for Thomas.
 - **R29 / R30 queued 2026-10-16 (Thomas: pre-register the drive-only round; compute through the weekend).**
   `svgd_stop_select_objective` = `full` (pin) | `shared`: the stall rule and the selection read the shared
   objective (regularisers excluded by name, as `reported_cost`), the drive unchanged -- a solver rule about

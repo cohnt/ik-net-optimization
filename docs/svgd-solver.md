@@ -2493,6 +2493,51 @@ queue never idles and no laptop has to be awake. Local 2-cell smoke of `so` and 
 manifest; the pin test (`tests/test_svgd_pin_and_gate.py`) must pass unchanged with the option at
 its default.
 
+**R29 results (ran 2026-10-17 01:45-07:21 EDT on four nodes, jobs 5943006-09, 5.6 h, the first stage on
+`SVGD_PINNED_V4` and on the swapped tree f312793; read 2026-10-17 08:30 against R24's `pat3`, R20's `pin2`
+and the round's own `pin4` on the same cells with the push's noise band).** 64 of 64 runs complete, 0
+crashed, 0 error cells. **Cap check**: 0 cells at the step cap, 0 clock stops, 0 recheck failures on every
+row. **Success 480 / 480 on all 64 rows.** Per-cell numbers: `scripts/report_svgd.py --stage SVGD --rows
+<robot> --variants pin2,pat3,pin4,so,lp0p1so,lp1so`.
+
+**The control.** `pin4` reproduces R24's `pat3` on every row: cost ratio to `pin2` equal to three decimals
+on 16 of 16 rows (0.991-1.004), wall within 0.1 s, median outer steps, feasible particles, residual and
+`|z|` equal. **Per cell it does not**: 3,728 of 7,680 cells (49%) return a different cost, 1,731 a different
+step count -- the median relative difference is 0.5%, the 90th percentile 26%, and 131 cells differ by
+more than 50% -- so a same-configuration re-run of the float32 GPU swarm under 20 Drake threads is
+reproducible at the row (every median within 0.3%) and not at the cell. This is the push's noise band
+measured directly, and it is what the cell-paired McNemar at 480 / 480 never sees; R30's `pin4s2` gives
+the across-grid version.
+
+| variant | cost ratio to `pin4` (shared cells; the regularisers excluded from both) | wall ratio to `pin4` | outer steps vs `pin4` | feasible particles vs `pin4` | `\|z\|` of the selection (`pin4` 2.5-3.2 rigid, 3.2-4.4 soft PCS) | `\|q_c\|_inf` (`pin4` 5e-4 to 1.2e-3) | resamples | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `so` (the rule alone at the pin) | rigid 0.986-1.001 and soft PCS grasp 0.98-0.99 (within the band on 14 rows); **soft PCS pose 0.70-0.71** | **grasp rows 1.0-1.6** (Panda +50%, iiwa +25-35%, soft PCS +55-60%, screw +0-10%); pose rows 1.0-1.07 | +1 to +6 on the grasp rows, 0 on pose | +-1 | as `pin4` (rigid), 3.3-3.4 soft PCS pose (from 4.3) | 1.5-2x the pin's; **soft PCS pose 8.5e-3** | as the pin | NOT within noise: **the correction penalty earns a role in the stall rule** (with it excluded the grasp swarms walk 1-6 checks longer on the shared cost) **and in the selection on soft PCS pose**, where excluding it returns the cheapest feasible particle at `\|q_c\|` ~1e-2 -- the same point R28's `qc0` returned (0.707 / 0.711). `shared` is not adopted as a general rule; the pin stays `full` |
+| `lp0p1so` | **rigid 0.984-1.016 (within the band on 12 of 12)**; soft PCS grasp 0.88, **soft PCS pose 0.63** | Panda grasp 1.4-1.7, iiwa grasp 1.2-1.4, screw grasp 1.0-1.1, rigid pose 0.97-1.1; **soft PCS 3.5-7** | rigid +0 to +8 (Panda grasp), pose 0; soft PCS grasp +5 to +6, pose 0 at the median with a long tail (mean wall 8 s: the cells that walk, 30+ steps at 5 s of collision time, against the 6-step majority) | +1 to +3 (within) | 2.0-2.8 rigid, 2.4-2.7 soft PCS: between `pin4`'s and R26's `lp0p1` (1.0-1.6), as predicted | 1.0-1.2x the pin's rigid, 1.1e-2 soft PCS pose | as the pin | cost within the band and `\|z\|` lower, as predicted; wall outside the band on the Panda and iiwa grasp rows and on every soft PCS row -> by the rule, not a candidate to field on the rigid arms; the soft PCS gains are stated below |
+| `lp1so` | rigid 0.983-1.075: Panda 0.983-0.996, iiwa 0.989-1.001, screw pose 1.02-1.03, **screw grasp 1.05-1.08 (outside)**; soft PCS grasp 0.64, **soft PCS pose 0.50-0.52** | Panda grasp 1.1-1.3, iiwa grasp 1.0-1.2, **screw grasp 0.87-0.94**, rigid pose 0.95-1.2; soft PCS 4-5.5 | rigid -1 to +3, soft PCS +17 to +25 | **-7 to -16 on 8 rigid rows** (screw grasp 33 / 32 against 43 / 42, iiwa and screw pose 24 against 33-35) | 1.2-2.1 rigid, 1.2-1.3 soft PCS | 1.0-1.3x rigid, 1.4e-2 soft PCS pose | screw grasp 20 against 25-26 (-20%), not >= 30% | within noise on Panda and iiwa cost, outside on screw grasp cost and on feasible particles on half the rigid rows; resamples not lowered by 30% anywhere -> not a candidate to field on the rigid arms |
+
+**What the round says.** (1) **Separating the roles works as a measurement**: with the stall rule and the
+selection reading the shared objective, the latent prior in the drive alone keeps the rigid-arm cost
+within the band at w = 0.1 (12 of 12 rows) and w = 1 (10 of 12), where R26's prior in all three roles
+cost +16-335%; the selection's `|z|` sits between the pin's and R26's exactly as pre-registered, and the
+outer steps come back from 10-30x to within a few of the pin's. So the drive effect of the prior is now
+read on its own: on the rigid arms it is **inert** -- it moves the swarm toward typical latents (the
+`|z|` it was built to move) without changing cost, residual or resamples, and at w = 1 it thins the
+feasible pool (-7 to -16 particles on half the rows) and costs the screw arm 5-8% on grasp. The runaway
+prediction fails for the third time (resamples -20% at best on screw grasp): no term in z addresses a
+runaway whose drive is in c. (2) **The regulariser's roles are not free to separate at the pin**: the
+correction penalty earns a role in the stall rule on every grasp row (without it the swarm walks 1-6
+checks longer for cost gains inside the band) and in the selection on soft PCS pose. `shared` is not a
+general simplification; the pin stays `full`. (3) **The soft PCS arm, again, and now decisively.** On its
+pose rows the drive-only prior at w = 1 returns solutions at 0.50-0.52x the pin's cost (0.50 / 0.69x the
+IPOPT twin, native / paired, where the pin sits at 1.005 / 1.331x) with 63 of 64 particles feasible and
+the residual in the same decade, for 6 s against the pin's 1.1 s; the shared selection alone gives 0.70,
+the prior at w = 0.1 0.63. On its grasp rows the same term gives 0.64-0.88 at 3.5-4.7x the wall. This is
+the push's largest cost result and it is confined to one robot, the one whose chart maps z = 0 to the
+straight rod the task cost is centred on, so the prior and the task cost agree there and nowhere else.
+**Not fielded by the rule** (the wall band, and a one-robot gain), reported as the one place a
+formulation-structure term buys the learned arm something under svgd; whether a robot-specific stated
+setting is worth carrying is a question for Thomas.
+
 ### Stage SVGD_R30: the V4 pin's record re-measure (pre-registered 2026-10-16, before the manifest)
 
 Patience 3 is the fielded pin from 2026-10-16. Two measurements the record kept for every earlier pin
