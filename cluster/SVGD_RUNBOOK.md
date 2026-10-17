@@ -985,6 +985,11 @@ is a seed-2 grid, compared by target-level rates, never cell-paired).
 
 ## R28 part 1 (branch `svgd-tune`, 2026-10-14): the correction penalty ladder at the pin
 
+**Finished 2026-10-17 01:44 EDT (3.9 h on 4 nodes, jobs 5926659/66/67/68), 1152 / 1152, 0 crashed; the
+swap job 5943005 ran at 01:44 (17 s, live tree f312793) and R29 started at 01:45 on all four nodes with 0
+error cells in its first rows. Collected 01:46-02:25 (`collect_20261017-014605`, 48 runs promoted). Read:
+`docs/svgd-solver.md` "R28 part 1 results" -- 10 stands, the weight is inert on the rigid arms, part 2 dropped.**
+
 **Submitted 2026-10-14 23:27 EDT and HELD: jobs 5926659, 5926666-5926668**, four nodes,
 `DRAKE_ENV=crc PROCS=2`, manifest md5 `ceb1a71b`; a second local watcher
 (`scratchpad/release_r28.sh`, log `release_r28.log`) releases them once the restage watcher logs

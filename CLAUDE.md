@@ -1043,6 +1043,13 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   latent). `fd` lowers the prior's cost penalty (Panda grasp 1.24 v 1.72, iiwa 1.9-2.3 v 2.6) and wall 2-3x
   but stays +18-265% over the pin on the rigid rows, through the stall rule (a -19 to -42 target loosens
   the relative stall test), not the drive. R28 part 2 has no winner to run on and is dropped.
+- **R28 part 1 (2026-10-16/17, the correction penalty at w = 0 / 1 / 100 against the pin's 10, 16 rows, 3.9 h;
+  `docs/svgd-solver.md` "R28 part 1 results"): 10 STANDS; the weight does nothing on the rigid arms.** 480 / 480
+  everywhere; cost within +-3% on all twelve rigid rows from w = 0 to 100, `|q_c|` 2e-4 to 5e-3 (the pin's is
+  5e-4 to 1e-3, not the IPOPT record's 2e-5), the +-0.1 box binding on 1 cell of 23,040 even unpenalised --
+  the reparameterised-joint-space flag never fires. The dose shows only on soft PCS pose (0.71 / 0.88 / 1.00 /
+  1.15), the third round singling out that robot's pose task. w = 100 stops the swarm sooner (grasp wall
+  0.63-0.85). Part 2 dropped: no density winner, and a `q_c` prior would replace a box that never binds.
 - **R29 / R30 queued 2026-10-16 (Thomas: pre-register the drive-only round; compute through the weekend).**
   `svgd_stop_select_objective` = `full` (pin) | `shared`: the stall rule and the selection read the shared
   objective (regularisers excluded by name, as `reported_cost`), the drive unchanged -- a solver rule about
