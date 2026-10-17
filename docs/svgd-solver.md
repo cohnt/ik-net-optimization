@@ -2323,6 +2323,36 @@ shards; read against `pin2` (= `w_c = 10`, the control) on the same cells and th
 ~4 h on 4 nodes. Local parse smoke (2 Panda grasp native cells, 60 s) of `w_c` 0 and 100 (never
 run under svgd; 1 likewise) before the manifest. No new code; runs on either staged tree.
 
+**R28 part 1 results (ran 2026-10-16 21:50 to 2026-10-17 01:44 EDT on four nodes, jobs 5926659/66/67/68,
+3.9 h; read 2026-10-17 02:30 against R20's `pin2` = `w_c` 10 on the same cells with the push's noise
+band).** 48 of 48 runs complete, 0 crashed. **Cap check**: 0 cells at the step cap, 0 clock stops, 0
+recheck failures on every row. **Success 480 / 480 on all 48 rows.** One correction to the
+pre-registration's premise before the table: the pin's `|q_c|_inf` median is 5e-4 to 1.3e-3 per row
+(the "~2e-5" quoted was the IPOPT record's figure), and 0 of 7,680 pin cells sit on the +-0.1 box.
+Per-cell numbers: `scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,qc0,qc1,qc100`.
+
+| variant | cost ratio to `pin2` (shared cells; the penalty excluded from both) | wall ratio | outer steps | `\|q_c\|_inf` median (pin 5e-4 to 1.3e-3) | cells on the +-0.1 box (of 480) | feasible particles | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `qc0` (no penalty; the box alone) | **rigid arms 0.98-1.00 and soft PCS grasp 1.00 (within the band on 14 rows); soft PCS pose 0.71** | grasp rows 1.1-1.6, pose rows 1.0-1.4 | +0 to +10 (Panda grasp +10) | 7e-4 to 5e-3 rigid, 9e-4 soft PCS grasp, **1e-2 soft PCS pose** | **0 on 15 rows, 1 on Panda pose native** | +-1 | the prediction (`\|q_c\|` 0.03-0.1 with many cells on the box, cost down 5-15%) is REFUTED on the rigid arms: unpenalised, the correction grows 1.5-4x and stays 20-100x inside its box, and the shared cost does not move. **The penalty is doing nothing the task does not already do there.** On soft PCS pose the free correction buys 29% of the cost at `\|q_c\|` 1e-2 (still 10x inside the box): what the box buys on the one robot whose chart-side self-motion is dear, reported, never adopted |
+| `qc1` | rigid 0.99-1.00, soft PCS grasp 1.00, soft PCS pose 0.87-0.88 | 1.0-1.4 | +0 to +9 | 7e-4 to 2.5e-3 (1.5-2x the pin's, the same order) | 0 | +-1 | within noise on 14 rows with `\|q_c\|` of the pin's order: no question raised |
+| `qc100` | rigid 1.01-1.03, soft PCS grasp 1.02-1.05, **soft PCS pose 1.12-1.17** | **0.63-0.85 on the grasp rows**, 0.94-1.03 on pose | -1 to -7 | 2.4e-4 to 7.7e-4 (0.4-0.6x the pin's) | 0 | -0 to -2 | monotone in `\|q_c\|` and in cost (soft PCS pose: 0.71 / 0.88 / 1.00 / 1.15 over w = 0 / 1 / 10 / 100), the mechanism's signature; **the correction earns its place in the formulation on the soft PCS pose rows** (+12-17% at w = 100, toward eq. (4)'s `q_c = 0` arm) and is at the band's edge elsewhere (+1-5%); pinning it harder also stops the swarm sooner (steps -1 to -7, wall 0.63-0.85 on grasp) |
+
+**What the round says.** Under svgd the correction's weight is a formulation setting whose value does
+not move the rigid arms: from 0 to 100 the shared cost stays within +-3% on all twelve rigid rows,
+feasible particles and residual are unchanged, and the +-0.1 box binds on 1 cell of 23,040. So the
+campaign's flag -- the learned arm quietly becoming a reparameterised joint-space arm through the
+correction -- does not fire even with the penalty removed: the swarm reaches the gate and stalls on
+the task cost long before the correction walks anywhere (the stall rule, again), and the correction's
+directions carry no chart gain, so the SVN step moves them little per outer step. The weight does
+work on the soft PCS pose rows only, monotonically (0.71 to 1.15 over the ladder), the third round in a
+row to single out that robot's pose task as the place where the learned formulation's cost is set by
+what holds the configuration near the chart's output. **10 stands as the stated value** (Thomas's
+2026-09-02 ruling), with this as the measurement behind it: it costs nothing on the rigid arms against
+0 or 1, and the dose on soft PCS pose is reported, not optimised. **Part 2 is dropped**: its density
+factor has no winner (R26 / R27), and its `q_c` prior replacing the box would replace a bound that
+binds on 1 cell in 23,040, so there is nothing for it to measure; the question of a zero-centred prior
+is answered by this table without code.
+
 ### Stage SVGD_R27: the flow as an exact density (phase 3 / 4; pre-registered 2026-10-14 night, before any cell; code ac4f5c2)
 
 **The term.** `flow_logdet_weight = w` adds `w log|det dx/dz|` of the IKFlow map `x = flow(c, z)`
