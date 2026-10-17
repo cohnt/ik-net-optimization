@@ -1035,6 +1035,14 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   and a decade lower residual, for 13-18x the wall** -- a trade carried, not adopted. Open question to
   Thomas: whether a structural term belongs in the drive only, not the stop rule or the selection. R27
   running (its `fd` rungs carry the prior; `ld1` is the informative one), R28 part 1 queued; part 2 waits.
+- **R27 (2026-10-16, the flow as an exact density: `ld1` log-det alone, `fd0p1` / `fd1` = prior + log-det at
+  0.1 / 1, 16 rows, 6.7 h; `docs/svgd-solver.md` "R27 results"): REFUTED in every form.** `ld1` is the push's
+  first success loss -- screw grasp 456 / 458 of 480, 22-24 cells at the clock, resamples 6x the pin's, `|z|`
+  at the trust region's radius, cost +28-320%: the log-det alone drives the swarm INTO the runaway it was
+  meant to prevent (its gradient is 20x larger on c than on z, so it moves the conditioning pose, not the
+  latent). `fd` lowers the prior's cost penalty (Panda grasp 1.24 v 1.72, iiwa 1.9-2.3 v 2.6) and wall 2-3x
+  but stays +18-265% over the pin on the rigid rows, through the stall rule (a -19 to -42 target loosens
+  the relative stall test), not the drive. R28 part 2 has no winner to run on and is dropped.
 - **R29 / R30 queued 2026-10-16 (Thomas: pre-register the drive-only round; compute through the weekend).**
   `svgd_stop_select_objective` = `full` (pin) | `shared`: the stall rule and the selection read the shared
   objective (regularisers excluded by name, as `reported_cost`), the drive unchanged -- a solver rule about

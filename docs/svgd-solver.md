@@ -2379,6 +2379,45 @@ against `pin2`, R26's `lp0p1` / `lp1` on the same cells, and the IPOPT twin:
 outer steps (4x the pin on `fd1`) ~5-8 h on 4 nodes. Restage first (`BRANCH=svgd-tune
 cluster/make_staging_clone.sh`, after R26 drains), then the usual scp / md5 / submit.
 
+**R27 results (ran 2026-10-16 15:10-21:55 EDT on four nodes, jobs 5932634-37, 6.7 h; read 2026-10-16
+night against R20's `pin2` and R26's `lp0p1` / `lp1` on the same cells with the push's noise band).**
+48 of 48 runs complete, 0 crashed. **Cap check**: 0 cells at the step cap; clock stops 0 on 46 rows,
+**24 and 22 of 480 on screw grasp native / paired under `ld1`** (native is at the 24-cell threshold: a
+result at the fielded clock, no success verdict; paired is a verdict); recheck failures 0. Success
+480 / 480 on the other 46 rows. Per-cell numbers: `scripts/report_svgd.py --stage SVGD --rows <robot>
+--variants pin2,lp0p1,lp1,ld1,fd0p1,fd1`.
+
+| variant | success | cost ratio to `pin2` (shared cells; the term excluded from both) | wall ratio | outer steps | feasible particles | `\|z\|` of the selection (pin 2.5-4.4) | resamples (pin: Panda 2-5, iiwa 8-9, screw grasp 28-30 / pose 13, soft PCS 0-1) | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `ld1` (the log-det alone) | 480 / 480 on 14 rows; **screw grasp 456 / 458 of 480, every loss at the clock** | Panda 1.28-1.29 grasp / 1.50-1.52 pose; iiwa 2.05-2.07 / 2.07-2.08; screw 3.9-4.2 / 3.9-4.0; soft PCS 2.40-2.45 / 1.54-1.57 | 0.9-2.1 rigid; **9-10 on screw grasp** (17-18 s); 3.0-3.8 soft PCS | +3 to +39 | iiwa grasp -14 / -15, **soft PCS -28 to -32**, screw grasp -13 / -14 | **3.1-5.0: at the trust region's radius** (iiwa 4.2, soft PCS 4.96) | **screw grasp 166-189 per cell (6x the pin)**; elsewhere as the pin | the prediction (resamples down >= 30% on the screw rows, cost within noise) is refuted in sign: **the log-det alone drives the swarm INTO the runaway on the robot it was meant to protect**, and off the typical set everywhere. Not fielded; the "structural answer to the resample" is refuted |
+| `fd0p1` (`-0.1 log p(x \| c)`) | 480 / 480 | Panda 1.24-1.27 / 1.18-1.21; iiwa 2.27-2.34 / 2.15-2.25; screw 3.56-3.65 / 3.35; soft PCS grasp 1.78-1.83, **soft PCS pose 0.95-0.98 (within the band)** | rigid pose 0.9-1.2 (within the band on 4 of 6), rigid grasp 1.15-3.2, soft PCS 3.3-6.4 | rigid pose -1 to 0, rigid grasp +7 to +36, soft PCS +0 / +51 | +2 to +7 | 1.3-2.3 | as the pin on every row | not within noise on cost (12 rigid rows +18 to +265%); resamples not lowered anywhere -> no candidate to field |
+| `fd1` (`-log p(x \| c)`) | 480 / 480 | Panda 1.24 / 1.11; iiwa 1.93-1.95 / 2.03-2.07; screw 3.7-3.9 / 3.3-3.4; soft PCS grasp 2.0, **soft PCS pose 0.765** | 1.15-4.0 rigid, 4.1-6.2 soft PCS | +11 to +43 | -6 to +13 | 0.9-1.8 | as the pin but screw grasp 38-40 (+30%) | prediction (cost +5-10%, resamples down on screw) refuted on both; not fielded |
+
+**Attribution, the pair of readings the pre-registration asked for (`fd` minus `lp` on the same
+cells).** Adding the log-det to the prior LOWERS the prior's cost penalty on every rigid row (Panda
+grasp 1.24 against `lp`'s 1.72, iiwa 1.9-2.3 against 2.6, screw 3.4-3.9 against 3.6-4.4) and cuts its
+wall 2-3x with 2-4x fewer outer steps; on soft PCS pose it REDUCES the prior's gain (`fd1` 0.765 against
+`lp1` 0.62, `fd0p1` 0.95-0.98 against `lp0p1` 0.78-0.80). Both readings fit the caveat written before
+the round: the log-det is -19 to -42 on the target against a task cost of 2-5, so the relative stall
+test fires sooner (a looser absolute threshold), the swarm walks the prior less far and the selection
+sits nearer the task cost's minimum -- the fewer steps are the rule, not the term. The density values
+themselves say the same: under `ld1` the recorded `-log p` at the returned point (-19 to -34) is LESS
+negative than under `fd` (-23 to -42), because without the prior the latent runs to the region's
+boundary where `|z|^2 / 2` is 8-12. So **the three readings are a single mechanism tangled with the
+stop rule and the selection**, which is what R29 (queued) separates; nothing here is a drive effect that
+can be read on its own.
+
+**What the round says.** The flow as an exact density, in the learned arm's target, is **refuted as a
+fielded term in every form**: the prior half relocates the selection (R26), the log-det half pushes
+the swarm off the typical set and, on the screw arm, into the runaway it was pre-registered to prevent
+(the push's first success loss: 22-24 cells at the clock, resamples 6x), and the pair is better than
+either half only through the stall rule. The structural claim that high-gain regions are where
+`log|det|` is large and a particle "pays before its q explodes" did not survive: the term's gradient is
+dominated by the conditioning pose (20x the latent's, found while building it), so it moves c to
+low-volume poses rather than holding z, and a free c with no prior lets the latent drift to the
+trust region's edge. **R28 part 2 was to run on R26 / R27's winner; there is none, so part 2 is not
+run.** The queue stands as R28 part 1 -> R29 -> R30.
+
 ### Stage SVGD_R29: the regulariser's three roles -- drive, stall rule, selection (pre-registered 2026-10-16 17:30 EDT, before any code ran a cell and before the manifest)
 
 **Why.** The augmented Lagrangian target is used in three roles inside the solver: the DRIVE (each
