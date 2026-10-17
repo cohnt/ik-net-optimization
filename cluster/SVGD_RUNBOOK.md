@@ -978,6 +978,10 @@ same cells: 3.73 / 5.48 at 85-132 steps, `|z|` 0.34) -- the pre-registered predi
 cells; collected 07:22-08:20 (`collect_20261017-072208`, 64 runs promoted). Read: `docs/svgd-solver.md`
 "R29 results". R30 (5943010-13) started 07:21.**
 
+**R30 finished 2026-10-17 10:08 EDT (2.8 h, jobs 5943010-13), 768 / 768, 0 crashed; collected 10:09-11:00
+(`collect_20261017-100857`, 32 runs promoted). Read: `docs/svgd-solver.md` "R30 results". THE QUEUE IS EMPTY;
+the live tree is f312793 (v4). Nothing further is pre-registered.**
+
 `swap_staged_tree.sh` refuses if anything still runs out of `repo/`, OVERLAYS `repo-next/` onto
 `repo/` (no `--delete`, so the cpp build and cluster-only checkpoints survive), copies
 `.staged-commit`, and `cmp`s the three files that matter; `afterok` means R29 never starts on an
