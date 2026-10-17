@@ -2552,6 +2552,45 @@ and does not yet have for this one, queued behind R29 so the four nodes stay bus
 Allotment: 32 runs, 768 items; `pin4kq`'s screw grasp rows run their clock-bound cells (R21: 7.5-8.5 s
 mean wall), so ~6-10 h on four nodes. No new code beyond R29's.
 
+**R30 results (ran 2026-10-17 07:21-10:08 EDT on four nodes, jobs 5943010-13, 2.8 h; read 2026-10-17
+11:10).** 32 of 32 runs complete, 0 crashed. **Cap check**: 0 cells at the step cap; clock stops only on the
+screw arm's joint-space rows (grasp 17 / 16, pose 4 / 4 of 480, as at V2: 17 / 20 and 3 / 3), all under 24;
+0 recheck failures.
+
+**`pin4kq`, the joint-space ablation at V4 (cell-paired to R20 / R21's `pin2kq`).** Success identical on
+the twelve rigid-and-soft rows that were 480 / 480 (480 / 480 again), and within the clock-bound band on
+the screw arm: grasp 463 / 464 against 463 / 460 (+3 / -3 and +7 / -3, p = 1 and 0.34), pose 476 / 476
+against 477 / 477 (-1 each). Cost within [0.99, 1.01] on all 16 rows; wall 0.77-0.86x on 13 rows (the
+patience's 2-6 fewer outer steps), 0.95x on screw grasp native and 1.05-1.07x on screw pose (rows whose
+mean wall is set by cells at the clock); feasible particles -1 to -3. **The ablation column at the fielded
+pin is established, and it moves exactly as the learned arm did under `pat3`**: joint space under svgd
+keeps its 16 wins over joint space under IPOPT, and learned-against-joint-space inside svgd keeps its 2
+wins / 14 ties (the screw grasp rows: 480 against 463 / 464).
+
+**`pin4s2`, the V4 learned rows on a second grid (seed 2; compared with R29's `pin4` by rates and row
+medians, never cell-paired).** 480 / 480 on all 16 rows (target-level rate 1.000 everywhere, 0 clock
+stops); median outer steps identical on every row; feasible particles within +-2; residual in the same
+decade; `|z|` within 0.1. **The seed-to-seed band on a row's median cost is 0.94-1.10** (Panda 0.95-1.04,
+iiwa 0.94-0.99, screw 1.05-1.10, soft PCS 0.97-0.99) and on mean wall 0.93-1.14. That is WIDER than the
+push's [0.95, 1.05] cost band, and it is the right comparison for anything read across grids (a new seed,
+a new robot rung); every round of this push was read CELL-PAIRED on one grid, where the same-configuration
+band (R29: row medians within 0.3%, per cell median 0.5%) applies and the [0.95, 1.05] band is
+conservative. Two consequences for the record: (1) the three rungs this push called "outside the band" by
+5-8% on a single row (`lp1so` screw grasp 1.05-1.08, `qc100` soft PCS grasp 1.05, `floor0p2` screw grasp
+1.07) are inside the seed-to-seed spread and are reported as such, not as effects; the rounds' verdicts
+rest on the 10-300% movements and on the 12-16-row patterns, which no seed moves. (2) **The fielded
+pin's record is now two seeds deep** on every row: 480 / 480 on both, no verdict depends on the grid.
+
+**The push's state after R30 (2026-10-17).** The queue is empty. The fielded pin is `SVGD_PINNED_V4`
+(V3 + patience 3), with its sixteen learned rows (R29 `pin4`), its joint-space ablation (R30 `pin4kq`)
+and its seed-2 replication (R30 `pin4s2`) all 480 / 480. Everything the structure rounds tried in the
+target -- the latent prior (R26), the flow density (R27), the correction weight (R28), the prior in the
+drive only (R29) -- is refuted or inert on the rigid arms by the pre-registered rules, and every one of
+them moves the soft PCS pose rows, where the drive-only prior at w = 1 (R29 `lp1so`) returns 0.50x the
+pin's cost at 6 s. Open with Thomas: whether that one-robot gain is carried as a stated setting; the
+paper tables from the V4 rows (`report_svgd` stage mode; numbers and verdicts only); R25 (float64
+polish, code); the screw-arm segfault's mechanism (a race at PROCS=2, not reproduced alone on a node).
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each

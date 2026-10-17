@@ -1062,7 +1062,13 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
   pose (0.70): the pin stays `full`. **Soft PCS pose: the drive-only prior at w = 1 gives 0.50x the pin's
   cost (0.50 / 0.69x the IPOPT twin) at 63 / 64 feasible for 6 s against 1.1 s** -- the push's largest cost
   result, one robot, not fielded by the rule; a question for Thomas.
-- **R29 / R30 queued 2026-10-16 (Thomas: pre-register the drive-only round; compute through the weekend).**
+- **R30 (2026-10-17, the V4 pin's record re-measure, 2.8 h): the joint-space ablation at V4 (`pin4kq`) matches
+  `pin2kq` within the clock-bound band (480 / 480 on 12 rows, screw grasp 463 / 464, cost within 1%, wall
+  0.77-0.86x), and the seed-2 replication (`pin4s2`) is 480 / 480 on all 16 rows with every median step count
+  equal. The seed-to-seed band on a row's median cost is 0.94-1.10 (wider than the push's [0.95, 1.05]), so a
+  single-row 5-8% reading across grids is noise; the push's cell-paired reads on one grid reproduce within
+  0.3%. The fielded pin's record is two seeds deep. THE QUEUE IS EMPTY (2026-10-17 10:08).**
+- **R29 / R30 were queued 2026-10-16 (Thomas: pre-register the drive-only round; compute through the weekend).**
   `svgd_stop_select_objective` = `full` (pin) | `shared`: the stall rule and the selection read the shared
   objective (regularisers excluded by name, as `reported_cost`), the drive unchanged -- a solver rule about
   regularisers as a class, approved as a kernel-space-kind exception. R29: `pin4` (the V4 control), `so`,
@@ -1074,8 +1080,7 @@ density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
 `scripts/svgd/cross/`; Thomas writes every word -- numbers and verdicts only from here);
 the GVS arm under svgd is DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU,
 and a dlpack bridge would not remove the batched root-find's cost; what to do with R14's
-combinations. The staged cluster tree is 0ecb1ad (svgd-tune) until the chained swap job 5943005 (after R28)
-overlays f312793 (patience 3, `svgd_stop_select_objective`); R29 / R30 run on it (`cluster/SVGD_RUNBOOK.md`).
+combinations. The staged cluster tree is f312793 (svgd-tune; patience 3, `svgd_stop_select_objective`), swapped in by job 5943005 on 2026-10-17.
 
 ## Results: the campaign of record
 
