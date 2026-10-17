@@ -1003,6 +1003,10 @@ to 1.6e-2. Runs on either staged tree (no new code). Allotment: tool 45 node-h, 
 
 ## R27 (branch `svgd-tune`, 2026-10-14): the flow as an exact density -- the restage and the queue order
 
+**Finished 2026-10-16 21:55 EDT (6.7 h on 4 nodes, jobs 5932634-37), 1152 / 1152, 0 crashed; collected
+21:57-23:10 (`collect_20261016-215524`, 48 runs promoted). Read: `docs/svgd-solver.md` "R27 results" --
+refuted in every form; `ld1` loses 22-24 screw grasp cells to the clock. R28 part 2 is dropped (no winner).**
+
 **Done 2026-10-15 06:33-07:05 EDT, by hand.** The watcher refused at 06:31 (`stage_code.sh`
 counted my one-node diagnostic job 5932481 as a live campaign job of the tree and exited 3; the
 holds stayed). That job had already imported everything it runs, so the restage was forced
