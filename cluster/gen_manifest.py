@@ -4194,6 +4194,147 @@ def _cvae_selftest():
     return fails
 
 
+## --------------------------------------------------------------------------- SCREWREDO --
+##
+## The screw record's LEARNED arm re-measured on the retrained chart (Thomas, 2026-10-18). The
+## screw7 datasets were deleted and rebuilt (same generator and seed, not provably the same file);
+## the fielded rung `screw7_p050_n6` is retrained on the rebuilt dataset as `screw7_p050_n6r`
+## (cluster/ladder_runs.txt, identical args) so the flow and the cVAE charts see the same data, and
+## the screw record's learned rows are redone with it. No sweep: the record's rows only.
+##
+## Each item is its RECORD TWIN with only the chart swapped, built by the record's own
+## constructors: stage PAPER (IPOPT, SNOPT at paper conditions), stage REMEASURE_NLOPT (NLopt) and
+## stage SVGD_R29 `pin4` (AL-SVGD, seed 1). What changes, and nothing else (the selftest holds it):
+##   * `--arms learned` (the record's joint-space columns pair on the same cells);
+##   * `--checkpoint models/screw7_p050/screw7_p050__n6r__step620000.pkl`;
+##   * the tag `sc_SCREWREDO_screw7_p050_n6r_<solver>_<row>_480_180_<start>`: rung token `n6r`, no
+##     `_pin4` suffix on the svgd rows (parse_tag's six-token tail, as stage CVAE).
+## Same sharding as the twins (8 / 24 / 24 per run).
+##
+## THREE MANIFESTS, because PROCS / MPS / DRAKE_ENV are per submission and the twins ran under three:
+##   SCREWREDO        IPOPT + SNOPT, 8 runs x 8 shards, PROCS=2 no MPS (stage PAPER's condition);
+##   SCREWREDO_NLOPT  NLopt, 4 runs x 24 shards, PROCS=8 MPS=1 (stage REMEASURE_NLOPT's condition;
+##                    NLopt is clock-bound, so its learned wall must be measured where the record's was);
+##   SCREWREDO_SVGD   AL-SVGD, 4 runs x 24 shards, DRAKE_ENV=crc PROCS=2 (R29's condition).
+
+SCREWREDO_RUNG = "n6r"
+SCREWREDO_CKPT = f"models/{SCREW_PRIMARY}/{SCREW_PRIMARY}__{SCREWREDO_RUNG}__step620000.pkl"
+SCREWREDO_STAGES = ("SCREWREDO", "SCREWREDO_NLOPT", "SCREWREDO_SVGD")
+
+
+def _screwredo_twins(which):
+    """The screw record's items for one SCREWREDO manifest, verbatim from the record's stages."""
+    if which == "SCREWREDO":
+        src = stage_PAPER()
+    elif which == "SCREWREDO_NLOPT":
+        src = stage_REMEASURE("REMEASURE_NLOPT")
+    else:
+        src = [it for it in stage_SVGD(CVAE_SVGD_ROUND)
+               if _svgd_flag(it["args"], "--tag").endswith(f"_{CVAE_SVGD_VARIANT}")
+               and _svgd_flag(it["args"], "--seed") == "1"]
+    return [it for it in src if it["robot"] == SCREW_PRIMARY]
+
+
+def _screwredo_seconds(it):
+    """Learned arm only: the twin's per-cell learned wall at the twin's condition."""
+    a = it["args"]
+    task, start, solver = (_svgd_flag(a, k) for k in ("--task", "--start", "--solver"))
+    shards = int(_svgd_flag(a, "--shard").split("/")[1]) if "--shard" in a else 1
+    if solver == "svgd":
+        per_cell = CVAE_SVGD_CELL_S
+    elif solver == "nlopt":
+        per_cell = _remeasure_mean_wall(it["robot"], task, start, solver)[0]
+    else:
+        per_cell = _paper_mean_wall(it["robot"], task, start, solver)[0]
+    return 480 * per_cell / shards + REMEASURE_ITEM_OVERHEAD_S
+
+
+def stage_SCREWREDO(which="SCREWREDO"):
+    """SCREWREDO (IPOPT + SNOPT), SCREWREDO_NLOPT, SCREWREDO_SVGD (see the section header)."""
+    items = []
+    for it in _screwredo_twins(which):
+        a = list(it["args"])
+        a[a.index("--arms") + 1] = "learned"
+        a[a.index("--checkpoint") + 1] = SCREWREDO_CKPT
+        old = _svgd_flag(a, "--tag")
+        m = re.match(rf"^sc_[A-Z0-9_]+?_{SCREW_PRIMARY}_n6_(.+)$", old)
+        assert m, old
+        new = f"sc_SCREWREDO_{SCREW_PRIMARY}_{SCREWREDO_RUNG}_{m.group(1)}"
+        if new.endswith(f"_{CVAE_SVGD_VARIANT}"):
+            new = new[:-len(CVAE_SVGD_VARIANT) - 1]
+        a[a.index("--tag") + 1] = new
+        o = dict(it, args=a, id=it["id"].replace(old, new, 1))
+        o["seconds"] = _screwredo_seconds(o)
+        items.append(o)
+    return items
+
+
+def _screwredo_selftest():
+    """Every SCREWREDO item is its screw record twin with only arms, checkpoint and tag changed."""
+    fails = []
+
+    def strip(a):
+        out, i = [], 0
+        while i < len(a):
+            if a[i] in ("--tag", "--arms", "--checkpoint"):
+                i += 2
+                continue
+            out.append(a[i])
+            i += 1
+        return tuple(out)
+
+    def key(it):
+        a = it["args"]
+        return tuple(_svgd_flag(a, f) for f in ("--task", "--start", "--solver", "--shard"))
+
+    tag_re = re.compile(rf"^sc_SCREWREDO_{SCREW_PRIMARY}_{SCREWREDO_RUNG}_(ipopt|snopt|nlopt|svgd)_"
+                        r"(mugshelf|posetip)_480_180_(paired|native)$")
+    want = {"SCREWREDO": (8, 64, {"ipopt", "snopt"}), "SCREWREDO_NLOPT": (4, 96, {"nlopt"}),
+            "SCREWREDO_SVGD": (4, 96, {"svgd"})}
+    here = os.path.dirname(os.path.abspath(__file__))
+    for which in SCREWREDO_STAGES:
+        items = stage_SCREWREDO(which)
+        twins = {key(t): t for t in _screwredo_twins(which)}
+        runs, n_items, solvers = want[which]
+        tags = {_svgd_flag(it["args"], "--tag") for it in items}
+        if len(items) != n_items or len(tags) != runs:
+            fails.append(f"{which}: {len(items)} items / {len(tags)} runs, expected {n_items} / {runs}")
+        if len({it["id"] for it in items}) != len(items):
+            fails.append(f"{which}: duplicate item ids")
+        n_clr = sum("svgd_collision_backend=clearances" in it["args"] for it in items)
+        if n_clr != (len(items) if which == "SCREWREDO_SVGD" else 0):
+            fails.append(f"{which}: {n_clr} of {len(items)} items carry the clearance row; "
+                         "submit_bench.sh needs all (DRAKE_ENV=crc) or none")
+        for it in items:
+            a, tag = it["args"], _svgd_flag(it["args"], "--tag")
+            m = tag_re.match(tag)
+            if not m or m.group(1) not in solvers or it["robot"] != SCREW_PRIMARY:
+                fails.append(f"{it['id']}: tag {tag} is not sc_SCREWREDO_{SCREW_PRIMARY}_"
+                             f"{SCREWREDO_RUNG}_<solver>_<row>_480_180_<start>")
+                continue
+            tw = twins.get(key(it))
+            if tw is None:
+                fails.append(f"{it['id']}: no record twin")
+                continue
+            if strip(a) != strip(tw["args"]) or it["script"] != tw["script"] \
+                    or it.get("order") != tw.get("order"):
+                fails.append(f"{it['id']}: differs from its record twin {tw['id']} beyond the chart")
+            if _svgd_flag(a, "--arms") != "learned" or _svgd_flag(a, "--checkpoint") != SCREWREDO_CKPT:
+                fails.append(f"{it['id']}: arms / checkpoint not learned / {SCREWREDO_CKPT}")
+            if _svgd_flag(tw["args"], "--checkpoint") != \
+                    f"models/{SCREW_PRIMARY}/{SCREW_PRIMARY}__n6__step620000.pkl":
+                fails.append(f"{it['id']}: the twin {tw['id']} is not the record's n6 chart")
+        path = os.path.join(here, f"manifest_stage{which}.txt")
+        if os.path.exists(path):
+            with open(path) as fh:
+                disk = [l.rstrip("\n") for l in fh if l.strip() and not l.startswith("#")]
+            if disk != render(items):
+                fails.append(f"{which}: cluster/manifest_stage{which}.txt is stale; regenerate it")
+        else:
+            fails.append(f"{which}: cluster/manifest_stage{which}.txt is missing")
+    return fails
+
+
 ## ---------------------------------------------------------------------------- ANALYTIC --
 ##
 ## The analytic + optimization arm on the two robots with a closed form (Thomas, 2026-10-12):
@@ -4854,7 +4995,8 @@ def _ladder_paths_match_export():
                    | {c for _, c in SOFT_ADOPTED.values()}
                    | {c for _, _, c in SOFT_CHART_RUNGS}
                    | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}
-                   | {ck for *_, ck in CVAE_RUNGS}) - PRE_EXISTING
+                   | {ck for *_, ck in CVAE_RUNGS}
+                   | {SCREWREDO_CKPT}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
         fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt / chart_runs.txt row would export it")
@@ -6855,6 +6997,15 @@ def selftest():
               "(PAPER / SVGD_R2 IPOPT, R29 pin4) with only arms, checkpoint, tag and the redundancy "
               "rung's trust region changed")
 
+    sr_fails = _screwredo_selftest()
+    for msg in sr_fails[:12]:
+        print(f"FAIL stage SCREWREDO: {msg}")
+    fails += len(sr_fails)
+    if not sr_fails:
+        print("ok   stages SCREWREDO / SCREWREDO_NLOPT / SCREWREDO_SVGD: 8 / 4 / 4 runs (64 / 96 / 96 "
+              "items); every item is its screw record twin (PAPER, REMEASURE_NLOPT, R29 pin4) with "
+              "only arms, checkpoint (n6r) and tag changed; committed manifests current")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -6885,6 +7036,7 @@ def main():
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD",
+                                 "SCREWREDO", "SCREWREDO_NLOPT", "SCREWREDO_SVGD",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -7042,6 +7194,7 @@ def main():
              "ANALYTIC_SVGD_SMOKE": lambda: stage_ANALYTIC_SVGD_SMOKE(),
              ## The chart ablation takes no grid arguments: it IS the record's shape.
              **{s: (lambda s=s: stage_CVAE(s)) for s in CVAE_STAGES},
+             **{s: (lambda s=s: stage_SCREWREDO(s)) for s in SCREWREDO_STAGES},
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),

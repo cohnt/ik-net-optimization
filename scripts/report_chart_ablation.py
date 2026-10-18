@@ -12,6 +12,9 @@ and this script REFUSES the pairing unless each cVAE run carries the record run'
 Rows are robot x task x start; one block per solver (IPOPT, AL-SVGD); four columns per block:
   flow   -- the record's learned arm: IPOPT stage PAPER (Panda: stage SVGD_R2, the same items at the
             same condition), AL-SVGD stage SVGD_R29 `pin4`, both via report_statusquo's loaders;
+            on the SCREW rows, stage SCREWREDO's `n6r` run (the same rung retrained on the rebuilt
+            dataset the cVAE trains on) replaces it wherever that run exists, else the record's
+            `n6`; the source of every screw row is printed to stderr;
   cVAE-K -- stage CVAE at K = the flow's width;
   cVAE-k -- stage CVAE at K = the redundancy;
   JS     -- the record's joint-space arm: the IPOPT runs' numerical arm, AL-SVGD stage SVGD_R30
@@ -47,7 +50,7 @@ sys.path.insert(0, os.path.join(REPO, "cluster"))
 from report_statusquo import (BUDGET_CELLS, CELLS, MIN_COST_CELLS, STATUS_QUO_ROWS,  # noqa: E402
                               arm_stats, budget_bound, by_cell, clock_bound, load,
                               load_record, load_svgd_record, mcnemar, median, parse_tag)
-from gen_manifest import CVAE_ACCEPT, CVAE_WIDTHS  # noqa: E402
+from gen_manifest import CVAE_ACCEPT, CVAE_WIDTHS, SCREWREDO_RUNG  # noqa: E402
 
 DEFAULT_OUT = "docs/chart-ablation-tables.md"
 ROBOTS = ("panda", "iiwa", "screw7_p050", "soft12")
@@ -87,6 +90,14 @@ def load_columns():
         t = parse_tag(tag)
         cvae[(t["solver"], t["robot"], t["rung"], t["row"], t["start"])] = (tag, s)
 
+    ## The screw flow column: stage SCREWREDO's retrained chart (`n6r`, on the rebuilt dataset the
+    ## cVAE trains on) where its run exists, else the record's n6 run. Joint space stays the record's.
+    redo, redo_robots = {}, {"screw7_p050"}
+    for tag, s in load("sc_SCREWREDO_", cells=CELLS).items():
+        t = parse_tag(tag)
+        if t["rung"] == SCREWREDO_RUNG:
+            redo[(t["solver"], t["robot"], t["row"], t["start"])] = (tag, s)
+
     out, refused = {}, []
     for solver, _ in SOLVERS:
         rec = ipopt if solver == "ipopt" else svgd
@@ -98,6 +109,21 @@ def load_columns():
                     if r is not None:
                         cols["flow"] = r["records"]["learned"]
                         cols["JS"] = r["records"]["numerical"]
+                    hit = redo.get((solver, robot, row, start))
+                    if hit is not None and r is not None:
+                        tag, s = hit
+                        ref = ipopt[(robot, row, start)]["metadata"]
+                        bad = [f for f in MUST_MATCH
+                               if s["metadata"].get(f) is None or s["metadata"].get(f) != ref.get(f)]
+                        if bad or {(x["target"], x["guess"]) for x in s["records"]["learned"]} \
+                                != set(by_cell(r, "learned")):
+                            refused.append(f"{tag}: {bad or 'cells'} do not match the record run of its row")
+                        else:
+                            cols["flow"] = s["records"]["learned"]
+                    if robot in redo_robots:
+                        src = (hit[0] if hit is not None and r is not None else
+                               "the record (n6)" if r is not None else NYM)
+                        print(f"flow column, {solver} {robot} {row} {start}: {src}", file=sys.stderr)
                     for c, which in (("cVAE-K", 0), ("cVAE-k", 1)):
                         hit = cvae.get((solver, robot, cvae_label(robot, which), row, start))
                         if hit is None:
