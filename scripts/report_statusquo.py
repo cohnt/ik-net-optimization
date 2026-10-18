@@ -72,9 +72,8 @@ AL-SVGD, the fourth method class (branch `svgd`; Thomas, 2026-10-12: "Add AL-SVG
 solver in the status quo."), is a fourth column block `PS` in the default and `--paper` modes, in
 the tally, the per-solver detail (rescue rate `L+`), the flags and the cap check. It is not a Drake
 solver, so it stays OUT of SOLVERS (scripts/report_remeasure.py iterates that over stage REMEASURE),
-and one of its logical runs is TWO summaries, one per arm: the learned arm from stage SVGD_R20
-(`_pin2`, run `--arms learned`) and the joint-space ablation from SVGD_R20 (Panda) or SVGD_R21 (the
-other three; `_pin2kq`, kernel q). load_svgd_record pairs them by (target, guess) only after checking
+and one of its logical runs is TWO summaries, one per arm: the learned arm from stage SVGD_R29
+(`_pin4`, run `--arms learned`) and the joint-space ablation from SVGD_R30 (`_pin4kq`, kernel q). load_svgd_record pairs them by (target, guess) only after checking
 that both carry the row's IPOPT record run's grid_hash and scene_fingerprint, and refuses otherwise.
 Both were measured at paper conditions (PROCS=2, no MPS) on the clearance collision row under the
 clearances venv. svgd counts OUTER steps (K = 10 inner steps each), not majors, so its iterations
@@ -415,7 +414,7 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
     print("  a trailing * marks the best in the row. Every row prints, zeros included.")
     if SVGD in dict(blocks):
         print("  PS = AL-SVGD (particle, the svgd branch's fielded pin): each arm its own run, learned")
-        print("  from stage SVGD_R20, joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest).")
+        print("  from stage SVGD_R29 (_pin4), joint space from SVGD_R30 (_pin4kq, kernel q); the V4 pin.")
     if runtime_only:
         emit_runtime(emit, runtime_note)
         return
@@ -561,14 +560,17 @@ def _load_paper_record(cells):
 #: TWO summaries, one per arm (see the module docstring).
 SVGD_ROBOTS = {"iiwa": ("n4", "iiwa"), "panda": ("n6", "panda"),
                "screw7_p050": ("n6", "screw_arm"), "soft12": ("n6", "soft12")}
-SVGD_LEARNED = "sc_SVGD_R20_{robot}_{rung}_svgd_{row}_480_180_{start}_pin2"
-SVGD_JOINT = {"panda": "sc_SVGD_R20_{robot}_{rung}_svgd_{row}_480_180_{start}_pin2kq"}
-SVGD_JOINT_DEFAULT = "sc_SVGD_R21_{robot}_{rung}_svgd_{row}_480_180_{start}_pin2kq"
+#: The V4 pin (svgd_stop_patience 3; branch svgd-tune, 2026-10-18): learned from stage SVGD_R29 `_pin4`, joint
+#: space from SVGD_R30 `_pin4kq`. The V2 record (R20 / R21, `_pin2` / `_pin2kq`) is superseded: same cells,
+#: success identical on every learned row, cost and wall within the seed-to-seed band.
+SVGD_LEARNED = "sc_SVGD_R29_{robot}_{rung}_svgd_{row}_480_180_{start}_pin4"
+SVGD_JOINT = {}
+SVGD_JOINT_DEFAULT = "sc_SVGD_R30_{robot}_{rung}_svgd_{row}_480_180_{start}_pin4kq"
 
 
 def load_svgd_record(record_runs, cells=CELLS):
     """AL-SVGD's 16 rows: {`sc_SVGD_<robot>_<rung>_svgd_<row>_<cells>_180_<start>`: a summary whose
-    records hold the learned arm of the SVGD_R20 `_pin2` run and the numerical arm of the `_pin2kq`
+    records hold the learned arm of the SVGD_R29 `_pin4` run and the numerical arm of the SVGD_R30 `_pin4kq`
     run}. Refuses (SystemExit) unless the two runs share grid_hash and scene_fingerprint with each
     other AND with the row's IPOPT run in `record_runs`, hold `cells` records each, cover the same
     (target, guess) cells and carry one wall-clock cap. A row with a run missing is skipped and
@@ -726,8 +728,8 @@ def main(argv):
         print("  but for two one-cell differences; scripts/report_paper.py pairs every run against its")
         print("  REMEASURE twin. The GVS arm was not re-run and is not printed here.")
         print(f"AL-SVGD (PS): {len(svgd_runs)} of 16 rows, each TWO runs, one per arm -- learned from stage")
-        print("  SVGD_R20 (_pin2), joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest) (_pin2kq, kernel")
-        print("  q) -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the")
+        print("  SVGD_R29 (_pin4), joint space from SVGD_R30 (_pin4kq, kernel q); the V4 pin, patience 3")
+        print("  -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the")
         print("  clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.")
         if svgd_missing:
             print(f"  MISSING: {len(svgd_missing)} AL-SVGD summary file(s), e.g. {svgd_missing[0]}")
@@ -749,8 +751,8 @@ def main(argv):
         print(f"NLopt: {n_nl} of 16 runs from stage {RECORD_STAGE}_NLOPT (2026-10-10; same conditions, same")
         print("  tag family). 48 logical runs in all.")
         print(f"AL-SVGD (PS): {len(svgd_runs)} of 16 rows, each TWO runs, one per arm -- learned from stage")
-        print("  SVGD_R20 (_pin2), joint space from SVGD_R20 (Panda) / SVGD_R21 (the rest) (_pin2kq, kernel")
-        print("  q) -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the")
+        print("  SVGD_R29 (_pin4), joint space from SVGD_R30 (_pin4kq, kernel q); the V4 pin, patience 3")
+        print("  -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the")
         print("  clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.")
         if svgd_missing:
             print(f"  MISSING: {len(svgd_missing)} AL-SVGD summary file(s), e.g. {svgd_missing[0]}")
@@ -762,7 +764,7 @@ def main(argv):
     print("NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the")
     print("      network, so a moving JS column is a property of the problem, not drift.")
 
-    ps_note = ("PS at PROCS=2, no MPS (paper conditions; stages SVGD_R20 / SVGD_R21), on the clearance "
+    ps_note = ("PS at PROCS=2, no MPS (paper conditions; stages SVGD_R29 / SVGD_R30, the V4 pin), on the clearance "
                "collision row under the clearances venv")
     if runtime:
         metric_tables(table_runs,

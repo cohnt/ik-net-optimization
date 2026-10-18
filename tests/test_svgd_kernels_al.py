@@ -10,8 +10,9 @@ SVGD on a 2-D standard Gaussian matching the target's mean and covariance; the G
 the penalty against autograd on linear rows; one Stein variational Newton step landing on a
 quadratic's minimiser; and the identity metric being projected gradient descent with the
 per-particle step `svgd_lr / ||H_i||_F`. The kernel spaces (`svgd_kernel`: the `q` fielded until 2026-10-12
-reproducing the previous step bit for bit, and x, z, c, cz, qz, pose against autograd) and the
-metric's temperature (`svgd_metric_temperature`) close it.
+reproducing the previous step bit for bit, and x, z, c, cz, qz, pose against autograd) close it.
+There is no temperature: `svgd_temperature` and `svgd_metric_temperature` were removed 2026-10-14
+(stage SVGD_R22 measured T inert), and the step is the T = 1 one.
 """
 
 import math
@@ -305,26 +306,26 @@ def test_rbf_repulsion_is_the_svgd_gradient():
 
 
 def test_stein_direction_forms():
-    """The three forms of `stein_direction`: kernel off is `-(gF + gC)/T` bitwise; the
+    """The three forms of `stein_direction`: kernel off is `-(gF + gC)` bitwise; the
     Tabor-Hermans form averages only the objective and the repulsion, `(1/N)`; the literal
     form averages the whole AL gradient. With `K = I` and `N = 1` all three agree."""
     for dtype, device, tol in _targets():
         gen = _gen(13, device)
-        N, n, T = 16, 5, 0.7
+        N, n = 16, 5
         gF = _randn(N, n, dtype=dtype, device=device, gen=gen)
         gC = _randn(N, n, dtype=dtype, device=device, gen=gen)
         R = _randn(N, n, dtype=dtype, device=device, gen=gen)
         y = _randn(N, 3, dtype=dtype, device=device, gen=gen)
         K, _ = kernels.rbf_terms(y, 2.0)
-        off = kernels.stein_direction(K, R, gF, gC, T, kernel=False)
-        assert bool((off == -(gF + gC) / T).all())
-        th = kernels.stein_direction(K, R, gF, gC, T)
-        assert _maxabs(th, (K @ (-gF / T) + R) / N - gC / T) <= tol * 10
-        lit = kernels.stein_direction(K, R, gF, gC, T, inside=True)
-        assert _maxabs(lit, (K @ (-(gF + gC) / T) + R) / N) <= tol * 10
+        off = kernels.stein_direction(K, R, gF, gC, kernel=False)
+        assert bool((off == -(gF + gC)).all())
+        th = kernels.stein_direction(K, R, gF, gC)
+        assert _maxabs(th, (K @ (-gF) + R) / N - gC) <= tol * 10
+        lit = kernels.stein_direction(K, R, gF, gC, inside=True)
+        assert _maxabs(lit, (K @ (-(gF + gC)) + R) / N) <= tol * 10
         one = [kernels.stein_direction(torch.ones(1, 1, dtype=dtype, device=device),
                                        torch.zeros(1, n, dtype=dtype, device=device),
-                                       gF[:1], gC[:1], T, inside=i, kernel=k)
+                                       gF[:1], gC[:1], inside=i, kernel=k)
                for i, k in ((False, True), (True, True), (False, False))]
         assert _maxabs(one[0], one[2]) <= tol and _maxabs(one[1], one[2]) <= tol
     print("PASS stein_direction: kernel off, Tabor-Hermans and literal forms; N = 1 collapses them")
@@ -339,7 +340,7 @@ def _run_svgd_gaussian(dtype, device, steps, lr, N=200):
     for _ in range(steps):
         h = kernels.median_bandwidth(kernels.pairwise_sqdist(y), N, floor=1e-3)
         K, R = kernels.rbf_terms(y, h)
-        y = y + lr * kernels.stein_direction(K, R, y, zero, 1.0)    # grad f = y
+        y = y + lr * kernels.stein_direction(K, R, y, zero)    # grad f = y
     return y
 
 
@@ -425,7 +426,7 @@ def test_gn_hessian_equals_the_autograd_hessian_on_linear_rows():
 def test_svn_step_lands_on_the_minimiser_of_a_quadratic():
     """Stein variational Newton with the exact Hessian and delta = 0: on a quadratic L (the
     objective 1/2|x - a|^2 plus equality rows, whose GN Hessian is exact) one step with
-    svgd_lr = 1, kernel off, T = 1, no bound, lands on argmin L."""
+    svgd_lr = 1, kernel off, no bound, lands on argmin L."""
     for dtype, device, tol in _targets():
         gen = _gen(23, device)
         kw = dict(dtype=dtype, device=device)
@@ -435,7 +436,7 @@ def test_svn_step_lands_on_the_minimiser_of_a_quadratic():
         S = _state(N, A.shape[0], 0, dtype, device, gen)
         s = torch.tensor([0.5, 2.0, 1.0, 3.0], **kw)
         tg = _toy_target(s, torch.full((n,), -1e9, **kw), torch.full((n,), 1e9, **kw), H_fx)
-        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=1.0, T=1.0,
+        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=1.0,
                               rho=RHO, metric="gn", gn_lm=0.0)
         X = _randn(N, n, dtype=dtype, device=device, gen=gen)
         phi, H, _ = _direction(tg, sc, X, rows, J_q, A, C, S)
@@ -461,7 +462,7 @@ def test_svn_step_lands_on_the_minimiser_of_a_quadratic():
 
 def test_identity_metric_is_projected_gradient_descent_with_the_frobenius_step():
     """With the kernel off and svgd_metric = identity the step IS projected gradient descent
-    on L / T in y = x / s with the per-particle step svgd_lr / ||H_i||_F: checked against a
+    on L in y = x / s with the per-particle step svgd_lr / ||H_i||_F: checked against a
     hand-rolled PGD through `al_value`'s own autograd gradient, with the bound clamp."""
     for dtype, device, tol in _targets():
         gen = _gen(21, device)
@@ -473,8 +474,9 @@ def test_identity_metric_is_projected_gradient_descent_with_the_frobenius_step()
         lo = torch.tensor([-0.3, -1e9, -2.0, -1.0], **kw)
         hi = torch.tensor([0.3, 1e9, 2.0, 1.0], **kw)
         tg = _toy_target(s, lo, hi, H_fx)
-        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=0.9, T=0.8,
+        sc = fused.StepConfig(kernel="none", bandwidth_floor=0.05, inside=False, lr=1.125,
                               rho=RHO, metric="identity", gn_lm=0.0)
+        ## lr 1.125 = the old lr 0.9 at T = 0.8: the same step, so the bound clamp is still hit.
         X = torch.zeros(N, n, **kw)
         X_ref = X.clone()
         clipped = 0
@@ -486,7 +488,7 @@ def test_identity_metric_is_projected_gradient_descent_with_the_frobenius_step()
             F2, h2, g2 = rows(yg * s)
             (gy,) = torch.autograd.grad(al.al_value(F2, h2, g2, S, RHO).sum(), yg)
             fro = H.flatten(1).norm(dim=1).unsqueeze(1)
-            y_new = yg.detach() - (sc.lr / fro) * gy / sc.T
+            y_new = yg.detach() - (sc.lr / fro) * gy
             X_ref = torch.minimum(torch.maximum(y_new * s, lo), hi)
             rel = _maxabs(X, X_ref) / max(1.0, _maxabs(X_ref))
             assert rel <= tol * 100, f"{dtype}: PGD mismatch (relative) {rel:.2e}"
@@ -494,7 +496,7 @@ def test_identity_metric_is_projected_gradient_descent_with_the_frobenius_step()
         ## ||H||_F bounds lambda_max from above (the step is a safe Lipschitz step)
         lam = fused.lambda_max(H)
         assert bool((H.flatten(1).norm(dim=1) >= lam * (1 - 1e-6)).all())
-    print("PASS identity metric: PGD on L_rho / T in y = x / s with the step svgd_lr / ||H_i||_F")
+    print("PASS identity metric: PGD on L_rho in y = x / s with the step svgd_lr / ||H_i||_F")
 
 
 def test_resample_mask():
@@ -541,7 +543,7 @@ def test_live_weights_drop_particles_exactly():
         assert torch.equal(kernels.median_bandwidth(sq, N, floor=0.05, live=one),
                            torch.full((), 0.05 ** 2, dtype=dtype, device=device))
 
-        sc = fused.StepConfig(kernel="q", bandwidth_floor=0.05, inside=False, lr=0.3, T=1.0,
+        sc = fused.StepConfig(kernel="q", bandwidth_floor=0.05, inside=False, lr=0.3,
                               rho=10.0)
         X = _randn(N, n, dtype=dtype, device=device, gen=gen)
         finite = torch.ones(N, dtype=torch.bool, device=device)
@@ -553,8 +555,8 @@ def test_live_weights_drop_particles_exactly():
         R_y = _randn(N, n, dtype=dtype, device=device, gen=gen)
         ones = torch.ones((), dtype=dtype, device=device)
         for inside in (False, True):
-            p0 = kernels.stein_direction(K0, R_y, gF, gC, 1.0, inside=inside)
-            p1 = kernels.stein_direction(K0, R_y, gF, gC, 1.0, inside=inside, avg_scale=ones)
+            p0 = kernels.stein_direction(K0, R_y, gF, gC, inside=inside)
+            p1 = kernels.stein_direction(K0, R_y, gF, gC, inside=inside, avg_scale=ones)
             assert torch.equal(p0, p1)
 
         Km, Rm, _, _ = fused.kernel_terms(sc, y, finite, X, live)
@@ -567,9 +569,9 @@ def test_live_weights_drop_particles_exactly():
         ## The direction over n_live: the live rows of the masked swarm's phi are the sub-swarm's.
         n_live = int(live.sum())
         scale = torch.full((), N / n_live, dtype=dtype, device=device)
-        pm = kernels.stein_direction(Km, R_y * live.unsqueeze(1), gF * live.unsqueeze(1), gC, 1.0,
+        pm = kernels.stein_direction(Km, R_y * live.unsqueeze(1), gF * live.unsqueeze(1), gC,
                                      avg_scale=scale)
-        ps = kernels.stein_direction(Ks, R_y[live], gF[live], gC[live], 1.0)
+        ps = kernels.stein_direction(Ks, R_y[live], gF[live], gC[live])
         assert _maxabs(pm[live], ps) <= tol * 10, _maxabs(pm[live], ps)
 
         S = ALState.init(N, 3, 2, dtype=dtype, device=device)
@@ -659,7 +661,7 @@ def _compiled_chain(x, a, A, b, C, d, lam, mu):
 
     grad, (h, g) = torch.func.grad(merit, has_aux=True)(x)
     phi = kernels.stein_direction(torch.eye(x.shape[0], dtype=x.dtype, device=x.device),
-                                  torch.zeros_like(x), grad, torch.zeros_like(x), 1.0, kernel=False)
+                                  torch.zeros_like(x), grad, torch.zeros_like(x), kernel=False)
     x1 = x + (0.01 / RHO) * phi
     S, clipped = al.dual_update(h, g, S, RHO, 1e3)
     rm = al.resample_mask(x1, torch.isfinite(x1).all(dim=1), 1.0)
@@ -692,12 +694,14 @@ def test_compiled_chain_matches_eager():
 
 
 ## --------------------------------------------------------------------------------------
-## 6. The kernel spaces and the metric's temperature (2026-10-11)
+## 6. The kernel spaces (2026-10-11)
 ## --------------------------------------------------------------------------------------
 
 ## The fielded step as it stood before the kernel spaces and the metric's temperature
 ## (svgd tip 5f15f55), VERBATIM, as the reference the fielded configuration must reproduce
-## bit for bit: `svgd_kernel = q`, `svgd_metric_temperature = off`.
+## bit for bit: `svgd_kernel = q` (then with `svgd_metric_temperature = off` at T = 1). The one
+## edit since: the temperature argument is gone from `stein_direction`'s call, the option having
+## been removed 2026-10-14 (at T = 1 the division it made was exact).
 
 def _head_kernel_terms(sc, cfg, finite, X, live=None):
     N = X.shape[0]
@@ -740,7 +744,7 @@ def _head_direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R
     gC_y = torch.where(fin, sv * gC, zero)
     R_y = torch.where(fin, sv * R_x, zero)
     use_kernel = sc.kernel != "none"
-    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, sc.T, inside=sc.inside, kernel=use_kernel,
+    phi = kernels.stein_direction(K, R_y, gF_y, gC_y, inside=sc.inside, kernel=use_kernel,
                                   avg_scale=avg_scale)
     rep = R_y / N if use_kernel else zero
     if use_kernel and avg_scale is not None:
@@ -815,7 +819,7 @@ def _toy_learned(dtype, device, gen, N=9, m_e=3, m_i=2, learned=True):
 
 
 def _sc(kernel="q", **kw):
-    base = dict(kernel=kernel, bandwidth_floor=0.05, inside=False, lr=0.3, T=1.0, rho=10.0,
+    base = dict(kernel=kernel, bandwidth_floor=0.05, inside=False, lr=0.3, rho=10.0,
                 metric="gn", gn_lm=1.0)
     base.update(kw)
     return fused.StepConfig(**base)
@@ -840,8 +844,8 @@ def _new_chain(tg, sc, X, cfg, gF, J_q, J_h, J_g, h, g, finite, lam, mu, live=No
 
 
 def test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise():
-    """(a) `svgd_kernel = q` with `svgd_metric_temperature = off` -- the step fielded until
-    2026-10-12, which every svgd round through R19 ran (the pin is now c x z with H / T) -- gives
+    """(a) `svgd_kernel = q` -- the step fielded until 2026-10-12, which every svgd round through
+    R19 ran (with metric off; the pin is now c x z, and the metric form is no longer an option) -- gives
     the kernel, repulsion, direction, Hessian, ratio and step of the pre-2026-10-11 code
     (`_head_*`, verbatim) BIT FOR BIT, under both metrics, with and without a dropped particle
     and a non-finite one; eager on every target, and compiled on CUDA (the compiled new chain
@@ -858,7 +862,6 @@ def test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise():
         live[2] = False
         for metric in ("gn", "identity"):
             sc = _sc("q", metric=metric)
-            assert sc.metric_temperature is False
             for lv in (None, live):
                 args = (p.tg, sc, p.X, p.cfg, p.gF, p.J_q, p.J_h, p.J_g, p.h, p.g, fin,
                         p.S.lam, p.S.mu, lv)
@@ -874,66 +877,7 @@ def test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise():
             for a, b in zip(ref, new):
                 assert torch.equal(a, b), "compiled"
             print(f"     compiled CUDA {dtype}: bit-identical")
-    print("PASS svgd_kernel=q, svgd_metric_temperature=off (the pre-2026-10-12 pin): the previous step bit for bit")
-
-
-def test_metric_temperature():
-    """(e) `svgd_metric_temperature = on`: at T = 1 bit-identical to off (eager, and compiled
-    on CUDA); at T = 0.1 the step is `svgd_lr (H / 0.1 + delta I)^-1 phi` where off is
-    `svgd_lr (H + delta I)^-1 phi`, and under the identity metric `svgd_lr / (||H||_F / T)`;
-    `from_options` maps the option, and ProgramOptions refuses any other value."""
-    from src.generic_program import ProgramOptions
-    for dtype, device, tol in _targets():
-        gen = _gen(32, device)
-        kw = dict(dtype=dtype, device=device)
-        p = _toy_learned(dtype, device, gen)
-        tg = p.tg
-        tg.bp.project = lambda X: (X, torch.zeros(X.shape[0], **kw))     # no clamp: the raw step
-        N, n = p.X.shape
-        S = p.S
-        sc1 = _sc("q", T=1.0)
-        K, R, kon, _ = fused.kernel_terms(sc1, p.cfg, p.finite, p.X, tg=tg)
-        phi, H, _ = fused.direction_and_hessian(tg, sc1, p.X, p.gF, p.J_q, p.J_h, p.J_g, p.h,
-                                                p.g, p.finite, K, R, kon, S)
-        for metric in ("gn", "identity"):
-            off = fused.step_from(tg, _sc("q", T=1.0, metric=metric), p.X, phi, H)
-            on = fused.step_from(tg, _sc("q", T=1.0, metric=metric, metric_temperature=True),
-                                 p.X, phi, H)
-            for a, b in zip(off, on):
-                assert torch.equal(a, b), (dtype, metric)
-        if device.type == "cuda":
-            f = lambda sc: torch.compile(lambda X, phi, H: fused.step_from(tg, sc, X, phi, H),
-                                         dynamic=False)(p.X, phi, H)
-            for a, b in zip(f(_sc("q", T=1.0)), f(_sc("q", T=1.0, metric_temperature=True))):
-                assert torch.equal(a, b), "compiled"
-        T, lr, dl = 0.1, 0.3, 1.0
-        eye = torch.eye(n, **kw)
-        for flag, Hm in ((False, H), (True, H / T)):
-            Xn, _, _ = fused.step_from(tg, _sc("q", T=T, lr=lr, gn_lm=dl, metric_temperature=flag),
-                                       p.X, phi, H)
-            dy = lr * torch.linalg.solve(Hm + dl * eye, phi.unsqueeze(2)).squeeze(2)
-            ref = p.X + tg.s * dy
-            err = _maxabs(Xn, ref) / max(1.0, _maxabs(ref))
-            assert err <= 1e3 * tol, (dtype, flag, err)
-        Xon, _, _ = fused.step_from(tg, _sc("q", T=T, metric="identity", metric_temperature=True),
-                                    p.X, phi, H)
-        fro = H.flatten(1).norm(dim=1, keepdim=True)
-        ref = p.X + tg.s * (0.3 * T / fro) * phi
-        assert _maxabs(Xon, ref) / max(1.0, _maxabs(ref)) <= 1e3 * tol
-        Xoff, _, _ = fused.step_from(tg, _sc("q", T=T, lr=lr, gn_lm=dl), p.X, phi, H)
-        assert _maxabs(Xoff, Xn) > 1e-3, "on and off must differ at T = 0.1"
-    o = ProgramOptions(which_solver="svgd", svgd_metric_temperature="on")
-    assert fused.StepConfig.from_options(o).metric_temperature is True
-    ## The default is `on` since 2026-10-12 (the fielded pin); `off` must be named.
-    assert fused.StepConfig.from_options(ProgramOptions()).metric_temperature is True
-    assert fused.StepConfig.from_options(
-        ProgramOptions(svgd_metric_temperature="off")).metric_temperature is False
-    try:
-        ProgramOptions(svgd_metric_temperature="maybe")
-        raise AssertionError("svgd_metric_temperature='maybe' was accepted")
-    except ValueError as exc:
-        assert "svgd_metric_temperature" in str(exc)
-    print("PASS svgd_metric_temperature: on at T = 1 is off bit for bit; at T = 0.1 the metric is H / T")
+    print("PASS svgd_kernel=q (the pre-2026-10-12 pin): the previous step bit for bit")
 
 
 NEW_SPACES = ("x", "z", "c", "cz", "qz", "pose")
@@ -1172,7 +1116,6 @@ if __name__ == "__main__":
     test_no_host_synchronising_calls_in_the_modules()
     test_compiled_chain_matches_eager()
     test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise()
-    test_metric_temperature()
     test_new_kernel_spaces()
     test_pose_kernel_ignores_self_motion()
     test_pose_jacobian_matches_finite_differences_on_the_panda()

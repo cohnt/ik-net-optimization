@@ -146,10 +146,10 @@ are reported as the collision row's share of the wall.
 | `svgd_seed` | 0 | particle draws, mixed with a CRC of the initial guess |
 | `svgd_paired_init` | `native` (fielded 2026-10-12; was `jitter`) | 11: `jitter` or `native`; particle 0 is the shared guess exactly under either |
 | `svgd_jitter` | 0.1 | 11: jitter sigma in the normalised coordinates |
-| `svgd_temperature` | 1.0 | 2: T, fixed |
+| `svgd_temperature` | **REMOVED 2026-10-14** (R22; T = 1, the only value ever fielded) | 2: T, fixed |
 | `svgd_lr` | 0.3 | 4: a fraction of the metric's step: `svgd_lr (H + delta I)^-1 phi` (gn) or `svgd_lr / \|\|H\|\|_F` (identity). Chosen 2026-10-10 by the screen at rho 1e3, delta 10 on 6 grasp + 6 pose Panda cells, most feasible cells with ties to the larger lr: lr 0.3 solved 24/24 (learned 12/12, joint space 12/12) resampling 0.07 of N per check, lr 1.0 solved 22/24 resampling 0.12 |
 | `svgd_metric` | `gn` | 4: `gn` (Stein variational Newton) or `identity` |
-| `svgd_metric_temperature` | `on` (fielded 2026-10-12; was `off`) | 4: `off`: the metric is H, so the drive `-grad L / T` is not matched by it and the Newton step scales as 1/T. `on`: the metric is H / T, `dy_i = svgd_lr (H_i / T + delta I)^-1 phi_i`, so T sets only the repulsion-to-drive ratio; under `identity` the step bound becomes `\|\|H_i\|\|_F / T` (the analogue, not refused). Both are swept and neither is "the" definition (Thomas, 2026-10-11). `on` at T = 1 is `off` bit for bit |
+| `svgd_metric_temperature` | **REMOVED 2026-10-14** with `svgd_temperature` (R22: T inert at the pin; the step is the T = 1 form below, bit for bit) -- was `on` (fielded 2026-10-12; `off` before) | 4: `off`: the metric is H, so the drive `-grad L / T` is not matched by it and the Newton step scales as 1/T. `on`: the metric is H / T, `dy_i = svgd_lr (H_i / T + delta I)^-1 phi_i`, so T sets only the repulsion-to-drive ratio; under `identity` the step bound becomes `\|\|H_i\|\|_F / T` (the analogue, not refused). Both are swept and neither is "the" definition (Thomas, 2026-10-11). `on` at T = 1 is `off` bit for bit |
 | `svgd_gn_lm` | 10 | 4: delta, the Levenberg damping of the GN metric. Chosen 2026-10-10 by the most feasible cells (learned + joint space) on 6 grasp + 6 pose Panda cells, ties to the larger: delta 1e-2 / 1 / 10 gave 2 / 3 / 6 (1e-4 diverged); then svgd_lr 1.0 / 0.3 / 0.1 at delta 10 gave 6 / 0 / 0 -- all at rho 10, and the 0.3 / 0.1 cells were mostly `error` records from the since-fixed eigvalsh crash, so that lr reading is void; `svgd_lr` was chosen later by the screen at rho 1e3 (its row) |
 | `svgd_row_units` | `natural` | 1: `natural` or `tolerance` (the control) |
 | `svgd_row_length_scale` | 1.0 | 1: metres per radian on the orientation-type rows |
@@ -1757,6 +1757,840 @@ solved):
   the learned arm's 58** (Panda): the q-space kernel spreads a joint-space swarm off the manifold
   the way it did the learned arm's in R13, and the latent kernel is learned-only.
 
+## The tuning push (branch `svgd-tune`, from 2026-10-14): strip, then replace with structure
+
+**Thomas's end goal (2026-10-14): a high-performing AL-SVGD solver for the learned formulation that
+leverages the special structure of the formulation, with a clear explanation for why each decision
+helps.** The work pattern is his four phases: (1) a simple method working [R20]; (2) STRIP every
+piece that does not earn its place; (3) replace what special treatment remains with formulation
+insight; (4) add insight. Success is at the ceiling on every record row, so from here a round is
+read on **cost on the cells shared with the pin, wall, residual at stop, feasible particles at stop
+and outer steps**, and on each variant's own diagnostic.
+
+Rules for every round of the push, fixed here before the first manifest:
+
+- **Each variant pre-registers a mechanism, a diagnostic, a prediction and a decision rule.** The
+  mechanism says why the change should move which metric; the diagnostic is a recorded per-cell
+  quantity that the mechanism predicts; a variant whose outcome matches the prediction while its
+  diagnostic does not is reported as *outcome without mechanism* (the stage-STEP lesson) and is
+  never adopted on outcome alone.
+- **Noise band**: "within noise" means the median cost on the cells shared with the pin within
+  [0.95, 1.05] of the pin's (R19's seed-to-seed band is 3-5%), feasible particles within +-3, outer
+  steps within +-2, wall within +-15%, residual in the same decade. Success is exact McNemar
+  against the pin on the same cells, ties stated as ties.
+- **Cap check** reads `timed_out` AND `stop_reason` (`wall_clock`, `step_cap`); >= 24 of 480 cells
+  at a budget means no verdict. `n_recheck_failures` is printed per row.
+- **A strip that is inert is removed, not defaulted off** (the seeding precedent), in its own
+  commit after Thomas's word, with `tests/test_svgd_pin_and_gate.py` re-pinned.
+- **Joint-space svgd stays an ablation** and is never tuned as a side effect; where a strip touches
+  a setting the ablation arm leans on, one joint-space confirmation runs beside it.
+- Structure (phase 3 / 4) enters the LEARNED arm's target only; the program's rows, bounds and task
+  are untouched; every added term is a learned-only regulariser excluded from `reported_cost`.
+
+Roadmap, each round its own pre-registration shown to Thomas before its manifest: **R22** (this
+section) strips at the pin; **R23** ablates the three 2026-10-09 conditioning changes (natural
+units, per-particle step, SVN with Levenberg delta), which were phase-1 exceptions and were A/B'd
+only on 12 laptop cells at rho 1e3; **R24** tunes wall and cost at fixed success (N 16 / 32, rho
+1e6, the stall patience, the dual step alpha, the c x z bandwidth rule); **R25** a float64 polish of
+the returned particle (code; his call); **R26** the latent prior N(0, I) on z; **R27** the flow as an
+exact density (the log-det, aimed at the runaway); **R28** the correction regulariser (w_c ladder,
+weight 10 as control; the zero-centred q_c prior as the structural alternative to penalty and box).
+
+### Stage SVGD_R22: stripping at the pin (pre-registered 2026-10-14, before any manifest)
+
+**What runs.** The learned arm on the record's sixteen rows (Panda `n6`, iiwa `n4`, `screw7_p050`
+`n6`, `soft12` `n6` x grasp / pose x native / paired), 480 cells, 180 s, seed 1, `SVGD_PINNED_V2`
+plus exactly ONE override per variant, graphed, the lifted step cap, the clearance row
+(`DRAKE_ENV=crc PROCS=2`), 24 shards; and ONE joint-space item set on the Panda's four rows. Every
+variant is read against R20's `pin2` on the same cells (the VARIANT vs VARIANT block) and against
+the robot's IPOPT twin (SVGD_R2 on the Panda, stage PAPER elsewhere). Native is the primary row,
+paired the ablation.
+
+| token | override | what it strips or tests | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `clipoff` | `svgd_multiplier_max=3e38` (`inf` does not survive `literal_eval` and would arrive as a string; 1e300 overflows the float32 scalar cast inside `torch.clamp` and errors every cell, found by the local smoke; 3e38 is float32-representable and `clamp` at +-3e38 is a no-op for any real multiplier) | the multiplier box (item 6) | PHR multipliers on the learned arm are O(1e2-1e4); the box caps only the few particles whose rows are still large after a dual step, which are the ones about to be resampled or already infeasible; it cannot move a feasible particle | `n_multiplier_clipped` (0 by construction), `lam_inf_max` / `mu_inf_max` (how far unboxed multipliers run), `n_resampled`, feasible count | ties on all 16 rows; cost within noise; `mu_inf_max` reaches 1e5-1e7 on a few particles without moving the selected one | inert on all 16 rows AND on the joint-space confirmation -> the box is deleted; inert on the learned arm only -> it stays as a stated setting of the ablation arm; a learned row where cost moves > 5% or the feasible count falls > 3 -> the box earns its place, explained from `multiplier_clips_by_group` |
+| `clipoffjs` | `svgd_kernel=q` + `svgd_multiplier_max=3e38`, `--arms numerical`, Panda only (declared two factors, scoped as R20's `pin2kq`) | the box on the ablation arm, which leans on it (2.8e5 / 5.2e5 clips per grasp run, R20) | joint space has no latent to absorb a dual step; its multipliers on the `mug_xy` and `collision` groups climb to the box; unboxed they either keep climbing harmlessly or the swarm loses the grasp cells it only just holds at the pin | as `clipoff`, against R20's `pin2kq` | A: 480 / 480, `mu_inf_max` 1e5-1e7, cost within noise; B: grasp rows lose cells to the clock | decides whether `clipoff`'s deletion is licensed (above) |
+| `drop2` | `svgd_resample=drop` | the redraw from the native draw (item 7); a dropped particle is frozen out of the swarm, the minimal handling of a non-finite particle | at the pin the swarm is native-drawn under BOTH protocols, so almost no particle runs away (R18: 0.05-0.08 redraws per particle on paired, ~0 native); the redraw that carried the jittered V1 swarm (R11) has nothing left to carry | `n_dropped`, `n_live` at stop, against `n_resampled` on `pin2` for the same cells; feasible count | ties on all 16 rows; median `n_dropped` <= 3 of 64; cost and feasible within noise; the native rows close to `pin2` cell for cell where `n_resampled` was 0 | inert on all 16 rows -> the redraw never earns its place at the pin: propose deleting the `native` and `keep` modes, the frozen drop staying as the sole non-finite handling (his approval); a paired row that loses cells -> the redraw stays and the loss is reported with `n_dropped` |
+| `T0p1` | `svgd_temperature=0.1` | whether T earns a role: under the pinned H / T metric T sets ONLY the repulsion-to-drive ratio (bit-identical to the pin at T = 1) | 10x less repulsion moves the swarm toward kernel-off behaviour (R1K: keeps descending, lower cost, later stall stop); R14 found T = 0.1 ~ rho = 1e5 on `kz` at rho 1e3, so at rho 1e5 it may add little | `repulsion_ratio_median`, outer steps, `stop_reason` (clock stops as R1K), feasible count, cost | cost -0 to -10% on grasp, more outer steps, possibly clock stops on grasp; feasible count unchanged or lower | with `T10v2`: both within noise on all 16 rows -> **T is inert at the pin: T = 1 is fixed and `svgd_temperature` and `svgd_metric_temperature` are deleted** (the method then has no temperature); T = 0.1 lowers cost >= 10% at no loss of success or wall on >= 12 of 16 rows -> T earns a role, which is a tuning adoption AND phase-4 item 6 (T as coverage), so it goes to Thomas as a question, not fielded |
+| `T10v2` | `svgd_temperature=10` | the other side of the bracket | 10x more repulsion: fewer feasible particles, higher cost, more steps (R5's `T10` under the old metric form was also a 0.1x Newton step; here it is the clean repulsion effect) | as `T0p1` | cost up, feasible count down, success unchanged | as `T0p1` |
+
+**Not re-proposed, and why.** K (`svgd_inner_iters`): Thomas's 2026-10-11 ruling keeps the inner /
+outer split as a parameter to be understood; a K ladder at the pin runs only on his word. The
+gate-edge rule: fired 0 times in 9600 cells, costs nothing per step, is the exactness guarantee.
+The time reserve (`svgd_time_reserve = 0.1`, 18 s of 180): an execution setting, and no learned cell
+at the pin is within 129 s of the clock (the slowest cell is 51 s), so it never acts; it is left
+alone. A float64 polish: none exists (removed 2026-10-09; `_select` only clamps onto the bounds),
+so the residual question is R25 and needs code. The bandwidth floor (`svgd_bandwidth_floor = 0.05`)
+is read from R20's recorded `bandwidths` on all sixteen rows rather than re-run: see "Strips decided
+from the record" below.
+
+**Allotment.** 68 logical runs (4 learned variants x 4 robots x 2 tasks x 2 starts + the Panda
+joint-space set), 1632 items. The tool's figure (`gen_manifest.py --stage SVGD_R22 --allotment`,
+5 s per learned cell + 180 s per item) and R20's measured scaling (1.0-2.6 s per learned cell, 6
+node-hours for 480 items) are both stated in `cluster/SVGD_RUNBOOK.md`; the worst case puts every
+cell at the clock. The only variant with a clock risk is `T0p1` (kernel-off behaviour). Items are claimed
+in id order within the learned group (so per robot and row the four variants run as T0p1, T10v2,
+clipoff, drop2, interleaved across the queue), and the joint-space items go last; the order sets
+only when a verdict can first be read, not the total.
+
+**Read from the record before the round, no compute** (R20's and R21's `summary.json`, every cell's
+`record["svgd"]`, 2026-10-14; this sharpens the predictions above and was written before any R22
+cell ran):
+
+- **The bandwidth floor is NOT inert, so it is not stripped here; it joins R24's bandwidth-rule
+  round.** `bandwidths` records the squared bandwidth `h = max(floor^2, med^2 / log N)`, so "at the
+  floor" is `h <= 0.0025`. The z block never touches it on any row of either arm (median h 0.22-0.28).
+  The c block does, on the POSE task only: Panda pose 9.2% / 10.8% of cells (native / paired), soft
+  PCS pose **98.5% / 99.2%**; every grasp row and the iiwa / screw pose rows 0%; the joint-space `q`
+  kernel never (h 1.2-12). Mechanism, to be tested in R24 rather than assumed: on the pose task every
+  particle conditions on the same target pose, so the swarm's c-spread collapses and the c factor of
+  the c x z product would become a delta without the floor -- the floor is what keeps the c block
+  from switching the kernel off on those rows. That makes the c block's role on pose a question for
+  the bandwidth round (per-block median against a shared bandwidth, or the z kernel alone on pose).
+- **The resample fires on most learned cells at the pin, not "almost never".** Median redraws per
+  cell (of 64 particles, cumulative over the solve): Panda 2-5, iiwa 8-9, screw 13-30, soft PCS 0-1;
+  p90 6-57; cells with any redraw 81-100% on the rigid arms, 12-93% on soft PCS; native and paired
+  alike (R18's "0.05-0.08 per particle" is the same 3-5 of 64 on the Panda). Joint space redraws on
+  **no** cell of any row. So `drop2`'s prediction is sharpened: median `n_dropped` 2-9 on Panda /
+  iiwa, 13-30 on the screw arm, 0-1 on soft PCS, and the screw grasp rows -- where a swarm would lose
+  up to a third of its particles -- are where a `drop2` loss, if any, will show. The decision rule
+  is unchanged.
+- **The multiplier box is active on the learned arm, on every row group.** `lam_inf_max` reaches the
+  1e4 box on the worst particle of the median cell on every iiwa, screw and Panda-pose row (Panda
+  grasp 131-164, soft PCS 2-18); the clips land on every group the arm has (task rows, collision,
+  joint limits, the z and c boxes, the trust row), 100-830 clipped entries per median cell. Joint
+  space clips only its task rows and the collision row, 1e5-1e6 entries per run (and never
+  resamples). So `clipoff` is a real test, not a formality: the prediction that the box does not move
+  the selected particle stands, and `mu_inf_max` / `lam_inf_max` will say how far the unboxed
+  multipliers run.
+- `repulsion_ratio_median` at the pin: 0.005-0.014 on the rigid grasp rows, 0.0002-0.001 on rigid
+  pose, 0.08-0.09 on soft PCS grasp -- the kernel's share of the step is small everywhere, which is
+  the baseline `T0p1` / `T10v2` move by 10x each way.
+- Every one of the 32 runs: 480 of 480 `converged`, `n_recheck_failures` 0 (the screw joint-space
+  rows: 17 / 20 / 3 / 3 `wall_clock`, as R21 reported).
+
+**R22 results (ran 14:12-19:40 EDT 2026-10-14 on four nodes, 5.5 h; jobs 5918035-38; 1631 of
+1632 items, the screw pose native `T0p1` shard 6 of 24 lost to a one-off segmentation fault and
+resubmitted as job 5924933, so that row reads on 23 shards until it lands).** Reader:
+`scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2[,pin2kq],clipoff[,clipoffjs],drop2,T10v2,T0p1`.
+Cost below is the median over cells of the per-cell ratio to `pin2` on cells both solved; wall is
+the ratio of cap-clamped means; outer steps and feasible particles are medians, as differences from
+`pin2`. **Cap check: 0 learned cells at the step cap or the clock on every row of every variant;
+`n_recheck_failures` 0 on all 67 runs; residual in the same decade as the pin (2e-6 to 3e-5) on
+every row. Every learned variant keeps the pin's verdict against the IPOPT twin on every row (8
+wins / 8 ties, cell for cell 480 / 480 except `drop2` on the screw arm).**
+
+| variant | success (16 rows) | cost ratio to pin | wall ratio | feasible of 64, delta | outer steps, delta | the diagnostic | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `clipoff` | 480 / 480 on all 16 | 0.999-1.001 | 0.97-1.07 | -1 to +2 | -1 to +1 | `n_multiplier_clipped` 0 by construction; unboxed multipliers run to `lam_inf_max` 1.3e5-1.2e6 and `mu_inf_max` 1.2e6-1.2e11 on the worst particle without moving the selected one | **inert on the learned arm on all 16 rows**, as predicted |
+| `clipoffjs` (joint space, Panda) | grasp **464 / 480** both protocols against `pin2kq`'s 480 (McNemar +0 / -16, p = 3.1e-5), 16 clock stops each; pose 479 / 480 (+0 / -1, p = 1), 1 clock stop each | 0.946 grasp (on the 433 shared cells), 1.000 pose | **4.6-4.7 grasp**, 1.55-1.58 pose | 3 v 4 grasp, 10 v 16 pose | +1 / 0 | `mu_inf_max` 1.6-1.8e8 grasp, 5-6e7 pose; the swarm loses the grasp cells it holds at the pin to the clock | **prediction B: the box is NOT inert on the ablation arm**, so by the rule it stays as a stated setting of that arm (the learned arm never needs it: no clip in 30,720 learned cells moved a selected particle) |
+| `drop2` | 480 / 480 on 12 rows; **screw arm 477 / 477 / 477 / 478** (grasp native / paired, pose native / paired), every loss a swarm with every particle dropped (`stop_reason = all_dead`), McNemar vs `pin2` +0 / -3, -3, -3, -2 (p = 0.25-0.5 per row, 11 cells over the four rows) | 0.998-1.002 on 12 rows; screw grasp **1.037 / 1.018** | 0.93-1.02 | Panda / iiwa -2 to -6, soft PCS -1, **screw -16 / -17 grasp, -7 pose** | 0 to -1 | median `n_dropped` per cell: Panda 2-4, iiwa 7-9, soft PCS 0-1, **screw 20-22 grasp, 11-12 pose** (R20's `n_resampled` medians, as predicted) | **the resample earns its place, on the screw arm only, for the runaway it was built for**; inert elsewhere. The prediction's "ties on all 16" held on 12 and failed where the pre-round record read said a loss would show. Nothing deleted; R27's density term is the structural answer to the screw arm's runaway |
+| `T10v2` | 480 / 480 on all 16 | 0.994-1.011 on 15 rows, screw grasp native **1.041** | 0.85-1.07 | -3 to +1 on 15 rows, screw grasp **-10** | -2 to +1 | `repulsion_ratio_median` 10x the pin's on every row (e.g. Panda grasp 0.16 v 0.016, soft PCS grasp 0.8 v 0.09) | within noise on 15 of 16 rows (screw grasp native at the band's edge on cost and outside it on feasible particles); the predicted cost-up / feasible-down shows only on the screw arm |
+| `T0p1` | 480 / 480 on all 15 rows read (screw pose native pending) | 0.984-1.008 | **1.01-1.58**: outside +15% on 4 rows (Panda pose native 1.22 / paired 1.17, iiwa grasp native 1.16, screw pose paired 1.58) | -3 to +2 | 0 to +3 | `repulsion_ratio_median` 0.1x the pin's on every row; no clock stop anywhere (the kernel-off clock stops of R1K do not appear at rho 1e5) | never lowers cost by 10% on any row, so T does not earn a role; T = 0.1 only costs wall. The rule's letter ("both within noise on all 16") is missed by `T0p1`'s wall on 4 rows; its conclusion, that nothing is gained from T in either direction, holds. **Thomas ruled the removal 2026-10-14; `svgd_temperature` and `svgd_metric_temperature` are deleted in c308934** (the T = 1 step is bit-identical: two-cell reference and the pin test's pre-change npz) |
+
+Read against the mechanisms: every outcome matches its pre-registered mechanism, none is "outcome
+without mechanism". The box's learned-arm inertness is the dual-step argument (the clip touches
+particles about to be redrawn); its joint-space activity is the missing latent (no z to absorb a
+dual step, multipliers climb to 1e8, the swarm drifts to the clock). The resample's single
+dependency is the screw arm's runaway population, which R20 had already measured as 13-30 redraws
+per cell; `drop2` converts those redraws into dead particles and, three cells per row, into dead
+swarms. The temperature moves only the repulsion share, by exactly its factor, and the repulsion
+share at the pin (0.0002-0.09) is too small for a 10x either way to reach the selected particle.
+
+**What R22 strips, and what stays with a reason**: the temperature (two options, gone); the
+multiplier box stays for the ablation arm and is documented as inert on the learned arm; the
+resample stays for the screw arm. CLAUDE.md's svgd section carries the verdicts.
+
+### Stage SVGD_R23: the phase-1 conditioning exceptions at the pin (pre-registered 2026-10-14, before any screen cell was read)
+
+**What it strips.** The three 2026-10-09 conditioning changes (the first section of this document:
+rows in natural units, the Stein variational Newton metric with its Levenberg delta, and the
+per-particle step). Thomas allowed them as phase-1 exceptions to "no special treatment", to be
+ablated in phase 2; their only A/B is the 12-cell attribution at rho 1e3, delta 10, lr 1 (section
+"3. The attribution" above), never at 480 cells or at the pin. The per-particle step has no
+option of its own: under `gn` the step is a fraction of each particle's Newton step, under
+`identity` it is `svgd_lr / ||H_i||_F` per particle, so a global step would need code and is not
+proposed; `identity` is the ablation of the metric with the per-particle Frobenius bound kept.
+
+**What runs.** R22's shape: the learned arm on the record's sixteen rows, 480 cells, 180 s, seed
+1, `SVGD_PINNED_V2` plus exactly ONE override per variant, graphed, the lifted step cap, the
+clearance row, 24 shards, read against R20's `pin2` on the same cells and the IPOPT twin. No
+joint-space item: these settings are shared by both arms, the ablation arm is not being tuned, and
+its attribution reading (joint space needs the metric, the units barely matter) stands as measured.
+
+**A laptop screen gates the manifest, and it is part of the pre-registration.** Two of the five
+variants are predicted dead at the pin and one is predicted structurally singular (below); a
+480-cell row of clock stops carries no verdict (the cap rule) and costs ~48 node-hours per variant.
+So every variant first runs on 12 Panda cells (targets 0-5, guess 0, grasp and pose, native, 180 s,
+the pin, one process at a time on the laptop; tags `screen_R23_panda_n6_svgd_*_6_180_native_<tok>`
+beside a `pin2` reference on the same cells). The rule, fixed before the screen ran: a variant that
+solves **fewer than 6 of its 12 cells, or stops on the clock on 3 or more**, is DEAD AT THE PIN and
+is reported from the screen (labelled preliminary, 12 cells); the rest go to the sixteen rows.
+Thomas can override either way.
+
+| token | override | what it strips | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ident` | `svgd_metric=identity` | the SVN metric (item 4): the direction is applied with the per-particle scalar step `svgd_lr / \|\|H_i\|\|_F` instead of `svgd_lr (H_i + delta I)^-1` | at the pin the AL's curvature is `rho J^T J` on the row directions, `lambda_max` median 1e5-1e7 (R20's `lambda_max_median`), against O(1-10) on the objective-only directions (joint centering, the correction penalty) along the feasible set. A scalar step bounded by `1 / \|\|H\|\|_F` moves the row directions at the right rate and the objective directions 1e-5 to 1e-7 as fast: the swarm reaches the rows and then barely descends the objective, so it stalls at a high cost or runs to the clock. The attribution at rho 1e3 read 8/12 and 36 outer steps against 12/12 and 10; rho 1e5 widens the gap by 100x | outer steps, `stop_reason`, cost on shared cells, `frobenius_over_lambda_median` (1.00-1.07 at the pin: the Frobenius bound is tight, so the step is the Lipschitz step, not a loose one), `repulsion_ratio_median`, feasible count | DEAD on the screen (pose cells to the clock, grasp cells at a cost far above the pin); if alive, cost up and outer steps up >= 3x on every row | success lost or cost > 5% above the pin on any row -> **the Newton metric earns its place**, and the explanation is the 1e5-1e7 spread between row and objective curvature that rho = 1e5 creates and the metric absorbs (why "a larger rho costs no conditioning" held in the rho screen). Within noise on all rows -> the metric is unnecessary and is stripped (not predicted) |
+| `tolunits` | `svgd_row_units=tolerance` | natural units (item 1): every AL row divided by `tol = 1e-4`, the pre-2026-10-09 path | Gauss-Newton is covariant under a row rescaling, so with an exact Newton step the units would be inert. The Levenberg delta is not covariant: dividing the rows by 1e-4 multiplies `rho J^T J` by 1e8, so delta 10 becomes a relative damping of 1e-7 and the float32 solve of a 1e13-curvature system (the attribution's (c): `lambda_max` median 1e12, every particle redrawn at every check, 0/12) returns garbage steps that the resample absorbs. At rho 1e5 the curvature is 1e15 | `lambda_max_median`, `n_resampled` (prediction: ~N per check), feasible count, `stop_reason` | DEAD on the screen: 0 feasible, every particle redrawn, clock stops | dead -> **natural units earn their place**, and the explanation is the units x delta x float32 interaction, not "ill-conditioning" in the abstract; alive (not predicted) -> the units are a free choice and the simpler one is reported |
+| `lm0` | `svgd_gn_lm=0` | the Levenberg delta (item 4): the plain GN step | **the learned formulation is 6-fold redundant in (c, z) by construction**: `q = flow(c, z) + q_c`, so `dq / d(c, z)` is 7 x 13 and every row of the AL (task, collision, joint limits -- all functions of q) and the joint-centering cost see the 13 conditioning-and-latent coordinates only through it. `H` on that block is therefore rank <= 7 of 13 wherever the c-box and latent-trust rows are inactive (nearly everywhere: both are regions, rarely active), with a 6-dimensional null space along the fibre `{(c, z): flow(c, z) = const}`. Only the correction penalty's constant Hessian (10 I on q_c) and delta see the fibre. **Delta is what fixes the gauge along the formulation's own redundancy**; at delta 0 `solve_ex` on a singular float32 block returns a step along the fibre of size ~1/eps that the bound clamp and the resample absorb | `n_resampled`, `bound_clip`, `lambda_max_median` unchanged, feasible count, the `solve_ex` failure count (recorded as a zero step; shows as frozen particles) | DEAD or near-dead on the screen: resamples explode, feasible count collapses. (Joint space has no fibre -- its block is `J_q = I` -- so this is a learned-arm fact; it is not run) | dead -> **delta earns its place, and the reason is structural, not numerical**: it regularises the (c, z) gauge. That names the phase-3 replacement: a term that lives on the fibre -- the latent prior `w_z |z|^2 / 2` of R26 gives the z block the curvature `w_z I`, so R26 adds `w_z = 1` with `svgd_gn_lm = 0` as a declared two-factor variant (the structure replacing the damping), subject to Thomas's go for R26 |
+| `lm1` | `svgd_gn_lm=1` | one decade below the pin | delta damps the directions whose curvature is below it: at the pin (delta 10) a direction of curvature 1 (joint centering, `w = 1`) takes `lr / 11` of its Newton step, the correction directions (curvature 10) `lr / 2`, the rows (1e5+) the full `lr`. Delta 1 lets the objective directions move 5x faster per outer step: more objective descent before the stall, so lower cost, at the risk of overshoot on the fibre (more resamples). The 2026-10-10 probe's "most feasible at delta 10" was at rho 10 and is void at the pin | cost on shared cells, outer steps, `n_resampled`, feasible count, residual | cost 5-15% below the pin on grasp (where the objective is the mug-frame cost and the self-motion is real), within noise on pose; outer steps unchanged or fewer; resamples up by a few per cell | `lm1` lowers cost >= 5% on >= 12 of 16 rows at no loss of success, wall within noise, resamples within +3 -> a tuning adoption that goes to Thomas as a question (phase-2 result, not fielded by me); within noise everywhere -> delta is inert over a decade and 10 stands with its structural explanation |
+| `lm100` | `svgd_gn_lm=100` | one decade above the pin | the objective directions take `lr / 101` of their Newton step: slower objective descent, more outer steps to the stall or an earlier stall at a higher cost; the row directions unchanged (curvature 1e5+) | as `lm1` | cost 5-15% above the pin on grasp, outer steps up; feasible count unchanged (the rows are untouched) | as `lm1`; together they say whether cost is monotone in delta, which is the mechanism's signature |
+
+**Strips decided without compute.** `svgd_row_length_scale` (1.0 m, "literally the raw rows"):
+the default is the identity, so there is nothing to strip, and a ladder on it is R24 material at
+most. The eager `lambda_max` diagnostic costs a `eigvalsh` per dual-update check and is a
+recorded diagnostic, not a solver setting.
+
+**Allotment.** 5 learned variants x 16 rows = 80 logical runs, 1920 items before the screen;
+each dead variant removes 16 runs. The tool's figure (5 s per cell + 180 s per item) is 71 node-h
+for the full set; R20's scaling (1-2.6 s per cell) makes the alive variants (`lm1`, `lm100`,
+and whichever of the others survives) ~4 node-h per variant. Worst case per clock-bound variant 48
+node-h, which is what the screen avoids.
+
+**The screen (laptop, 2026-10-14 14:25-15:47 EDT; PRELIMINARY, 12 Panda cells, read after the
+section above was committed as 4d3eaf8).** Targets 0-5, guess 0, native, 180 s, the pin plus one
+override; `pin2` re-run on the same cells as the reference (6/6 and 6/6, the cost ratio's
+denominator). Medians over the 6 cells of each task; cost ratio over the cells both solved.
+
+| variant | grasp solved / clock | pose solved / clock | outer steps grasp / pose (pin 23.5 / 8) | wall s grasp / pose (pin 4.2 / 1.2) | feasible of 64 grasp / pose (pin 52.5 / 42) | resamples per cell grasp / pose (pin 2.5 / 3.5) | cost ratio to pin grasp / pose | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `lm1` | 6/6, 0 | 6/6, 0 | 11 / 9 | 2.0 / 1.5 | 12.5 / 2.5 | 17.5 / 80 | **1.27 / 1.23** | alive -> cluster |
+| `lm100` | 6/6, 0 | 6/6, 0 | **45** / 8 | **9.6** / 1.4 | 61.5 / 54 | 0 / 0.5 | 1.00 / 0.99 | alive -> cluster |
+| `lm0` | **0/6, 6** | **0/6, 6** | 575 / 599 | 162 / 162 | 0 / 0 | **36,782 / 37,333** | -- | DEAD at the pin |
+| `ident` | 6/6, 0 | 6/6, 0 | 7 / **133** | 1.4 / **25.2** | 20.5 / **1** | 0 / 0 | **1.25 / 1.24** | alive -> cluster |
+| `tolunits` | **0/6, 6** | **0/6, 6** | 622 / 653 | 162 / 162 | 0 / 0 | **39,443 / 40,975** | -- | DEAD at the pin |
+
+What the screen says against the predictions, before the 480-cell round:
+
+- **`lm0` and `tolunits` are dead exactly as predicted, with the predicted signature**: every
+  particle redrawn at every check (~60 redraws per outer step, N = 64), zero feasible particles
+  ever, every cell to the clock, and the recorded `lambda_max` median is 1 with
+  `||H||_F / lambda_max = sqrt(20) = 4.47` -- the identity the solver substitutes for a non-finite
+  H. For `lm0` that is the singular (c, z) block: the plain GN solve of a rank-7-of-13 block in
+  float32 returns a non-finite step. For `tolunits` it is the 1e15 curvature of the rescaled rows
+  at rho 1e5. Neither goes to the cluster; both are reported from here (12 cells, preliminary) as
+  "the setting earns its place" with its mechanism. **The structural reading stands: delta is what
+  fixes the gauge along the learned formulation's own (c, z) redundancy**, which is the phase-3
+  candidate R26 carries (the latent prior as the term that lives on the fibre).
+- **`lm1` is alive but worse on everything except success, and the cost prediction had the wrong
+  sign.** Cost +23-27%, feasible particles 12.5 / 2.5 of 64 against 52.5 / 42, resamples 7x / 23x
+  the pin's. The mechanism's second half (overshoot along the fibre, absorbed by the resample) is
+  what happened; the first half (faster objective descent, lower cost) did not show, because a
+  particle that overshoots is redrawn rather than descending. So delta 10 is not slowing the
+  objective; it is keeping particles on the manifold. The 480-cell round reads it under the
+  pre-registered rule.
+- **`lm100` is level on cost and success, with 2x the outer steps and wall on grasp, zero
+  resamples and the most feasible particles of any variant** (61.5 / 54 of 64); its repulsion share
+  is 0.28 on grasp against the pin's 0.01, because the damped drive leaves the kernel term a larger
+  fraction of the step. The cost-up prediction did not show at 12 cells; the steps-up one did.
+- **`ident` is alive, against the prediction of dead, and lands in the mechanism's other branch**:
+  it stalls early at a high cost rather than running to the clock on grasp (7 outer steps, 1.4 s,
+  cost +25%, 20.5 feasible), and on pose it crawls (133 outer steps, 25 s, ONE feasible particle,
+  cost +24%). Both halves of the mechanism are visible: the scalar step reaches the rows and
+  barely descends the objective. Under the pre-registered rule a cost > 5% above the pin on any row
+  is already "the Newton metric earns its place"; the 480-cell round measures it on all sixteen.
+
+Manifest `cluster/manifest_stageSVGD_R23.txt` (48 runs, 1152 items: `ident`, `lm1`, `lm100` on
+the sixteen rows) was generated after this table was written; it is submitted on Thomas's word.
+
+**R23 results (ran 19:40 EDT 2026-10-14 to 05:33 EDT 2026-10-15 on four nodes, 9.9 h; jobs
+5923288-91; 1152 items, of which 8 died with a segmentation fault and 4 of those completed on a
+re-run, so the screw arm's three `lm1` rows read on 23 / 22 / 23 of 24 shards; the crash is its own
+paragraph below).** Reader: `scripts/report_svgd.py --stage SVGD --rows <robot> --variants
+pin2,ident,lm1,lm100` (`--rows screw7_p050` for the screw arm). The table's conventions are R22's:
+cost is the median over cells of the per-cell ratio to `pin2` on cells both solved; wall the ratio
+of cap-clamped means; outer steps, feasible particles and resamples medians over cells, as deltas
+from `pin2` where marked. **Cap check: `lm100` has 0 cells at the clock or the step cap on every
+row and 0 re-check failures; `ident` stops on the clock on 1 / 2 Panda pose and 6 / 5 screw pose
+cells (native / paired), 1 re-check failure on seven rows; `lm1` stops on the clock on 35-38 Panda
+pose, 22-23 iiwa pose, 64-72 screw grasp and 44-52 screw pose cells per row, so on those six rows
+it carries no success verdict (>= 24 at a budget) -- the clock stop itself is its diagnostic.**
+Every row's residual is in the table; the pin's is 4e-6 to 2.7e-5.
+
+| variant | success (16 rows, vs `pin2`) | cost ratio to pin | wall ratio | feasible of 64 (pin 36-61) | outer steps (pin 8-19) | residual | the diagnostic | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `ident` | 480 / 480 on the 8 grasp rows and iiwa / soft PCS pose; Panda pose 479 / 478, **screw pose 474 / 475** (-6 / -5, p = 0.031 / 0.062) | **grasp: Panda 1.21, iiwa 1.13-1.16, screw 1.90-2.02**, soft PCS 0.97; **pose: Panda 1.41, iiwa 2.35-2.38, screw 3.77-3.82**, soft PCS 1.00-1.02 | grasp 0.38-0.86 (stalls early); **pose 22-29x on the rigid arms (25-30 s), 4.8x on soft PCS (7.3 s)** | grasp: Panda 26-27, iiwa 16, screw 5-6, soft PCS 47-48; **pose: 1 on every row** | grasp 10-12 (-9 to 0); **pose 242-294 on the rigid arms (+232 to +282), 40 on soft PCS** | grasp 1.8e-5 to 2.7e-5 rigid, 4.2e-6 soft PCS; **pose 7.5e-5 to 8.0e-5 everywhere** (a decade above the pin, at the gate's edge) | `frobenius_over_lambda` 1.00-1.07 on the rigid arms (the per-particle step is the Lipschitz step, as predicted); `repulsion_ratio` 1e-4 to 1e-2; zero resamples | **the Newton metric earns its place** (cost > 5% above the pin on 12 of 16 rows, success lost on screw pose), by the predicted mechanism: the scalar step reaches the rows and then descends the objective at the rate the row curvature allows, so on pose it crawls (one feasible particle for 250 steps) and on grasp it stalls early at a cost 13-100% above the pin. The soft PCS arm is the stated exception (cost within noise on all four rows; its row curvature is the smallest, `lambda_max` 1.7e4 grasp against 5e4-1e6, so the spread the metric absorbs is smallest there) |
+| `lm1` | 480 / 480 on 6 grasp rows and soft PCS pose; **no verdict on 6 rows (clock)**: Panda pose 442 / 445, iiwa pose 457 / 458, screw grasp 400 of 464 / 408, screw pose 396 of 440 / 404 of 456 | **above the pin on every row**: grasp Panda 1.16-1.17, iiwa 1.47-1.51, **screw 4.03-4.09**, soft PCS 1.38-1.40; pose Panda 1.71-1.75, iiwa 2.42-2.55, screw 3.49-3.71, soft PCS 1.40-1.42 | grasp 0.43-0.80 on Panda / iiwa / soft PCS, **screw 23-25x (40-45 s)**; **pose 16-20x on the rigid arms (15-26 s)**, 1.34-1.37 soft PCS | **grasp 16-17 Panda, 11 iiwa, 1 screw, 37-38 soft PCS; pose 1-2 rigid, 27 soft PCS** | grasp 10-11 Panda / iiwa, 8 soft PCS, **114-116 screw**; pose +5 Panda, +16 iiwa, +25 screw | 3.8e-5 to 6.9e-5 on every rigid row, 1.8e-5 / 4.9e-5 soft PCS: a decade above the pin | **resamples per cell: grasp 17-19 Panda, 40-43 iiwa, 2600-3100 screw, 4-5 soft PCS; pose 70 Panda, 250 iiwa, 390-420 screw, 28-30 soft PCS** (pin 0-30); `lambda_max_median` 1e8 on every rigid pose row and screw grasp (the swarm sits in the chart's high-gain regions) | **delta 10 earns its place against delta 1, and the cost prediction had the wrong sign on all 16 rows**: a smaller delta does not buy objective descent, it lets particles overshoot along the (c, z) fibre, where they are redrawn (7-100x the pin's resamples), so the swarm never settles: one or two feasible particles, cost up, the clock on the rigid pose rows and the screw arm. The screen's reading at 12 cells is the 480-cell reading |
+| `lm100` | **480 / 480 on all 16 rows**, 0 clock stops, 0 re-check failures | grasp Panda 1.03, iiwa 0.99-1.00, screw 0.96-0.99, soft PCS 0.96; **pose Panda 0.98, iiwa 0.97, screw 0.95-0.96, soft PCS 0.73-0.74** | **grasp 1.3-2.8x (Panda 6.3-6.9 s against 2.5, iiwa 2.6 against 1.3-1.4, screw 2.6-3.5 against 1.8-2.0, soft PCS 3.8-4.3 against 2.5)**, a tail of 40-90 s cells at unchanged median steps; pose 0.95 Panda, 1.33-1.37 iiwa, 1.38-1.61 screw, 1.03-1.04 soft PCS | **53-63 on every row (+1 to +22)** | Panda grasp 26-28 (+8 / +9); every other row within +-2 | **5e-7 to 6e-6 on every row: a decade BELOW the pin** | resamples 0-13 per cell (below the pin on the screw arm: 12-13 against 28-30); `repulsion_ratio` 0.1-0.9 on grasp against the pin's 0.005-0.09 (the damped drive leaves the kernel a larger share of the step, as on the screen) | **neither branch of the rule**: cost >= 5% below the pin on 3 rows (soft PCS pose x2, screw pose paired), not 12, and wall outside +15% on 11. A TRADE along a monotone ladder, not an adoption: over delta 1 -> 10 -> 100 cost, residual and resamples fall on every row and feasible particles rise, while grasp wall rises 1.3-2.8x. Delta 10 stands; the ladder's lower-residual end is R24 / R25 material if the residual matters to Thomas |
+
+Read against the mechanisms, every outcome is explained and two predictions were wrong in a way
+that sharpens the explanation. **The metric**: the identity step's failure is exactly the row /
+objective curvature spread (1e5-1e7 at rho 1e5) that the Newton step absorbs; the soft PCS arm, with
+the smallest spread, is where the identity step is level on cost. **The delta**: the pre-registered
+mechanism ("delta slows the objective directions, so a smaller delta descends faster and a larger
+one slower") predicted cost rising with delta; measured, cost FALLS with delta on all sixteen rows,
+and so do the residual and the resamples, while feasible particles rise. So delta is not a brake on
+the objective; it is the term that keeps particles on the manifold along the learned formulation's
+(c, z) redundancy (the screen's `lm0` reading), and 10 is the value at which the swarm is
+regularised enough to settle (57-61 feasible particles) without the extra wall that 100 costs on
+grasp. That is the structural reading R26 tests: a latent prior gives the z block curvature of its
+own, so the gauge is fixed by the formulation rather than by damping. **Nothing is stripped by
+R23**: the Stein variational Newton metric, the Levenberg delta at 10 and the natural row units all
+earn their place, each with a measured mechanism, and the per-particle step stays as the metric's
+implementation (no global-step ablation was run, as pre-registered).
+
+**The screw-arm segmentation fault (an implementation finding, not a verdict).** Nine of the
+push's items died with status 139 in R22 / R23, all on the screw arm: R22's screw pose native
+`T0p1` shard 6 and eight R23 `lm1` shards (grasp native 11 / 16 / 19, pose native 4 / 12, pose
+paired 4 / 5 / 9), 57 s to 1727 s into the item, with nothing in the log after the warm-up (no Python
+traceback: the crash is in native code). Re-run on the same tree: 4 of the 8 `lm1` shards completed
+and 4 died again (two at the same second as before, two at a different one), the R22 item died again
+(619 s against 113 s), and the shard that had died twice fastest (pose native 12) ran clean to the
+end under `python -X faulthandler` as the only process on its node (job 5932481, 20 min, no fault).
+So the crash is not deterministic per cell and is concentrated on the variants with the most runaway
+particles (`lm1` redraws 390-3100 particles per screw cell, `T0p1` 26-41 against the pin's 13-30),
+on the one robot whose joint-limit row is repaired by hand (the screw joint) and whose runaway is a
+two-joint family rather than a ray. The mechanism is not established; the candidates are the
+batched clearance query on a non-finite float32 configuration between resample checks (the only
+native code the swarm calls per inner step) and a CUDA-graph replay fault, and the first is the
+one a local probe can settle (feed `CollisionEvaluator` a swarm with inf / nan rows on the screw
+arm). **The first candidate is refuted locally (2026-10-15 07:30, Thomas's Drake build, which
+carries the same `CalcRobotClearances`)**: `ClearanceEvaluator` on the screw arm's pose and grasp
+scenes, fed every joint in turn and all seven at once at 1e2 to 3.4e38 rad (the float32 range the
+swarm can reach before the resample sees it; non-finite rows never reach Drake, the evaluator
+drops them), returns a finite row and gradient on all 300 evaluations with no fault. So a large
+but finite configuration does not crash the clearance query; what is left is a race or a fault
+that needs the cluster's own wheel, two processes per node and the CUDA-graphed step together,
+which the single-process `faulthandler` run did not reproduce. Until it is found every screw-arm
+round carries the risk of a lost shard, which a mop-up re-run recovers at about 50%. The three `lm1` screw rows and R22's `T0p1` screw pose native row stay at 22-23
+of 24 shards: `lm1` is dead on every criterion with or without them, and `T0p1` is a removed option.
+
+### Stage SVGD_R24: tuning wall and cost at fixed success (pre-registered 2026-10-14 evening, before any manifest)
+
+**What it is.** Phase-2's last round: the settings that R22 / R23 leave standing, each pushed one
+step from the pin to find out whether the pin's VALUE earns its place or only the piece. Every
+variant is a single `--set` on the pin **`SVGD_PINNED_V3`** (= V2 without the removed
+`svgd_metric_temperature=on`; bit-identical to V2, and identical on the staged cluster tree, where
+that option's default is `on`), the learned arm, the record's sixteen rows, R22's shape, read
+against R20's `pin2` on the same cells and the IPOPT twin. No joint-space items. Success is at
+the ceiling, so every rule below reads cost / wall / feasible / steps / residual with the push's
+noise band, and a variant that moves wall or cost by less than the band on 16 rows is reported
+inert and the pin's value stands with its reason.
+
+| token | override | what it tests | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `N16`, `N32` | `svgd_n=16`, `svgd_n=32` | the swarm size (64), the wall lever | the step is GPU-batched over N, but the collision row (clearances, 92-96% of a step at N = 64-256 before the batched row; still the largest share) and the dual check scale with N, so wall per outer step falls with N; the latent kernel keeps the swarm on the manifold at any N (R14 / R18: N does not add to `cz`); the selection picks the best feasible particle, so fewer particles = a smaller pool, cost up slightly and the paired start carried by fewer draws | ms per outer step, outer steps, feasible count (scaled: fraction of N), cost, `n_resampled` | wall 0.4-0.7x at N 16, 0.6-0.85x at N 32; cost +0-5%; success unchanged (R-early: N 1-256 within a cell at V1); feasible fraction unchanged | N 32 within the cost band and wall <= 0.85x on >= 12 rows -> a tuning adoption question for Thomas (the pin's N is 64 for no measured reason beyond "works"); cost outside the band on any rigid row -> 64 earns its place as the selection pool |
+| `rho1e6` | `svgd_rho=1e6` | the penalty (1e5), one decade further along the lever that bought the record's cost (1e3 -> 1e5) | with the SVN metric a larger rho costs no conditioning (the metric absorbs `rho J^T J`), only churn: the PHR active set hardens, the dual step `alpha = rho` moves multipliers faster, particles overshoot the rows more and are redrawn more; the objective is weighed less against the rows, so cost may fall again (as 1e3 -> 1e5 did) or saturate | cost, `n_resampled`, residual (should fall ~10x), `lam_inf_max` / `mu_inf_max` (box at 1e4 bites harder), feasible count | cost within noise (the lever saturated at 1e5) or -0 to -5%; resamples up 2x; residual 1e-6 | cost <= 0.95x on >= 12 rows at no success / wall loss -> a question for Thomas (and R26-R28's structure then runs at 1e6); within noise -> 1e5 stands as the saturation point; resamples > +3 per cell or any row losing cells -> 1e5 earns its place |
+| `pat2`, `pat3` | `svgd_stop_patience=2`, `=3` | the stall patience (5): of the 8-19 median outer steps per cell, 5 are the stall itself | the stop fires when the best feasible objective has not improved by `svgd_stop_rel` for `patience` checks (then the float64 re-check); a shorter patience saves (5 - p) outer steps on every cell and risks stopping during a plateau the swarm would have left | outer steps (prediction: exactly -3 / -2 medians), wall, cost (the price of stopping early), `n_recheck_failures` | wall 0.7-0.85x (`pat2`), 0.8-0.9x (`pat3`); cost +0-3%; success unchanged | `pat3` (or `pat2`) within the cost band on all 16 rows with wall <= 0.85x on >= 12 -> adoption question; cost outside the band anywhere -> 5 earns its place as the plateau guard |
+| `alpha0p1`, `alpha10`, `alpha0` | `svgd_dual_lr=1e4`, `=1e6`, `=0` (the dual step; default `None` = rho, the exact PHR update) | the dual-ascent step: declared "pending the alpha ladder" on 2026-10-09 and never swept | `alpha = rho` is the method-of-multipliers step that makes the AL's stationary point the KKT point in one shot per check; alpha < rho converges the multipliers geometrically slower (more outer steps to the same residual), alpha > rho overshoots them (oscillation, more resamples); **`alpha = 0` is the pure quadratic penalty**, whose minimiser violates the rows by `|lam*| / rho` = 1e-3 to 1e-1 at the record's multipliers (1e2-1e4) against the 1e-4 gate, so it should fail most cells -- the multipliers earning their place in one row | outer steps, residual, `lam_inf_median` (0 by construction under `alpha0`), `n_resampled`, success | `alpha0p1`: steps +2 to +5, cost within noise; `alpha10`: resamples up, cost within noise or worse; **`alpha0`: success collapses on the task-row-bound cells (grasp first)** | `alpha0` losing cells on every row -> the multipliers earn their place (phase 2's cleanest "why"); `alpha0p1` / `alpha10` within noise -> alpha = rho is not a knob and stays implied (the option could go); either beating the pin on cost at no wall loss -> question |
+| `floor1e-3`, `floor0p2`, `kz` | `svgd_bandwidth_floor=0.001`, `=0.2`, `svgd_kernel=z` | the c x z bandwidth rule and its floor (0.05), which R20's record shows binding on the pose task's c block (Panda 9-11% of cells, soft PCS 98-99%) and nowhere else | per block `h = max(floor^2, med^2 / log N)`; on the pose task every particle conditions near one target, the c-spread is below the floor and the c factor is held flat by it. `floor1e-3` lets the median rule run (a sharper c kernel on pose: more repulsion in c), `floor0p2` holds the c factor flat on far more cells (grasp rows too, where the c-spread is 0.1-0.3), and `kz` drops the c factor altogether (the latent kernel alone, R14's `kz` at the pin's rho) | `bandwidths` (the floor's binding fraction per block), `repulsion_ratio_median`, `feasible_q_spread`, feasible count, cost | `kz` ~ pin on the pose rows (the floor already makes the c factor ~1 there) and within noise on grasp; `floor1e-3` within noise on grasp, pose rows: repulsion share up, feasible count down a few; `floor0p2` within noise | `kz` within noise on all 16 -> **the c factor earns nothing and `cz` is simplified to `z`** (one bandwidth, no floor question on pose; a question for Thomas since `cz` was his sweep's winner at rho 1e3); the floor variants say whether 0.05 is a value or an accident |
+
+**Not proposed.** `svgd_lr` (0.3): a damped Newton fraction, chosen by the 2026-10-10 screen at
+rho 1e3; a ladder at the pin is a numerical knob with no structural question and R23's delta
+ladder covers the same axis (how far the objective directions move per step). `svgd_stop_rel`
+(1e-3): paired with the patience, one of the two is enough. `svgd_recheck_topk` (10): an execution
+setting of the gate-edge rule. `svgd_inner_iters` (K): not re-proposed.
+
+**Allotment.** 11 variants x 16 rows = 176 runs, 4224 items; the tool's figure (5 s per cell +
+180 s per item) ~165 node-h, R22's measured pace (1632 items in 5.5 h on 4 nodes) ~14 h on 4 nodes;
+`alpha0` may run its failing cells to the clock (16 rows x up to 480 x 180 s = 48 node-h worst),
+which the cap rule then reads as a result at the fielded clock. Local smoke of every value never
+run before (`svgd_n` 16 / 32 at the pin, rho 1e6, patience 2 / 3, the three alpha values, the two
+floors) on 2 Panda pose cells each before the manifest; `kz` ran in R14. No restage: every option
+exists in the staged 7812715 and V3 omits only a setting whose staged default is the pin's value.
+
+**R24 results (ran 2026-10-15 07:03-22:16 EDT on four nodes, jobs 5925276-79, staged 0ecb1ad; read
+2026-10-16 against R20's `pin2` on the same cells with the push's noise band: cost ratio [0.95, 1.05]
+on shared cells, wall +-15%, feasible particles +-3, outer steps +-2, residual the same decade).**
+169 of 176 runs complete; the seven `alpha10` POSE rows other than iiwa native were HELD by Thomas
+(2026-10-15 15:45, "Do proposal 1") after that row ran every cell to the clock -- 168 items
+pre-claimed, reversible by `--reclaim` (`cluster/SVGD_RUNBOOK.md`). **Cap check**: 0 cells at the
+step cap anywhere; 0 clock stops on 168 of the 169 rows; iiwa pose native `alpha10` has 477 of 480
+at the clock (a result at the fielded clock, no success verdict). Gate-edge re-check failures: 5 in
+81,120 cells (iiwa grasp paired `alpha10` 2, iiwa pose paired `alpha0p1` 2, screw pose paired
+`alpha0p1` 1). **Success is 480 / 480 on every complete row but that one** (3 / 480), so every
+verdict below is on cost, wall, feasible particles, steps and residual. Per-cell numbers:
+`scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,N16,N32,rho1e6,pat2,pat3,alpha0p1,alpha10,alpha0,floor1em3,floor0p2,kz3`.
+
+| variant | cost ratio to `pin2` (shared cells) | wall ratio | feasible particles at stop (pin 36-61 of 64) | outer steps | residual | diagnostic | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `N16` | **1.16-2.25 on the twelve rigid rows** (Panda 1.16-1.24, iiwa 1.40-1.66, screw 1.94-2.25), 1.29-1.31 soft PCS | 0.34-0.80 | 4-14 of 16 | +-1 | up to 3x | the pool: fewer feasible particles to select from on every row | **64 earns its place** (cost outside the band on every row) |
+| `N32` | 1.02-1.32: within the band on Panda pose (1.02) and Panda grasp (1.04-1.05) only; iiwa 1.08-1.11, screw 1.20-1.32, soft PCS 1.09-1.12 | 0.58-0.89 | 14-30 of 32 | +-1 | same decade | cost is monotone in N on all 16 rows (64 -> 32 -> 16): the swarm is the selection pool, and the latent kernel does not make a smaller one as good | **64 earns its place** (outside the band on 13 of 16) |
+| `rho1e6` | 0.988-1.003 on all 16 (within) | 0.95-1.20 (screw pose 1.15 / 1.20 outside) | +-3 | +-1 | **same decade, NOT a decade lower** | resamples +1 to +2 per cell on grasp, **+5 to +10 on the six rigid pose rows**; recorded `lam_inf` 8-13x the pin's | **1e5 stands**: the cost lever is saturated and the resample churn exceeds +3 on six rows. The residual does not follow rho: it is set by the stop rule (the stall at gate level), not by the penalty |
+| `pat2` | 0.981-1.057 (screw grasp native 1.057 outside; soft PCS pose 0.98) | 0.49-0.68 | -1 to -15 (outside +-3 on ten rows) | -3 to -8 | same decade | stops during plateaus the swarm leaves: feasible count down, screw grasp cost up | **5 earns its place against 2** |
+| **`pat3`** | **0.991-1.001 on all 16 (within)** | **0.66-0.81 on all 16** | -0 to -6 (within +-3 on 11 rows; screw grasp -6 / -6, iiwa grasp native -4, Panda pose -4 / -4, screw pose native -4) | -2 to -4 | same decade | the (5 - 3) saved checks are the whole wall gain; the prediction was exactly -2 steps and the pin stalls more than once on many cells, hence -2 to -4 | **meets the adoption-question rule** (cost within the band on 16 of 16, wall <= 0.85 on 16 of 16): a QUESTION for Thomas, with the feasible-count cost stated |
+| `alpha0p1` | Panda and soft PCS within; iiwa grasp within, **iiwa pose 1.12-1.14, screw grasp 1.01-1.03, screw pose 1.31-1.33** | 0.78-0.97 | **-8 to -28 on the ten rigid grasp / pose rows but Panda grasp** | **-1 to -3** (predicted +2 to +5) | 2-4x up, same decade mostly | `lam_inf` 2-9x the pin's at stop | not within noise: alpha = rho / 10 stalls EARLIER with fewer feasible particles and dearer selections. Prediction (slower multiplier convergence, more steps) refuted |
+| `alpha10` | grasp: **1.43-4.26** (Panda 1.64, iiwa 2.8, screw 4.0-4.3, soft PCS 1.43-1.46); pose: iiwa native **3 / 480**, 477 at the clock | grasp 0.7-2.7; pose 162 s per cell | **1 feasible particle** (soft PCS 3) on every grasp row; 0 on pose | grasp +8 to +29 (iiwa, screw, soft PCS); pose ~2290 | grasp 5-7e-5; pose 1.1e-3 (outside the gate) | resamples 82-754 per cell on grasp (pin 0-30), 16k-20k on pose | the overshoot in its extreme form: alpha = 10 rho destroys the swarm on every row and convergence on pose. Seven pose rows held, not run |
+| `alpha0` | **0.995-1.003 on all 16 (within)** | 0.84-0.99 | -0 to -4 | -1 to -2 | same decade (soft PCS pose 1.5-1.9e-6 against 1.6e-6) | `lam_inf` = 0 by construction; resamples as the pin's | **the prediction (success collapses on the task-row-bound cells) is REFUTED on all 16 rows**: the pure quadratic penalty at rho = 1e5 ties the pin on every metric |
+| `floor1em3` | rigid arms 0.999-1.012; **soft PCS grasp 1.097 / 1.102**; soft PCS pose 0.974 / 0.977 | 0.97-1.10 | +-2 | +-1 | same decade | the floor's binding fraction (R20: soft PCS 98-99% of pose cells) is where it moves | **0.05 is a value, not an accident, on the soft PCS grasp rows** (removing the floor costs +10%); inert on the rigid arms |
+| `floor0p2` | Panda 1.00-1.01, iiwa 1.01-1.02, screw 1.03-1.07, soft PCS grasp 1.14-1.16, **soft PCS pose 0.821** | 0.67-1.06 | **-8 to -16 on 15 rows** | +-1 | up to one decade (soft PCS pose 1.1e-5 against 1.6e-6) | `z_norm` of the selection up 0.5-0.9 on the rigid arms (3.3-3.9 against 2.5-3.2) | a flat c factor spreads the swarm in z and off the feasible set: the floor's value is not 0.2 |
+| `kz3` | **grasp 1.09-1.26 on every robot** (Panda 1.16, iiwa 1.09-1.10, screw 1.21-1.26, soft PCS 1.14-1.15), screw pose 1.15-1.18, Panda / iiwa pose 0.99-1.01, **soft PCS pose 0.806 / 0.819** | 0.59-1.26 | **-10 to -26 on every row** | +-1 | up to one decade on soft PCS pose | `z_norm` of the selection **3.8-4.3**, at the latent trust region's radius (4.0 Panda, 4.33 iiwa, 4.15 screw) against 2.5-3.2 under `cz` | **the c factor earns its place on all eight grasp rows and screw pose**: `cz` stands, `kz` is not a simplification. The prediction (`kz` ~ pin on pose, within noise on grasp) holds on Panda and iiwa pose only |
+
+**What the round says, in the order the pre-registration asked.** (1) **N = 64 is the selection
+pool, not a convenience.** Cost rises monotonically as the swarm shrinks on all sixteen rows, so the
+wall that N 16 / 32 buy (0.34-0.89x) is paid in cost on every rigid row; R14 / R18's "N does not
+add to the latent kernel" was a statement about success, which is at the ceiling, and it stands.
+(2) **rho = 1e5 is the saturation point and the residual is not rho's to set.** Another decade
+moves cost by under 1.2% on every row, raises the resample churn by 5-10 per cell on the rigid
+pose rows, and leaves the residual at stop in the same decade, because the swarm stops when the
+best feasible objective stalls at gate level, not when the penalty's stationary point is reached;
+the recorded `lam_inf` scales 8-13x with rho, which is the signature of a one-step estimate
+`rho * c` rather than a converged multiplier (below). (3) **The stall patience is worth 19-34% of
+the wall at no cost**: `pat3` meets its adoption rule on all sixteen rows (cost within 1%, wall
+0.66-0.81x), at 2-6 fewer feasible particles at stop on the screw and Panda rows; `pat2` crosses
+into cost (screw grasp +5.7%) and feasible count (-15). **A question for Thomas, not adopted.**
+(4) **The dual step is a knob with a corner, and the multipliers do no measurable work at the pin.**
+`alpha0` (no dual update: the pure quadratic penalty at rho = 1e5) ties the pin on success, cost,
+wall, steps, feasible particles and residual on all sixteen rows, refuting the pre-registered
+prediction and its premise: the "record's multipliers of 1e2-1e4" were the pin's `lam_inf` /
+`mu_inf` MAXIMA, and the medians at stop (0.1-4.5) scale with rho, so they are `rho * c` one-step
+estimates, not lambda-star. The residual the penalty alone reaches (2e-6 to 3e-5) bounds the true
+multipliers of this objective at `rho * c` ~ 0.2-3, two decades below what the prediction assumed,
+which is why the pure penalty sits inside the 1e-4 gate. Around that corner the ladder is NOT
+monotone: alpha = rho / 10 keeps success but stalls earlier with 8-28 fewer feasible particles and
+dearer selections on the rigid pose and screw rows, and alpha = 10 rho destroys the swarm (one
+feasible particle, resamples 80-750 per cell on grasp) and convergence (477 / 480 at the clock on
+pose, residual 1e-3). A hypothesis for the rho / 10 corner, not established: a partial dual step
+moves the AL's minimiser every check without landing on it, so the feasible set the stall rule
+reads keeps shifting and the stop fires on a smaller one. **What is settled**: alpha = rho (the
+exact PHR step) is kept as the formulation's value -- the augmented Lagrangian is the method Thomas
+named, and dropping the multipliers buys no wall -- and the option stays because it is not inert;
+whether the pure penalty is a legitimate simplification of the METHOD is a formulation question for
+him, flagged, with the structure rounds (R26-R28) running on the AL as pre-registered. (5) **The
+c x z kernel earns its place on every grasp row, and the floor is a value on the soft PCS arm.**
+`kz` costs 9-26% on the eight grasp rows and 15-18% on screw pose, with 10-26 fewer feasible
+particles and the selection's `|z|` pushed to the trust region's radius: without the c factor,
+particles that share a latent but differ in conditioning pose read as duplicates and are repelled
+along z, off the feasible set. `floor1e-3` costs +10% on the soft PCS grasp rows (where R20 records
+the floor binding) and is inert on the rigid arms; `floor0p2` loses 8-16 feasible particles
+everywhere. So `cz` at floor 0.05 stands with a reason, not an accident. **One trade worth
+carrying into R26's reading**: on the soft PCS POSE rows a flat c factor (`floor0p2`) or no c
+factor (`kz3`) cuts the cost 18% (0.81-0.83 of the pin: from 1.005 / 1.331x the IPOPT twin to
+0.825 / 1.109x, native / paired), at 14-15 fewer feasible particles and one decade of residual
+(1e-5, inside the gate). That is the one place in the record where the learned arm under svgd is
+dearer than under IPOPT (R20: soft PCS 1.26-1.45x on three rows), and it says the premium is the
+c-kernel's repulsion holding the swarm's conditioning poses apart on a robot whose c-spread at stop
+is below the floor. Not adopted (a 16-row trade), but R26's latent prior, which drives z rather
+than c, is read with it in view. **Nothing deleted by rule; two questions to Thomas: `pat3`, and
+the status of the pure penalty.** *Thomas, 2026-10-16: "Patience 3 sounds good."* **ADOPTED: `svgd_stop_patience` defaults
+to 3 from the next pin, `SVGD_PINNED_V4` (= V3 + `svgd_stop_patience=3`), for every stage after R28;
+R1-R28 ran 5, and R27 / R28 are read against `pin2` at 5 as pre-registered.** The pure penalty: **the augmented
+Lagrangian at alpha = rho stays the method (Thomas, 2026-10-16: *"I prefer augmented Lagrangian from a
+story perspective as well, it's a more flexible (and arguably more principled) framework than a pure
+penalty method. It also leaves a lot of future directions open, like ADMM, whereas jumping from
+penalty to those methods is more of a change"*)**, with this finding as the explanation: at rho = 1e5
+in natural row units the penalty alone parks inside the gate, the dual update is correct and inert on
+this record, and it keeps the feasibility guarantee independent of the objective's scale. `svgd_dual_lr`
+stays at its default (alpha = rho) and is not a tuning knob: both rho / 10 and 10 rho are worse than
+either endpoint.
+
+### Stage SVGD_R26: the latent prior N(0, I) on z (phase 3 / 4; pre-registered 2026-10-14 evening, before any cell)
+
+**Why this round needs no new code, and what that means.** The formulation already carries the
+term: `ProgramOptions.latent_cost_weight = w` adds Drake's `QuadraticCost` `0.5 w |z|^2` on the
+learned arm's latent (`LatentCost`, description `LatentRegularizerCost`), excluded by name from
+`reported_cost`; the svgd batched program folds every quadratic cost into its target and its
+constant Hessian into the SVN metric. So **`latent_cost_weight = 1` is exactly `|z|^2 / 2`, the
+negative log density of the flow's latent prior N(0, I)**, up to a constant, inside the augmented
+Lagrangian -- the structure the chart was trained to invert, entering the LEARNED arm's target
+only (joint space has no z). It was swept once under IPOPT (CLAUDE.md: `latent_cost_weight` helps
+the Panda at 0.1, hurts the iiwa; a settled negative there) and never under svgd. R25 (the float64
+polish) is skipped in sequence because it needs code and Thomas's call; R26 runs first.
+
+**What runs.** R22's shape (the learned arm, the record's sixteen rows, 480 cells, 180 s, seed 1,
+`SVGD_PINNED_V3`, 24 shards), four variants read against R20's `pin2` (= `w = 0`) on the same
+cells and the IPOPT twin; two are declared two-factor variants:
+
+| token | override | the term | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `lp1` | `latent_cost_weight=1` | `+ \|z\|^2 / 2`: the exact log prior | the flow is accurate where the latent is typical (`\|z\| ~ sqrt(d)` = 2.65 Panda, 2.83 iiwa); the task rows leave the self-motion free and the kernel's repulsion spreads particles along it; the prior gives every particle an objective-side drive toward the typical set, so the feasible swarm sits where the chart is trustworthy and the selected particle is a configuration the chart represents well. On the objective it is one more quadratic, so cost (which excludes it) may rise slightly where the prior and the task cost disagree | `z_norm` of the selected particle and the swarm (recorded; R20's selected `\|z\|` is 2.2-2.6), `n_resampled` (a particle drifting toward the runaway has atypical z: prediction, fewer redraws), feasible count, cost, residual | `\|z\|` of the selected particle down 10-30%; resamples down on the rigid arms (Panda 2-5 -> 1-3, screw 13-30 -> under 10); cost within noise or +0-5%; success unchanged | resamples down >= 30% on the screw rows at cost within noise -> the prior does structurally what the resample does numerically, and it is the candidate to field (a question for Thomas, with R27's log-det as the stronger form); within noise everywhere -> inert, reported, not fielded |
+| `lp10` | `latent_cost_weight=10` | a 10x prior, the dose | as `lp1`, with the prior now competing with the task cost: cost up, `\|z\|` down further, possibly feasible particles down where the typical set and the grasp manifold are far apart | as `lp1` | cost +5-15%, `\|z\|` 1.5-2.0, resamples down further | says whether the effect is monotone in w (the mechanism's signature) |
+| `lp1notr` | `latent_cost_weight=1` + `latent_trust_region=None` (two factors) | the soft prior REPLACING the hard latent trust region (`\|z\| <= 4.0 / 4.3`, a stated deviation from eq. (6) that IPOPT keeps because a nonbinding row still shapes an interior-point trajectory; svgd has no barrier, so that reason does not transfer) | with the row gone the swarm's only hold on z is the prior (and the +-5 component box, a region of last resort); if the prior suffices, the formulation moves TOWARD eq. (6) at no cost | `z_norm` max over the swarm (does any particle leave the old radius?), `bound_clip` on the z box, feasible count, cost, resamples | within noise of `lp1` on all 16 rows; `\|z\|` max 3-4, no particle at the +-5 box | within noise of `lp1` everywhere -> the trust region earns nothing under svgd once the prior is in: a phase-3 replacement, Thomas's call since it changes the program the arm is measured on; a row losing cells or resampling more -> the row stays |
+| `lp1lm0` | `latent_cost_weight=1` + `svgd_gn_lm=0` (two factors) | the prior REPLACING the Levenberg delta (R23's screen: delta 0 is dead because the (c, z) block of the GN Hessian is rank <= 7 of 13 along the formulation's redundancy fibre; the prior adds `I` on the z block, and no fibre direction is purely in c because `dq / dc` has full column rank, so the block becomes nonsingular by structure, not by damping) | if alive, the structural reading of R23 is confirmed: the formulation's own prior fixes the gauge the damping was fixing | `lambda_max_median` (no longer the substituted 1), `frobenius_over_lambda_median`, `n_resampled`, outer steps, cost | ALIVE on the screen; outer steps and cost near `lp1`'s; if resamples are high the undamped step overshoots on the c directions, which the prior does not touch | alive and within noise of `lp1` -> **delta is replaced by structure** (phase 3, the cleanest result this push can produce; fielding it is Thomas's call); alive but worse -> delta stays with the prior; dead -> the c directions need damping too and the structural claim is narrowed to the z block |
+
+**A laptop screen gates `lp1lm0` only** (12 Panda cells, as R23's: targets 0-5 guess 0, native,
+both tasks, 180 s; rule: fewer than 6 of 12 solved or 3 or more clock stops = dead at the pin,
+reported from the screen). `lp1`, `lp10` and `lp1notr` go to the sixteen rows after a 2-cell
+parse smoke each.
+
+**Added after the parse smoke, before the manifest (2026-10-14 20:50 EDT): a fifth variant
+`lp0p1`, `latent_cost_weight=0.1`.** The 2-cell smoke (Panda pose native, targets 0-1, 60 s)
+already shows the dose at w = 1 is strong: the selected particle's `|z|` falls from 3.9 (the pin
+on the same two cells) to 0.34 / 0.34 (`lp1`), 0.12 / 0.18 (`lp10`), 0.27 / 0.36 (`lp1notr`),
+against the prior's typical `sqrt(7) = 2.65`; outer steps rise from 4-8 to 85-132 (`lp1`), 68-74
+(`lp10`), 79-81 (`lp1notr`); cost 3.73 / 5.48 against 3.35 / 4.62; feasible particles 44-58 of
+64; 2 / 2 solved everywhere. The mechanism is visible already: at a typical latent the prior is
+worth `|z|^2 / 2 ~ 3.5`, larger than the task cost itself (2-5), so the target's descent along the
+self-motion is dominated by the prior and the stall rule (on the full target) keeps the swarm
+walking toward the prior's MODE at z = 0 rather than its typical set, at 10x the outer steps. The
+prediction "`|z|` down 10-30%" was therefore wrong in size before the round; the round measures
+the dose. The 0.1 rung is the one IPOPT's sweep found helpful on the Panda (CLAUDE.md) and the one
+at which the prior (~0.35 at a typical z) is small against the task cost. Decision rules are
+unchanged, read per rung.
+
+**The `lp1lm0` screen (laptop, 2026-10-14 20:48-21:05 EDT, grasp half; the pose half ran after
+this was written): DEAD at the pin.** 2 of 6 grasp cells solved and all 6 stopped on the clock
+(556-765 outer steps, 35,000-49,000 redraws per cell, 0-1 feasible particles at stop, the
+substituted identity H on 5 of 6 cells) -- the same signature as R23's `lm0` (0 of 6, 560-617
+steps, 36,000-39,000 redraws) with two cells landing on a feasible particle before the clock. So
+**the prior on z does not replace the Levenberg delta, and the structural claim is narrowed**: the
+prior adds `I` on the z block, which makes the (c, z) block nonsingular in exact arithmetic (no
+fibre direction is purely in c), but a fibre direction whose z component is small keeps a
+curvature of order `|dz|^2`, and the undamped float32 step along it is still enormous. What delta
+regularises is the whole soft subspace, not only its z part; a term that would replace it has to
+act on c too (the conditioning pose has no prior in the formulation), so delta stays, with this as
+its reason. `lp1lm0` is not run at 480 cells.
+
+*The pose half, read after the paragraph above was committed (21:05-21:08 EDT): ALIVE.* 6 of 6
+converged, 7-31 outer steps, wall 3.7-12.9 s against the pin's 1.2, feasible particles 20-40 of
+64, redraws 5-26 per cell, `lambda_max` median 2.6e6-1.7e7 (a real Hessian, not the substituted
+identity), `|z|` 0.7-1.4. So the prior DOES fix the gauge where the six pose rows pin `q` (the
+soft subspace is then the (c, z) fibre alone, and `I` on z is enough for the float32 solve), and
+does not where the grasp leaves a self-motion in `q` (the soft subspace gains the self-motion's
+pull-back into (c, z), on which the prior has no hold and delta is the only damping). The variant
+stays off the cluster by the rule (6 clock stops on grasp), and the narrowed claim reads: the
+formulation's prior replaces the damping exactly on the task that has no redundancy left for it
+to damp.
+
+**Allotment.** 4 variants x 16 rows = 64 runs, 1536 items: the tool's ~60 node-h; by the smoke's
+outer steps (10x the pin's on the w >= 1 rungs) the real figure is 8-12 h on 4 nodes rather than
+R22's pace; no restage (`latent_cost_weight`, `latent_trust_region` and `svgd_gn_lm` all exist in
+the staged 7812715).
+
+**R26 results (ran 2026-10-15 22:16 to 2026-10-16 15:20 EDT on four nodes, jobs 5925565-68, 17 h --
+the soft PCS rows took 9-20 min per shard; read 2026-10-16 against R20's `pin2` on the same cells with
+the push's noise band).** 64 of 64 runs complete. **Cap check**: 0 cells at the step cap; clock stops
+0-10 per row (soft PCS grasp `lp0p1` 10 / 9, `lp1` 3 / 9, `lp1notr` 3 / 4; every other row 0-2), all
+under 24, so every verdict stands; recheck failures 0. **Success 480 / 480 on all 64 rows.** Per-cell
+numbers: `scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,lp0p1,lp1,lp10,lp1notr`.
+
+| variant | cost ratio to `pin2` (shared cells, the prior EXCLUDED from both) | wall ratio | outer steps | feasible particles | `\|z\|` of the selection (pin 2.5-4.4) | resamples (pin: Panda 2-5, iiwa 8-9, screw 13-30, soft PCS 0-1) | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `lp0p1` | **rigid arms 1.16-4.35** (Panda grasp 1.72-1.77, pose 1.26-1.30; iiwa 2.59-2.63 / 2.14-2.25; screw 4.27-4.35 / 3.63-3.69); soft PCS grasp 1.35-1.41, **soft PCS pose 0.78-0.80** | rigid grasp 3.8-6.6, rigid pose 1.7-3.3, soft PCS 17-22 (26-58 s) | rigid grasp +12 to +54, rigid pose +1 to +5, soft PCS +170 to +241 | +2 to +6 | 1.0-1.6 | Panda 3-5, iiwa 8.5-14.5, screw 12-34, soft PCS 0-1: not down | not within noise, not the mechanism: **a cost and wall loss on the twelve rigid rows at the smallest dose** |
+| `lp1` | rigid 1.22-4.18 (Panda 1.72 / 1.22, iiwa 2.58-2.62 / 2.23-2.28, screw 4.08-4.18 / 3.71-3.86); soft PCS grasp 1.20-1.21, **soft PCS pose 0.62** | rigid grasp 4.6-7.3, rigid pose 2.8-7.7, soft PCS 15-16 | rigid grasp +69 to +100, rigid pose +15 to +80, soft PCS +126 to +146 | -8 to +9 | 0.2-0.9 | Panda 4-6, iiwa 9-23, **screw 12-41 (grasp +30-37%)**, soft PCS 0-1 | the rule's gate (resamples down >= 30% on the screw rows at cost within noise) FAILS on both counts: **the prior does not do what the resample does, and it is not inert** |
+| `lp10` | rigid 1.16-4.26 (Panda 1.67-1.73 / 1.16-1.20, iiwa 2.70-2.79 / 2.16-2.28, screw 4.26 / 3.68-3.89); soft PCS grasp 1.22-1.25, soft PCS pose 0.61-0.62 | rigid grasp 2.0-4.0, rigid pose 3.1-7.4, soft PCS 9-13 | +17 to +103 | **-11 to -36 on the rigid arms** | 0.1-0.5 | as `lp1`; `lam_inf` 5-25 on the rigid arms (pin 0.2-4.5) | the dose is monotone in `\|z\|` (1.0-1.6 -> 0.2-0.9 -> 0.1-0.5) and NOT in cost, which is saturated from w = 0.1 (Panda grasp 1.72 / 1.72 / 1.67); at 10 the task rows fight the prior (multipliers up, feasible count down) |
+| `lp1notr` | within [0.95, 1.05] of `lp1` on 14 of 16 rows (iiwa pose native 0.95, screw pose paired 0.94 at the band's edge); same soft PCS pose 0.62 | as `lp1` | as `lp1` | as `lp1` | 0.2-0.9, **max over 480 cells 1.2-2.2 per row** against radii 4.0 / 4.33 / 4.15 / 4.96 | as `lp1` | as predicted, **the trust region earns nothing once the prior is in**; moot, because the prior is not fielded |
+
+**What the round says.** The latent prior N(0, I) on z, entering the learned arm's target, is **refuted
+as a fielded term** at every dose: on the twelve rigid rows it raises the reported cost 16-335% and the
+wall 2-8x, at success unchanged, residual in the same decade, feasible particles unchanged at w <= 1,
+and resamples NOT reduced (the screw rows resample 7-37% MORE under `lp1`), so neither the mechanism
+it was pre-registered on (the swarm held where the chart is trustworthy, fewer runaway redraws) nor the
+phase-3 replacement it was meant to license (the trust region, or R23's delta -- dead on the laptop
+screen) survives. The dose curve is the diagnosis: `|z|` of the selection falls monotonically with w
+(1.0-1.6 / 0.2-0.9 / 0.1-0.5 against the pin's 2.5-4.4 and the prior's own typical `sqrt(d)` = 2.6-3.5),
+while the cost penalty is already saturated at w = 0.1. So the prior does not "shape" where the swarm
+sits; it RELOCATES the selection to the prior's mode. The mechanism, visible in the 2-cell smoke and
+confirmed on 30,720 cells: the term enters the stall rule and the selection, both of which read the
+full target, so the swarm keeps walking down the prior along the formulation's (c, z) self-motion after
+the task rows and the task cost have stalled (outer steps 2-30x), and the particle selected is the one
+nearest z = 0, which on the rigid arms is NOT where the task cost (joint centering about the ready
+pose) is small. The pre-registered prediction (`|z|` down 10-30%, resamples down, cost within noise or
++0-5%) was wrong in sign on cost and in size on `|z|`, and the smoke said so before the round; the
+round measured the dose as promised.
+
+**The soft PCS pose rows are the exception, and the one finding to carry forward.** There the prior at
+any w >= 0.1 cuts the reported cost 20-39% (w = 1: 0.62x the pin, i.e. 0.62 / 0.83x the IPOPT twin
+native / paired, where the pin sits at 1.005 / 1.331x -- the one place in the record where the learned
+arm under svgd is dearer than under IPOPT), keeps 64 / 64 particles feasible and lands a decade lower
+in residual (3e-7), at a wall of 20-27 s (13-18x) and 110-180 outer steps. Hypothesis, not established:
+on this robot the prior's mode and the task cost agree -- its `q_nominal` is the straight rod and the
+chart's z = 0 at a given tip pose maps near it -- so the descent along the fibre lowers both, where on
+the rigid arms the ready pose and the chart's mode are different configurations. With R24's `kz3` /
+`floor0p2` (0.81-0.83x on the same rows at 1-2 s) this makes two levers that recover the soft PCS pose
+premium; both are trades (feasible particles, or wall), neither adopted. **Not pre-registered, a
+question for Thomas rather than a plan: the structural term may belong in the DRIVE (the objective-side
+direction each particle descends) and not in the stall rule or the selection** -- the measurements
+above cannot say, because the three roles are one target here.
+
+**Consequences for the queue.** R27's `fd0p1` / `fd1` carry `|z|^2 / 2` inside the density term and
+should be expected to inherit this; `ld1` (the log-det alone) is R27's informative rung. R28 part 2
+was to run on "R26 / R27's winner": R26 has none, so part 2 waits on R27's `ld1`.
+
+### Stage SVGD_R28, part 1: the correction regulariser at the pin (pre-registered 2026-10-14 night, before any cell)
+
+**What it tests.** The weight-10 penalty on `q_c` is a STATED part of the learned formulation
+(Thomas 2026-09-02: the draft says `q_c ~ 0` without saying how, and the penalty imposes it), so
+this is not a strip but a dose ladder of a formulation setting, read under svgd. Part 1 runs the
+ladder at the pin alone; **part 2 (the ladder on R26 / R27's better density term, as a declared
+second factor, and the zero-centred `q_c` prior replacing penalty and box, which needs code and
+Thomas's call) is pre-registered after those rounds read.** `correction_cost_weight` is in the
+pin's own `--set` list (10.0), so each variant REPLACES it; the reported cost excludes the penalty
+by name on every solver, so the cost column is comparable across the ladder. At `w_c = 0` the
+program adds no `CorrectionCost` binding at all (the `> 0` guard) and `q_c` is held only by its
++-0.1 box.
+
+R22's shape: the learned arm, the record's sixteen rows, 480 cells, 180 s, seed 1, the V3 pin, 24
+shards; read against `pin2` (= `w_c = 10`, the control) on the same cells and the IPOPT twin.
+
+| token | override | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- |
+| `qc0` | `correction_cost_weight=0` | with no penalty the correction is a free +-0.1 rad per joint added to the chart's output: the task rows and the joint-centering cost can use it directly, so the learned arm becomes, within the box, a reparameterised joint-space arm (the pre-registered flag of the campaign); the shared objective (joint centering) can fall because the box gives it 7 extra directions | `median_correction_inf` and `correction_binding` (how much of the box solutions use; pin: `|q_c|` ~2e-5, 0 on the box), cost on shared cells, feasible count, `z_norm`, residual | `|q_c|` median 0.03-0.1 with a large fraction on the box; cost DOWN 5-15% (the extra freedom), success unchanged; `z` barely moves (the correction absorbs the task, not the latent) | cost down with `|q_c|` on the box -> the penalty is what keeps the learned arm from solving in joint space through the correction: it earns its place for the formulation's meaning, not for success, and the cost gain is reported as what the box buys, never adopted; cost within noise with `|q_c|` still ~0 -> the penalty is doing nothing the task does not already do, and part 2's prior question gains weight |
+| `qc1` | `correction_cost_weight=1` | one decade below the pin: the penalty's pull against the joint-centering cost (weight 1) is level, so the solver trades the two | as `qc0` | `|q_c|` ~1e-3 to 1e-2, cost within noise or -0 to -5% | the ladder's monotonicity in `|q_c|` and cost is the mechanism's signature; a rung within noise on cost with `|q_c|` an order of magnitude larger than the pin's is a question for Thomas (the formulation's `q_c ~ 0` has no stated tolerance) |
+| `qc100` | `correction_cost_weight=100` | one decade above: `q_c` pinned harder, the arm closer to the chart's bare output; cost up if the correction was doing work | as `qc0` | `|q_c|` ~2e-6, cost within noise (the correction does no work at the pin), outer steps unchanged | within noise -> the correction is inert at the record's solutions and 10 stands as the stated value; cost up -> the correction earns its place in the formulation (what `q_c` buys over eq. (4)'s `q_c = 0` arm, the open item in CLAUDE.md) |
+
+**Allotment.** 3 variants x 16 rows = 48 runs, 1152 items; the tool's ~45 node-h, R22's pace
+~4 h on 4 nodes. Local parse smoke (2 Panda grasp native cells, 60 s) of `w_c` 0 and 100 (never
+run under svgd; 1 likewise) before the manifest. No new code; runs on either staged tree.
+
+**R28 part 1 results (ran 2026-10-16 21:50 to 2026-10-17 01:44 EDT on four nodes, jobs 5926659/66/67/68,
+3.9 h; read 2026-10-17 02:30 against R20's `pin2` = `w_c` 10 on the same cells with the push's noise
+band).** 48 of 48 runs complete, 0 crashed. **Cap check**: 0 cells at the step cap, 0 clock stops, 0
+recheck failures on every row. **Success 480 / 480 on all 48 rows.** One correction to the
+pre-registration's premise before the table: the pin's `|q_c|_inf` median is 5e-4 to 1.3e-3 per row
+(the "~2e-5" quoted was the IPOPT record's figure), and 0 of 7,680 pin cells sit on the +-0.1 box.
+Per-cell numbers: `scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,qc0,qc1,qc100`.
+
+| variant | cost ratio to `pin2` (shared cells; the penalty excluded from both) | wall ratio | outer steps | `\|q_c\|_inf` median (pin 5e-4 to 1.3e-3) | cells on the +-0.1 box (of 480) | feasible particles | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `qc0` (no penalty; the box alone) | **rigid arms 0.98-1.00 and soft PCS grasp 1.00 (within the band on 14 rows); soft PCS pose 0.71** | grasp rows 1.1-1.6, pose rows 1.0-1.4 | +0 to +10 (Panda grasp +10) | 7e-4 to 5e-3 rigid, 9e-4 soft PCS grasp, **1e-2 soft PCS pose** | **0 on 15 rows, 1 on Panda pose native** | +-1 | the prediction (`\|q_c\|` 0.03-0.1 with many cells on the box, cost down 5-15%) is REFUTED on the rigid arms: unpenalised, the correction grows 1.5-4x and stays 20-100x inside its box, and the shared cost does not move. **The penalty is doing nothing the task does not already do there.** On soft PCS pose the free correction buys 29% of the cost at `\|q_c\|` 1e-2 (still 10x inside the box): what the box buys on the one robot whose chart-side self-motion is dear, reported, never adopted |
+| `qc1` | rigid 0.99-1.00, soft PCS grasp 1.00, soft PCS pose 0.87-0.88 | 1.0-1.4 | +0 to +9 | 7e-4 to 2.5e-3 (1.5-2x the pin's, the same order) | 0 | +-1 | within noise on 14 rows with `\|q_c\|` of the pin's order: no question raised |
+| `qc100` | rigid 1.01-1.03, soft PCS grasp 1.02-1.05, **soft PCS pose 1.12-1.17** | **0.63-0.85 on the grasp rows**, 0.94-1.03 on pose | -1 to -7 | 2.4e-4 to 7.7e-4 (0.4-0.6x the pin's) | 0 | -0 to -2 | monotone in `\|q_c\|` and in cost (soft PCS pose: 0.71 / 0.88 / 1.00 / 1.15 over w = 0 / 1 / 10 / 100), the mechanism's signature; **the correction earns its place in the formulation on the soft PCS pose rows** (+12-17% at w = 100, toward eq. (4)'s `q_c = 0` arm) and is at the band's edge elsewhere (+1-5%); pinning it harder also stops the swarm sooner (steps -1 to -7, wall 0.63-0.85 on grasp) |
+
+**What the round says.** Under svgd the correction's weight is a formulation setting whose value does
+not move the rigid arms: from 0 to 100 the shared cost stays within +-3% on all twelve rigid rows,
+feasible particles and residual are unchanged, and the +-0.1 box binds on 1 cell of 23,040. So the
+campaign's flag -- the learned arm quietly becoming a reparameterised joint-space arm through the
+correction -- does not fire even with the penalty removed: the swarm reaches the gate and stalls on
+the task cost long before the correction walks anywhere (the stall rule, again), and the correction's
+directions carry no chart gain, so the SVN step moves them little per outer step. The weight does
+work on the soft PCS pose rows only, monotonically (0.71 to 1.15 over the ladder), the third round in a
+row to single out that robot's pose task as the place where the learned formulation's cost is set by
+what holds the configuration near the chart's output. **10 stands as the stated value** (Thomas's
+2026-09-02 ruling), with this as the measurement behind it: it costs nothing on the rigid arms against
+0 or 1, and the dose on soft PCS pose is reported, not optimised. **Part 2 is dropped**: its density
+factor has no winner (R26 / R27), and its `q_c` prior replacing the box would replace a bound that
+binds on 1 cell in 23,040, so there is nothing for it to measure; the question of a zero-centred prior
+is answered by this table without code.
+
+### Stage SVGD_R27: the flow as an exact density (phase 3 / 4; pre-registered 2026-10-14 night, before any cell; code ac4f5c2)
+
+**The term.** `flow_logdet_weight = w` adds `w log|det dx/dz|` of the IKFlow map `x = flow(c, z)`
+to the learned arm's objective (Drake cost `FlowLogDetCost`, excluded from `reported_cost` by
+name; svgd cost kind `flow_logdet`, in the target and the drive). With `latent_cost_weight = w`
+beside it the pair is `w (|z|^2 / 2 + log|det dx/dz|) = -w log p(x | c)` up to a constant: the
+density of configurations the chart actually represents, the conditional the flow was trained to
+model. Facts that shape the reading, found while building it (the scoping and the parity tests):
+- The log-det is a free by-product of the forward pass (FrEIA returns it; IKFlow discards it), and
+  its gradient is one extra row of the existing reverse pass, taken only when `w > 0` -- the extra
+  row perturbs the q rows at 1e-16, so the flag keeps the pin bit for bit (pin test untouched; the
+  term-off graphed smoke equals the pre-change reference on every field).
+- **On the iiwa the map is 8-wide against 7 joints** (the eighth output is the training-time
+  padding), so there the term is the joint density of `(q, pad)`, not `p(q | c)`; the Panda, screw
+  and soft PCS maps are square. It is the density of `flow(c, z)`, not of `q = flow + q_c`
+  (exact to `|q_c| ~ 2e-5` at the approved penalty), and not a density under `chart_error_scale`
+  or `lift_q` (both refused with it).
+- **The gradient is dominated by the conditioning pose**: on a sample point ~20 on c's position,
+  1-2 on its orientation, 0.003-0.5 on z. The term is a conditional density optimised over a free
+  c: it moves the conditioning pose to where the configuration is typical, more than it moves the
+  latent. The latent half (`|z|^2 / 2`) is what R26 measures alone.
+- **The term's size shifts the stall rule.** The log-det is -23 to -34 on the Panda against a
+  task cost of 2-5, so with the term on the target is large and negative; the stall test
+  `f_best < best_seen - rel |best_seen|` then has a threshold ~6-10x looser in absolute terms (and
+  ill-defined where the target crosses zero). The stop rule is left exactly as it is (the term
+  joins the target as `LatentRegularizerCost` does), and outer steps are read with this in mind:
+  a stall reached in fewer steps than `lp1`'s is partly the rule, not only the term. Changing the
+  rule (stalling on the shared objective) is a separate candidate, not folded in here.
+- SVN metric: no block for the log-det (its curvature is indefinite and a second-order pass is
+  2-3x a flow Jacobian per step); the `|z|^2 / 2` half enters through `LatentCost`'s constant
+  Hessian as in R26. The exact-Hessian metric is a possible second rung, only if the term matters.
+- The 2-cell smoke (Panda pose native, compiled + graphed, `w = 1` on both halves): 2 / 2
+  converged in 31 / 33 outer steps (pin ~8, `lp1` 85 / 132), `|z|` 0.64 / 0.79 (`lp1` 0.34 / 0.34),
+  cost 3.68 / 4.81 (pin 3.35 / 4.62, `lp1` 3.73 / 5.48), the negative log density at the returned
+  point -32.8 / -33.7, 60-61 feasible particles, 0-2 redraws.
+- The same two cells under IPOPT with the term on (the Drake cost path, 60 s): both feasible at
+  the returned point, 559 / 384 majors to the clock, cost 6.43 / 4.79, `|z|` 1.3 / 0.78, density
+  -31.2 / -34.2; 0 error cells. The term is a stated deviation from the measured learned formulation
+  and is NOT fielded on the Drake solvers; the smoke only shows the shared cost evaluator runs.
+
+**What runs.** R22's shape (the learned arm, the record's sixteen rows, 480 cells, 180 s, seed 1,
+24 shards, the V3 pin), **on a RESTAGED cluster tree** (the term is new code; the restage waits
+until R26 has drained so no queued item changes tree mid-round, and the pin test's bit-identity is
+what licenses running R24 / R26's pending items on it if that ever happens). Three variants, read
+against `pin2`, R26's `lp0p1` / `lp1` on the same cells, and the IPOPT twin:
+
+| token | override | the term | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ld1` | `flow_logdet_weight=1` | the log-det alone (the Jacobian-volume half, no prior) | high-gain regions of the chart are where `log|det dx/dz|` is large, so the term penalises a particle BEFORE its `q` explodes, where the resample acts only after (`|q|_inf > 10`): the structural answer to the screw arm's runaway R22 showed the resample still carries. Alone it also rewards low-volume regions, which with a free c can pull the conditioning pose rather than the latent | `n_resampled` / `n_dropped` (prediction: down on the screw rows, 13-30 -> under 10 per cell), `flow_neg_log_density` at the returned point (recorded for every learned cell, pin included), `z_norm`, `|q|_inf` excursions, feasible count, cost, outer steps | resamples down >= 30% on the screw rows; cost within noise or +0-5%; success unchanged; `|z|` near the pin's (the latent half is absent) | resamples down >= 30% on the screw rows at cost within noise -> the log-det does structurally what the resample does numerically (then R26's resample question is re-asked with the term in); within noise everywhere -> inert, reported, not fielded |
+| `fd0p1` | `latent_cost_weight=0.1` + `flow_logdet_weight=0.1` (declared two factors) | `-0.1 log p(x | c)`, the full density at the dose R26's `lp0p1` carries | as `ld1` plus the prior's pull toward the typical set; read against `lp0p1` to separate the log-det's contribution from the prior's | as `ld1`, plus `z_norm` against `lp0p1`'s | within noise of `lp0p1` on cost and wall; resamples below `lp0p1`'s on the screw rows if the log-det does the work the prior does not | the pair of readings (`fd0p1` - `lp0p1`, `fd1` - `lp1`) attributes the effect to the log-det or to the prior; the candidate to field is whichever rung lowers resamples on the screw rows at cost and wall within noise -- a question for Thomas |
+| `fd1` | `latent_cost_weight=1` + `flow_logdet_weight=1` (declared two factors) | `-log p(x | c)`, the exact density | as above at the smoke's dose; `lp1`'s 10x outer steps may shrink (the smoke: 31-33 against 85-132) partly through the stall rule's shifted threshold | as above, plus outer steps against `lp1` | cost between the pin's and `lp1`'s (+5-10%), `|z|` ~0.6-0.8, outer steps 3-5x the pin, resamples down on the screw rows | as `fd0p1` |
+
+**Allotment.** 3 variants x 16 rows = 48 runs, 1152 items: the tool's ~45 node-h; by the smoke's
+outer steps (4x the pin on `fd1`) ~5-8 h on 4 nodes. Restage first (`BRANCH=svgd-tune
+cluster/make_staging_clone.sh`, after R26 drains), then the usual scp / md5 / submit.
+
+**R27 results (ran 2026-10-16 15:10-21:55 EDT on four nodes, jobs 5932634-37, 6.7 h; read 2026-10-16
+night against R20's `pin2` and R26's `lp0p1` / `lp1` on the same cells with the push's noise band).**
+48 of 48 runs complete, 0 crashed. **Cap check**: 0 cells at the step cap; clock stops 0 on 46 rows,
+**24 and 22 of 480 on screw grasp native / paired under `ld1`** (native is at the 24-cell threshold: a
+result at the fielded clock, no success verdict; paired is a verdict); recheck failures 0. Success
+480 / 480 on the other 46 rows. Per-cell numbers: `scripts/report_svgd.py --stage SVGD --rows <robot>
+--variants pin2,lp0p1,lp1,ld1,fd0p1,fd1`.
+
+| variant | success | cost ratio to `pin2` (shared cells; the term excluded from both) | wall ratio | outer steps | feasible particles | `\|z\|` of the selection (pin 2.5-4.4) | resamples (pin: Panda 2-5, iiwa 8-9, screw grasp 28-30 / pose 13, soft PCS 0-1) | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `ld1` (the log-det alone) | 480 / 480 on 14 rows; **screw grasp 456 / 458 of 480, every loss at the clock** | Panda 1.28-1.29 grasp / 1.50-1.52 pose; iiwa 2.05-2.07 / 2.07-2.08; screw 3.9-4.2 / 3.9-4.0; soft PCS 2.40-2.45 / 1.54-1.57 | 0.9-2.1 rigid; **9-10 on screw grasp** (17-18 s); 3.0-3.8 soft PCS | +3 to +39 | iiwa grasp -14 / -15, **soft PCS -28 to -32**, screw grasp -13 / -14 | **3.1-5.0: at the trust region's radius** (iiwa 4.2, soft PCS 4.96) | **screw grasp 166-189 per cell (6x the pin)**; elsewhere as the pin | the prediction (resamples down >= 30% on the screw rows, cost within noise) is refuted in sign: **the log-det alone drives the swarm INTO the runaway on the robot it was meant to protect**, and off the typical set everywhere. Not fielded; the "structural answer to the resample" is refuted |
+| `fd0p1` (`-0.1 log p(x \| c)`) | 480 / 480 | Panda 1.24-1.27 / 1.18-1.21; iiwa 2.27-2.34 / 2.15-2.25; screw 3.56-3.65 / 3.35; soft PCS grasp 1.78-1.83, **soft PCS pose 0.95-0.98 (within the band)** | rigid pose 0.9-1.2 (within the band on 4 of 6), rigid grasp 1.15-3.2, soft PCS 3.3-6.4 | rigid pose -1 to 0, rigid grasp +7 to +36, soft PCS +0 / +51 | +2 to +7 | 1.3-2.3 | as the pin on every row | not within noise on cost (12 rigid rows +18 to +265%); resamples not lowered anywhere -> no candidate to field |
+| `fd1` (`-log p(x \| c)`) | 480 / 480 | Panda 1.24 / 1.11; iiwa 1.93-1.95 / 2.03-2.07; screw 3.7-3.9 / 3.3-3.4; soft PCS grasp 2.0, **soft PCS pose 0.765** | 1.15-4.0 rigid, 4.1-6.2 soft PCS | +11 to +43 | -6 to +13 | 0.9-1.8 | as the pin but screw grasp 38-40 (+30%) | prediction (cost +5-10%, resamples down on screw) refuted on both; not fielded |
+
+**Attribution, the pair of readings the pre-registration asked for (`fd` minus `lp` on the same
+cells).** Adding the log-det to the prior LOWERS the prior's cost penalty on every rigid row (Panda
+grasp 1.24 against `lp`'s 1.72, iiwa 1.9-2.3 against 2.6, screw 3.4-3.9 against 3.6-4.4) and cuts its
+wall 2-3x with 2-4x fewer outer steps; on soft PCS pose it REDUCES the prior's gain (`fd1` 0.765 against
+`lp1` 0.62, `fd0p1` 0.95-0.98 against `lp0p1` 0.78-0.80). Both readings fit the caveat written before
+the round: the log-det is -19 to -42 on the target against a task cost of 2-5, so the relative stall
+test fires sooner (a looser absolute threshold), the swarm walks the prior less far and the selection
+sits nearer the task cost's minimum -- the fewer steps are the rule, not the term. The density values
+themselves say the same: under `ld1` the recorded `-log p` at the returned point (-19 to -34) is LESS
+negative than under `fd` (-23 to -42), because without the prior the latent runs to the region's
+boundary where `|z|^2 / 2` is 8-12. So **the three readings are a single mechanism tangled with the
+stop rule and the selection**, which is what R29 (queued) separates; nothing here is a drive effect that
+can be read on its own.
+
+**What the round says.** The flow as an exact density, in the learned arm's target, is **refuted as a
+fielded term in every form**: the prior half relocates the selection (R26), the log-det half pushes
+the swarm off the typical set and, on the screw arm, into the runaway it was pre-registered to prevent
+(the push's first success loss: 22-24 cells at the clock, resamples 6x), and the pair is better than
+either half only through the stall rule. The structural claim that high-gain regions are where
+`log|det|` is large and a particle "pays before its q explodes" did not survive: the term's gradient is
+dominated by the conditioning pose (20x the latent's, found while building it), so it moves c to
+low-volume poses rather than holding z, and a free c with no prior lets the latent drift to the
+trust region's edge. **R28 part 2 was to run on R26 / R27's winner; there is none, so part 2 is not
+run.** The queue stands as R28 part 1 -> R29 -> R30.
+
+### Stage SVGD_R29: the regulariser's three roles -- drive, stall rule, selection (pre-registered 2026-10-16 17:30 EDT, before any code ran a cell and before the manifest)
+
+**Why.** The augmented Lagrangian target is used in three roles inside the solver: the DRIVE (each
+particle's SVN step), the STALL RULE (`solve`: stop when the best feasible particle's objective has
+not improved by `svgd_stop_rel` over `svgd_stop_patience` checks) and the SELECTION (`_select`: the
+feasible particle with the best objective, re-checked in float64). Under the pin all three read the
+FULL objective, every cost binding, the learned-only regularisers included (`CorrectionCost` at the
+pin; `LatentRegularizerCost` whenever the prior is on). R26 showed what a regulariser does in roles 2
+and 3: the swarm keeps walking down `|z|^2 / 2` along the (c, z) self-motion after the task has
+stalled (steps 2-30x), and the particle returned is the one nearest the prior's mode, not the one with
+the lowest task cost (cost +16-335% on the rigid rows, saturated from w = 0.1). What the prior does in
+role 1 alone -- bend every particle's trajectory toward typical latents while the stop and the
+selection keep reading the shared objective -- R26 could not say, because the roles were one target.
+Thomas, 2026-10-16: *"Pre-register the drive-only round and queue it after R28."*
+
+**The rule, and why it is general.** One `ProgramOptions` field, `svgd_stop_select_objective`:
+`full` (the pin, bit-identical) or `shared`, under which the stall rule and the selection read
+`F_reported`, the shared objective with every regulariser excluded BY NAME (`REGULARIZER_COSTS` =
+`benchmark._REGULARIZER_COSTS`, exactly what `reported_cost` measures), while the drive is untouched.
+It is a solver rule about regularisers as a class, not a special case for the prior: it applies to the
+pin's own `CorrectionCost` too, which is why the round carries the rule ALONE as a variant. It is
+solver-side (the program's costs, rows and bounds are unchanged), it carries no formulation-specific
+information beyond the regulariser names the benchmark already uses, and it is a declared exception
+of the kernel-space kind, approved by Thomas.
+
+**What runs.** R22's shape (the learned arm, the record's sixteen rows, 480 cells, 180 s, seed 1,
+24 shards, the clearance row, `DRAKE_ENV=crc PROCS=2`), **the first stage on `SVGD_PINNED_V4`**
+(= V3 + `svgd_stop_patience=3`, adopted 2026-10-16 from R24), so it carries its own control:
+
+| token | override | what it tests | mechanism | diagnostic | prediction | decision rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| `pin4` | none (the V4 pin) | the control, and the fielded pin's first sixteen rows at patience 3 | R24's `pat3` against `pin2`: cost within 1%, wall 0.66-0.81x, 2-6 fewer feasible particles | the same, read against `pin2` (R20) on the same cells | reproduces R24's `pat3` row for row (same pin, same seed): cost within the band, wall 0.66-0.81x | if it does not reproduce `pat3` within the noise band, the round is read against `pat3` and the discrepancy is reported before anything else |
+| `so` | `svgd_stop_select_objective=shared` | the rule alone at the pin: does the correction penalty do any work in the stop or the selection? | `CorrectionCost` = `10 * |q_c|^2 / 2` at the pin's `|q_c|_inf` ~ 0.05 is ~0.01-0.1, under 1% of the task cost (2-5), so excluding it from the stop and the selection should change neither | `median_correction_inf`, cost, steps, feasible count, the selected index | within noise of `pin4` on all 16 rows; `|q_c|` within 10% | within noise on all 16 -> the rule is safe as a general rule (and R28 part 1's `qc*` rows are read knowing the penalty's stop / selection role is nil); outside the band anywhere -> the correction penalty earns a role in the stop or the selection, reported, and `lp*so` are read with that confound stated |
+| `lp0p1so` | `latent_cost_weight=0.1` + `shared` (two factors) | the prior in the drive only, small dose | the drive pulls every particle toward typical z while the stop fires on the task cost's stall and the selection picks the cheapest feasible particle: the prior shapes WHERE the swarm explores, not when it stops or what is returned | `z_norm` of the selection (pin 2.5-4.4, R26's `lp0p1` 1.0-1.6), steps, wall, cost, feasible count, `n_resampled`, and on soft PCS pose the cost against `pin4` | steps within +-2 of `pin4`, wall within the band; cost within the band on the rigid rows; `|z|` of the selection BETWEEN `pin4`'s and R26's (1.6-3.5); resamples unchanged (R26 found no reduction with the prior in every role) | see `lp1so` |
+| `lp1so` | `latent_cost_weight=1` + `shared` (two factors) | the exact log prior in the drive only | as above, full dose | as above; read against `pin4` first and against R26's `lp1` (patience 5, so wall carries the 0.66-0.81 factor) for the direction of `|z|` and cost | as above, `|z|` lower than `lp0p1so`'s; **soft PCS pose: if R26's 0.62x came from the drive (particles descending the fibre to cheaper configurations) it survives at the pin's wall; if it came from the stop and the selection (walking longer, returning the mode) it disappears** | within noise of `pin4` on cost and wall with `|z|` lower -> the prior is a drive-only term that costs nothing; it is a candidate to FIELD as structure (a question for Thomas) only if it buys something measurable: soft PCS pose cost <= 0.95x, or resamples down >= 30% on the screw rows; within noise on everything including `|z|` -> inert as a drive, reported, not fielded; cost or wall outside the band -> the prior is refuted in every role |
+
+Noise band, cap check and the per-cell metrics as the push's rules (R22). Allotment: 64 runs, 1536
+items; at the pin's pace (1-3 min per shard) 5-6 h on four nodes; if the `lp*so` rows still walk as
+R26's did (9-20 min per soft PCS shard) up to 15 h. The round needs code (the option) and a RESTAGE
+carrying it and the patience default: staged beside the live tree (`STAGE_SUBDIR=repo-next`) and
+swapped in by a chained cluster job between R28 and R29 (`cluster/swap_staged_tree.sh`), so the
+queue never idles and no laptop has to be awake. Local 2-cell smoke of `so` and `lp1so` before the
+manifest; the pin test (`tests/test_svgd_pin_and_gate.py`) must pass unchanged with the option at
+its default.
+
+**R29 results (ran 2026-10-17 01:45-07:21 EDT on four nodes, jobs 5943006-09, 5.6 h, the first stage on
+`SVGD_PINNED_V4` and on the swapped tree f312793; read 2026-10-17 08:30 against R24's `pat3`, R20's `pin2`
+and the round's own `pin4` on the same cells with the push's noise band).** 64 of 64 runs complete, 0
+crashed, 0 error cells. **Cap check**: 0 cells at the step cap, 0 clock stops, 0 recheck failures on every
+row. **Success 480 / 480 on all 64 rows.** Per-cell numbers: `scripts/report_svgd.py --stage SVGD --rows
+<robot> --variants pin2,pat3,pin4,so,lp0p1so,lp1so`.
+
+**The control.** `pin4` reproduces R24's `pat3` on every row: cost ratio to `pin2` equal to three decimals
+on 16 of 16 rows (0.991-1.004), wall within 0.1 s, median outer steps, feasible particles, residual and
+`|z|` equal. **Per cell it does not**: 3,728 of 7,680 cells (49%) return a different cost, 1,731 a different
+step count -- the median relative difference is 0.5%, the 90th percentile 26%, and 131 cells differ by
+more than 50% -- so a same-configuration re-run of the float32 GPU swarm under 20 Drake threads is
+reproducible at the row (every median within 0.3%) and not at the cell. This is the push's noise band
+measured directly, and it is what the cell-paired McNemar at 480 / 480 never sees; R30's `pin4s2` gives
+the across-grid version.
+
+| variant | cost ratio to `pin4` (shared cells; the regularisers excluded from both) | wall ratio to `pin4` | outer steps vs `pin4` | feasible particles vs `pin4` | `\|z\|` of the selection (`pin4` 2.5-3.2 rigid, 3.2-4.4 soft PCS) | `\|q_c\|_inf` (`pin4` 5e-4 to 1.2e-3) | resamples | verdict by the pre-registered rule |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `so` (the rule alone at the pin) | rigid 0.986-1.001 and soft PCS grasp 0.98-0.99 (within the band on 14 rows); **soft PCS pose 0.70-0.71** | **grasp rows 1.0-1.6** (Panda +50%, iiwa +25-35%, soft PCS +55-60%, screw +0-10%); pose rows 1.0-1.07 | +1 to +6 on the grasp rows, 0 on pose | +-1 | as `pin4` (rigid), 3.3-3.4 soft PCS pose (from 4.3) | 1.5-2x the pin's; **soft PCS pose 8.5e-3** | as the pin | NOT within noise: **the correction penalty earns a role in the stall rule** (with it excluded the grasp swarms walk 1-6 checks longer on the shared cost) **and in the selection on soft PCS pose**, where excluding it returns the cheapest feasible particle at `\|q_c\|` ~1e-2 -- the same point R28's `qc0` returned (0.707 / 0.711). `shared` is not adopted as a general rule; the pin stays `full` |
+| `lp0p1so` | **rigid 0.984-1.016 (within the band on 12 of 12)**; soft PCS grasp 0.88, **soft PCS pose 0.63** | Panda grasp 1.4-1.7, iiwa grasp 1.2-1.4, screw grasp 1.0-1.1, rigid pose 0.97-1.1; **soft PCS 3.5-7** | rigid +0 to +8 (Panda grasp), pose 0; soft PCS grasp +5 to +6, pose 0 at the median with a long tail (mean wall 8 s: the cells that walk, 30+ steps at 5 s of collision time, against the 6-step majority) | +1 to +3 (within) | 2.0-2.8 rigid, 2.4-2.7 soft PCS: between `pin4`'s and R26's `lp0p1` (1.0-1.6), as predicted | 1.0-1.2x the pin's rigid, 1.1e-2 soft PCS pose | as the pin | cost within the band and `\|z\|` lower, as predicted; wall outside the band on the Panda and iiwa grasp rows and on every soft PCS row -> by the rule, not a candidate to field on the rigid arms; the soft PCS gains are stated below |
+| `lp1so` | rigid 0.983-1.075: Panda 0.983-0.996, iiwa 0.989-1.001, screw pose 1.02-1.03, **screw grasp 1.05-1.08 (outside)**; soft PCS grasp 0.64, **soft PCS pose 0.50-0.52** | Panda grasp 1.1-1.3, iiwa grasp 1.0-1.2, **screw grasp 0.87-0.94**, rigid pose 0.95-1.2; soft PCS 4-5.5 | rigid -1 to +3, soft PCS +17 to +25 | **-7 to -16 on 8 rigid rows** (screw grasp 33 / 32 against 43 / 42, iiwa and screw pose 24 against 33-35) | 1.2-2.1 rigid, 1.2-1.3 soft PCS | 1.0-1.3x rigid, 1.4e-2 soft PCS pose | screw grasp 20 against 25-26 (-20%), not >= 30% | within noise on Panda and iiwa cost, outside on screw grasp cost and on feasible particles on half the rigid rows; resamples not lowered by 30% anywhere -> not a candidate to field on the rigid arms |
+
+**What the round says.** (1) **Separating the roles works as a measurement**: with the stall rule and the
+selection reading the shared objective, the latent prior in the drive alone keeps the rigid-arm cost
+within the band at w = 0.1 (12 of 12 rows) and w = 1 (10 of 12), where R26's prior in all three roles
+cost +16-335%; the selection's `|z|` sits between the pin's and R26's exactly as pre-registered, and the
+outer steps come back from 10-30x to within a few of the pin's. So the drive effect of the prior is now
+read on its own: on the rigid arms it is **inert** -- it moves the swarm toward typical latents (the
+`|z|` it was built to move) without changing cost, residual or resamples, and at w = 1 it thins the
+feasible pool (-7 to -16 particles on half the rows) and costs the screw arm 5-8% on grasp. The runaway
+prediction fails for the third time (resamples -20% at best on screw grasp): no term in z addresses a
+runaway whose drive is in c. (2) **The regulariser's roles are not free to separate at the pin**: the
+correction penalty earns a role in the stall rule on every grasp row (without it the swarm walks 1-6
+checks longer for cost gains inside the band) and in the selection on soft PCS pose. `shared` is not a
+general simplification; the pin stays `full`. (3) **The soft PCS arm, again, and now decisively.** On its
+pose rows the drive-only prior at w = 1 returns solutions at 0.50-0.52x the pin's cost (0.50 / 0.69x the
+IPOPT twin, native / paired, where the pin sits at 1.005 / 1.331x) with 63 of 64 particles feasible and
+the residual in the same decade, for 6 s against the pin's 1.1 s; the shared selection alone gives 0.70,
+the prior at w = 0.1 0.63. On its grasp rows the same term gives 0.64-0.88 at 3.5-4.7x the wall. This is
+the push's largest cost result and it is confined to one robot, the one whose chart maps z = 0 to the
+straight rod the task cost is centred on, so the prior and the task cost agree there and nowhere else.
+**Not fielded by the rule** (the wall band, and a one-robot gain), reported as the one place a
+formulation-structure term buys the learned arm something under svgd; whether a robot-specific stated
+setting is worth carrying is a question for Thomas.
+
+### Stage SVGD_R30: the V4 pin's record re-measure (pre-registered 2026-10-16, before the manifest)
+
+Patience 3 is the fielded pin from 2026-10-16. Two measurements the record kept for every earlier pin
+and does not yet have for this one, queued behind R29 so the four nodes stay busy through the weekend
+(Thomas: *"As long as the compute is being used all the way through, I'm happy."*):
+
+| token | what | shape | read against | prediction | what it is for |
+| --- | --- | --- | --- | --- | --- |
+| `pin4kq` | the joint-space ablation at V4: `svgd_kernel=q`, `--arms numerical` | the sixteen rows, seed 1 | R20 / R21's `pin2kq` on the same cells, and the joint-space IPOPT twin | success within one cell of `pin2kq` on every row (the clock-bound screw grasp rows may move a few cells either way), wall 0.7-0.9x, cost within the band | the ablation column of the record at the fielded pin (joint space under svgd is an ablation, never tuned: it takes the pin's patience as it took every other pin setting) |
+| `pin4s2` | the V4 pin, learned arm, seed 2 | the sixteen rows on a second grid | R29's `pin4` (seed 1) by target-level success rate and the push's per-row medians (NOT cell-paired: a different grid) | 480 / 480 on every row; cost / wall / feasible medians within the band of seed 1 | the seed-to-seed band at the fielded pin (R19's 3-5% was measured at V1), which is what the push's noise band rests on |
+
+Allotment: 32 runs, 768 items; `pin4kq`'s screw grasp rows run their clock-bound cells (R21: 7.5-8.5 s
+mean wall), so ~6-10 h on four nodes. No new code beyond R29's.
+
+**R30 results (ran 2026-10-17 07:21-10:08 EDT on four nodes, jobs 5943010-13, 2.8 h; read 2026-10-17
+11:10).** 32 of 32 runs complete, 0 crashed. **Cap check**: 0 cells at the step cap; clock stops only on the
+screw arm's joint-space rows (grasp 17 / 16, pose 4 / 4 of 480, as at V2: 17 / 20 and 3 / 3), all under 24;
+0 recheck failures.
+
+**`pin4kq`, the joint-space ablation at V4 (cell-paired to R20 / R21's `pin2kq`).** Success identical on
+the twelve rigid-and-soft rows that were 480 / 480 (480 / 480 again), and within the clock-bound band on
+the screw arm: grasp 463 / 464 against 463 / 460 (+3 / -3 and +7 / -3, p = 1 and 0.34), pose 476 / 476
+against 477 / 477 (-1 each). Cost within [0.99, 1.01] on all 16 rows; wall 0.77-0.86x on 13 rows (the
+patience's 2-6 fewer outer steps), 0.95x on screw grasp native and 1.05-1.07x on screw pose (rows whose
+mean wall is set by cells at the clock); feasible particles -1 to -3. **The ablation column at the fielded
+pin is established, and it moves exactly as the learned arm did under `pat3`**: joint space under svgd
+keeps its 16 wins over joint space under IPOPT, and learned-against-joint-space inside svgd keeps its 2
+wins / 14 ties (the screw grasp rows: 480 against 463 / 464).
+
+**`pin4s2`, the V4 learned rows on a second grid (seed 2; compared with R29's `pin4` by rates and row
+medians, never cell-paired).** 480 / 480 on all 16 rows (target-level rate 1.000 everywhere, 0 clock
+stops); median outer steps identical on every row; feasible particles within +-2; residual in the same
+decade; `|z|` within 0.1. **The seed-to-seed band on a row's median cost is 0.94-1.10** (Panda 0.95-1.04,
+iiwa 0.94-0.99, screw 1.05-1.10, soft PCS 0.97-0.99) and on mean wall 0.93-1.14. That is WIDER than the
+push's [0.95, 1.05] cost band, and it is the right comparison for anything read across grids (a new seed,
+a new robot rung); every round of this push was read CELL-PAIRED on one grid, where the same-configuration
+band (R29: row medians within 0.3%, per cell median 0.5%) applies and the [0.95, 1.05] band is
+conservative. Two consequences for the record: (1) the three rungs this push called "outside the band" by
+5-8% on a single row (`lp1so` screw grasp 1.05-1.08, `qc100` soft PCS grasp 1.05, `floor0p2` screw grasp
+1.07) are inside the seed-to-seed spread and are reported as such, not as effects; the rounds' verdicts
+rest on the 10-300% movements and on the 12-16-row patterns, which no seed moves. (2) **The fielded
+pin's record is now two seeds deep** on every row: 480 / 480 on both, no verdict depends on the grid.
+
+**The push's state after R30 (2026-10-17).** The queue is empty. The fielded pin is `SVGD_PINNED_V4`
+(V3 + patience 3), with its sixteen learned rows (R29 `pin4`), its joint-space ablation (R30 `pin4kq`)
+and its seed-2 replication (R30 `pin4s2`) all 480 / 480. Everything the structure rounds tried in the
+target -- the latent prior (R26), the flow density (R27), the correction weight (R28), the prior in the
+drive only (R29) -- is refuted or inert on the rigid arms by the pre-registered rules, and every one of
+them moves the soft PCS pose rows, where the drive-only prior at w = 1 (R29 `lp1so`) returns 0.50x the
+pin's cost at 6 s. Open with Thomas: whether that one-robot gain is carried as a stated setting; the
+paper tables from the V4 rows (`report_svgd` stage mode; numbers and verdicts only); R25 (float64
+polish, code); the screw-arm segfault's mechanism (a race at PROCS=2, not reproduced alone on a node).
+
 ## Kernel-space screen, stage A (laptop, 2026-10-11 evening; PRELIMINARY, 12 cells)
 
 `scripts/svgd/screens/screen_kernel.sh`, run on Thomas's go-ahead: 3 targets x 2 guesses on each
@@ -2055,3 +2889,44 @@ correction-box item above, which may change the fielded solver and therefore voi
 - **Settings for the stage**: `svgd_outer_iters` lifted so only the 180 s clock binds (cap rule);
   `PROCS=2`; the comparison columns are the record (no IPOPT re-run), paired by `(target, guess)`
   after the `grid_hash` check.
+
+## Close-out of the tune-and-simplify push (2026-10-18)
+
+**The pin is `SVGD_PINNED_V4`, and CLAUDE.md's svgd section carries the settings table with each
+setting's reason** (the rounds above are the evidence). The record is R29 `pin4` (learned) with R30
+`pin4kq` (joint space) and `pin4s2` (seed 2); `docs/status-quo-tables.md` column `PS` reads them.
+
+**The result against ablations and baselines is read as a double contribution** (Thomas, 2026-10-18:
+the formulation and the optimizer). Proposed = learned + AL-SVGD; ablation A = the learned formulation
+under IPOPT / SNOPT / NLopt (stages SVGD_R2 / PAPER / REMEASURE_NLOPT); ablation B = joint space under
+AL-SVGD (`pin4kq`, never tuned); baselines = joint space under the three Drake solvers. Metrics:
+success (exact McNemar), cost (median on cells both solved, shared objective, ratio corner / proposed,
+a ratio inside the seed-to-seed band 0.94-1.10 a tie), wall (cap-clamped mean), and the time-matched
+axis; no iterations. **The time-matched rule since 2026-10-18**: the corner restarts from the target's
+recorded starts in random order inside the wall the proposed method spent on that cell, stopping at
+the first success, **and a solve begun inside the budget runs to completion and counts** (*"we always
+let the 'current' solve finish, even if we hit the budget"*); every portfolio therefore gets at least
+one start. `scripts/report_time_matched.py` implements the rule (`portfolio_stats`) for the record's
+tables and `scripts/report_svgd_2x2.py --write docs/svgd-2x2-tables.md` reads the 2x2 with it, the
+condensed summary (the layout Thomas approved) first and the per-row tables after. Regenerate the
+2x2 from the promoted runs with that one command.
+
+**Verdicts** (`docs/svgd-2x2-tables.md`): success 480 / 480 on all 16 rows, 8 / 8 / 0 against A-IPOPT,
+14 / 2 / 0 against A-SNOPT, 16 / 0 / 0 against A-NLopt, 2 / 14 / 0 against B, 16 / 0 / 0 against every
+baseline; each contribution alone takes most rows to or near the ceiling, the combination is the only
+corner at the ceiling everywhere (the screw arm is where only the combination gets there). Cost: cheaper
+than its own formulation under IPOPT on all 12 rigid rows (1.22-3.48x), costlier on soft PCS; joint
+space under IPOPT cheaper on rigid grasp (0.54-0.85) and soft PCS (0.27-0.42), the proposed cheaper on
+rigid pose (1.68-3.46); inside AL-SVGD joint space is level on grasp and cheaper on pose. Wall 0.70-2.00
+s, faster than A-IPOPT on 12 rows, than every SNOPT / NLopt corner on 16, slower than joint space under
+IPOPT on 10 (every pose row). Time-matched: A-IPOPT 84.6-100%, joint space under IPOPT 83.1-99.6%,
+proposed 100%. Agreed characterisation: AL-SVGD >= ablations > baselines on success and on wall at
+matched time under interior point; on solution cost the learned formulation pays a premium on grasp
+and on the soft PCS arm under every optimizer, discussed in the paper rather than hidden.
+
+**Rulings at close-out (Thomas, 2026-10-18)**: the soft PCS pose drive-only prior (0.50x cost at 6 s) is
+REPORTED AS A FINDING, not fielded; R25's float64 polish is smoked on branch `svgd-polish` (his worry: it
+must be robust to the inequality rows); the screw-arm segfault race is left recorded; the 168 held
+`alpha10` pose items are removed from the cluster so `--reclaim` cannot release them; the GVS arm under
+svgd stays deferred. The next step is
+network-architecture ablations, in another session.

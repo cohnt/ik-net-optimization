@@ -743,8 +743,9 @@ def stage_catalogue(family="SVGD"):
                     assert t["variant"] in G.SVGD_ROUNDS[stage], f"{tag}: not a variant of {stage}"
             sets = manifest_sets(a)
             ## What the run RAN, not only what it named: a v1 stage (the old pin) left kernel q,
-            ## metric off and init jitter to the then-defaults, which have since moved
-            ## (gen_manifest's SVGD_HISTORICAL_DEFAULTS); the IPOPT twins carry no svgd setting.
+            ## metric off and init jitter to the then-defaults, and every stage through R28 the stall
+            ## patience 5, all since moved (gen_manifest's SVGD_HISTORICAL_DEFAULTS); the IPOPT twins
+            ## carry no svgd setting.
             settings = (sets if t["solver"] != "svgd" else
                         {**G.svgd_unnamed_settings(stage), **sets})
             arms = tuple(_flag(a, "--arms").split(","))
@@ -760,12 +761,16 @@ def stage_catalogue(family="SVGD"):
                              arms=arms, seed=seed, variant=t["variant"]))
             assert (v["manifest"], v["sets"], v["arms"]) == (stage, sets, arms), \
                 f"{t['robot']} {column} runs different settings or arms in {v['manifest']} and {stage}"
-    ## Every svgd run pairs with an IPOPT twin on ITS OWN grid: same robot, rung, row, start, seed.
+    ## Every svgd run pairs with an IPOPT twin on ITS OWN grid: same robot, rung, row, start, seed --
+    ## unless its context is DECLARED twinless (gen_manifest's SVGD_TWINLESS_CONTEXTS: R30's seed-2
+    ## rows on the iiwa, screw and soft PCS arms), whose LEAD rows print "not paired".
     twins = {(t["robot"], t["rung"], t["row"], t["start"], t["seed"]): tag
              for tag, t in runs.items() if t["variant"] == STAGE_TWIN}
     for tag, t in runs.items():
         if t["variant"] != STAGE_TWIN:
             k = (t["robot"], t["rung"], t["row"], t["start"], t["seed"])
+            if k not in twins and (t["robot"], t["rung"], t["seed"]) in G.SVGD_TWINLESS_CONTEXTS:
+                continue
             assert k in twins and runs[twins[k]]["column"] == twin_of(t["column"]), \
                 f"{tag}: no IPOPT twin on its grid {k}"
     primary = stage_primary()
@@ -1162,7 +1167,9 @@ def stage_main(args):
             if is_twin(v):
                 what = "the IPOPT twin"
             elif primary in variants:
-                what = setting_diff(variants, base_of(v), primary)
+                ## A seed-k column reads as its seed-1 base where that exists (`kq@seed2` as `kq`), else
+                ## as itself (R30's `pin4s2@seed2` has no seed-1 column).
+                what = setting_diff(variants, base_of(v) if base_of(v) in variants else v, primary)
             else:
                 what = "(no primary on this robot)"
             if seed_suffix(v):
