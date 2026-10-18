@@ -62,7 +62,7 @@ REST = dict(svgd_n=64, svgd_outer_iters=300, svgd_stop_patience=5, svgd_stop_rel
             svgd_cuda_graph=False, svgd_dtype="float32", svgd_seed=0, svgd_warmup="none",
             svgd_constraint_inside_kernel=False, svgd_metric="gn", svgd_multiplier_max=1e4,
             svgd_dual_lr=None, svgd_jitter=0.1, svgd_collision_backend="autodiff",
-            svgd_time_reserve=0.1, max_iter=None)
+            svgd_time_reserve=0.1, svgd_polish="none", max_iter=None)
 #: (task, arm, extra overrides). The grasp cell runs to the clock under the stop rule on the eager
 #: step, which no reference can pin, so it is held to a 10-check step cap instead; the two pose
 #: cells stop on the stall rule (and so pass through the gate-edge re-check).

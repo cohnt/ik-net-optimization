@@ -89,6 +89,9 @@ class SvgdSolverDetails:
                                    # re-check passed no candidate, so the swarm continued
     feas_level: float = 1.0        # the feasibility level at stop (v <= feas_level; 1.0 = the gate,
                                    # x0.9 per refused stall)
+    polish: dict = None            # svgd_polish='newton': the float64 polish's polish_* stats
+                                   # (steps, rejected, viol before / after, dx, active inequality
+                                   # rows, seconds); None when no polish ran (the pin)
     solve_seconds: float = 0.0
     collision_seconds: float = 0.0 # host time blocked in the collision backend (the exactness premium)
     collision_backend: str = "autodiff"  # which evaluator ran the row (`svgd_collision_backend`)
@@ -227,6 +230,12 @@ def write_log(path, details):
         ## The gate-edge rule's refused stall stops and the level at stop. Informational.
         f.write(f"SVGD gate re-check failures: {int(getattr(details, 'n_recheck_failures', 0))} "
                 f"(feasibility level at stop {float(getattr(details, 'feas_level', 1.0)):g})\n")
+        pol = getattr(details, "polish", None)
+        if pol:
+            f.write(f"SVGD polish: {pol['polish_steps']} steps, {pol['polish_rejected']} rejected, "
+                    f"worst violation {pol['polish_viol_before']:.3e} -> {pol['polish_viol_after']:.3e}, "
+                    f"|dx| {pol['polish_dx']:.3e}, active inequality rows {pol['polish_active_ineq']}, "
+                    f"{pol['polish_seconds']:.3f} s\n")
         ## The per-check trace, one line per column (`_Target.TRACE_COLUMNS`): violation,
         ## feasibility, the multiplier magnitudes, clips, resampling.
         ## Informational -- the harness parses none of these lines.

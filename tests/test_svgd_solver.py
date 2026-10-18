@@ -618,6 +618,49 @@ def test_stop_select_objective():
               f"selected {sel.selected} argmin {amin} candidates {sel.cands}")
 
 
+def test_polish():
+    """`svgd_polish` (a smoke, 2026-10-18): the float64 minimum-norm Gauss-Newton polish of
+    the returned particle. On the Panda pose learned cell under 'newton': the solve converges,
+    a polish ran, the worst signed Drake violation did not rise and stays within the gate, and
+    `verify` (the harness's own re-measurement) agrees the point is feasible. Under 'none' no
+    polish ran and the per-cell svgd record carries no polish_* key. An unknown value is
+    refused at options construction."""
+    print("\n--- polish: 'newton' vs 'none' (Panda pose, learned) ---")
+    try:
+        ProgramOptions(svgd_polish="bogus")
+        refused = False
+    except ValueError:
+        refused = True
+    check("polish: an unknown value raises at ProgramOptions construction", refused)
+    p = pose_program("learned")
+    tol = 1e-4
+    for mode in ("newton", "none"):
+        v, d, result = run_cell(p, "pose", f"polish={mode}",
+                                dict(svgd_n=32, svgd_kernel="q", svgd_outer_iters=300,
+                                     svgd_polish=mode, svgd_polish_steps=3), wall=30.0, quiet=True)
+        rec = bm.solver_diagnostics(result, "svgd").get("svgd", {})
+        pol = d.polish
+        tag = f"polish={mode}"
+        print(f"    [{mode}] stop {d.stop_reason}, drake {d.drake_feasible}, verify max_violation "
+              f"{v.detail.get('max_violation'):.3e}, drake_max_violation "
+              f"{d.extras.get('drake_max_violation'):.3e}; polish {pol}")
+        check(f"{tag}: the solve converges and is Drake-feasible",
+              d.stop_reason == "converged" and d.drake_feasible and v.feasible,
+              f"{d.stop_reason} {d.drake_feasible} {v.feasible}")
+        if mode == "newton":
+            check(f"{tag}: a polish ran and is recorded per cell",
+                  pol is not None and all(k in rec for k in pol), f"{pol} {sorted(rec)}")
+            if pol is not None:
+                check(f"{tag}: polish_viol_after <= polish_viol_before",
+                      pol["polish_viol_after"] <= pol["polish_viol_before"], str(pol))
+                check(f"{tag}: polish_viol_after <= tol", pol["polish_viol_after"] <= tol, str(pol))
+                check(f"{tag}: drake_max_violation is the polished one",
+                      d.extras.get("drake_max_violation") == pol["polish_viol_after"])
+        else:
+            check(f"{tag}: no polish ran and no polish_* key is recorded",
+                  pol is None and not any(k.startswith("polish") for k in rec), f"{pol} {sorted(rec)}")
+
+
 def test_step_with_kernel_off_is_pgd_on_the_programs_L():
     """On the real pose programs (float64 swarm, collision row included), one step with
     `svgd_kernel = none` and `svgd_metric = identity` is projected gradient descent on the
@@ -834,8 +877,10 @@ def main():
         tests += [test_closed_form_derivatives_match_autograd, test_scaled_rows_map_back_to_drake_rows,
                   test_grasp_cells, test_determinism, test_wall_clock_stop, test_nan_injection,
                   test_cem_warmup_toggle, test_stop_reasons_and_log, test_stop_select_objective,
-                  test_step_with_kernel_off_is_pgd_on_the_programs_L, test_graph_replay_is_bitwise,
+                  test_polish, test_step_with_kernel_off_is_pgd_on_the_programs_L, test_graph_replay_is_bitwise,
                   test_benchmark_subprocess]
+    if "polish" in which:
+        tests.append(test_polish)
     if "sweep" in which:
         tests.append(sweep)
     if "profile" in which:
