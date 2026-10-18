@@ -28,6 +28,7 @@ Usage:
     python cluster/gen_manifest.py --selftest
 """
 import argparse
+import math
 import re
 import os
 import sys
@@ -3970,6 +3971,229 @@ def paper_allotment():
     print("  (REMEASURE ran these exact shards inside ITEM_TIMEOUT).")
 
 
+## -------------------------------------------------------------------------------- CVAE --
+##
+## The chart ablation (branch chart-cvae, Thomas 2026-10-18): the record's learned rows with the
+## IKFlow chart replaced by a standard conditional VAE's DECODER, everything else in the learned
+## formulation unchanged -- eq. (6), the correction and its penalty, the c box, the latent box and
+## trust region, frame calibration -- so the only thing ablated is the network. Two pre-registered
+## latent rungs per robot (cluster/chart_runs.txt): K = the flow's width, so the decision-variable
+## count is the record's, and K = the redundancy (DOF - 6).
+##
+## Each item is the record's item for the same row with ONLY the chart swapped: same seed, grid,
+## scene, cap, --compile, CUDA graphs, lifted budgets, shard count. So `grid_hash` and
+## `scene_fingerprint` match the record's run and scripts/report_chart_ablation.py pairs every cVAE
+## cell against the record's flow (learned) and joint-space arms on the same cell. Built by the
+## record's own constructors: `_svgd_rows` (the IPOPT rows exactly as stage PAPER / SVGD_R2 ran
+## them) and `_svgd_as_svgd(..., "pin4", stage="SVGD_R29")` (the V4 pin exactly as R29's `pin4`).
+## What changes, and nothing else (the selftest holds every item to it):
+##   * `--arms learned`: joint space is not re-run. The record's joint-space columns pair on the
+##     same cells, and one ACCEPTANCE item (below) proves they still would after the refactor;
+##   * `--checkpoint models/<robot>/<robot>__cvae<K>__step620000.pkl`;
+##   * the tag: `sc_CVAE_<robot>_cvae<K>_<solver>_<row>_480_180_<start>` -- the status-quo shape
+##     scripts/report_statusquo.parse_tag reads, rung token without underscores, and NO `_pin4`
+##     suffix on the svgd rows (the stage has one svgd setting, so the token would only break the
+##     parse);
+##   * the trust region on the K = redundancy rung (below).
+##
+## TRUST REGION, a setting of the rung. The record's items carry no radius of their own: `--config
+## latent` sets each robot's fielded constant (Panda 4.0, iiwa 4.3) or computes the rule
+## round(sqrt(ndof) + 1.5, 2) from the ROBOT's ndof (screw 4.15, soft PCS 4.96). The K = flow-width
+## rung keeps exactly that -- `--config latent`, nothing added -- so its program is the record's but
+## for the chart. The K = redundancy rung has a narrower latent, and the fielded constants are the
+## rule at the flow's width, so it takes the rule at ITS width, named explicitly as
+## `--set latent_trust_region=<round(sqrt(K) + 1.5, 2)>` (2.5 at K = 1, 3.95 at K = 6). Explicit
+## rather than `latent_trust_region_rule=True` because no record item expresses its radius that way,
+## and because the screw and soft PCS configs size the radius from the robot, not the chart.
+##
+## TWO MANIFESTS PER STAGE, because the Drake environment is per submission (submit_bench.sh refuses
+## a mix): `CVAE` = the IPOPT rows + the acceptance item on the tarball pin; `CVAE_SVGD` = the AL-SVGD
+## rows on the clearance row, DRAKE_ENV=crc. Both at PROCS=2, no MPS (paper conditions, as the record).
+## `CVAESMOKE` / `CVAESMOKE_SVGD`: every item family at CVAE_SMOKE_CELLS of the same grid (`--cells`,
+## so the cells are the record's), one item per logical run, tag `sc_CVAESMOKE_..._<n>_180_...`.
+##   64 logical runs: 4 robots x {grasp, pose} x {paired, native} x {IPOPT, AL-SVGD} x 2 rungs.
+
+#: Model directory (= the jrl robot name the cVAE trains on) per benchmark robot.
+CVAE_MODEL_DIR = {"panda": "panda", "iiwa": "iiwa14", SCREW_PRIMARY: SCREW_PRIMARY,
+                  "soft12": "soft12"}
+#: Each robot's two pre-registered latent widths: (the flow's width, the redundancy DOF - 6).
+CVAE_WIDTHS = {"panda": (7, 1), "iiwa": (8, 1), SCREW_PRIMARY: (7, 1), "soft12": (12, 6)}
+#: (robot, the record's flow rung, the record's grid seed, cVAE rung label, K, checkpoint), in
+#: report order: the record's four contexts (SVGD_RECORD_CONTEXTS), flow-width rung first.
+CVAE_RUNGS = tuple(
+    (robot, rung, seed, f"cvae{k}", k,
+     f"models/{CVAE_MODEL_DIR[robot]}/{CVAE_MODEL_DIR[robot]}__cvae{k}__step620000.pkl")
+    for robot, rung, seed in SVGD_RECORD_CONTEXTS for k in CVAE_WIDTHS[robot])
+CVAE_IPOPT_SHARDS = SVGD_R2_SHARDS               # 8, as stage PAPER / SVGD_R2 ran each run
+CVAE_SVGD_SHARDS = SVGD_ROUNDS["SVGD_R29"]["pin4"][1]   # 24, as R29's `pin4`
+CVAE_SVGD_ROUND, CVAE_SVGD_VARIANT = "SVGD_R29", "pin4"
+CVAE_PROCS = 2                                   # one solve per V100, no MPS
+#: The acceptance row: joint space re-run on one record row with identical flags, to show it is
+#: bit-identical to the record after the chart refactor (the Panda's pose paired IPOPT row, whose
+#: record run is stage SVGD_R2's).
+CVAE_ACCEPT = ("panda", "n6", 1, "pose", "paired")
+#: The smoke's cells of the 60 x 8 grid: two targets, far apart in the target-major order.
+CVAE_SMOKE_CELLS = "0:0,31:5"
+#: AL-SVGD's allotment base per learned cell: R29's assumption (SVGD_ROUND_CELL_S); the V4
+#: record's learned rows measured 0.70-2.00 s mean, so this is pessimistic.
+CVAE_SVGD_CELL_S = SVGD_ROUND_CELL_S[0]
+CVAE_STAGES = ("CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD")
+
+
+def cvae_trust_region(robot, k):
+    """The `--set` a rung adds for its trust region: nothing on the flow-width rung (the record's
+    `--config latent` radius), the rule at K on the redundancy rung (see the section header)."""
+    if k == CVAE_WIDTHS[robot][0]:
+        return []
+    return ["--set", f"latent_trust_region={round(math.sqrt(k) + 1.5, 2)}"]
+
+
+def _cvae_swap(it, stem, robot, rung, label, k, ckpt, arms="learned", cells=None):
+    """A record row item with only the chart swapped: arms, checkpoint, trust region and tag."""
+    a = list(it["args"])
+    a[a.index("--arms") + 1] = arms
+    a[a.index("--checkpoint") + 1] = ckpt
+    a += cvae_trust_region(robot, k)
+    old = _svgd_flag(a, "--tag")
+    head = f"sc_{stem}_{robot}_{rung}_"
+    assert old.startswith(head), (old, head)
+    new = f"sc_{stem}_{robot}_{label}_" + old[len(head):]
+    if new.endswith(f"_{CVAE_SVGD_VARIANT}"):
+        new = new[:-len(CVAE_SVGD_VARIANT) - 1]
+    if cells is not None:
+        new = new.replace("_480_", f"_{cells}_", 1)
+    a[a.index("--tag") + 1] = new
+    return dict(it, args=a, id=it["id"].replace(old, new, 1))
+
+
+def _cvae_seconds(it):
+    a = it["args"]
+    task, start, solver = (_svgd_flag(a, k) for k in ("--task", "--start", "--solver"))
+    if "--cells" in a:
+        cells = len(_svgd_flag(a, "--cells").split(","))
+    else:
+        shards = int(_svgd_flag(a, "--shard").split("/")[1]) if "--shard" in a else 1
+        cells = 480 / shards
+    if solver == "svgd":
+        per_cell = CVAE_SVGD_CELL_S
+    else:
+        L, J = _paper_mean_wall(it["robot"], task, start, "ipopt")
+        per_cell = J if _svgd_flag(a, "--arms") == "numerical" else L
+    return cells * per_cell + REMEASURE_ITEM_OVERHEAD_S
+
+
+def stage_CVAE(which="CVAE"):
+    """CVAE (IPOPT + acceptance), CVAE_SVGD (AL-SVGD), CVAESMOKE / CVAESMOKE_SVGD (see the header)."""
+    smoke = which.startswith("CVAESMOKE")
+    svgd = which.endswith("_SVGD")
+    stem = "CVAESMOKE" if smoke else "CVAE"
+    n_cells = len(CVAE_SMOKE_CELLS.split(","))
+    items = []
+    for robot, rung, seed, label, k, ckpt in CVAE_RUNGS:
+        shards = 1 if smoke else (CVAE_SVGD_SHARDS if svgd else CVAE_IPOPT_SHARDS)
+        for it in _svgd_rows(60, 8, shards, stem, robot=robot, rung=rung, seed=seed):
+            if svgd:
+                it = _svgd_as_svgd(it, CVAE_SVGD_VARIANT, stage=CVAE_SVGD_ROUND,
+                                   cells_token=str(n_cells) if smoke else None)
+            o = _cvae_swap(it, stem, robot, rung, label, k, ckpt,
+                           cells=None if svgd or not smoke else n_cells)
+            if smoke:
+                o["args"] += ["--cells", CVAE_SMOKE_CELLS]
+            items.append(dict(o, order=0 if _svgd_flag(o["args"], "--task") == "mug" else 1))
+    if which == "CVAE":
+        ## The acceptance item first: four minutes of joint space that says whether the refactor
+        ## left the record's joint-space columns pairable, before 256 learned items spend the nodes.
+        robot, rung, seed, task, start = CVAE_ACCEPT
+        for it in _svgd_rows(60, 8, CVAE_IPOPT_SHARDS, "CVAEACC", starts=start, robot=robot,
+                             rung=rung, seed=seed):
+            if _svgd_flag(it["args"], "--task") != task:
+                continue
+            a = list(it["args"])
+            a[a.index("--arms") + 1] = "numerical"
+            items.append(dict(it, args=a, order=-1))
+    return [dict(it, seconds=_cvae_seconds(it)) for it in items]
+
+
+def _cvae_selftest():
+    """Every CVAE item is its record twin with only the chart swapped (the section header)."""
+    fails = []
+
+    def strip(a):
+        out, i = [], 0
+        while i < len(a):
+            if a[i] in ("--tag", "--arms", "--checkpoint", "--cells") or \
+                    (a[i] == "--set" and a[i + 1].startswith("latent_trust_region=")):
+                i += 2
+                continue
+            out.append(a[i])
+            i += 1
+        return tuple(out)
+
+    def key(it):
+        a = it["args"]
+        return (it["robot"],) + tuple(_svgd_flag(a, f) for f in ("--task", "--start", "--solver")) \
+            + ((_svgd_flag(a, "--shard"),) if "--shard" in a else ())
+
+    ipopt_twins = {key(it): it for it in stage_SVGD("SVGD_R2") + svgd_twin_items("PAPER")}
+    svgd_twins = {key(it): it for it in stage_SVGD(CVAE_SVGD_ROUND)
+                  if _svgd_flag(it["args"], "--tag").endswith(f"_{CVAE_SVGD_VARIANT}")
+                  and _svgd_flag(it["args"], "--seed") == "1"}
+    rung_of = {(r, f"cvae{k}"): (k, ck) for r, _, _, _, k, ck in CVAE_RUNGS}
+    tag_re = re.compile(r"^sc_CVAE_(.+)_(cvae\d+)_(ipopt|svgd)_(mugshelf|posetip)_480_180_(paired|native)$")
+    want = {"CVAE": 32 * CVAE_IPOPT_SHARDS + CVAE_IPOPT_SHARDS, "CVAE_SVGD": 32 * CVAE_SVGD_SHARDS,
+            "CVAESMOKE": 32, "CVAESMOKE_SVGD": 32}
+    for which in CVAE_STAGES:
+        items = stage_CVAE(which)
+        if len(items) != want[which]:
+            fails.append(f"{which}: {len(items)} items, expected {want[which]}")
+        if len({it["id"] for it in items}) != len(items):
+            fails.append(f"{which}: duplicate item ids")
+        n_clr = sum("svgd_collision_backend=clearances" in it["args"] for it in items)
+        if n_clr != (len(items) if which.endswith("_SVGD") else 0):
+            fails.append(f"{which}: {n_clr} of {len(items)} items carry the clearance row; "
+                         "submit_bench.sh needs all (DRAKE_ENV=crc) or none")
+        twins = svgd_twins if which.endswith("_SVGD") else ipopt_twins
+        for it in items:
+            a, tag = it["args"], _svgd_flag(it["args"], "--tag")
+            smoke = which.startswith("CVAESMOKE")
+            if tag.startswith("sc_CVAEACC_"):
+                tw = twins.get(key(it))
+                if tw is None or strip(a) != strip(tw["args"]) or _svgd_flag(a, "--arms") != "numerical" \
+                        or _svgd_flag(a, "--checkpoint") != _svgd_flag(tw["args"], "--checkpoint"):
+                    fails.append(f"{it['id']}: the acceptance item is not its record twin with --arms numerical")
+                continue
+            n_smoke = len(CVAE_SMOKE_CELLS.split(","))
+            m = tag_re.match(tag.replace("sc_CVAESMOKE_", "sc_CVAE_")
+                             .replace(f"_{n_smoke}_180_", "_480_180_"))
+            if not m or m.group(1) != it["robot"] or (it["robot"], m.group(2)) not in rung_of:
+                fails.append(f"{it['id']}: tag {tag} is not sc_CVAE_<robot>_cvae<K>_<solver>_<row>_480_180_<start>")
+                continue
+            k, ck = rung_of[(it["robot"], m.group(2))]
+            ## A smoke item is unsharded: its twin is the record run's shard 0, --shard removed.
+            tw = next((t for kk, t in sorted(twins.items()) if kk[:4] == key(it)), None) \
+                if smoke else twins.get(key(it))
+            if tw is None:
+                fails.append(f"{it['id']}: no record twin")
+                continue
+            tw_a = list(tw["args"])
+            if smoke and "--shard" in tw_a:
+                i = tw_a.index("--shard")
+                del tw_a[i:i + 2]
+            if strip(a) != strip(tw_a):
+                fails.append(f"{it['id']}: differs from its record twin {tw['id']} beyond the chart")
+            if _svgd_flag(a, "--arms") != "learned" or _svgd_flag(a, "--checkpoint") != ck:
+                fails.append(f"{it['id']}: arms / checkpoint not learned / {ck}")
+            tr = [x for x in a if x.startswith("latent_trust_region=")]
+            if tr != cvae_trust_region(it["robot"], k)[1:]:
+                fails.append(f"{it['id']}: trust region {tr}, expected {cvae_trust_region(it['robot'], k)[1:]}")
+            if smoke and _svgd_flag(a, "--cells") != CVAE_SMOKE_CELLS:
+                fails.append(f"{it['id']}: smoke without --cells {CVAE_SMOKE_CELLS}")
+    runs = {_svgd_flag(it["args"], "--tag") for w in ("CVAE", "CVAE_SVGD") for it in stage_CVAE(w)}
+    if len([r for r in runs if r.startswith("sc_CVAE_")]) != 64:
+        fails.append(f"CVAE + CVAE_SVGD: {len(runs)} logical runs, expected 64 + the acceptance run")
+    return fails
+
+
 ## ---------------------------------------------------------------------------- ANALYTIC --
 ##
 ## The analytic + optimization arm on the two robots with a closed form (Thomas, 2026-10-12):
@@ -4601,6 +4825,16 @@ def _ladder_paths_match_export():
             robot, run_name = line.split()[:2]
             label = run_name[len(robot) + 1:] if run_name.startswith(robot + "_") else run_name
             trained[f"models/{robot}/{robot}__{label}__step620000.pkl"] = run_name
+    ## The non-flow chart families (cluster/chart_runs.txt: <family> <robot> <run_name> ...),
+    ## exported by cluster/train_chart.sh under the same <robot>__<label>__step620000 rule.
+    with open(os.path.join(os.path.dirname(manifest), "chart_runs.txt")) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            family, robot, run_name = line.split()[:3]
+            label = run_name[len(robot) + 1:] if run_name.startswith(robot + "_") else run_name
+            trained[f"models/{robot}/{robot}__{label}__step620000.pkl"] = f"{family}:{run_name}"
 
     # Checkpoints the ladder does NOT train because they already exist: the iiwa's adopted
     # control. (The Panda's control is the downloaded chart, which is `None` in LADDER_RUNGS
@@ -4619,10 +4853,11 @@ def _ladder_paths_match_export():
                    | {c for _, _, c in SCREW_PITCH_RUNGS}
                    | {c for _, c in SOFT_ADOPTED.values()}
                    | {c for _, _, c in SOFT_CHART_RUNGS}
-                   | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}) - PRE_EXISTING
+                   | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}
+                   | {ck for *_, ck in CVAE_RUNGS}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
-        fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt row would export it")
+        fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt / chart_runs.txt row would export it")
     for ckpt in sorted(set(trained) - benchmarked):
         fails.append(f"rung '{trained[ckpt]}' trains but nothing in LADDER_RUNGS benchmarks it")
     return fails
@@ -6610,6 +6845,16 @@ def selftest():
               "arms, tag, kernel and clip ladder changed (and, on the CPU-node stages, the "
               "learned-only GPU switches dropped)")
 
+    cvae_fails = _cvae_selftest()
+    for msg in cvae_fails[:12]:
+        print(f"FAIL stage CVAE: {msg}")
+    fails += len(cvae_fails)
+    if not cvae_fails:
+        print("ok   stages CVAE / CVAE_SVGD / CVAESMOKE / CVAESMOKE_SVGD: 64 logical runs (264 / 768 items) "
+              "+ the joint-space acceptance run, 32 / 32 smoke items; every item is its record twin "
+              "(PAPER / SVGD_R2 IPOPT, R29 pin4) with only arms, checkpoint, tag and the redundancy "
+              "rung's trust region changed")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -6639,6 +6884,7 @@ def main():
                                  "SVGD_R29", "SVGD_R30",
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
+                                 "CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -6794,6 +7040,8 @@ def main():
              "ANALYTIC_SMOKE": lambda: stage_ANALYTIC_SMOKE(),
              "ANALYTIC_SVGD": lambda: stage_ANALYTIC_SVGD(),
              "ANALYTIC_SVGD_SMOKE": lambda: stage_ANALYTIC_SVGD_SMOKE(),
+             ## The chart ablation takes no grid arguments: it IS the record's shape.
+             **{s: (lambda s=s: stage_CVAE(s)) for s in CVAE_STAGES},
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
