@@ -49,11 +49,11 @@ def check(name, condition, detail=""):
         FAILURES.append(name)
 
 
-#: The pre-2026-10-12 pin (kernel q, rho 1000, metric off, init jitter). The solves here are on the
+#: The pre-2026-10-12 pin (kernel q, rho 1000, init jitter; its metric form `off` is, since the
+#: temperature options were removed 2026-10-14, the only step). The solves here are on the
 #: JOINT-SPACE arm, which cannot run the new default kernel `cz` (learned-only), so they name the
 #: pin they were written against.
-LEGACY_PIN = dict(svgd_kernel="q", svgd_rho=1000.0, svgd_metric_temperature="off",
-                  svgd_paired_init="jitter")
+LEGACY_PIN = dict(svgd_kernel="q", svgd_rho=1000.0, svgd_paired_init="jitter")
 
 
 def a_reachable_target():
@@ -232,9 +232,10 @@ def test_bad_svgd_set_is_refused_at_options():
 
 def test_option_guard():
     """The svgd option checks at ProgramOptions: `svgd_method` has one value; the removed
-    methods, unknown kernel spaces and metric-temperature forms are refused (the eight kernel
-    spaces of 2026-10-11 are accepted); a non-positive temperature, step size or initial
-    penalty is refused; the CUDA-graph switch without the compile switch is refused."""
+    methods and unknown kernel spaces are refused (the eight kernel spaces of 2026-10-11 are
+    accepted); a non-positive step size or penalty is refused; the CUDA-graph switch without the
+    compile switch is refused; no field of a removed piece survives (the temperature options
+    among them, removed 2026-10-14)."""
     print("\n--- svgd option checks ---")
     cases = [(dict(svgd_method="al_svgd"), False),
              (dict(svgd_method="tsvgd"), True),
@@ -244,9 +245,6 @@ def test_option_guard():
              (dict(svgd_kernel="pose"), False),
              (dict(svgd_kernel="rbf"), True),
              (dict(svgd_kernel="none"), False),
-             (dict(svgd_metric_temperature="on"), False),
-             (dict(svgd_metric_temperature="maybe"), True),
-             (dict(svgd_temperature=0.0), True),
              (dict(svgd_lr=-1.0), True),
              (dict(svgd_rho=0.0), True),
              (dict(svgd_dual_lr=0.0), False),
@@ -269,7 +267,8 @@ def test_option_guard():
                "svgd_repulsion_T0", "svgd_anneal_frac", "svgd_gamma_t", "svgd_admm_rho",
                "svgd_tsvgd_switch_infeas", "svgd_lr_decay_t", "svgd_bandwidth",
                "svgd_row_scale_rot", "svgd_resample_every", "svgd_jitter_z", "svgd_rho0",
-               "svgd_rho_growth", "svgd_rho_gamma", "svgd_rho_max")
+               "svgd_rho_growth", "svgd_rho_gamma", "svgd_rho_max",
+               "svgd_temperature", "svgd_metric_temperature")
     present = [f for f in removed if hasattr(ProgramOptions(), f)]
     check("no field of a removed piece survives on ProgramOptions", not present, str(present))
 

@@ -125,7 +125,8 @@ _EXIT_PATTERNS = {
 ## comparison (median 2e-08, because the penalty drives `|q_c|` to ~2e-05), so this
 ## changes no published learned-arm cost materially -- but it makes the column exactly
 ## what it says it is instead of nearly so.
-_REGULARIZER_COSTS = ("LatentRegularizerCost", "CorrectionCost", "JointLimitPenaltyCost")
+_REGULARIZER_COSTS = ("LatentRegularizerCost", "CorrectionCost", "JointLimitPenaltyCost",
+                      "FlowLogDetCost")
 
 
 def reported_cost(program, result, weight):
@@ -271,7 +272,7 @@ _SVGD_DETAIL_KEYS = ("method", "dtype", "n_particles", "iterations", "inner_step
                      "multiplier_clips_by_group", "multiplier_inf_median_by_group",
                      "feasible_q_spread", "lambda_max_median", "lambda_max_max",
                      "frobenius_over_lambda_median", "repulsion_ratio_median",
-                     "kernel", "metric_temperature", "bandwidths", "feasible_spread_kernel")
+                     "kernel", "bandwidths", "feasible_spread_kernel")
 
 
 def is_timeout(exit_string):
@@ -565,6 +566,13 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
     if hasattr(program, "z"):
         detail["z_norm"] = float(np.linalg.norm(
             x[program.prog.FindDecisionVariableIndices(program.z)]))
+        ## The chart's own `-log p(x | c)` (up to a constant) at the returned point, on every
+        ## learned cell whatever `flow_logdet_weight` is: what the density term (R27) acts on.
+        try:
+            detail["flow_neg_log_density"] = float(program.FlowNegLogDensity(
+                x[program.prog.FindDecisionVariableIndices(program.lumped_vars)]))
+        except Exception as exc:                  # never let instrumentation kill a cell
+            detail["flow_neg_log_density_error"] = f"{type(exc).__name__}: {exc}"
 
     ok, task_detail = task_gate(program, verify_q)
     detail.update(task_detail)
@@ -962,7 +970,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     ## criterion is argued over, and it should be one key away in every
                     ## record rather than nested.
                     record["max_violation"] = detail.pop("max_violation", None)
-                    for key in ("correction_inf", "z_norm"):
+                    for key in ("correction_inf", "z_norm", "flow_neg_log_density"):
                         record[key] = _finite(detail.pop(key, None))
                     record["detail"] = detail
                     if verdict.feasible:

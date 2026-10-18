@@ -943,6 +943,338 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R29 / R30 (branch `svgd-tune`, 2026-10-16): the regulariser's three roles, and the V4 pin's record re-measure
+
+**Pre-registered 2026-10-16 (`docs/svgd-solver.md`, "Stage SVGD_R29" / "Stage SVGD_R30") on Thomas's
+"Pre-register the drive-only round and queue it after R28" and "As long as the compute is being used
+all the way through, I'm happy."** R29: `pin4` / `so` / `lp0p1so` / `lp1so` (64 runs, 1536 items,
+the first v4 stage: `SVGD_PINNED_V4` names `svgd_stop_patience=3`); R30: `pin4kq` (joint space,
+kernel q) and `pin4s2` (seed 2, learned), 32 runs, 768 items.
+
+**The restage between rounds, without a laptop.** Both need code the live tree 0ecb1ad lacks (the
+option `svgd_stop_select_objective`, the patience default 3). Since R28 runs until ~23:00 and a round
+queued behind it starts the instant it drains, the new tree is staged BESIDE the live one and swapped
+in by a chained job:
+
+```bash
+STAGE_SUBDIR=repo-next bash cluster/stage_code.sh                      # to ~/learned-ik/repo-next (no guard: nothing runs there)
+scp cluster/manifest_stageSVGD_R29.txt cluster/manifest_stageSVGD_R30.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/   # submit_bench needs them in the live tree
+# the swap job: afterany on R28's four jobs, submitted from ~/learned-ik (its %Z must not be repo/)
+ssh tcohn@txe1-login.mit.edu 'cd ~/learned-ik && sbatch --dependency=afterany:5926659:5926666:5926667:5926668 repo-next/cluster/swap_staged_tree.sh'
+DEPENDENCY=afterok:<swap job> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R29.txt 4
+DEPENDENCY=afterany:<R29 jobs, colon-separated> DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R30.txt 4
+```
+
+**Done 2026-10-16 17:05 EDT: side tree `repo-next` staged at f312793 (from the refreshed staging clone,
+`BRANCH=svgd-tune bash cluster/make_staging_clone.sh ~/.cache/learned-ik-svgd-tune/stage-svgd`, then
+`STAGE_SUBDIR=repo-next bash $CLONE/cluster/stage_code.sh`; the worktree itself is refused, exit 4);
+manifests R29 `e1066b43` / R30 `0886ce3a` in both trees; swap job **5943005** (afterany R28's
+5926659/66/67/68), R29 **5943006-5943009** (afterok 5943005), R30 **5943010-5943013** (afterany R29).
+Local 2-cell smoke (Panda pose native, 60 s): `so` 2 / 2 at the pin's cost and steps; `lp1so` 2 / 2,
+cost 3.354 / 4.610 against the pin's 3.35 / 4.62 at 6-11 steps and `|z|` 0.90 / 3.17 (R26's `lp1` on the
+same cells: 3.73 / 5.48 at 85-132 steps, `|z|` 0.34) -- the pre-registered prediction, on two cells.**
+
+**R29 finished 2026-10-17 07:21 EDT (5.6 h on 4 nodes, jobs 5943006-09), 1536 / 1536, 0 crashed, 0 error
+cells; collected 07:22-08:20 (`collect_20261017-072208`, 64 runs promoted). Read: `docs/svgd-solver.md`
+"R29 results". R30 (5943010-13) started 07:21.**
+
+**R30 finished 2026-10-17 10:08 EDT (2.8 h, jobs 5943010-13), 768 / 768, 0 crashed; collected 10:09-11:00
+(`collect_20261017-100857`, 32 runs promoted). Read: `docs/svgd-solver.md` "R30 results". THE QUEUE IS EMPTY;
+the live tree is f312793 (v4). Nothing further is pre-registered.**
+
+`swap_staged_tree.sh` refuses if anything still runs out of `repo/`, OVERLAYS `repo-next/` onto
+`repo/` (no `--delete`, so the cpp build and cluster-only checkpoints survive), copies
+`.staged-commit`, and `cmp`s the three files that matter; `afterok` means R29 never starts on an
+unswapped tree (a failed swap leaves R29 and R30 pending for a manual restage). Items re-read the
+tree's `.py` files when they start, so the swap must land in the gap -- the dependency chain
+guarantees it. Reads: `scripts/report_svgd.py --stage SVGD --rows <robot> --variants
+pin2,pat3,pin4,so,lp0p1so,lp1so` (R29) and `--variants pin2kq,pin4kq` / `pin4,pin4s2` (R30; `pin4s2`
+is a seed-2 grid, compared by target-level rates, never cell-paired).
+
+## R28 part 1 (branch `svgd-tune`, 2026-10-14): the correction penalty ladder at the pin
+
+**Finished 2026-10-17 01:44 EDT (3.9 h on 4 nodes, jobs 5926659/66/67/68), 1152 / 1152, 0 crashed; the
+swap job 5943005 ran at 01:44 (17 s, live tree f312793) and R29 started at 01:45 on all four nodes with 0
+error cells in its first rows. Collected 01:46-02:25 (`collect_20261017-014605`, 48 runs promoted). Read:
+`docs/svgd-solver.md` "R28 part 1 results" -- 10 stands, the weight is inert on the rigid arms, part 2 dropped.**
+
+**Submitted 2026-10-14 23:27 EDT and HELD: jobs 5926659, 5926666-5926668**, four nodes,
+`DRAKE_ENV=crc PROCS=2`, manifest md5 `ceb1a71b`; a second local watcher
+(`scratchpad/release_r28.sh`, log `release_r28.log`) releases them once the restage watcher logs
+"R27 submitted", so the order on the nodes is R24, R26, R27, R28 (Thomas: jobs queued through
+Friday morning). Pre-registration: `docs/svgd-solver.md`, "Stage SVGD_R28, part 1". Learned arm,
+the four record contexts, 24 shards, the V3 pin, three single-factor variants that REPLACE the
+pin's `correction_cost_weight=10.0`: `qc0` (0), `qc1` (1), `qc100` (100); 48 runs, 1152 items.
+`gen_manifest.py` gained `_svgd_drop_named_sets` for this (a variant overriding a setting the base
+IPOPT row carries, not the svgd pin list); every earlier manifest regenerates byte-identically.
+Local smoke (2 Panda grasp native cells, 60 s): 2 / 2 at each weight, 0 error cells, `|q_c|` 3e-4
+to 1.6e-2. Runs on either staged tree (no new code). Allotment: tool 45 node-h, R22's pace ~4 h.
+
+```bash
+# read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,qc0,qc1,qc100
+```
+
+## R27 (branch `svgd-tune`, 2026-10-14): the flow as an exact density -- the restage and the queue order
+
+**Finished 2026-10-16 21:55 EDT (6.7 h on 4 nodes, jobs 5932634-37), 1152 / 1152, 0 crashed; collected
+21:57-23:10 (`collect_20261016-215524`, 48 runs promoted). Read: `docs/svgd-solver.md` "R27 results" --
+refuted in every form; `ld1` loses 22-24 screw grasp cells to the clock. R28 part 2 is dropped (no winner).**
+
+**Done 2026-10-15 06:33-07:05 EDT, by hand.** The watcher refused at 06:31 (`stage_code.sh`
+counted my one-node diagnostic job 5932481 as a live campaign job of the tree and exited 3; the
+holds stayed). That job had already imported everything it runs, so the restage was forced
+(`FORCE_STAGE=1 bash $CLONE/cluster/stage_code.sh`, clone at 0ecb1ad; the script then sits for
+40+ min in its post-rsync `du -sh` of the Lustre results tree, so verify by hand rather than wait):
+staged commit `0ecb1ad`, 0 `svgd_metric_temperature`, 1 `flow_logdet_weight: float`, 24 step
+checkpoints, every manifest md5 equal on both sides (R24 763a308b, R26 23d8cf92, R27 d7e9f817,
+R28 ceb1a71b). Then `scontrol release` R24 / R26 (R24 started at once on all four nodes),
+`DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R27.txt 4` -> **jobs
+5932634-5932637**, `scontrol release` R28, and R28's four jobs chained `afterany` on R27's four
+(5926659 -> 5932634, 5926666 -> 5932635, 5926667 -> 5932636, 5926668 -> 5932637), because a
+released hold's eligible time is later than R27's submit time and the FIFO would otherwise be
+uncertain. Order on the nodes: R24 (running 07:03) -> R26 -> R27 -> R28. The R23 read is in
+`docs/svgd-solver.md`; the diagnostic job ran the twice-crashed `lm1` shard clean under
+`faulthandler` (20 min, no fault), see the R23 section below.
+
+
+Stage `SVGD_R27` (`ld1` = `flow_logdet_weight=1`; `fd0p1` = `latent_cost_weight=0.1` +
+`flow_logdet_weight=0.1`; `fd1` = `1` + `1`; learned arm, the four record contexts, 24 shards; 48
+runs / 1152 items; manifest md5 `d7e9f817`; pre-registration `docs/svgd-solver.md` "Stage
+SVGD_R27") needs the cluster tree RESTAGED at `00f6b27` (the term is new code, behind
+`flow_logdet_weight`; bit-identical at 0 by the pin test and the term-off graphed smoke). The
+staged `7812715` cannot change while R23 and the R22 mop-up run, because their items `--set` the
+removed `svgd_metric_temperature=on` (v2 pin) and would fail loudly on the new tree. So, 22:47 EDT:
+
+1. `scontrol hold` on the pending R24 (5925276-79) and R26 (5925565-68) jobs -- their v3 items
+   set no removed option and run bit for bit on either tree, but holding them keeps every round on
+   ONE tree.
+2. A local watcher (`scratchpad/restage_watch.sh`, log `restage_watch.log`) polls the queue every
+   10 min; once 5923288-91 and 5924933 are gone it runs `stage_code.sh` from the clone at
+   `00f6b27` (`BRANCH=svgd-tune cluster/make_staging_clone.sh`; the cluster-side `*__step*.pkl`
+   checkpoints survive the rsync's `--delete` by the PROTECT filters), checks `.staged-commit`,
+   that `svgd_metric_temperature` is gone and `flow_logdet_weight` present in the staged
+   `generic_program.py`, and that >= 4 exported checkpoints remain; only then `scontrol release`
+   on the eight held jobs, scp + md5 of the R27 manifest, and `DRAKE_ENV=crc PROCS=2
+   submit_bench.sh manifest_stageSVGD_R27.txt 4`. Any failed check leaves the holds in place.
+3. Expected order on the nodes: R23 -> R22 mop-up -> (restage, minutes) -> R24 -> R26 -> R27 -> R28.
+
+**2026-10-15 00:01 EDT: the laptop rebooted (an OOM, not this session's: only two idle ssh-polling
+scripts were mine), which wiped the tmpfs scratchpad holding the watchers and the staging clone.
+Rebuilt at 00:10 under `~/.cache/learned-ik-svgd-tune/` (clone at the tip 0ecb1ad, which the
+restage now stamps; `restage_watch.sh`, `release_r28.sh`, their logs), restarted; the cluster
+queue was untouched by the crash (R23 running, every hold in place).**
+
+## R26 (branch `svgd-tune`, 2026-10-14): the latent prior N(0, I) on z
+
+**Finished 2026-10-16 15:20 EDT (17 h on 4 nodes, jobs 5925565-68; the soft PCS rows took 9-20 min per
+shard, the rigid 2-6), 1536 / 1536, 0 crashed. Collected 2026-10-16 14:24 (62 runs) and 15:28 (the last
+2), 64 promoted. Read 2026-10-16: `docs/svgd-solver.md` "R26 results" -- the prior as a target term is
+refuted on the rigid arms (cost +16-335%, wall 2-8x); soft PCS pose 0.62x at 13-18x wall, a trade.**
+
+**Submitted 2026-10-14 21:12 EDT under the standing "Queue them up": jobs 5925565-5925568, four
+nodes, `DRAKE_ENV=crc PROCS=2`, staged 7812715, manifest md5 `23d8cf92`, PENDING behind R23, the
+R22 mop-up and R24.** Pre-registration and the laptop reads: `docs/svgd-solver.md`, "Stage
+SVGD_R26". Phase 3 of the push and manifest-only: the term is the program's own
+`latent_cost_weight` (`0.5 w |z|^2`, excluded from `reported_cost` by name), which the svgd batched
+program folds into the target and the SVN metric; `latent_trust_region=None` and `svgd_gn_lm`
+likewise exist in the staged tree. Learned arm only, the four record contexts, 24 shards:
+
+| token | override | arm / rows |
+| --- | --- | --- |
+| `lp0p1` / `lp1` / `lp10` | `latent_cost_weight=0.1` / `1` / `10` | learned, all 16 rows |
+| `lp1notr` | `latent_cost_weight=1` + `latent_trust_region=None` (declared two factors) | learned, all 16 rows |
+
+`lp1lm0` (`latent_cost_weight=1` + `svgd_gn_lm=0`) was pre-registered, screened on the laptop
+(12 Panda cells) and read DEAD at the pin on grasp (6 clock stops) while alive on pose, so it is
+reported from the screen and not run. 64 logical runs, 1536 items. Local parse smoke (2 Panda pose
+native cells, 60 s): 2 / 2 on `lp1`, `lp10`, `lp1notr`, 0 error cells, `|z|` 0.1-0.4 and 68-132
+outer steps against the pin's 3.9 and 4-8 -- the w >= 1 rungs will run ~10x the pin's wall, so
+expect 8-12 h on 4 nodes rather than R22's pace (tool: 60 node-h; worst case 806 node-h).
+
+```bash
+scp $WT/cluster/manifest_stageSVGD_R26.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/   # md5 23d8cf92
+cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R26.txt 4
+# read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,lp0p1,lp1,lp10,lp1notr
+```
+
+## R24 (branch `svgd-tune`, 2026-10-14): wall and cost at fixed success
+
+**Submitted 2026-10-14 20:30 EDT under Thomas's standing "Queue them up. No wasted cluster compute
+time": jobs 5925276-5925279, four nodes, `DRAKE_ENV=crc PROCS=2`, staged 7812715, manifest md5
+`763a308b`, PENDING behind R23 (and R22's mop-up job 5924933) under the 4-node cap. The variant
+table (`docs/svgd-solver.md`, "Stage SVGD_R24") was committed before the manifest and is in front
+of him before it runs; `scancel 5925276 5925277 5925278 5925279` withdraws it.** The first stage on
+`SVGD_PINNED_V3` (V2 minus the removed `svgd_metric_temperature=on`); on the staged 7812715 that
+option still exists with default `on`, so the items are the pin bit for bit and no restage is
+needed. Learned arm only, the four record contexts, 24 shards, one override per variant:
+
+| token | override | token | override |
+| --- | --- | --- | --- |
+| `N16` / `N32` | `svgd_n=16` / `32` | `alpha0p1` / `alpha10` / `alpha0` | `svgd_dual_lr=10000` / `1000000` / `0` |
+| `rho1e6` | `svgd_rho=1000000` (replaces the pin's) | `floor1em3` / `floor0p2` | `svgd_bandwidth_floor=0.001` / `0.2` |
+| `pat2` / `pat3` | `svgd_stop_patience=2` / `3` | `kz3` | `svgd_kernel=z` (replaces the pin's `cz`; `kz` was R14's V1 token) |
+
+176 logical runs, 4224 items. Local smoke (2 Panda pose native cells each at 60 s, the pin, every
+value never run before: ten of the eleven, `kz` ran in R14): 2 / 2 on all ten, 0 error cells, the
+override echoed in `metadata.overrides`, `n_particles` 16 / 32 on the N variants, `lam_inf_median` 0
+under `alpha0`. **Allotment**: the tool's 164 node-h (5 s per cell + 180 s per item, 41 h on 4
+nodes); R22's measured pace (1632 items in 5.5 h) gives ~14 h on 4 nodes; worst case 2218 node-h
+(every cell at the clock), with `alpha0` the only variant expected to run cells to the clock.
+
+```bash
+scp $WT/cluster/manifest_stageSVGD_R24.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/   # md5 763a308b
+cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R24.txt 4
+# read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,N16,N32,rho1e6,pat2,pat3,alpha0p1,alpha10,alpha0,floor1em3,floor0p2,kz3
+```
+
+**Finished 2026-10-15 22:16 EDT (15.0 h on 4 nodes, jobs 5925276-79, restaged 0ecb1ad): 4056 of 4224
+items done, 168 held, 0 crashed (the eight worker logs carry 0 nonzero exits). Collected 2026-10-16
+14:24 (`collect_20261016-142413`, 40 min in the remote tar: 4056 shard dirs), 169 runs merged and
+promoted (`sc_SVGD_R24_*`), the seven held rows absent. Read 2026-10-16: `docs/svgd-solver.md` "R24
+results" -- nothing deleted by rule; `pat3` and the pure-penalty question went to Thomas. **Patience 3
+ADOPTED 2026-10-16** (`svgd_stop_patience` default 3, pin `SVGD_PINNED_V4`): the staged tree 0ecb1ad still
+has 5, so R27 / R28 run at 5 (as pre-registered, read against `pin2` at 5) and the NEXT RESTAGE carries 3;
+any stage submitted after it must be generated as v4.** The seven
+remaining `alpha10` POSE rows are HELD (Thomas, 15:45 EDT, "Do proposal 1").** The grasp rows finished at 1-5 min per
+shard (`alpha10` 480 / 480 everywhere, resamples 40-60x the pin's). On the pose rows the variant runs
+EVERY cell to the clock: iiwa pose native `alpha10`, first 8 shards, 0 of 128 cells feasible, all
+`wall_clock` at 162 s, ~2300 outer steps and 16k-20k resamples per cell, residual ~1e-3 against the
+1e-4 gate, 43-65 min per shard. Its other seven pose rows (168 shards) would have cost ~15 h of all
+four nodes and pushed R26-R28 back a day for a mechanism one row settles, so the iiwa native row runs
+to completion (24 shards, the 480-cell evidence) and the other seven are skipped by PRE-CLAIMING:
+`mkdir <id>.claim` with an `owner` file reading "HELD by hand ..." for each of the 168 items (a worker
+skips an existing claim; `run_items.sh` lines 225-245). **Consequences**: (1) R24's collection
+reports those 168 items INCOMPLETE and the reporter refuses the seven rows (read `alpha10` on the
+iiwa native row only, per-cell reader); (2) `collect_results.sh --reclaim manifest_stageSVGD_R24`
+clears HELD claims along with crashed ones, so a mop-up for any genuine crash must re-hold them
+first (`grep -l "HELD by hand" *.claim/owner` lists them) unless Thomas wants the full ladder run;
+(3) the mid-run segfault signal is an ORPHANED claim (claims - done - held - 2 x running jobs > 0),
+NOT `state/<manifest>/logs` -- this tree copies worker logs there only when the job ends, so a grep
+over it mid-run reads 0 regardless. Early note for the read: `alpha0` (pure quadratic penalty,
+predicted to collapse) is 480 / 480 with 0 clock stops on every row run so far, so the multipliers'
+place is read on residual.
+
+## R23 (branch `svgd-tune`, 2026-10-14): the phase-1 conditioning exceptions at the pin
+
+**Finished 2026-10-15 05:33 EDT (9.9 h on 4 nodes), 1144 of 1152 items. Eight items died with a
+segmentation fault (status 139) and were re-queued as a mop-up on the OLD tree (jobs 5932386-87,
+two nodes, 05:41-06:25) before the restage: 4 completed, 4 died again, and the R22 mop-up item
+(5924933) died again too, so the three screw `lm1` rows stand at 23 / 22 / 23 shards and R22's
+screw pose native `T0p1` at 23, for good (the old tree is gone and `T0p1` is a removed option).
+Collected 05:42 (1144 items; the 17 iiwa grasp native `ident` shards written before the 19:45
+watermark were fetched by a fresh-connection rsync and re-merged) and 06:30 (the mop-up's 4), 45 of
+48 runs promoted; read with the per-cell reader against `pin2` (`docs/svgd-solver.md`, "R23
+results"). Nothing stripped: the metric, delta 10 and the natural units all earn their place.** All eight are screw-arm `lm1` shards (grasp native 11 / 16 /
+19 of 24, pose native 4 / 12, pose paired 4 / 5 / 9), dying 57 s to 1727 s into the item with nothing
+in the log after "warmed up the svgd step" (no Python traceback: the crash is in C++); every other
+R23 item of those workers ran cleanly before and after. With R22's one segfault (screw pose native
+`T0p1`) that is nine of nine segfaults in this push on the screw arm, eight of them under
+`svgd_gn_lm=1`. Mechanism not yet established; a deterministic crash would repeat in the mop-up at
+the same cell, so the mop-up doubles as the reproduction test. The restage watcher was stopped and
+restarted waiting for 5924933 and 5932386-87 (`~/.cache/learned-ik-svgd-tune/restage_watch.sh`);
+the R24 / R26 / R28 holds are untouched. Until the mop-up lands the three screw `lm1` rows have 420
+/ 440 / 420 of 480 cells and are read as incomplete.
+
+**Submitted 2026-10-14 18:25 EDT on Thomas's word (*"Queue them up. No wasted cluster compute time."*): jobs 5923288-5923291, four nodes, `DRAKE_ENV=crc PROCS=2`, staged 7812715, manifest md5 `8fe92f91`, queued behind R22 so the nodes hand over without a gap.** Pre-registration: `docs/svgd-solver.md`, "Stage SVGD_R23". Stage `SVGD_R23` is R22's shape (`SVGD_PINNED_V2`, the four record contexts,
+480 cells at 180 s on seed 1, graphed, the lifted step cap, the clearance row, 24 shards, PROCS=2,
+learned arm only, no joint-space set) with one override per variant:
+
+| token | override | arm / rows |
+| --- | --- | --- |
+| `ident` | `svgd_metric=identity` | learned, all 16 rows |
+| `lm1` | `svgd_gn_lm=1` (replaces the pin's 10 in the item's `--set` list; one `svgd_gn_lm=` per item) | learned, all 16 rows |
+| `lm100` | `svgd_gn_lm=100` | learned, all 16 rows |
+
+Two pre-registered variants were screened DEAD on the laptop (12 Panda cells, every cell to the
+clock, every particle redrawn at every check) and are not run: `svgd_gn_lm=0` and
+`svgd_row_units=tolerance`; the doc's screen table reports them. 48 logical runs, 1152 items, md5
+`8fe92f911ad495d4a3a2591fb900b941`. Claim order within a cell is by id (`ident`, `lm100`, `lm1`).
+
+**No restage.** `svgd_metric` and `svgd_gn_lm` exist in the staged `7812715` (both are in R20's
+own `--set` surface or option table); manifest-only, as R22:
+
+```bash
+WT=~/Documents/programming/work/rlg/analytic-and-optimization-ik/learned-ik/.claude/worktrees/svgd-tune
+scp $WT/cluster/manifest_stageSVGD_R23.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/
+md5sum $WT/cluster/manifest_stageSVGD_R23.txt; ssh tcohn@txe1-login.mit.edu 'md5sum ~/learned-ik/repo/cluster/manifest_stageSVGD_R23.txt; cat ~/learned-ik/repo/.staged-commit; grep -c "\"svgd_metric\": (\"gn\", \"identity\")\|svgd_gn_lm" ~/learned-ik/repo/src/generic_program.py'
+cd $WT && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R23.txt 4
+```
+
+**Allotment**: the tool's figure 44.8 node-h (5 s per cell + 180 s per item, 11.2 h on 4 nodes);
+R20's scaling makes `lm100` and `lm1` ~4 node-h each and `ident` more (its pose cells took 20x
+the pin's wall on the screen); worst case 605 node-h. Read with
+`scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2,ident,lm1,lm100`.
+
+## R22 (branch `svgd-tune`, 2026-10-14): stripping at the pin
+
+**Submitted 2026-10-14 14:12 EDT: jobs 5918035-5918038, four nodes, `DRAKE_ENV=crc PROCS=2`, the
+staged 7812715 (no restage; manifest scp'd, md5 `0874898b`), after the local smokes of `clipoff`
+(3e38) and `T0p1` solved 2 / 2 each.**
+
+**Finished 2026-10-14 19:40 EDT (5.5 h on 4 nodes), 1631 of 1632 items.** One item died with a
+segmentation fault (status 139) 113 s in, right after the svgd warm-up, on worker `d-14-8-2_p1`
+(`sc_SVGD_R22_screw7_p050_n6_svgd_posetip_480_180_native_T0p1_shard6of24`, 17:56); the same worker
+ran its next item cleanly and no other item of the 1632 reports an error, so it is a one-off dead
+item: `collect_results.sh --reclaim manifest_stageSVGD_R22` cleared the claim and the manifest was
+resubmitted as ONE mop-up job (5924933), queued behind R23 under the 4-node cap. Until it lands the
+screw pose native `T0p1` row has 460 of 480 cells and is read as incomplete.
+
+The first round of the tuning push (`docs/svgd-solver.md`, "The tuning push"). Stage `SVGD_R22`
+is R20's shape -- `SVGD_PINNED_V2`, the four record contexts, 480 cells at 180 s on seed 1, graphed,
+the lifted step cap, the clearance row, 24 shards, PROCS=2 with no MPS -- with one override per
+learned variant and one declared two-factor joint-space set:
+
+| token | override | arm / rows |
+| --- | --- | --- |
+| `clipoff` | `svgd_multiplier_max=3e38` | learned, all 16 rows |
+| `drop2` | `svgd_resample=drop` | learned, all 16 rows |
+| `T10v2` | `svgd_temperature=10` | learned, all 16 rows |
+| `T0p1` | `svgd_temperature=0.1` | learned, all 16 rows (claimed last of the learned items: the one clock risk) |
+| `clipoffjs` | `svgd_kernel=q` + `svgd_multiplier_max=3e38` | joint space, Panda `n6` only, its own items after every learned item |
+
+**The tokens are new on purpose**: `drop` (R11) and `T10` (R5) exist on the V1 pin, and the selftest
+holds a token to one (pin, overrides) across every round. `3e38` rather than `inf`: the benchmark's
+`--set` parser is `literal_eval`, which does not parse `inf`, so the value would arrive as a string
+and `torch.clamp` would raise on every cell; `1e300` overflows the float32 scalar cast inside `clamp` (the local smoke errored on every cell); `clamp` at +-3e38 is a no-op and the value is float32-representable.
+
+**No restage.** The staged tree is `7812715` (the analytic campaign's), whose `src/svgd/`,
+`src/generic_program.py`, `src/benchmark.py` and `cluster/*` are byte-identical to main's and to
+`svgd-tune`'s at this round; every option R22 sets exists there (`svgd_multiplier_max`,
+`svgd_resample` with `drop`, `svgd_temperature`). So the manifest is copied by hand and checked:
+
+```bash
+WT=~/Documents/programming/work/rlg/analytic-and-optimization-ik/learned-ik/.claude/worktrees/svgd-tune
+scp $WT/cluster/manifest_stageSVGD_R22.txt tcohn@txe1-login.mit.edu:~/learned-ik/repo/cluster/
+md5sum $WT/cluster/manifest_stageSVGD_R22.txt; ssh tcohn@txe1-login.mit.edu 'md5sum ~/learned-ik/repo/cluster/manifest_stageSVGD_R22.txt; cat ~/learned-ik/repo/.staged-commit; grep -c "svgd_multiplier_max\|\"svgd_resample\": (\"native\", \"drop\", \"keep\")\|svgd_temperature" ~/learned-ik/repo/src/generic_program.py'
+```
+
+**Local smoke before submitting** (the two values never run before, `svgd_multiplier_max=3e38` and
+`svgd_temperature=0.1`): 2 cells x 20 s, Panda pose paired, learned arm, one process under
+`systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0`; read `n_multiplier_clipped == 0`
+on `clipoff` and the override echoed in `metadata.overrides`. Not a result.
+
+**Submit** (all four nodes are this push's, Thomas 2026-10-14):
+
+```bash
+cd $WT
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R22.txt 4
+```
+
+**Allotment**: `python cluster/gen_manifest.py --stage SVGD_R22 --allotment` (5 s per learned cell,
+180 s per item; the joint-space items at R21's measured 1.5 / 0.9 s). R20 measured 6 node-hours for
+480 items against 25 allotted, so expect about a third of the tool's figure.
+
+**Read**:
+
+```bash
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows panda --variants pin2,pin2kq,clipoff,clipoffjs,drop2,T10v2,T0p1
+.venv/bin/python scripts/report_svgd.py --stage SVGD --rows iiwa --variants pin2,clipoff,drop2,T10v2,T0p1        # and screw7_p050, soft12
+```
+
+Promote with `cp -r <STAGING>/results/<robot>/benchmark/sc_SVGD_R22_* results/<robot>/benchmark/`
+(`grep -v _shard`). The decision rule per variant is in the pre-registration; a strip the rule
+licenses is removed in its own commit after Thomas's word.
+
 ## R21 (submitted 2026-10-12 16:18 EDT): the joint-space ablation at the pin on the other three robots
 
 Thomas, after R20's Panda ablation came in 480 / 480: *"Run the joint-space svgd ablation on the other
@@ -1145,3 +1477,16 @@ R20, SMOKE_R20 and the screw / soft PCS smokes are listed in their own sections 
   It re-runs the branch's own `summarise`, which knows the svgd records.
 - `verify_sharding.sh` was not run, since it solves. Nothing about sharding or grid construction
   changed: R1 and R2 use the standard target-major `--shard`.
+
+## Close-out (2026-10-18)
+
+The push is closed; the queue has been empty since 2026-10-17 10:08. The live cluster tree is f312793
+(svgd-tune; patience 3, `svgd_stop_select_objective`), swapped in by job 5943005. The 168 `alpha10`
+pose items of R24 were RETIRED on 2026-10-18 (Thomas's ruling): each held claim now has a hand-written
+`<id>.done` marker ("RETIRED 2026-10-18 ... no result exists for this item") and the owner file says so,
+so `--reclaim` and any resubmission skip them; the manifest reads 4224 / 4224 done with 4056 results. The results of record are promoted under
+`results/<robot>/benchmark/sc_SVGD_R29_*_pin4` (learned, the V4 pin), `sc_SVGD_R30_*_pin4kq` (joint
+space) and `sc_SVGD_R30_*_pin4s2` (seed 2). The result against ablations and baselines:
+`python scripts/report_svgd_2x2.py --write docs/svgd-2x2-tables.md` (no cluster work; reads the promoted
+runs and the IPOPT / SNOPT / NLopt twins). The record's time-matched table: `scripts/report_time_matched.py`
+with the three prefixes CLAUDE.md names, under the finish-the-current-solve rule.

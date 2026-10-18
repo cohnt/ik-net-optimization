@@ -7,12 +7,18 @@ per-cell records already on disk -- no new runs.
 
 For every learned cell (target t, guess g) the budget is the wall time the learned arm spent on
 that cell, success or failure. The joint-space portfolio runs target t's recorded joint-space
-solves in a random order, stopping at the first success, and succeeds if that first success
-lands within the budget; averaged over --n-perm random orders per target. Where the budget
-exceeds ALL of a target's joint-space solves the portfolio is STARVED (more starts would have
-fit), so its figure is a lower bound there, and the starved share is printed. `JS any` is the
-share of targets joint space solves from at least one start, with no time limit: the
-portfolio's ceiling at this many starts.
+solves in a random order, stopping at the first success; averaged over --n-perm random orders
+per target. **A solve BEGUN inside the budget runs to completion and counts** (Thomas,
+2026-10-18: "we always let the 'current' solve finish, even if we hit the budget"), so a
+portfolio always gets at least one start, and the next start is taken only while the time
+already spent is below the budget. Before 2026-10-18 the rule was that the first success had
+to LAND inside the budget, which gave a portfolio whose first solve outlasted the budget zero
+starts; every time-matched figure quoted before that date was read under the old rule.
+Where the portfolio runs out of a target's recorded starts without a success while the time
+spent is still below the budget it is STARVED (more starts would have fit), so its figure is a
+lower bound there, and the starved share is printed. `JS any` is the share of targets joint
+space solves from at least one start, with no time limit: the portfolio's ceiling at this many
+starts.
 
 This is an ANALYSIS of recorded guesses, not multi-start machinery; multi-start as a method
 stays out of scope. Each joint-space wall time includes its own program setup, which a real
@@ -26,7 +32,9 @@ multi-start would reuse, so the baseline is if anything slightly pessimistic for
 Selection matches scripts/report_statusquo.py's `load`: merged runs with --cells learned cells,
 staged and promoted trees both (promoted wins on a duplicate tag), per-shard directories
 skipped, rows `mugshelf` (contained grasp) and `posetip` (contained pose). Success is
-`feasible`. Results on the record: CLAUDE.md, "What the tables say".
+`feasible`. Results on the record: CLAUDE.md, "What the tables say". `portfolio_stats` is the
+one implementation of the rule; `scripts/report_svgd_2x2.py` imports it for the AL-SVGD rows
+(budget arm and portfolio arm from different runs).
 """
 import argparse
 import glob
@@ -52,30 +60,60 @@ def load(prefix, cells, tag_re, exclude=()):
     return out
 
 
-def row_stats(s, n_perm, rng):
-    L, J = s["records"]["learned"], s["records"]["numerical"]
-    js_by_t = {}
-    for r in J:
-        js_by_t.setdefault(r["target"], []).append(r)
-    first, total = {}, {}
-    for t, rs in js_by_t.items():
-        w = np.array([r["wall_time"] for r in rs])
+def _target(r):
+    return r["target"] if "target" in r else r["target_index"]
+
+
+def portfolio_stats(budget_records, portfolio_records, n_perm, rng, cap=None):
+    """The time-matched portfolio: for every budget cell, the portfolio arm restarts from that
+    target's recorded solves in a random order and stops at the first success; a solve begun while
+    the time spent is below the budget runs to completion and counts. Returns the matched success
+    share, the single-start share, the no-time-limit ceiling, the starved share, and the median
+    number of starts taken. Wall times are clamped at `cap` when given (the cap-clamped
+    convention of the svgd tables); the record's reader leaves them as recorded."""
+    def wall(r):
+        return min(r["wall_time"], cap) if cap else r["wall_time"]
+    by_t = {}
+    for r in portfolio_records:
+        by_t.setdefault(_target(r), []).append(r)
+    first_start, before_last, any_ok, pre, succ_pos = {}, {}, {}, {}, {}
+    for t, rs in by_t.items():
+        w = np.array([wall(r) for r in rs])
         ok = np.array([bool(r["feasible"]) for r in rs])
         perms = np.argsort(rng.random((n_perm, len(rs))), axis=1)
-        cw = np.cumsum(w[perms], axis=1)
-        okp = ok[perms]
+        wp, okp = w[perms], ok[perms]
+        cw = np.cumsum(wp, axis=1)
         idx = okp.argmax(axis=1)
-        ## Cumulative time at the FIRST success under each order; inf if no start succeeds.
-        first[t] = np.where(okp.any(axis=1), cw[np.arange(n_perm), idx], np.inf)
-        total[t] = w.sum()
-    return dict(
-        L=np.mean([bool(r["feasible"]) for r in L]),
-        J1=np.mean([bool(r["feasible"]) for r in J]),
-        J_match=np.mean([(first[r["target"]] <= r["wall_time"]).mean() for r in L]),
-        J_any=np.mean([any(bool(x["feasible"]) for x in rs) for rs in js_by_t.values()]),
-        starved=np.mean([total[r["target"]] < r["wall_time"] for r in L]),
-        L_wall=np.median([r["wall_time"] for r in L]),
-        J_wall=np.median([r["wall_time"] for r in J]))
+        ar = np.arange(n_perm)
+        ## Time spent BEFORE the first success under each order (the start that succeeds is taken
+        ## iff this is below the budget); inf if no start succeeds.
+        first_start[t] = np.where(okp.any(axis=1), cw[ar, idx] - wp[ar, idx], np.inf)
+        before_last[t] = cw[:, -1] - wp[:, -1]
+        any_ok[t] = okp.any(axis=1)
+        ## Time spent before each start, and the position of the first success (inf if none).
+        pre[t] = cw - wp
+        succ_pos[t] = np.where(any_ok[t], idx + 1, np.inf)
+    matched, starved, ks = [], [], []
+    for r in budget_records:
+        t, b = _target(r), wall(r)
+        matched.append((first_start[t] < b).mean())
+        starved.append((~any_ok[t] & (before_last[t] < b)).mean())
+        ## Starts taken: every start whose preceding time is below the budget, cut at the first
+        ## success (if that success was taken its predecessors all were, so the min is exact).
+        ks.append(np.median(np.minimum((pre[t] < b).sum(axis=1), succ_pos[t])))
+    return dict(J_match=float(np.mean(matched)),
+                J1=float(np.mean([bool(r["feasible"]) for r in portfolio_records])),
+                J_any=float(np.mean([v.any() for v in any_ok.values()])),
+                starved=float(np.mean(starved)),
+                k_median=float(np.median(ks)))
+
+
+def row_stats(s, n_perm, rng):
+    L, J = s["records"]["learned"], s["records"]["numerical"]
+    st = portfolio_stats(L, J, n_perm, rng)
+    return dict(L=np.mean([bool(r["feasible"]) for r in L]),
+                L_wall=np.median([r["wall_time"] for r in L]),
+                J_wall=np.median([r["wall_time"] for r in J]), **st)
 
 
 def main():
@@ -106,13 +144,13 @@ def main():
     order = {"ipopt": 0, "snopt": 1, "nlopt": 2}
     rows.sort(key=lambda r: (order[r["solver"]], r["task"], r["robot"], r["start"]))
     hdr = (f"{'solver':<6} {'row':<30} {'learned':>8} {'JS x1':>7} {'JS matched':>10} "
-           f"{'JS any':>7} {'starved':>8} {'L wall':>7} {'JS wall':>8}")
+           f"{'JS any':>7} {'starved':>8} {'starts':>6} {'L wall':>7} {'JS wall':>8}")
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
         print(f"{r['solver']:<6} {r['robot'] + ' ' + r['task'] + ' ' + r['start']:<30} "
               f"{100 * r['L']:>7.1f}% {100 * r['J1']:>6.1f}% {100 * r['J_match']:>9.1f}% "
-              f"{100 * r['J_any']:>6.1f}% {100 * r['starved']:>7.0f}% "
+              f"{100 * r['J_any']:>6.1f}% {100 * r['starved']:>7.0f}% {r['k_median']:>6.0f} "
               f"{r['L_wall']:>6.2f}s {r['J_wall']:>7.2f}s")
 
 

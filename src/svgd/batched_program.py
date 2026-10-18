@@ -105,7 +105,8 @@ from src.svgd.kinematics_from_plant import (BatchedFK, BodyPoseProvider, Kinemat
 
 ## Mirrors `src.benchmark._REGULARIZER_COSTS` (asserted equal by the test rather than
 ## imported, so constructing a swarm does not import the benchmark harness).
-REGULARIZER_COSTS = ("LatentRegularizerCost", "CorrectionCost", "JointLimitPenaltyCost")
+REGULARIZER_COSTS = ("LatentRegularizerCost", "CorrectionCost", "JointLimitPenaltyCost",
+                     "FlowLogDetCost")
 
 ## Descriptions of the separate learned-arm bindings -> the short keys of `extra_rows`.
 EXTRA_ROW_KEYS = {
@@ -200,7 +201,7 @@ class _RowBlock:
 @dataclass
 class _CostTerm:
     description: str
-    kind: str             # "joint_centering" | "quadratic" | "linear"
+    kind: str             # "joint_centering" | "quadratic" | "linear" | "flow_logdet"
     reported: bool
     Q: Optional[Tensor] = None
     b: Optional[Tensor] = None
@@ -437,6 +438,11 @@ class BatchedProgram:
         q_nom = np.asarray(program.q_nominal, dtype=float)[:n]
         self._q_nominal = torch.tensor(q_nom, dtype=dtype, device=self.device)
         self._w_centering = float(self.options.joint_centering_cost)
+        ## The flow log-det term's weight: a float the fused stages read (`_READ_FLOATS`), so
+        ## two programs with different weights never share a compiled template or a graph.
+        self.has_flow_logdet = any(t.kind == "flow_logdet" for t in self._costs)
+        self._w_logdet = (float(getattr(self.options, "flow_logdet_weight", 0.0))
+                          if self.has_flow_logdet else 0.0)
 
         ## -- bounds and regions ----------------------------------------------------------
         lo, hi = self._variable_bounds()
@@ -711,6 +717,13 @@ class BatchedProgram:
             reported = desc not in REGULARIZER_COSTS
             if desc == "JointCenteringCost":
                 self._costs.append(_CostTerm(desc, "joint_centering", reported))
+            elif desc == "FlowLogDetCost":
+                ## `w * log|det dx/dz|` of the flow (`flow_logdet_weight`): the log-det comes
+                ## from the same network call as q (`BatchedFlow.q_and_logdet`), its gradient
+                ## as one extra row of the split step's jacrev.
+                if not self.is_learned:
+                    raise NotImplementedError("FlowLogDetCost on a program without a latent")
+                self._costs.append(_CostTerm(desc, "flow_logdet", reported))
             elif desc == "JointLimitPenaltyCost":
                 raise NotImplementedError("JointLimitPenaltyCost is not replayed")
             elif isinstance(ev, QuadraticCost):
@@ -820,6 +833,11 @@ class BatchedProgram:
         w = self.width
         return X[:, :6], X[:, 6:6 + w], X[:, 6 + w:6 + w + self.ndof]
 
+    def _config_and_logdet(self, X):
+        """`(cfg [N, ndof], log|det dx/dz| [N])` of a learned batch, one network call."""
+        c6, z, qc = self._split(X)
+        return self.flow.q_and_logdet(c6, z, qc)
+
     def _config(self, X) -> Tensor:
         if self.is_learned:
             c6, z, qc = self._split(X)
@@ -897,8 +915,11 @@ class BatchedProgram:
         prof = self.profile
         t0 = time.perf_counter() if prof else 0.0
 
+        ld = None
         if self.is_analytic:
             cfg, aux_u = self.amap(X)
+        elif self.has_flow_logdet:
+            cfg, ld = self._config_and_logdet(X)
         else:
             cfg = self._config(X)
         self._count("map_forward")
@@ -931,7 +952,7 @@ class BatchedProgram:
                 col_row, col_grad = self.collision_eval(kin[0], need_grad=row_jacobians)
             if prof:
                 timing["collision"] = time.perf_counter() - tc
-        ev = self.assemble(X, cfg, cfg_k, kin, col_row, col_grad)
+        ev = self.assemble(X, cfg, cfg_k, kin, col_row, col_grad, ld=ld)
         if prof:
             self._sync(); timing["rows_costs"] = time.perf_counter() - t0 - timing.get("collision", 0.0)
         ev.timing = timing
@@ -1007,12 +1028,14 @@ class BatchedProgram:
         g = None if grad is None else torch.as_tensor(grad).to(device=q_plant.device, dtype=q_plant.dtype)
         return row, g
 
-    def assemble(self, X, cfg, cfg_k, kin, col_row, col_grad) -> Evaluation:
+    def assemble(self, X, cfg, cfg_k, kin, col_row, col_grad, ld=None) -> Evaluation:
         """Rows, costs and the `Evaluation` from the pieces: decision variables `X`, the
         configuration `cfg` (with its graph, if any) and its kinematics copy `cfg_k`, the
         `kinematics(cfg_k)` tuple, and the collision row and gradient (`None` row: the
         collision entries are NaN). Pure tensor arithmetic over a fixed block inventory --
-        no Drake call, no host sync -- so a fused step can compile and capture it."""
+        no Drake call, no host sync -- so a fused step can compile and capture it. `ld [N]`,
+        the flow's log-det from the same network call as `cfg`, is required exactly when the
+        program carries `FlowLogDetCost` (`has_flow_logdet`)."""
         N = X.shape[0]
         q_plant, pose_frame, pose_flow, frame_jac = kin[:4]
         ## The analytic arm's aux `(u, J_u)` (`evaluate`, `fused.stage2`); absent elsewhere.
@@ -1071,6 +1094,8 @@ class BatchedProgram:
             elif term.kind == "quadratic":
                 xv = X[:, term.var_idx]
                 val = 0.5 * ((xv @ term.Q) * xv).sum(dim=1) + xv @ term.b + term.c
+            elif term.kind == "flow_logdet":
+                val = self._w_logdet * ld
             else:
                 xv = X[:, term.var_idx]
                 val = xv @ term.b + term.c
@@ -1085,6 +1110,8 @@ class BatchedProgram:
             c6, z, qc = self._split(X)
             extras["z_norm"] = z.detach().norm(dim=1)
             extras["qc_inf"] = qc.detach().abs().max(dim=1).values
+            if ld is not None:
+                extras["flow_logdet"] = ld
         if self.is_analytic:
             extras["aux_jac"] = aux_jac
         return Evaluation(F=F, F_reported=F_rep, h=h, g=g, q=cfg, q_plant=q_plant,
@@ -1328,7 +1355,8 @@ class BatchedProgram:
         """`(dF/dcfg [N, ndof], dF/dX|direct [N, nvars])` of the FULL objective in closed
         form from the cost inventory: the joint-centering term in the configuration, the
         quadratic / linear bindings directly in the decision variables. The total gradient
-        is `J_q^T dF/dcfg + dF/dX|direct`."""
+        is `J_q^T dF/dcfg + dF/dX|direct` (+ `w * d logdet / dX` where the program carries
+        the flow log-det term, which the caller takes from the flow's Jacobian)."""
         X = self._as_X(X).detach()
         cfg = cfg.detach()
         N = X.shape[0]
@@ -1337,6 +1365,10 @@ class BatchedProgram:
         for term in self._costs:
             if term.kind == "joint_centering":
                 g_cfg = g_cfg + self._w_centering * (cfg[:, :self.ndof] - self._q_nominal)
+            elif term.kind == "flow_logdet":
+                ## Neither part: `d logdet / dX` is a row of the flow's own Jacobian (the
+                ## split step's stage 2), which the caller adds as `w * J_ld`.
+                continue
             elif term.kind == "quadratic":
                 xv = X[:, term.var_idx]
                 g_x[:, term.var_idx] += 0.5 * (xv @ term.Q + xv @ term.Q.transpose(0, 1)) + term.b

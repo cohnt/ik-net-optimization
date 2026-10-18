@@ -229,18 +229,18 @@ SVGD_ENUM_FIELDS = {
     "svgd_dtype": ("float32", "float64"),
     "svgd_paired_init": ("jitter", "native"),
     "svgd_kernel": ("q", "none", "x", "z", "c", "cz", "qz", "pose"),
-    "svgd_metric_temperature": ("off", "on"),
     "svgd_warmup": ("none", "cem"),
     "svgd_metric": ("gn", "identity"),
     "svgd_row_units": ("natural", "tolerance"),
     "svgd_collision_backend": ("autodiff", "clearances"),
     "svgd_resample": ("native", "drop", "keep"),
+    "svgd_stop_select_objective": ("full", "shared"),
 }
 
 
 def CheckSvgdOptions(options):
-    """Refuse an svgd enum value outside its choices, a non-positive particle count,
-    temperature or step size, and the CUDA-graph switch without the compile switch."""
+    """Refuse an svgd enum value outside its choices, a non-positive particle count or
+    step size, and the CUDA-graph switch without the compile switch."""
     for name, allowed in SVGD_ENUM_FIELDS.items():
         value = getattr(options, name)
         if value not in allowed:
@@ -248,7 +248,7 @@ def CheckSvgdOptions(options):
     if int(options.svgd_n) < 1:
         raise ValueError(f"svgd_n must be >= 1, got {options.svgd_n!r} (N = 1 is the "
                          f"degenerate single-particle control, not 0)")
-    for name in ("svgd_temperature", "svgd_lr", "svgd_rho", "svgd_row_length_scale"):
+    for name in ("svgd_lr", "svgd_rho", "svgd_row_length_scale"):
         if not float(getattr(options, name)) > 0.0:
             raise ValueError(f"{name} must be > 0, got {getattr(options, name)!r}")
     if not float(options.svgd_gn_lm) >= 0.0:
@@ -360,6 +360,11 @@ class ProgramOptions:
     # gap the draft itself names ("outside the reachable set IKFlow's gradients explode").
     latent_trust_region: float = field(default=None, metadata={"help": "Bound on ||z||; None keeps the per-component box only"})
     latent_cost_weight: float = field(default=0.0, metadata={"help": "Weight on ||z||^2, keeping the latent in the flow's typical set"})
+    ## The other half of the chart's own density (stage R27): with `latent_cost_weight = w`
+    ## the pair is `w (|z|^2/2 + log|det dx/dz|) = -w log p(x | c)` up to a constant. The
+    ## log-det is the FrEIA forward pass's second return, so the term costs one extra
+    ## jacrev row and no second network pass (`MakeFlowInference(with_logdet=True)`).
+    flow_logdet_weight: float = field(default=0.0, metadata={"help": "learned-only: w times log|det dx/dz| of the flow at the decision point; with latent_cost_weight = w the pair is -w log p(x|c), the chart's own density; excluded from the reported cost; on the iiwa the map is 8-wide against 7 joints so this is the joint density of (q, pad)"})
     correction_bound: float = field(default=0.1, metadata={"help": "Half-width of the box on the joint-space correction"})
     ## The trust-region RULE, as an alternative to a per-robot constant. Every robot but the
     ## Panda sizes its region as `round(sqrt(dim_latent) + 1.5, 2)` (iiwa 4.3 by hand, soft
@@ -689,7 +694,7 @@ class ProgramOptions:
     ## recorded in `emitted_solver_options["svgd"]` like the Drake solvers' options are.
     ##
     ## NO FORMULATION-SPECIFIC INFORMATION is encoded by any of these (Thomas, 2026-10-08).
-    ## The solver's target is exactly the program as written, -L_rho/T: no latent-prior
+    ## The solver's target is exactly the program as written, -L_rho: no latent-prior
     ## term, no assumption that the correction or any residual is zero-centred, no kernel or
     ## schedule that knows what one arm's variables mean. What IS allowed is
     ## formulation-agnostic: a kernel in configuration space (every arm has a q), row
@@ -705,16 +710,14 @@ class ProgramOptions:
     svgd_seed: int = field(default=0, metadata={"help": "svgd: base seed for the particle draws (combined with the cell's initial guess)"})
     svgd_paired_init: str = field(default="native", metadata={"help": "svgd: how the swarm is drawn around the program's initial guess (particle 0 is the guess, never clipped, either way) -- 'native' (fielded 2026-10-12; was 'jitter') draws the other N-1 from the arm's own start distribution, 'jitter' adds svgd_jitter * N(0, I) in the normalised coordinates (every svgd round through R19 ran it)"})
     svgd_jitter: float = field(default=0.1, metadata={"help": "svgd: paired-jitter sigma, as a fraction of each variable's region half-width (the normalised coordinates)"})
-    svgd_temperature: float = field(default=1.0, metadata={"help": "svgd: the temperature T of the target exp(-L_rho / T); fixed for the whole solve"})
     svgd_lr: float = field(default=0.3, metadata={"help": "svgd: the step, a dimensionless fraction of the metric's step -- under svgd_metric=gn dy_i = svgd_lr (H_i + svgd_gn_lm I)^-1 phi_i (Stein variational Newton), under identity dy_i = (svgd_lr / ||H_i||_F) phi_i, H_i the GN Hessian of the AL in the normalised coordinates (0.3: the 2026-10-10 screen at rho 1e3, delta 10 -- lr 0.3 solved 24/24 of 12 Panda cells x 2 arms, resampling 0.07 of N per check, against 22/24 and 0.12 at lr 1.0)"})
     svgd_metric: str = field(default="gn", metadata={"help": "svgd: 'gn' -- the block-diagonal Stein variational Newton step (Detommaso et al. 2018) with the per-particle Gauss-Newton Hessian of the AL; 'identity' -- the plain SVGD direction with the per-particle step svgd_lr / ||H_i||_F"})
-    svgd_metric_temperature: str = field(default="on", metadata={"help": "svgd: whether the Stein variational Newton metric carries the temperature -- 'on' (fielded 2026-10-12; was 'off', bit-identical at T = 1): the metric is H / T, dy_i = svgd_lr (H_i / T + svgd_gn_lm I)^-1 phi_i, matching the drive so T sets only the repulsion-to-drive ratio (under svgd_metric=identity, the step bound ||H_i / T||_F = ||H_i||_F / T); 'off': the metric is H, so the drive -grad L / T is not matched by it and the Newton step scales as 1/T (every svgd round through R19 ran it). Both are swept; neither is 'the' definition (Thomas, 2026-10-11)"})
     svgd_gn_lm: float = field(default=10.0, metadata={"help": "svgd: delta, the Levenberg damping added to the GN Hessian under svgd_metric=gn (10: the 2026-10-10 probe, most feasible of {1e-2, 1, 10} on 12 Panda cells)"})
     svgd_row_units: str = field(default="natural", metadata={"help": "svgd: 'natural' -- the AL is formed on the rows exactly as the program's bindings evaluate them (orientation-type rows times svgd_row_length_scale); 'tolerance' -- every row divided by acceptable_constr_viol_tol (the pre-2026-10-09 path, a control). Feasibility is per row against the tolerance either way"})
     svgd_row_length_scale: float = field(default=1.0, metadata={"help": "svgd: metres per radian on the orientation-type rows (rpy residuals, the c box's rpy rows; NOT joint limits) under svgd_row_units=natural"})
     svgd_kernel: str = field(default="cz", metadata={"help": "svgd: the space of the RBF kernel, median bandwidth per factor (floored by svgd_bandwidth_floor in that factor's units; fielded 2026-10-12: 'cz', was 'q') -- 'q' (the configuration; repulsion pulled back to y through the flow's VJP; every svgd round through R19 that does not name a kernel ran it); 'x' (all of the normalised decision vector y = x / s, repulsion directly in y; on joint space this is q divided by its half-range); 'z' / 'c' (the latent / conditioning-pose block of y alone, repulsion on that block only; learned arm only); 'cz' (fielded: the product of the c and z RBFs, each its own bandwidth; learned only -- the joint-space arm must name another space, e.g. 'q'); 'qz' (the product of the q RBF, pulled back, and the z RBF, direct; learned only); 'pose' (the task frame's [position; canonical quaternion wxyz], pulled back through d pose / d q and the VJP); 'none' (no interaction: both kernel terms dropped, the batched-AL control). z / c / cz / qz are refused on the joint-space arm at solver construction"})
     svgd_bandwidth_floor: float = field(default=0.05, metadata={"help": "svgd: floor on the median-heuristic kernel bandwidth"})
-    svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho / T), the whole AL gradient inside it -- an A/B"})
+    svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho), the whole AL gradient inside it -- an A/B"})
     svgd_rho: float = field(default=100000.0, metadata={"help": "svgd: the penalty rho of the augmented Lagrangian -- ONE scalar, fixed for the whole solve, shared by every particle (1e5: fielded 2026-10-12 with svgd_kernel=cz, rounds R14/R17/R17S/R17P/R18/R19; was 1000, the 2026-10-10 screen -- 10/1e3/1e4/1e5 solved 5/12/12/12 learned and 0/10/9/11 joint space of 12 Panda cells, 1e3 the smallest that works with the least resampling)"})
     svgd_dual_lr: float = field(default=None, metadata={"help": "svgd: alpha, the dual-ascent step taken every svgd_inner_iters steps on every particle (lam += alpha h~, mu = max(0, mu + alpha g~)); None = svgd_rho, the textbook step; 0 = a pure quadratic penalty (multipliers stay zero)"})
     svgd_multiplier_max: float = field(default=1e4, metadata={"help": "svgd: box on the magnitude of every multiplier; the clipped entries are counted"})
@@ -724,8 +727,9 @@ class ProgramOptions:
     svgd_resample: str = field(default="native", metadata={"help": "svgd: what happens at a check to a RUNAWAY particle (|q|_inf > svgd_resample_q_max) or a NON-FINITE one (a non-finite configuration or row) -- 'native' (fielded): both are redrawn from the arm's native start with zero multipliers (n_resampled); 'drop': both are removed from the swarm for the rest of the solve -- frozen, out of every other particle's kernel average, repulsion and median bandwidth, never feasible or selected (n_dropped; n_live at stop; every particle dropped stops the swarm, stop_reason all_dead, scored infeasible); 'keep': a runaway is NOT redrawn and keeps stepping, while a non-finite particle, which cannot keep stepping without poisoning the kernel average, is dropped exactly as under 'drop' (n_dropped)"})
     svgd_recheck_topk: int = field(default=10, metadata={"help": "svgd: how many particles feasible on the batched rows, in objective order, get the exact Drake `EvalBinding` re-check (float64); the first passer is returned. The same re-check gates a stall stop (the gate-edge rule, 2026-10-12): if none passes, the swarm continues with its feasibility level tightened x0.9 (n_recheck_failures, feas_level)"})
     svgd_time_reserve: float = field(default=0.1, metadata={"help": "svgd: fraction of `max_wall_time` held back from the swarm for the selection and the Drake re-check"})
-    svgd_stop_patience: int = field(default=5, metadata={"help": "svgd: once a particle is feasible at the gate, stop (converged) after this many consecutive outer checks at which the best feasible particle's objective improved by less than svgd_stop_rel"})
+    svgd_stop_patience: int = field(default=3, metadata={"help": "svgd: once a particle is feasible at the gate, stop (converged) after this many consecutive outer checks at which the best feasible particle's objective improved by less than svgd_stop_rel (3: adopted 2026-10-16 from round R24's `pat3`; rounds R1-R28 ran 5)"})
     svgd_stop_rel: float = field(default=1e-3, metadata={"help": "svgd: the relative improvement of the best feasible objective that counts as progress for the stop rule"})
+    svgd_stop_select_objective: str = field(default="full", metadata={"help": "svgd: which objective the STALL RULE and the SELECTION read -- 'full' (the pin: every cost binding, the learned-only regularisers included) or 'shared' (the shared objective only, the regularisers excluded by name as in benchmark.reported_cost; the DRIVE is unchanged either way). Pre-registered as stage SVGD_R29 (2026-10-16)"})
     svgd_warmup: str = field(default="none", metadata={"help": "svgd: 'none' or 'cem' -- a forward-only Cross-Entropy phase on the penalised merit before the gradient phase; a phase of the population method, named in full in every table and A/B tested"})
     svgd_warmup_iters: int = field(default=10, metadata={"help": "svgd: CEM warm-up iterations"})
     svgd_warmup_elite: float = field(default=0.1, metadata={"help": "svgd: CEM elite fraction"})
@@ -756,6 +760,18 @@ class ProgramOptions:
         ## else would be a third configuration nobody measured.
         if self.flow_cuda_graph and not self.compile_flow_jacobian:
             raise ValueError("flow_cuda_graph requires compile_flow_jacobian (--compile)")
+        ## The log-det is the density of `flow(c, z)`. Under `lift_q` the configuration is a
+        ## separate variable tied to the flow by an equality, and under `chart_error_scale`
+        ## the map is the flow plus a perturbation whose Jacobian the FrEIA log-det does not
+        ## carry: under either the term would not be the density it is named for.
+        if not float(self.flow_logdet_weight) >= 0.0:
+            raise ValueError(f"flow_logdet_weight must be >= 0, got {self.flow_logdet_weight!r}")
+        if self.flow_logdet_weight > 0.0 and self.lift_q:
+            raise ValueError("flow_logdet_weight > 0 is refused under lift_q (the log-det is "
+                             "the density of flow(c, z), not of the lifted q)")
+        if self.flow_logdet_weight > 0.0 and self.chart_error_scale:
+            raise ValueError("flow_logdet_weight > 0 is refused with chart_error_scale != 0 "
+                             "(the perturbed chart's log-det is not FrEIA's)")
         if self.analytic_branches not in (4, 8):
             raise ValueError(f"analytic_branches must be 4 or 8, got {self.analytic_branches}")
         if self.analytic_backend not in ("python", "cpp"):
@@ -828,7 +844,8 @@ ORIENTATION_ERROR_FORMS = ("rpy", "rpy_boxed")
 # the penalty was per instance because the compiled thing was per instance.)
 
 
-def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.0):
+def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.0,
+                      with_logdet=False):
     """`vars -> (q, q)`, the shape `jacrev(..., has_aux=True)` wants.
 
     Returning q twice is what lets one reverse pass yield both dq/dvars and q, instead of
@@ -843,6 +860,13 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
     dose-response experiment: the Panda's 3.8 mm chart pushed through the iiwa's
     16.6-64 mm regime). It is a function of the conditioning pose and latent only, so the
     correction's analytic identity block in the Jacobian is untouched.
+
+    `with_logdet` (only when `flow_logdet_weight > 0`) returns `y = [q, log|det dx/dz|]`
+    in place of `q`, the log-det being the FrEIA call's second return (the reverse map's,
+    summed over the coupling blocks), which the default path discards. It is a STRUCTURAL
+    flag rather than an always-on extra row: an `ndof + 1`-row jacrev is not bit-identical
+    to the `ndof`-row one in its q rows (~1e-14), and every run without the term must stay
+    exactly what it was.
     """
     if chart_error_scale:
         # Explicit device="cpu": ikflow installs a global default-device override that
@@ -857,6 +881,11 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
         c, z, correction = vars[:7], vars[7:7 + width], vars[7 + width:]
         c_torch = torch.cat(
             [c.unsqueeze(0), torch.zeros((1, 1), dtype=vars.dtype, device=device)], dim=1)
+        if with_logdet:
+            output, logdet = nn_model(z.unsqueeze(0), c=c_torch, rev=True)
+            y = torch.cat([output[0, :num_arm_dof] + correction,
+                           logdet.reshape(1).to(output.dtype)])
+            return y, y
         output, _ = nn_model(z.unsqueeze(0), c=c_torch, rev=True)
         q = output[0, :num_arm_dof] + correction
         if chart_error_scale:
@@ -939,13 +968,15 @@ class GraphedFlowCall:
         return tuple(t.clone() for t in self.static_out)
 
 
-def _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale):
+def _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet=False):
+    ## `with_logdet` changes the function's output, so it must key the compiled-jacrev and
+    ## CUDA-graph caches: without it one variant would be handed the other's graph.
     return (id(nn_model), width, num_arm_dof, str(device),
-            next(nn_model.parameters()).dtype, float(chart_error_scale))
+            next(nn_model.parameters()).dtype, float(chart_error_scale), bool(with_logdet))
 
 
 def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_error_scale=0.0,
-                    cuda_graph=False):
+                    cuda_graph=False, with_logdet=False):
     """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked, and
     replayed as a CUDA graph on top of that if asked.
 
@@ -953,11 +984,12 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
     which 13 reach the network -- and the measurements behind that are in CLAUDE.md.
     """
     jacobian_gen = torch.func.jacrev(
-        MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale),
+        MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale,
+                          with_logdet=with_logdet),
         has_aux=True)
     if not compile_it:
         return jacobian_gen
-    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale)
+    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet)
     if key not in _COMPILED_JACOBIANS:
         _COMPILED_JACOBIANS[key] = torch.compile(jacobian_gen)
     if not cuda_graph:
@@ -968,15 +1000,18 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
     return _FLOW_GRAPHS[graph_key]
 
 
-def FlowValueGen(nn_model, width, num_arm_dof, device, chart_error_scale=0.0):
+def FlowValueGen(nn_model, width, num_arm_dof, device, chart_error_scale=0.0,
+                 with_logdet=False):
     """`vars -> (q, q)` for the plain forward pass: compiled, under no_grad, CUDA-graphed.
 
     Used only under `flow_cuda_graph`; otherwise the forward pass stays the eager
     `MakeFlowInference`, so a run without the switch is exactly what it always was.
     """
-    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale) + ("value",)
+    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale,
+                   with_logdet) + ("value",)
     if key not in _FLOW_GRAPHS:
-        infer = MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale)
+        infer = MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale,
+                                  with_logdet=with_logdet)
 
         def forward(vars):
             with torch.no_grad():
@@ -1094,6 +1129,9 @@ class IKFlowProgram:
         ## bit-identical, which is what the A/B test checks.
         if self.options.joint_limit_penalty_weight > 0.0 and hasattr(self, "z"):
             self.JointLimitPenaltyCost()
+        ## Learned-only (the latent is the flow's), guarded like the rest.
+        if getattr(self.options, "flow_logdet_weight", 0.0) > 0.0 and hasattr(self, "z"):
+            self.FlowLogDetCost()
 
     def LatentCost(self):
         '''A quadratic pull towards the centre of the latent prior.
@@ -1290,16 +1328,108 @@ class IKFlowProgram:
         if fn is None:
             make = (FlowValueGen if getattr(self.options, "flow_cuda_graph", False)
                     else MakeFlowInference)
-            fn = self._flow_inference = make(
-                self.ik_solver.nn_model, self.ik_solver.network_width,
-                self.num_arm_dof, DEVICE, self.options.chart_error_scale)
+            on = self._FlowLogDetOn()
+            fn = make(self.ik_solver.nn_model, self.ik_solver.network_width,
+                      self.num_arm_dof, DEVICE, self.options.chart_error_scale,
+                      with_logdet=on)
+            if on:
+                fn = self._StashingFlowCall(fn, jacobian=False)
+            self._flow_inference = fn
         return fn
 
     def MakeJacobianGen(self):
-        return FlowJacobianGen(
+        on = self._FlowLogDetOn()
+        gen = FlowJacobianGen(
             self.ik_solver.nn_model, self.ik_solver.network_width, self.num_arm_dof,
             DEVICE, self.options.compile_flow_jacobian, self.options.chart_error_scale,
-            cuda_graph=getattr(self.options, "flow_cuda_graph", False))
+            cuda_graph=getattr(self.options, "flow_cuda_graph", False), with_logdet=on)
+        return self._StashingFlowCall(gen, jacobian=True) if on else gen
+
+    ## ------------------- the flow's log-det (flow_logdet_weight) ------------------- ##
+    ##
+    ## With the term on, the flow call returns `[q, logdet]` (and the jacrev one extra row).
+    ## The robots' VarsToQ / VarsToConfigAndQ call sites are left exactly as they are: they
+    ## receive the first `ndof` rows through `_StashingFlowCall`, which leaves the log-det's
+    ## value and its row `d logdet / d flow_vars` in `_logdet_stash`, and `QAndPose` files
+    ## the stash in its memo beside `(q, pose, cfg)`. So the cost costs no network pass of
+    ## its own -- the rule this file was built around.
+
+    def _FlowLogDetOn(self):
+        return float(getattr(self.options, "flow_logdet_weight", 0.0)) > 0.0
+
+    def _StashingFlowCall(self, fn, jacobian):
+        n = self.num_arm_dof
+
+        def call(vars):
+            a, y = fn(vars)
+            ld = float(y[n].detach())
+            if jacobian:
+                self._logdet_stash = (ld, a[n].detach().cpu().numpy())
+                return a[:n], y[:n]
+            self._logdet_stash = (ld, None)
+            return y[:n], y[:n]
+        return call
+
+    def _FlowVars(self, rpy_vars, autodiff):
+        """`[xyz | wxyz | z | correction]`, the layout `MakeFlowInference` consumes, from the
+        lumped decision vector: the same lumping every robot's `VarsToQ` performs."""
+        width = self.ik_solver.network_width
+        n = self.num_task_vars
+        vars = np.zeros(7 + width + self.num_arm_dof,
+                        dtype=AutoDiffXd if autodiff else np.float64)
+        xyz, quaternion = self.TaskVarsToPose7(
+            rpy_vars[:n], AutoDiffXd if autodiff else float)
+        vars[:3] = xyz
+        vars[3:7] = quaternion
+        vars[7:7 + width] = rpy_vars[n:n + width]
+        vars[7 + width:] = rpy_vars[n + width:n + width + self.num_arm_dof]
+        return vars
+
+    def FlowLogDet(self, vars):
+        """`(value, d value / d flow_vars or None)` at an iterate `QAndPose` has evaluated."""
+        key = self._FlowCacheKey(vars)
+        cache = getattr(self, "_flow_cache", None)
+        if cache is not None:
+            hit = cache.get(key)
+            if hit is not None and len(hit) > 3 and hit[3] is not None:
+                return hit[3]
+        last = getattr(self, "_last_logdet", None)
+        if last is not None and last[0] == key and last[1] is not None:
+            return last[1]
+        raise RuntimeError("FlowLogDet: no log-det memoised at this iterate (QAndPose first, "
+                           "with flow_logdet_weight > 0)")
+
+    def FlowLogDetCost(self):
+        self.flow_logdet_cost = self.prog.AddCost(
+            func=self.EvalFlowLogDetCost, vars=self.lumped_vars)
+        self.flow_logdet_cost.evaluator().set_description("FlowLogDetCost")
+
+    def EvalFlowLogDetCost(self, vars):
+        """`w * log|det dx/dz|` of the flow at the iterate, from `QAndPose`'s memo (no second
+        network pass). The AutoDiffXd row is chain-ruled through the same lumping
+        (`_FlowVars`: rpy -> quaternion) VarsToQ applies to the flow's Jacobian."""
+        self.QAndPose(vars)
+        value, row = self.FlowLogDet(vars)
+        w = float(self.options.flow_logdet_weight)
+        if isinstance(vars[0], AutoDiffXd):
+            flow_vars = self._FlowVars(vars, True)
+            gradients = np.array([v.derivatives() for v in flow_vars])
+            return AutoDiffXd(w * value, w * (row @ gradients))
+        return w * value
+
+    def FlowNegLogDensity(self, lumped):
+        """`|z|^2/2 + log|det dx/dz|` at a plain lumped decision vector: the chart's own
+        `-log p(x | c)` up to a constant (on the iiwa, of `(q, pad)`). One eager forward
+        pass, outside any solve -- a recorded diagnostic, never part of a program, so it
+        neither reads nor fills the memo and never touches a CUDA graph."""
+        flow_vars = self._FlowVars(np.asarray(lumped, dtype=float), False)
+        infer = MakeFlowInference(self.ik_solver.nn_model, self.ik_solver.network_width,
+                                  self.num_arm_dof, DEVICE, with_logdet=True)
+        with torch.no_grad():
+            y, _ = infer(torch.tensor(flow_vars, dtype=self.torch_dtype, device=DEVICE))
+        width = self.ik_solver.network_width
+        z = flow_vars[7:7 + width]
+        return 0.5 * float(z @ z) + float(y[self.num_arm_dof])
 
     def WarmUpJacobian(self):
         """Pay torch.compile's one-off cost outside any timed solve.
@@ -1430,10 +1560,15 @@ class IKFlowProgram:
             q = self.LiftedQ(vars)
             self._last_config = (None, q)
             return q, self.fk(q)
+        ## `_logdet_stash` is filled by the flow call inside VarsToConfigAndQ when
+        ## `flow_logdet_weight > 0` (`_StashingFlowCall`) and stays None otherwise.
         if not getattr(self.options, "share_flow_evaluations", False):
             counts[bucket] += 1
+            self._logdet_stash = None
             cfg, q = self.VarsToConfigAndQ(vars)
-            self._last_config = (self._FlowCacheKey(vars), cfg)
+            key = self._FlowCacheKey(vars)
+            self._last_config = (key, cfg)
+            self._last_logdet = (key, self._logdet_stash)
             return q, self.fk(q)
         cache = getattr(self, "_flow_cache", None)
         if cache is None:
@@ -1442,8 +1577,9 @@ class IKFlowProgram:
         hit = cache.get(key)
         if hit is None:
             counts[bucket] += 1
+            self._logdet_stash = None
             cfg, q = self.VarsToConfigAndQ(vars)
-            hit = (q, self.fk(q), cfg)
+            hit = (q, self.fk(q), cfg, self._logdet_stash)
             cache[key] = hit
             while len(cache) > 4:
                 cache.pop(next(iter(cache)))

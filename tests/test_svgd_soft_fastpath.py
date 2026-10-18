@@ -237,11 +237,11 @@ def test_soft_frame_jacobians_match_central_differences():
 ## ------------------------------------------------------------------------------------ ##
 
 def _solver(task, dtype, N=16, kernel="cz", seed=9, mode="eager", start="native"):
-    """A learned soft PCS solver at the fielded pin (c x z, rho 1e5, H / T, the native-draw
-    swarm), its initial swarm and AL state."""
+    """A learned soft PCS solver at the fielded pin (c x z, rho 1e5, the native-draw swarm),
+    its initial swarm and AL state."""
     p = T.program("soft", task, "learned")
     p.options = replace(p.options, which_solver="svgd", svgd_n=N, svgd_kernel=kernel,
-                        svgd_dtype=dtype, svgd_rho=1e5, svgd_metric_temperature="on",
+                        svgd_dtype=dtype, svgd_rho=1e5,
                         svgd_paired_init="native",
                         svgd_compile=mode != "eager", svgd_cuda_graph=mode == "graphed",
                         acceptable_constr_viol_tol=1e-4)

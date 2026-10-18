@@ -268,19 +268,8 @@ class SoftArmIKProgram(IKFlowProgram):
         quaternion = RotationMatrix_[t](RollPitchYaw_[t](task_vars[3:6])).ToQuaternion().wxyz()
         return xyz, quaternion
 
-    def _FlowVars(self, rpy_vars, autodiff):
-        """`[xyz | wxyz | z | correction]`, the layout `MakeFlowInference` consumes."""
-        width = self.ik_solver.network_width
-        n = self.num_task_vars
-        vars = np.zeros(7 + width + self.num_arm_dof,
-                        dtype=AutoDiffXd if autodiff else np.float64)
-        xyz, quaternion = self.TaskVarsToPose7(
-            rpy_vars[:n], AutoDiffXd if autodiff else float)
-        vars[:3] = xyz
-        vars[3:7] = quaternion
-        vars[7:7 + width] = rpy_vars[n:n + width]
-        vars[7 + width:] = rpy_vars[n + width:n + width + self.num_arm_dof]
-        return vars
+    ## `_FlowVars` (the lumping into `MakeFlowInference`'s layout) lives on IKFlowProgram,
+    ## where the flow log-det cost shares it.
 
     def VarsToConfigAndQ(self, rpy_vars, add_correction=True):
         autodiff = isinstance(rpy_vars[0], AutoDiffXd)
