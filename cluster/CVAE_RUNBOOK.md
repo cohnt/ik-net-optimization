@@ -9,12 +9,35 @@ rules, which override anything here.
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE AS OF 2026-10-18 -- NOTHING SUBMITTED
+## STATE AS OF 2026-10-18 18:30 -- THE WHOLE CHAIN IS QUEUED (staged commit 9396d99)
 
-Scripts written and committed on `chart-cvae`; nothing staged, nothing on the queue. The cVAE
-model, trainer, exporter and screen (`src/charts/cvae.py`, `scripts/training/{train,export,screen}_cvae.py`)
-and the chart refactor are separate work on the same branch; the cluster half needs them merged
-into what gets staged.
+Submitted unattended for the night (Thomas travelling; he ruled the screen check-in before the
+benchmarks is skipped -- read the screens alongside the results). Smokes were skipped: the plumbing
+was checked locally instead (untrained cVAE chart through IPOPT paired/native, AL-SVGD
+paired/native on CPU, and the CUDA-graph path on the laptop GPU -- all ran, no dead-arm abort).
+
+| step | jobs | depends on |
+| --- | --- | --- |
+| screw7_p050 dataset rebuild (xeon-p8) | 5953556, COMPLETED 7.5 min | -- |
+| cVAE training, `PAIRS=1 --all 24:00:00` (two runs per 2-GPU job, so the 4-node cap is never in question) | 5955588 panda, 5955589 iiwa14, 5955590 screw7_p050, 5955591 soft12 | -- |
+| stage CVAE (IPOPT, 264 items incl. the joint-space acceptance item), PROCS=2 | 5955592-94, 5955601 | afterany: the four training jobs |
+| stage CVAE_SVGD (768 items), DRAKE_ENV=crc PROCS=2 | 5955602-05 | afterany: the four training jobs |
+| screw flow retrain `screw7_p050_n6r` (4 nodes, chain_ladder) | 5955608 | afterany: all eight CVAE bench jobs |
+| SCREWREDO (IPOPT+SNOPT, 64), PROCS=2 | 5955609-12 | afterany: 5955608 |
+| SCREWREDO_SVGD (96), DRAKE_ENV=crc PROCS=2 | 5955613-16 | afterany: 5955608 |
+| SCREWREDO_NLOPT (96), PROCS=8 MPS=1 | 5955617-20 | afterany: 5955608 |
+
+**Why the screw flow is retrained** (Thomas, 2026-10-18): the screw dataset was deleted with the
+old tree and rebuilt (same generator, seed 0) but cannot be shown identical to the one `n6` trained
+on, so the fielded rung is retrained on the rebuilt data (`n6r`, same recipe) and the screw
+record's learned rows re-run with it -- flow and cVAE then see the same data. No sweep.
+
+**Resume checks, in order**: `bash cluster/submit_chart_train.sh --status` (all eight at 620000
+steps, exported to `models/<robot>/<robot>__cvae<K>__step620000.*`, screens in
+`results/screen_cvae/`); `sacct` the bench job ids above (a bench job whose checkpoints were
+missing refuses at start and exits -- resubmit it); `bash cluster/submit_ladder.sh --status` for
+`screw7_p050_n6r`; then `python scripts/report_chart_ablation.py --write`. `afterany` means a dead
+predecessor does not stall the chain: always check, never infer from the queue.
 
 ## What runs
 

@@ -389,6 +389,14 @@ measure and report as a stated deviation, not adopt. **Damping an exact Jacobian
 inconsistent**; damping belongs on the Newton step, which Drake's IPOPT does not expose. **Suppressing
 the runaway does not buy success.**
 
+**Chart ablation, in progress (branch `chart-cvae`, 2026-10-18).** The program reaches its
+network only through `src/charts/` (`LoadChart`; `FlowChart` is bit-identical to the old calls).
+Rung one: a standard cVAE decoder as the chart (`src/charts/cvae.py`), K = flow width and K =
+redundancy, paired start = encoder mean (residual beyond the correction box is
+`unrepresentable_start`), IPOPT + AL-SVGD, learned arm only against the record. The screw flow is
+retrained as `n6r` on the rebuilt dataset and its record rows re-run (Thomas: data even between
+networks). LOInK deferred. Ops `cluster/CVAE_RUNBOOK.md`.
+
 ## Other robots (long form: `docs/notes-robots.md`)
 
 **The analytic chart.** Panda's 8 branches = wrist/shoulder/elbow signs (`analytic_branches`, default
