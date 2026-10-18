@@ -2924,7 +2924,9 @@ proposed 100%. Agreed characterisation: AL-SVGD >= ablations > baselines on succ
 matched time under interior point; on solution cost the learned formulation pays a premium on grasp
 and on the soft PCS arm under every optimizer, discussed in the paper rather than hidden.
 
-**Left open at close-out**: the soft PCS pose drive-only prior (0.50x cost at 6 s) as a per-robot stated
-setting (Thomas's call); R25's float64 polish (never built); the screw-arm segfault race at PROCS=2;
-the 168 held `alpha10` pose items on the cluster; the GVS arm under svgd (deferred). The next step is
+**Rulings at close-out (Thomas, 2026-10-18)**: the soft PCS pose drive-only prior (0.50x cost at 6 s) is
+REPORTED AS A FINDING, not fielded; R25's float64 polish is smoked on branch `svgd-polish` (his worry: it
+must be robust to the inequality rows); the screw-arm segfault race is left recorded; the 168 held
+`alpha10` pose items are removed from the cluster so `--reclaim` cannot release them; the GVS arm under
+svgd stays deferred. The next step is
 network-architecture ablations, in another session.
