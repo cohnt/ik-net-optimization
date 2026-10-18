@@ -232,6 +232,13 @@ def test_batched_dataloaders(robot_name="iiwa14"):
     if not os.path.isdir(get_dataset_directory(robot_name)):
         print(f"SKIP batched dataloaders: no local {robot_name} dataset")
         return
+    ## The fork's IkfLitDataset `torch.load`s with no `map_location`, and the laptop's iiwa14
+    ## dataset was saved from CUDA tensors, so it cannot load in a CPU-only run (local runs
+    ## are CPU-only since the 2026-10-18 crash). The fork is not edited for a test.
+    if not torch.cuda.is_available():
+        print(f"SKIP batched dataloaders: the {robot_name} dataset holds CUDA tensors and "
+              "the fork loads without map_location; CPU-only run")
+        return
     data = CVAEDataset(robot_name, 4096, 1000, [DATASET_TAG_NON_SELF_COLLIDING])
     q, pose = next(iter(data.train_dataloader()))
     assert q.shape == (4096, data._samples_tr.shape[1]) and pose.shape == (4096, 7)
