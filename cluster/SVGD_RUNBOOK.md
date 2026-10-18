@@ -1482,8 +1482,9 @@ R20, SMOKE_R20 and the screw / soft PCS smokes are listed in their own sections 
 
 The push is closed; the queue has been empty since 2026-10-17 10:08. The live cluster tree is f312793
 (svgd-tune; patience 3, `svgd_stop_select_objective`), swapped in by job 5943005. The 168 `alpha10`
-pose items of R24 are still HELD by hand-made claims (`<id>.claim` with an owner file "HELD by hand");
-`--reclaim` on that manifest would release them to run. The results of record are promoted under
+pose items of R24 were RETIRED on 2026-10-18 (Thomas's ruling): each held claim now has a hand-written
+`<id>.done` marker ("RETIRED 2026-10-18 ... no result exists for this item") and the owner file says so,
+so `--reclaim` and any resubmission skip them; the manifest reads 4224 / 4224 done with 4056 results. The results of record are promoted under
 `results/<robot>/benchmark/sc_SVGD_R29_*_pin4` (learned, the V4 pin), `sc_SVGD_R30_*_pin4kq` (joint
 space) and `sc_SVGD_R30_*_pin4s2` (seed 2). The result against ablations and baselines:
 `python scripts/report_svgd_2x2.py --write docs/svgd-2x2-tables.md` (no cluster work; reads the promoted
