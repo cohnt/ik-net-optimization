@@ -920,7 +920,7 @@ the box binds on 1 cell of 23,040, R28); the drive-only prior (inert, R29). **Ph
 did NOT happen**: the prior replacing the trust region (moot once the prior is refuted) and replacing the
 Levenberg delta. **One robot-specific result not fielded**: on soft PCS pose the drive-only prior at w = 1
 gives 0.50x the pin's cost (0.50 / 0.69x the IPOPT twin) for 6 s against 1.1 s; a flat or absent c factor
-cuts 18%; Thomas's call whether to carry it as a stated per-robot setting.
+cuts 18%. **Ruled 2026-10-18: reported as a finding, NOT fielded** (one pin for all robots).
 
 **THE SVGD RECORD IS R29 `pin4` (learned) + R30 `pin4kq` (joint space), 2026-10-17**, the record's sixteen
 rows (four robots x grasp / pose x native / paired, 480 cells, 180 s, seed 1, one solve per GPU, the
@@ -976,7 +976,8 @@ V4 (R22); the multipliers at the record's rows are O(0.2-3), so the penalty alon
 **Implementation findings, open**: twelve screw-arm items segfaulted in R22 / R23 (native code, not
 deterministic per cell, clean under faulthandler alone on a node, concentrated on runaway-heavy variants;
 R24-R30 ran 0 of ~9,000 items crashed) -- a race at PROCS=2 is what is left. The float64 Newton polish of
-the returned particle (R25) was never built: residual parity with IPOPT is Thomas's call. The GVS arm under
+the returned particle (R25) is being SMOKED on branch `svgd-polish` (2026-10-18; Thomas's worry: a polish must not
+break inequality rows); the segfault is left recorded (Thomas, 2026-10-18). The GVS arm under
 svgd is DEFERRED (2026-10-12; its JAX forward model runs on the CPU). R24's remaining `alpha10` pose rows
 (168 items) are left held on the cluster; `--reclaim` would release them. **The push is CLOSED
 (2026-10-18); the next step is network-architecture ablations, in another session.** The staged cluster
