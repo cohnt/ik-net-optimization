@@ -1477,3 +1477,15 @@ R20, SMOKE_R20 and the screw / soft PCS smokes are listed in their own sections 
   It re-runs the branch's own `summarise`, which knows the svgd records.
 - `verify_sharding.sh` was not run, since it solves. Nothing about sharding or grid construction
   changed: R1 and R2 use the standard target-major `--shard`.
+
+## Close-out (2026-10-18)
+
+The push is closed; the queue has been empty since 2026-10-17 10:08. The live cluster tree is f312793
+(svgd-tune; patience 3, `svgd_stop_select_objective`), swapped in by job 5943005. The 168 `alpha10`
+pose items of R24 are still HELD by hand-made claims (`<id>.claim` with an owner file "HELD by hand");
+`--reclaim` on that manifest would release them to run. The results of record are promoted under
+`results/<robot>/benchmark/sc_SVGD_R29_*_pin4` (learned, the V4 pin), `sc_SVGD_R30_*_pin4kq` (joint
+space) and `sc_SVGD_R30_*_pin4s2` (seed 2). The result against ablations and baselines:
+`python scripts/report_svgd_2x2.py --write docs/svgd-2x2-tables.md` (no cluster work; reads the promoted
+runs and the IPOPT / SNOPT / NLopt twins). The record's time-matched table: `scripts/report_time_matched.py`
+with the three prefixes CLAUDE.md names, under the finish-the-current-solve rule.

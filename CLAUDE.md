@@ -874,213 +874,113 @@ space needs 970 median iterations against 48 on the free one. Under SNOPT it nev
 *toward* the learned arm and flips one away from it. Step rejection was the remaining candidate and is
 refuted too, so the containment verdicts stand as measured under IPOPT.
 
-## The fourth method class: AL-SVGD on the fixed programs (branch `svgd`, 2026-10-08 to 10-12)
+## The fourth method class: AL-SVGD on the fixed programs (branches `svgd` and `svgd-tune`, 2026-10-08 to 10-18)
 
-**Evidence lives in `docs/svgd-solver.md`** (pre-registration, every round's section, the kernel
-screens); operations in `cluster/SVGD_RUNBOOK.md`; reader `scripts/report_svgd.py --stage SVGD`.
-This file keeps the verdicts and the rulings.
+**Evidence lives in `docs/svgd-solver.md`** (pre-registration and results of every round R1-R30, the
+kernel screens); operations in `cluster/SVGD_RUNBOOK.md`; readers `scripts/report_svgd.py --stage SVGD`
+(round reads) and **`scripts/report_svgd_2x2.py --write docs/svgd-2x2-tables.md` (the result against
+ablations and baselines, the condensed summary first)**. This file keeps the verdicts and the rulings.
 
 **What it is.** Thomas reopened the closed solver axis for a fourth METHOD CLASS: a batch-parallel
-particle method on exactly the existing programs. The fielded method is plain augmented-Lagrangian
-SVGD (PHR merit, Tabor-Hermans form, SVN block-diagonal Gauss-Newton metric, N = 64, float32 swarm,
-K = 10 inner steps per check, rho = 1e3, lr = 0.3, the runaway RESAMPLE from the native draw, stop =
-best feasible objective stalls 5 checks). **The goal is the LEARNED arm under svgd against the
+particle method on exactly the existing programs. **The goal is the LEARNED arm under svgd against the
 learned arm under IPOPT on the same cells; joint-space svgd is an ablation, not a baseline** (Thomas,
 2026-10-10). Rulings: SVGD-style only; exact Drake collision, no proxy; no formulation-specific
-information inside the solver (kernel SPACE is the one deliberate exception, swept); AL is the
-formulation and SVGD the optimizer, one dynamics; `--solver svgd`.
+information inside the solver (kernel SPACE is the one deliberate exception; `svgd_stop_select_objective`
+was approved as a second, about regularisers as a class, and measured inert); AL is the formulation and
+SVGD the optimizer, one dynamics; `--solver svgd`; K stays a separate parameter (2026-10-11, do not
+re-propose the one-loop strip-down); "resample" is the term; the clearances wheel is a strict
+improvement every svgd round uses (the one stated exception to ONE DRAKE); compute footprint (GPU + 40
+threads vs one core) is a paper explanation, not a fairness worry; **the augmented Lagrangian with its
+true dual update stays the method** (2026-10-16: *"more flexible (and arguably more principled) ... leaves
+a lot of future directions open, like ADMM"*) although the pure quadratic penalty ties it on every row.
 
-**THE SVGD RECORD IS STAGE R20 (2026-10-12): the record's sixteen rows at the fielded pin**
-(`SVGD_PINNED_V2`; four robots x grasp / pose x native / paired, 480 cells, 180 s, seed 1, one
-solve per GPU, the clearance row under the clearances venv -- the one stated exception to ONE
-DRAKE; `scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin2[,pin2kq]`;
-`docs/svgd-solver.md` "R20"). Ran in 6 node-hours.
-- **Learned under svgd: 480 / 480 on all sixteen rows, 8 wins / 8 ties / 0 losses against learned
-  under IPOPT on the same cells** (wins: every pose paired row, Panda / iiwa / screw pose native,
-  screw grasp paired; IPOPT at 395-480). Zero clock or step-cap stops anywhere; every cell converged;
-  the gate-edge re-check never failed on 9600 cells. Success is identical cell for cell to the V1
-  rounds (R1 / R12 / R15 / R16, `kq`): **the pin moves cost and wall, never cells.** Nineteen
-  single-factor variants on the Panda had already sat within one cell of each other (N 1-256, rho
-  1e2-1e5, lr, K, T, kernel on/off, resample mode, kernel space).
-- **Cost (cells shared with the twin): below the IPOPT learned arm on all twelve rigid-arm rows**
-  (Panda 0.55-0.81x, iiwa 0.43-0.45x, screw 0.28-0.36x), above it on three soft PCS rows
-  (1.26-1.45x), level on soft PCS pose native. The two levers that bought it ADD: the kernel SPACE
-  (q -> c x z) and rho (1e3 -> 1e5); N does not add to the latent kernel; the native-draw paired
-  init removes the redraw churn at equal cost; the H / T metric is bit-identical at T = 1.
-- **Wall (cap-clamped mean) 0.9-2.6 s on every row**, below IPOPT learned on all eight paired rows
-  and three of four grasp-native rows, above it on pose native (IPOPT 0.6-1.1 s). Residual at stop
-  4e-6 to 3e-5 against IPOPT's 1e-8, gate 1e-3.
-- **The soft PCS arm takes the split step since 2026-10-12** (merge a2a5569): row Jacobians w.r.t.
-  the configuration by forward mode through the exact strain map (`_kinematics_cfg_jacobians`),
-  collision gradient pulled back through `d q_plant / d cfg`; parity with autograd 1e-15, rigid
-  arms bitwise unchanged, pays only compiled (eager it is dispatch-bound and slower). **Cluster:
-  780-850 -> 174-214 ms per outer step (3.7-4.8x), wall 7.5-10.1 -> 1.5-2.6 s, same cells, same
-  step counts** (R17P -> R20). It now sits at 2.4-3.2x the rigid arms per outer step, from 10x.
-- **The joint-space ablation at the pin (`pin2kq`, kernel q; R20 Panda, R21 the other three,
-  2026-10-12): joint space under svgd beats joint space under IPOPT on all sixteen rows**, 480 / 480
-  on twelve; the screw arm leaves 17-20 grasp and 3 pose cells per protocol at the clock (463 / 460
-  / 477 / 477 against IPOPT's 442 / 320), under the 24-cell threshold. Its grasp solutions are dearer
-  than IPOPT joint space's (1.2-3.5x), its rigid pose ones cheaper. **Inside svgd, learned against
-  joint space on the same cells: 2 wins (screw grasp, both protocols), 14 ties, 0 losses**; cost
-  level on grasp, joint space cheaper on pose; the learned swarm keeps 58 feasible particles at stop
-  where joint space keeps 4-5 on rigid grasp (the q kernel spreads it off the manifold). Not a
-  baseline; which pin factor did it is not separated.
-- **Mechanisms settled**: the kernel-off swarm keeps descending to the clock (R1K); the q-space
-  kernel spreads particles OFF the manifold (few feasible, 2x cost) where a latent kernel keeps them
-  on it; the paired-start penalty is the jittered swarm (drawing the paired swarm from the native
-  distribution removes it, R10); the resample carries the paired start (drop / keep lose 30-57% of
-  paired cells, R11); under the fielded metric H the temperature is a step multiplier (T < 1
-  diverges), under H / T it is a well-posed knob inert over two decades; the multiplier box is a
-  bystander (R9); K trades swarm convergence for wall (R6).
+**THE FIELDED PIN IS `SVGD_PINNED_V4` (2026-10-16; stages R29 on), and every piece of it has a measured
+reason** (the tune-and-simplify push R22-R30, branch `svgd-tune`, 2026-10-14 to 10-18; each round
+pre-registered mechanism, diagnostic, prediction and decision rule before its manifest):
 
-**Rulings, 2026-10-11.** K stays a separate parameter (*"The balance of inner to outer steps in AL
-seems like something we need to handle delicately"*) -- do not re-propose the one-loop strip-down.
-"Resample" is the term. The clearances wheel is a strict improvement and every svgd round uses it.
-Compute footprint (GPU + 40 threads vs one core) is a paper explanation, not a fairness worry.
+| setting | value | why it stays (the round) |
+| --- | --- | --- |
+| method | PHR augmented Lagrangian, Tabor-Hermans direction, exact dual step alpha = rho every K = 10 inner steps | alpha = rho / 10 stalls earlier with fewer feasible particles, alpha = 10 rho destroys the swarm; alpha = 0 ties (R24), AL kept by ruling |
+| penalty rho | 1e5 | bought the record's cost (1e3 -> 1e5); 1e6 saturated, the residual set by the stall stop (R24) |
+| kernel space | `cz` (product of the c and z RBFs, median bandwidth, floor 0.05) | `kz` costs 9-26% on every grasp row (particles sharing z but differing in c read as duplicates and are repelled off the feasible set); floor 0.05 is a value on soft PCS grasp (R24). Learned-only: **a joint-space svgd run must name `svgd_kernel=q`** |
+| metric | Stein variational Newton, block-diagonal Gauss-Newton, Levenberg delta 10 | identity crawls on pose and stalls high on grasp (it cannot absorb the 1e5-1e7 row / objective curvature spread rho creates); **delta fixes the gauge along the formulation's own 6-fold (c, z) redundancy** -- delta 0 is dead, delta 1 resamples 7-100x, 100 is a wall trade (R23) |
+| step | lr 0.3 | the 2026-10-10 screen; never moved a cell |
+| particles | N = 64, float32 swarm, particle 0 at the guess, the rest from the native draw under both protocols (`svgd_paired_init=native`) | N is the selection pool: N 32 / 16 trade cost for wall (R24); the native draw removes the jittered swarm's paired penalty (R10 / R18) |
+| resample | runaways (`\|q\|_inf` > 10) redrawn from the native draw | inert on three robots, earns its place on the screw arm (`drop` loses 2-3 cells per screw row, R22) |
+| multiplier box | 1e4 | inert on the learned arm (no clip in 30,720 cells moved a selection) but the joint-space ablation loses 16 grasp cells without it (R22) |
+| stop | best feasible objective stalls 3 checks at rel 1e-3, confirmed by the float64 Drake re-check | patience 3 ADOPTED from R24 (same cells, wall 0.66-0.81x; R1-R28 ran 5); **the gate-edge rule** (2026-10-12): a stall stop stands only if the top-k float64 re-check passes, else the feasibility level tightens x0.9 and the swarm continues (`n_recheck_failures`, `feas_level`) -- five float32 cells in 11,520 had sat 0.05-7% outside the gate |
+| objective the stop and selection read | `full` (regularisers included) | `shared` costs grasp wall 10-60% for nothing (R29) |
 
-**Rulings, 2026-10-12 -- THE FIELDED PIN (`SVGD_PINNED_V2`, R20 on).** Thomas: *"Agree re 1 and 2.
-Native draw is the method and paired is the ablation."* `ProgramOptions` defaults are now
-`svgd_kernel=cz`, `svgd_rho=1e5`, `svgd_metric_temperature=on` (H / T; bit-identical at T = 1;
-**the temperature was removed outright on 2026-10-14**, R22 below) and
-`svgd_paired_init=native` (particle 0 at the shared guess, the rest from the native draw); N, T, lr,
-gn_lm, K, the resample and the stop rule are unchanged. **Native is the method's primary row and
-paired its ablation.** `cz` is learned-only, so **a joint-space svgd run must name its kernel**
-(`svgd_kernel=q`) or it is refused at warm-up. Every round through R19 ran the old pin
-(`SVGD_PINNED_V1`; `SVGD_HISTORICAL_DEFAULTS` records what they ran unnamed) and regenerates
-byte-identically; the reporter prints a v1 round's settings with those defaults filled in.
+**Stripped with compute**: the temperature (`svgd_temperature`, `svgd_metric_temperature`; inert both ways,
+removed c308934, R22). **Refuted or inert, not in the pin** (all on the rigid arms; every one moves soft
+PCS pose): the latent prior N(0, I) on z as a target term (cost +16-335%, wall 2-8x, R26); the flow as an
+exact density (the log-det alone is the push's only success loss, screw grasp 456 / 458, driving the
+swarm into the runaway it was meant to prevent, R27); the correction weight 0 / 1 / 100 against 10 (inert,
+the box binds on 1 cell of 23,040, R28); the drive-only prior (inert, R29). **Phase-3 replacements that
+did NOT happen**: the prior replacing the trust region (moot once the prior is refuted) and replacing the
+Levenberg delta. **One robot-specific result not fielded**: on soft PCS pose the drive-only prior at w = 1
+gives 0.50x the pin's cost (0.50 / 0.69x the IPOPT twin) for 6 s against 1.1 s; a flat or absent c factor
+cuts 18%; Thomas's call whether to carry it as a stated per-robot setting.
 
-**The gate-edge rule (2026-10-12, *"Yes, I like the proposed fix."*).** Five cells in 11,520 stopped
-on a float32 particle inside the 1e-4 gate that float64 Drake read 0.05-7% outside (network error x
-chart gain). The fix costs nothing per step: a stall stop stands only if the existing float64 Drake
-re-check of the top-k passes. If none passes the swarm does not stop: the stall counter resets, the
-solve's feasibility level (`v <= feas_level`, 1.0 = the gate, used by the stop rule, the trace and
-the selection) is tightened x0.9, and it re-tests at the next stall. Recorded per cell as
-`n_recheck_failures` and `feas_level`. Rejected on the way: a per-step float64 check (1 ms per outer
-step for a 0.04% event) and a fixed margin.
+**THE SVGD RECORD IS R29 `pin4` (learned) + R30 `pin4kq` (joint space), 2026-10-17**, the record's sixteen
+rows (four robots x grasp / pose x native / paired, 480 cells, 180 s, seed 1, one solve per GPU, the
+clearance row); R30 `pin4s2` replicates it on seed 2 (480 / 480 on all 16 rows, every median step count
+equal; **the seed-to-seed band on a row's median cost is 0.94-1.10**, so a ratio inside it is a tie, while
+cell-paired reads on one grid reproduce within 0.3%). The V2 record (R20 / R21) is superseded on the same
+cells: success identical, cost and wall within the band. `docs/status-quo-tables.md` column `PS` reads
+these runs. Pin history: V1 (R1-R19, rho 1e3, kernel q, jitter), V2 (R20-R23: `cz`, rho 1e5, native draw),
+V3 (R24-R28: V2 without the removed temperature), V4 (V3 + patience 3); `SVGD_HISTORICAL_DEFAULTS` records
+what each stage ran unnamed and every manifest regenerates byte-identically.
 
-**The tuning push (branch `svgd-tune`, from 2026-10-14): strip, then replace with structure.**
-Thomas's end goal: a high-performing AL-SVGD solver for the LEARNED formulation that leverages the
-formulation's structure, with a clear reason for every piece. His order: strip what does not earn
-its place (phase 2), replace special treatment with formulation insight (3), add insight (4). Every
-round pre-registers mechanism + diagnostic + prediction + decision rule in `docs/svgd-solver.md`
-("The tuning push") BEFORE its manifest; success is at the ceiling, so rounds read on cost (cells
-shared with the pin, ratio within [0.95, 1.05] = noise), wall (+-15%), feasible particles (+-3),
-outer steps (+-2), residual (same decade); K is not re-proposed (his 10-11 ruling). Roadmap: R22
-strips, R23 the phase-1 conditioning exceptions, R24 tuning (N, rho 1e6, stall patience, dual
-step, c x z bandwidth rule incl. the floor, which R20's record shows binding on the pose task's c
-block), R25 float64 polish (code, his call), R26 latent prior N(0, I) on z, R27 the flow as exact
-density (log-det), R28 the correction regulariser. Memory: `svgd-tune-push`.
-- **R22 (2026-10-14, 16 rows x 4 strips at the pin + a Panda joint-space check; 5.5 h on 4 nodes).**
-  Every learned variant keeps the pin's 480 / 480 and its verdict against IPOPT on every row. **The
-  temperature is inert** (T = 10 within noise on 15 of 16 rows, T = 0.1 buys nothing and costs wall
-  on 4) -- **`svgd_temperature` and `svgd_metric_temperature` are REMOVED (Thomas; c308934)**, the
-  T = 1 step bit-identical. **The multiplier box is inert on the learned arm on all 16 rows**
-  (unboxed multipliers run to 1e11 without moving the selected particle) **but not on the
-  joint-space ablation** (Panda grasp 464 v 480 to the clock, p = 3e-5, wall 4.6x), so it stays as
-  a stated setting of that arm. **The resample earns its place on the screw arm only**: `drop`
-  loses 2-3 cells per screw row (whole swarms dead, 20-22 of 64 particles dropped per grasp cell),
-  inert on the other three robots; R27's density term is the structural answer. Everything matched
-  its pre-registered mechanism. One item segfaulted (one-off, resubmitted).
-- **R23 screen (12 Panda cells, laptop) before its 480-cell round**: delta 0 (`svgd_gn_lm=0`) and
-  tolerance row units are DEAD at the pin (every particle redrawn at every check, clock stops) --
-  **the Levenberg delta is what fixes the gauge along the learned formulation's own 6-fold (c, z)
-  redundancy** (`dq / d(c, z)` is 7 x 13, so the GN block is rank-deficient wherever the region rows
-  are inactive), the phase-3 candidate R26's latent prior replaces; the identity metric, delta 1
-  and delta 100 solve the screen but cost +24-27% (identity, delta 1) or 2x the steps (delta 100).
-- **R23 (2026-10-15, identity metric / delta 1 / delta 100 on the 16 rows, 9.9 h on 4 nodes):
-  NOTHING IS STRIPPED -- the SVN metric, delta 10 and the natural row units all earn their place.**
-  Identity: cost +13-100% on grasp and +41-280% on pose (rigid arms), ONE feasible particle and
-  240-294 outer steps on pose (25-30 s); level only on the soft PCS arm, whose row curvature is
-  smallest. Delta 1: cost up on all 16 rows, 1-2 feasible particles, 7-100x the resamples, the
-  clock on six rows -- **cost FALLS with delta (1 -> 10 -> 100) on every row, the opposite of the
-  prediction: delta keeps particles on the manifold along the (c, z) fibre, it does not brake the
-  objective.** Delta 100: 480 / 480 everywhere, residual a decade BELOW the pin, cost -1 to -27%,
-  at 1.3-2.8x the grasp wall -- a trade, 10 stands. **Twelve screw-arm items segfaulted** (R22 1,
-  R23 8 + 3 on re-run; native code, not deterministic per cell, clean under faulthandler alone on a
-  node), concentrated on the runaway-heavy variants; mechanism open (local probe of the clearance
-  query on non-finite particles: huge finite configurations do not crash it; a race at PROCS=2 is
-  what is left). R24 ran clean (0 of 4056 items crashed).
-- **R24 (2026-10-15, eleven single-`--set` tuning variants on the 16 rows, 15 h on 4 nodes; `docs/svgd-solver.md`
-  "R24 results"): NOTHING DELETED BY RULE, two questions to Thomas.** 480 / 480 on every complete row.
-  **N = 64 is the selection pool**: cost rises monotonically as the swarm shrinks (N 32 +2-32%, N 16
-  +16-125% on the rigid rows) for wall 0.34-0.89x. **rho = 1e5 is the saturation point**: 1e6 moves
-  cost < 1.2%, adds 5-10 resamples per cell on the rigid pose rows, and leaves the residual in the same
-  decade -- the residual is set by the stall stop, not the penalty. **Stall patience 3 meets its
-  adoption rule** (cost within 1% on 16 of 16, wall 0.66-0.81x on 16 of 16, 2-6 fewer feasible particles on
-  five rows) -- **ADOPTED (Thomas, 2026-10-16): `svgd_stop_patience=3` is the default and the pin is
-  `SVGD_PINNED_V4` (= V3 + that setting) for every stage after R28; R1-R28 ran 5**; patience 2 crosses
-  into cost and feasible count. **The dual step has a corner:
-  `alpha0` (no multiplier update, the pure quadratic penalty) TIES the pin on every metric on all 16
-  rows** -- the prediction's premise (multipliers 1e2-1e4) was the pin's maxima; the medians scale with
-  rho, so they are `rho * c` one-step estimates and the true multipliers are ~0.2-3, which the penalty
-  alone puts inside the gate (**the AL at alpha = rho stays the method, Thomas 2026-10-16: more flexible and principled than a
-  penalty, and it keeps ADMM-like directions open; the multipliers are a safeguard this record never needs**); alpha = rho / 10 stalls earlier with 8-28 fewer feasible particles and
-  dearer selections, alpha = 10 rho destroys the swarm (1 feasible particle, 80-750 resamples) and runs
-  every pose cell to the clock (iiwa native 3 / 480; **its other seven pose rows HELD by Thomas**, 168
-  items pre-claimed). alpha = rho is kept as the formulation's value; whether the pure penalty is a
-  legitimate simplification of the METHOD is his question. **`cz` earns its place**: `kz` costs 9-26% on
-  every grasp row with 10-26 fewer feasible particles and `|z|` at the trust-region radius; the floor
-  0.05 is a value on the soft PCS grasp rows (1e-3 costs +10%) and 0.2 loses 8-16 feasible particles
-  everywhere. One trade carried into R26's reading: a flat or absent c factor cuts the soft PCS POSE
-  cost 18% (to 0.83 / 1.11x the IPOPT twin from 1.005 / 1.33x), the one place svgd is dearer than IPOPT.
-- **R26 (2026-10-15/16, the latent prior N(0, I) on z at w = 0.1 / 1 / 10 and w = 1 without the trust
-  region, 16 rows, 17 h on 4 nodes; `docs/svgd-solver.md` "R26 results"): the prior as a target term is
-  REFUTED as a fielded piece.** 480 / 480 everywhere, but on the twelve rigid rows cost +16-335% and
-  wall 2-8x at every dose, resamples NOT reduced (screw +7-37%), `|z|` of the selection 1.0-1.6 / 0.2-0.9 /
-  0.1-0.5 against the pin's 2.5-4.4: the term enters the stall rule and the selection, so the swarm walks
-  down the prior along the (c, z) self-motion after the task has stalled and the selection relocates to
-  the prior's mode, which on the rigid arms is not where the task cost is small (saturated from w = 0.1).
-  The trust region earns nothing once the prior is in (`lp1notr` = `lp1`, selection `|z|` max 1.2-2.2),
-  moot. **Exception: soft PCS pose, cost 0.62x the pin (0.62 / 0.83x the IPOPT twin) at 64 / 64 feasible
-  and a decade lower residual, for 13-18x the wall** -- a trade carried, not adopted. Open question to
-  Thomas: whether a structural term belongs in the drive only, not the stop rule or the selection. R27
-  running (its `fd` rungs carry the prior; `ld1` is the informative one), R28 part 1 queued; part 2 waits.
-- **R27 (2026-10-16, the flow as an exact density: `ld1` log-det alone, `fd0p1` / `fd1` = prior + log-det at
-  0.1 / 1, 16 rows, 6.7 h; `docs/svgd-solver.md` "R27 results"): REFUTED in every form.** `ld1` is the push's
-  first success loss -- screw grasp 456 / 458 of 480, 22-24 cells at the clock, resamples 6x the pin's, `|z|`
-  at the trust region's radius, cost +28-320%: the log-det alone drives the swarm INTO the runaway it was
-  meant to prevent (its gradient is 20x larger on c than on z, so it moves the conditioning pose, not the
-  latent). `fd` lowers the prior's cost penalty (Panda grasp 1.24 v 1.72, iiwa 1.9-2.3 v 2.6) and wall 2-3x
-  but stays +18-265% over the pin on the rigid rows, through the stall rule (a -19 to -42 target loosens
-  the relative stall test), not the drive. R28 part 2 has no winner to run on and is dropped.
-- **R28 part 1 (2026-10-16/17, the correction penalty at w = 0 / 1 / 100 against the pin's 10, 16 rows, 3.9 h;
-  `docs/svgd-solver.md` "R28 part 1 results"): 10 STANDS; the weight does nothing on the rigid arms.** 480 / 480
-  everywhere; cost within +-3% on all twelve rigid rows from w = 0 to 100, `|q_c|` 2e-4 to 5e-3 (the pin's is
-  5e-4 to 1e-3, not the IPOPT record's 2e-5), the +-0.1 box binding on 1 cell of 23,040 even unpenalised --
-  the reparameterised-joint-space flag never fires. The dose shows only on soft PCS pose (0.71 / 0.88 / 1.00 /
-  1.15), the third round singling out that robot's pose task. w = 100 stops the swarm sooner (grasp wall
-  0.63-0.85). Part 2 dropped: no density winner, and a `q_c` prior would replace a box that never binds.
-- **R29 (2026-10-17, the regulariser's three roles: `svgd_stop_select_objective=shared` alone and with the
-  latent prior at 0.1 / 1 in the drive only, against the V4 control `pin4`, 16 rows, 5.6 h; `docs/svgd-solver.md`
-  "R29 results"): the drive-only prior is INERT on the rigid arms, and the roles are not free to separate.**
-  480 / 480 everywhere. `pin4` reproduces `pat3` on every row median (cost within 0.3%) and on 51% of cells
-  (the same-configuration band: median 0.5%, p90 26%, 131 of 7,680 cells > 50%). With the stop and the
-  selection on the shared objective, the prior keeps rigid cost within the band (12 / 12 rows at w = 0.1,
-  10 / 12 at w = 1), `|z|` between the pin's and R26's, resamples unchanged (the runaway prediction fails a
-  third time), feasible particles -7 to -16 at w = 1. `shared` alone costs wall on every grasp row
-  (+10-60%: the correction penalty earns a role in the stall rule) and returns R28's `qc0` point on soft PCS
-  pose (0.70): the pin stays `full`. **Soft PCS pose: the drive-only prior at w = 1 gives 0.50x the pin's
-  cost (0.50 / 0.69x the IPOPT twin) at 63 / 64 feasible for 6 s against 1.1 s** -- the push's largest cost
-  result, one robot, not fielded by the rule; a question for Thomas.
-- **R30 (2026-10-17, the V4 pin's record re-measure, 2.8 h): the joint-space ablation at V4 (`pin4kq`) matches
-  `pin2kq` within the clock-bound band (480 / 480 on 12 rows, screw grasp 463 / 464, cost within 1%, wall
-  0.77-0.86x), and the seed-2 replication (`pin4s2`) is 480 / 480 on all 16 rows with every median step count
-  equal. The seed-to-seed band on a row's median cost is 0.94-1.10 (wider than the push's [0.95, 1.05]), so a
-  single-row 5-8% reading across grids is noise; the push's cell-paired reads on one grid reproduce within
-  0.3%. The fielded pin's record is two seeds deep. THE QUEUE IS EMPTY (2026-10-17 10:08).**
-- **R29 / R30 were queued 2026-10-16 (Thomas: pre-register the drive-only round; compute through the weekend).**
-  `svgd_stop_select_objective` = `full` (pin) | `shared`: the stall rule and the selection read the shared
-  objective (regularisers excluded by name, as `reported_cost`), the drive unchanged -- a solver rule about
-  regularisers as a class, approved as a kernel-space-kind exception. R29: `pin4` (the V4 control), `so`,
-  `lp0p1so`, `lp1so` (16 rows each); R30: `pin4kq` (joint-space ablation at V4) and `pin4s2` (seed 2).
-  Pre-registration: `docs/svgd-solver.md` "Stage SVGD_R29" / "R30". Restage between rounds without a
-  laptop: `STAGE_SUBDIR=repo-next` + `cluster/swap_staged_tree.sh` chained after the running round.
+**The result, as a double contribution (Thomas, 2026-10-18: the formulation and the optimizer; metrics
+success, cost, wall and the time-matched axis -- no iterations, svgd counts outer steps, not majors).**
+Proposed = learned + AL-SVGD; ablation A = the learned formulation under IPOPT / SNOPT / NLopt; ablation
+B = joint space under AL-SVGD; baselines = joint space under the Drake solvers. Tables:
+`docs/svgd-2x2-tables.md`.
+- **Success: the proposed method is 480 / 480 on all 16 rows with zero clock or step-cap stops**, 8 / 8 / 0
+  against A-IPOPT (395-480), 14 / 2 / 0 against A-SNOPT (233-479), 16 / 0 / 0 against A-NLopt (3-360),
+  2 / 14 / 0 against B (463-480; the screw arm's clock stops, 16-17 grasp and 4 pose cells, under the
+  24-cell threshold), 16 / 0 / 0 against every baseline (joint space under IPOPT 200-472). Under IPOPT
+  the formulation is worth +8 to +280 cells over joint space; under joint space the optimizer is worth
+  +8 to +280 over IPOPT; **each alone takes most rows to or near the ceiling, the combination is the only
+  corner at the ceiling everywhere, and the screw arm is where only the combination gets there.**
+- **Cost** (ratio corner / proposed on cells both solved, shared objective): the proposed method is
+  cheaper than its own formulation under IPOPT on all 12 rigid rows (1.22-3.48x) and costlier on soft PCS
+  (0.70-0.81 grasp); joint space under IPOPT is cheaper on rigid grasp (0.54-0.85) and every soft PCS row
+  (0.27-0.42), the proposed cheaper on rigid pose (1.68-3.46). Inside AL-SVGD joint space is level on grasp
+  and cheaper on pose (0.73-0.98). **So the cost premium against joint space on grasp and on the soft PCS
+  arm is the learned formulation's, under every optimizer; AL-SVGD removes it only against its own
+  formulation under IPOPT, by selecting the best of a 42-58-particle feasible swarm.** Residual at stop
+  4e-6 to 3e-5 against IPOPT's 1e-8, both inside the 1e-3 gate.
+- **Wall** (cap-clamped mean) 0.70-2.00 s on every row: faster than A-IPOPT on 12 rows (slower on soft PCS
+  grasp and pose native), than A-SNOPT and every SNOPT / NLopt corner on all 16, than B on 12 (slower on
+  Panda grasp); joint space under IPOPT is faster on 10 rows (every pose row at 0.1-0.5 s).
+- **Time-matched** (the corner restarts from the target's recorded starts inside the proposed method's wall
+  on that cell, the running solve finishing): A-IPOPT 84.6-100% (7 rows at >= 99%), joint space under
+  IPOPT 83.1-99.6% (2), the SNOPT corners 51-94%, NLopt 0-75%; the proposed 100% everywhere.
+- **The fair one-line characterisation** (agreed 2026-10-18): on success and on wall at matched time the
+  ordering is AL-SVGD >= ablations > baselines under interior point, the proposed method at the ceiling on
+  every row; on solution cost the learned formulation pays a premium on grasp and on the soft PCS arm
+  under every optimizer. The exceptions are discussed, not hidden. **The contribution is clear and strong
+  on success, robustness to the start, wall at matched time and generality across four robots; it is not
+  a solution-quality result against joint space and the paper must not claim one.**
 
-**Still open**: the paper tables from R20 (`report_svgd` stage mode; the multistart column via
-`scripts/svgd/cross/`; Thomas writes every word -- numbers and verdicts only from here);
-the GVS arm under svgd is DEFERRED (Thomas, 2026-10-12) -- its JAX forward model runs on the CPU,
-and a dlpack bridge would not remove the batched root-find's cost; what to do with R14's
-combinations. The staged cluster tree is f312793 (svgd-tune; patience 3, `svgd_stop_select_objective`), swapped in by job 5943005 on 2026-10-17.
+**Mechanisms settled along the way**: the kernel-off swarm keeps descending to the clock (R1K); the q-space
+kernel spreads particles OFF the manifold (3-4 feasible of 64 on rigid grasp against 42-58 with `cz`),
+which is why joint space under AL-SVGD is slower on the screw and soft PCS arms; the paired-start penalty
+was the jittered swarm (R10); the resample carries the paired start under V1 (R11) and the screw arm under
+V4 (R22); the multipliers at the record's rows are O(0.2-3), so the penalty alone sits inside the gate
+(R24); the soft PCS arm takes the split step (row Jacobians by forward mode through the exact strain map,
+3.7-4.8x per outer step, merge a2a5569).
+
+**Implementation findings, open**: twelve screw-arm items segfaulted in R22 / R23 (native code, not
+deterministic per cell, clean under faulthandler alone on a node, concentrated on runaway-heavy variants;
+R24-R30 ran 0 of ~9,000 items crashed) -- a race at PROCS=2 is what is left. The float64 Newton polish of
+the returned particle (R25) was never built: residual parity with IPOPT is Thomas's call. The GVS arm under
+svgd is DEFERRED (2026-10-12; its JAX forward model runs on the CPU). R24's remaining `alpha10` pose rows
+(168 items) are left held on the cluster; `--reclaim` would release them. **The push is CLOSED
+(2026-10-18); the next step is network-architecture ablations, in another session.** The staged cluster
+tree is f312793 (svgd-tune; patience 3, `svgd_stop_select_objective`), swapped in by job 5943005.
 
 ## Results: the campaign of record
 
@@ -1110,7 +1010,7 @@ at PROCS=8 under `MPS=1`.
 solvers**: the 32 IPOPT and SNOPT runs from stage REMEASURE, the 16 NLopt runs from stage
 **REMEASURE_NLOPT** (same conditions and tag family, queued last; jobs 5868202/03/04/07, collected
 2026-10-10), and the 16 AL-SVGD rows (column `PS`), each arm its own run: learned from stage
-SVGD_R20, joint space from SVGD_R20 (Panda) and SVGD_R21 (the rest). **The GVS arm is OUTSIDE the
+SVGD_R29 (`pin4`), joint space from SVGD_R30 (`pin4kq`), the V4 pin. **The GVS arm is OUTSIDE the
 record**:
 stage REMEASURE measured it under identical conditions and the reporter prints its eight rows as a
 separate block with their own tally (IPOPT 3 learned / 1 tie, SNOPT 2 / 2), but it is merged as a
@@ -1178,34 +1078,37 @@ per row as `L+` beside `JS` in the per-solver detail; the old record's 83-100% i
 
 **Time-matched joint space, on the record's own cells at paper conditions** (`scripts/report_time_matched.py
 --prefix sc_PAPER_`, and `--prefix sc_SVGD_R2_` for Panda IPOPT; the NLopt and GVS rows `--prefix
-sc_REMEASURE_ --exclude sc_REMEASURE_LEGACY_ --exclude sc_REMEASURE_RULE_`): joint space gets
-best-of-k from each target's 8 recorded starts, random order, stopping at the first success, within
-the learned arm's wall time on the same cell. Where the budget outlasts all 8 starts ("starved") the
-joint-space figure is a lower bound.
+sc_REMEASURE_ --exclude sc_REMEASURE_LEGACY_ --exclude sc_REMEASURE_RULE_`): joint space restarts from
+each target's 8 recorded starts, random order, stopping at the first success, inside the learned arm's
+wall time on the same cell. **The rule since 2026-10-18 (Thomas: *"we always let the 'current' solve
+finish, even if we hit the budget"*): a solve begun inside the budget runs to completion and counts, so
+the portfolio always gets at least one start** -- under the old rule (the first success had to LAND
+inside the budget) a joint-space solve longer than the budget scored zero, which is why the figures
+below are higher than those quoted before that date; the AL-SVGD 2x2 (`docs/svgd-2x2-tables.md`)
+uses the same rule. Starved (all starts used, none succeeded, time still below the budget) is 0-4%
+on every row, so no figure is a lower bound.
 
 | | learned | time-matched joint space | verdict |
 | --- | --- | --- | --- |
-| **IPOPT grasp** native / paired: Panda, iiwa, soft PCS | 99.4-100% | 59-86% (starved <= 33%) | **survives** |
-| IPOPT grasp, screw | 99.0 / 98.5% | >= 89.4 / 94.9% (starved 40-58%) | unestablished |
-| **IPOPT pose native**: soft PCS / Panda | 99.4 / 95.4% | 56.2 / 56.4% | **survives** |
-| IPOPT pose native: iiwa / screw | 96.2 / 95.6% | >= 77.1 / 81.9% (starved 36-41%) | unestablished |
-| IPOPT pose paired | soft PCS 91.0%, Panda 82.3%, iiwa / screw 84.6 / 89.4% | 81.4%, 83.9%, 95.9 / 96.7% | soft PCS survives, Panda level, **joint space wins** iiwa and screw |
-| SNOPT grasp native | 90.8-99.6% (screw 83.3) | 68.5-70.5% (screw 83.3) | **survives** on three, screw level |
-| SNOPT pose native: Panda, iiwa, soft PCS / screw | 91.5-99.8 / 87.3% | >= 76.1-91.0 (starved 33-48%) / 91.6% | unestablished, screw to joint space |
-| SNOPT grasp paired, SNOPT pose paired | 48.5-81.9% | 78.1-96.1% | **joint space wins** every row |
-| **NLopt native**, all eight rows | 62.3-75.0% | 0-11.3% (starved <= 1%) | **survives** |
-| NLopt pose paired | soft PCS / iiwa 67.7 / 23.3%, screw / Panda 19.4 / 27.1% | 1.9 / 5.4%, 12.8 / 20.6% | survives soft PCS and iiwa; learned ahead on screw and Panda, single-start ties |
-| NLopt grasp paired | 0.6-2.3% | iiwa / Panda 0%, screw / soft PCS 9.9 / 7.7% | floor on iiwa and Panda, **joint space wins** screw and soft PCS |
-| *GVS, outside the record* | IPOPT grasp 100 / 97.9%, pose native 100% | 55.2 / 80.8%, 29.8% | survives; pose paired (79.8 v 83.4%) and every SNOPT paired row go to joint space |
+| IPOPT grasp, all four robots, both protocols | 98.5-100% | 96.2-99.3% | **level** (learned ahead by 0.4-3.8 points, within one start's reach) |
+| **IPOPT pose native**: Panda / iiwa / screw / soft PCS | 95.4 / 96.2 / 95.6 / 99.4% | 68.4 / 88.9 / 91.5 / 75.4% | **survives** on all four |
+| IPOPT pose paired | Panda 82.3%, iiwa / screw 84.6 / 89.4%, soft PCS 91.0% | 86.8%, 97.6 / 98.0%, 87.2% | **joint space wins** the rigid arms; soft PCS survives |
+| SNOPT grasp native: Panda / iiwa / soft PCS / screw | 96.0 / 90.8 / 99.6 / 83.3% | 90.1 / 86.1 / 89.3 / 93.5% | survives on three, screw to joint space |
+| SNOPT pose native: Panda / iiwa / soft PCS / screw | 91.5 / 92.1 / 99.8 / 87.3% | 81.7 / 89.2 / 92.6 / 93.7% | survives Panda and soft PCS, iiwa level, screw to joint space |
+| SNOPT grasp paired, SNOPT pose paired | 48.5-81.9% | 89.7-96.7% | **joint space wins** every row |
+| **NLopt native**, all eight rows | 62.3-75.0% | 0-32.5% | **survives** |
+| NLopt pose paired | soft PCS / iiwa 67.7 / 23.3%, Panda / screw 27.1 / 19.4% | 11.6 / 11.7%, 34.9 / 22.4% | survives soft PCS and iiwa; Panda and screw level to joint space |
+| NLopt grasp paired | 0.6-2.3% | iiwa / Panda 0%, screw / soft PCS 12.3 / 8.9% | floor on iiwa and Panda, **joint space wins** screw and soft PCS |
+| *GVS, outside the record* | IPOPT grasp 100 / 97.9%, pose native 100%, pose paired 79.8% | 98.1 / 98.8%, 69.3%, 91.0% | grasp level, pose native survives, pose paired and every SNOPT paired row to joint space |
 
-**This reverses the old caveat on interior-point grasp**: on the old record only Panda contained grasp
-survived on the rigid arms; with the scene fixed and graphs cutting the per-iteration premium it
-survives on three of the four record robots (all but screw), and on native pose on two. The paired-start pose rows still go to
-a restarting joint space. On REMEASURE's PROCS=8 `MPS=1` seconds every IPOPT and SNOPT joint-space
-figure was 0.0-2.0 points higher and no verdict differed. The NLopt and GVS rows are still at those
-seconds. **State single-start wins as single-start, and rest a time-matched claim on the
-"survives" rows above.** Under NLopt a joint-space solve itself runs to the clock, so restarts buy it
-almost nothing (starved <= 3% on every row).
+**What the rule change moved**: with every portfolio guaranteed one start, interior-point grasp is
+level on all four robots rather than "survives on three", because a single joint-space grasp solve
+already succeeds on 92-98% of cells; native pose survives on all four rather than two, because the
+old rule had been crediting the learned arm's short wall against joint-space solves that overran it.
+The paired-start pose rows still go to a restarting joint space. The NLopt and GVS rows are at
+REMEASURE's PROCS=8 `MPS=1` seconds. **State single-start wins as single-start, and rest a
+time-matched claim on the "survives" rows above.** Under NLopt a joint-space solve itself runs to
+the clock, so restarts buy it almost nothing.
 
 **The augmented Lagrangian, read per protocol and never pooled** (it is extraordinarily
 start-sensitive on the learned arm).

@@ -2889,3 +2889,42 @@ correction-box item above, which may change the fielded solver and therefore voi
 - **Settings for the stage**: `svgd_outer_iters` lifted so only the 180 s clock binds (cap rule);
   `PROCS=2`; the comparison columns are the record (no IPOPT re-run), paired by `(target, guess)`
   after the `grid_hash` check.
+
+## Close-out of the tune-and-simplify push (2026-10-18)
+
+**The pin is `SVGD_PINNED_V4`, and CLAUDE.md's svgd section carries the settings table with each
+setting's reason** (the rounds above are the evidence). The record is R29 `pin4` (learned) with R30
+`pin4kq` (joint space) and `pin4s2` (seed 2); `docs/status-quo-tables.md` column `PS` reads them.
+
+**The result against ablations and baselines is read as a double contribution** (Thomas, 2026-10-18:
+the formulation and the optimizer). Proposed = learned + AL-SVGD; ablation A = the learned formulation
+under IPOPT / SNOPT / NLopt (stages SVGD_R2 / PAPER / REMEASURE_NLOPT); ablation B = joint space under
+AL-SVGD (`pin4kq`, never tuned); baselines = joint space under the three Drake solvers. Metrics:
+success (exact McNemar), cost (median on cells both solved, shared objective, ratio corner / proposed,
+a ratio inside the seed-to-seed band 0.94-1.10 a tie), wall (cap-clamped mean), and the time-matched
+axis; no iterations. **The time-matched rule since 2026-10-18**: the corner restarts from the target's
+recorded starts in random order inside the wall the proposed method spent on that cell, stopping at
+the first success, **and a solve begun inside the budget runs to completion and counts** (*"we always
+let the 'current' solve finish, even if we hit the budget"*); every portfolio therefore gets at least
+one start. `scripts/report_time_matched.py` implements the rule (`portfolio_stats`) for the record's
+tables and `scripts/report_svgd_2x2.py --write docs/svgd-2x2-tables.md` reads the 2x2 with it, the
+condensed summary (the layout Thomas approved) first and the per-row tables after. Regenerate the
+2x2 from the promoted runs with that one command.
+
+**Verdicts** (`docs/svgd-2x2-tables.md`): success 480 / 480 on all 16 rows, 8 / 8 / 0 against A-IPOPT,
+14 / 2 / 0 against A-SNOPT, 16 / 0 / 0 against A-NLopt, 2 / 14 / 0 against B, 16 / 0 / 0 against every
+baseline; each contribution alone takes most rows to or near the ceiling, the combination is the only
+corner at the ceiling everywhere (the screw arm is where only the combination gets there). Cost: cheaper
+than its own formulation under IPOPT on all 12 rigid rows (1.22-3.48x), costlier on soft PCS; joint
+space under IPOPT cheaper on rigid grasp (0.54-0.85) and soft PCS (0.27-0.42), the proposed cheaper on
+rigid pose (1.68-3.46); inside AL-SVGD joint space is level on grasp and cheaper on pose. Wall 0.70-2.00
+s, faster than A-IPOPT on 12 rows, than every SNOPT / NLopt corner on 16, slower than joint space under
+IPOPT on 10 (every pose row). Time-matched: A-IPOPT 84.6-100%, joint space under IPOPT 83.1-99.6%,
+proposed 100%. Agreed characterisation: AL-SVGD >= ablations > baselines on success and on wall at
+matched time under interior point; on solution cost the learned formulation pays a premium on grasp
+and on the soft PCS arm under every optimizer, discussed in the paper rather than hidden.
+
+**Left open at close-out**: the soft PCS pose drive-only prior (0.50x cost at 6 s) as a per-robot stated
+setting (Thomas's call); R25's float64 polish (never built); the screw-arm segfault race at PROCS=2;
+the 168 held `alpha10` pose items on the cluster; the GVS arm under svgd (deferred). The next step is
+network-architecture ablations, in another session.
