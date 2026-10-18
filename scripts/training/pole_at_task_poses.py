@@ -94,20 +94,22 @@ def main():
     chunks = []
     with torch.no_grad():
         for i in range(0, args.n, args.chunk):
-            c = np.zeros((min(args.chunk, args.n - i), 8))
-            c[:, :7] = pose[i:i + args.chunk]
-            c[:, 7] = 0.0                      # softflow noise column, zero at test time
-            out = model(torch.tensor(z[i:i + args.chunk], dtype=torch.float64, device=dev),
-                        c=torch.tensor(c, dtype=torch.float64, device=dev), rev=True)[0]
+            # Through the chart's `decode` (src/charts), as the programs evaluate it; for a
+            # flow that appends the softflow noise column, zero at test time.
+            out = solver.decode(
+                model, torch.tensor(z[i:i + args.chunk], dtype=torch.float64, device=dev),
+                torch.tensor(pose[i:i + args.chunk], dtype=torch.float64, device=dev))[0]
             chunks.append(out[:, :ndof].abs().amax(dim=1).cpu().numpy())
     qinf = np.concatenate(chunks)
 
     res = {"checkpoint": os.path.basename(ckpt) if ckpt else "downloaded",
            "robot": args.robot,
-           "nb_nodes": solver.arch["nb_nodes"],
-           "coeff_fn_internal_size": solver.arch["coeff_fn_internal_size"],
-           "rnvp_clamp": solver.arch["rnvp_clamp"],
-           "dim_latent_space": solver.arch["dim_latent_space"],
+           "family": solver.family,
+           # Flow-only keys read with .get: another family's sidecar has none of them.
+           "nb_nodes": solver.arch.get("nb_nodes"),
+           "coeff_fn_internal_size": solver.arch.get("coeff_fn_internal_size"),
+           "rnvp_clamp": solver.arch.get("rnvp_clamp"),
+           "dim_latent_space": solver.arch.get("dim_latent_space"),
            "n": args.n, "seed": args.seed, "z": args.z, "domain": "task_poses",
            ## The literal-1000 keys keep their literal meaning FOREVER, so archived
            ## screens stay comparable and the key never lies about what it counted.
