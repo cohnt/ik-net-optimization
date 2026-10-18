@@ -32,8 +32,9 @@ def ChartFamily(checkpoint):
 def LoadChart(robot_name, checkpoint, fallback_arch=None, compile_model=None):
     """The chart stored at `checkpoint`, as a `Chart`.
 
-    `fallback_arch` is the flow loader's (a sidecar-less legacy checkpoint) and is refused
-    for any other family, whose sidecar is mandatory.
+    `fallback_arch` is the flow loader's (a sidecar-less legacy checkpoint). It is ignored
+    for any other family: those sidecars are mandatory, so there is nothing for it to stand
+    in for, and the programs pass their robot's flow fallback unconditionally.
     """
     family = ChartFamily(checkpoint)
     if family == "ikflow":
@@ -41,9 +42,6 @@ def LoadChart(robot_name, checkpoint, fallback_arch=None, compile_model=None):
         return FlowChart(LoadFlowSolver(robot_name, checkpoint, fallback_arch=fallback_arch,
                                         compile_model=compile_model))
     if family == "cvae":
-        if fallback_arch is not None:
-            raise ValueError(f"{checkpoint}: fallback_arch applies to flow checkpoints only; "
-                             "a cvae chart's sidecar is mandatory")
         try:
             from src.charts.cvae import LoadCVAEChart
         except ImportError as e:
