@@ -27,6 +27,15 @@ paired/native on CPU, and the CUDA-graph path on the laptop GPU -- all ran, no d
 | SCREWREDO_SVGD (96), DRAKE_ENV=crc PROCS=2 | 5955613-16 | afterany: 5955608 |
 | SCREWREDO_NLOPT (96), PROCS=8 MPS=1 | 5955617-20 | afterany: 5955608 |
 
+**Early training read (step 40k of 620k, 18:37).** Mean FK error of `decode(pose, z ~ N(0,I))`
+over 500 val poses: Panda 0.64 m / 1.8 rad, iiwa 0.22 m / 2.0 rad, screw 0.74 m / 2.2 rad (both
+screw runs fully collapsed, KL 0), soft12 4.5 cm / 0.17 rad. About one active latent dim, ~2 nats
+of KL: the decoder behaves like an averaging regressor, the standard Gaussian-decoder cVAE's known
+failure on multimodal targets. Thomas: **let it run** to 620k and benchmark what comes out (a poor
+chart is itself an answer, and tests whether the optimization rescues it). A recipe change (KL
+warm-up, free bits, fixed decoder variance) would be a deviation from "standard cVAE" and is his
+call. wandb is offline on the nodes; sync from the laptop (`environment-and-tooling` memory).
+
 **Why the screw flow is retrained** (Thomas, 2026-10-18): the screw dataset was deleted with the
 old tree and rebuilt (same generator, seed 0) but cannot be shown identical to the one `n6` trained
 on, so the fielded rung is retrained on the rebuilt data (`n6r`, same recipe) and the screw
