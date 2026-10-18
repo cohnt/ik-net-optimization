@@ -235,6 +235,7 @@ SVGD_ENUM_FIELDS = {
     "svgd_collision_backend": ("autodiff", "clearances"),
     "svgd_resample": ("native", "drop", "keep"),
     "svgd_stop_select_objective": ("full", "shared"),
+    "svgd_polish": ("none", "newton"),
 }
 
 
@@ -730,6 +731,8 @@ class ProgramOptions:
     svgd_stop_patience: int = field(default=3, metadata={"help": "svgd: once a particle is feasible at the gate, stop (converged) after this many consecutive outer checks at which the best feasible particle's objective improved by less than svgd_stop_rel (3: adopted 2026-10-16 from round R24's `pat3`; rounds R1-R28 ran 5)"})
     svgd_stop_rel: float = field(default=1e-3, metadata={"help": "svgd: the relative improvement of the best feasible objective that counts as progress for the stop rule"})
     svgd_stop_select_objective: str = field(default="full", metadata={"help": "svgd: which objective the STALL RULE and the SELECTION read -- 'full' (the pin: every cost binding, the learned-only regularisers included) or 'shared' (the shared objective only, the regularisers excluded by name as in benchmark.reported_cost; the DRIVE is unchanged either way). Pre-registered as stage SVGD_R29 (2026-10-16)"})
+    svgd_polish: str = field(default="none", metadata={"help": "svgd: a float64 polish of the RETURNED particle after the Drake re-check passes -- 'none' (the pin: no polish, bit-identical) or 'newton' (a SMOKE, 2026-10-18): up to svgd_polish_steps minimum-norm Gauss-Newton steps on the ACTIVE rows (every equality, plus every inequality row within the gate of a finite bound, held AT that bound), from one AutoDiffXd pass over prog.GetAllConstraints(), clamped to the variable bounds; a step is accepted only if the float64 worst signed violation over ALL rows does not rise and stays within the gate, so the polish never returns a worse point (polish_* in the per-cell svgd stats)"})
+    svgd_polish_steps: int = field(default=3, metadata={"help": "svgd: the most Newton steps svgd_polish='newton' takes; it also stops at the first rejected step and once a step improves the worst violation by less than 10x"})
     svgd_warmup: str = field(default="none", metadata={"help": "svgd: 'none' or 'cem' -- a forward-only Cross-Entropy phase on the penalised merit before the gradient phase; a phase of the population method, named in full in every table and A/B tested"})
     svgd_warmup_iters: int = field(default=10, metadata={"help": "svgd: CEM warm-up iterations"})
     svgd_warmup_elite: float = field(default=0.1, metadata={"help": "svgd: CEM elite fraction"})

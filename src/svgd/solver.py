@@ -1040,6 +1040,7 @@ class SvgdSolver:
         X_np = np.minimum(np.maximum(X32, lo64), hi64)
         bound_rounding = float(np.nan_to_num(np.abs(X_np - X32), nan=0.0).max(initial=0.0))
         k = max(1, int(opts.svgd_recheck_topk))
+        polish = None      # `svgd_polish`: the stats of the float64 polish, when one ran
         if n_live == 0:
             ## Every particle dropped: nothing to select. A NaN point, so `verify` scores it
             ## `nan` and run_grid scores the last recorded iterate under `recovered_*`.
@@ -1061,6 +1062,8 @@ class SvgdSolver:
             cands = order
             selected, drake_viol, drake_ok = self._drake_recheck(X_np, order, n_feasible)
             x_ret = X_np[selected].copy()
+            if opts.svgd_polish == "newton" and drake_ok:
+                x_ret, drake_viol, polish = self._polish_newton(x_ret, drake_viol)
             solver_ok = bool(feas[selected])
             status = STATUS_CONVERGED if drake_ok else (
                 stop if stop in (STATUS_WALL_CLOCK, STATUS_STEP_CAP) else STATUS_INFEASIBLE)
@@ -1068,7 +1071,148 @@ class SvgdSolver:
             evf=evf, v=v, Fv=Fv, feas=feas, n_feasible=n_feasible, live_np=live_np, n_live=n_live,
             bound_rounding=bound_rounding, x_ret=x_ret, status=status, drake_ok=bool(drake_ok),
             solver_ok=bool(solver_ok), selected=selected, drake_viol=drake_viol, cands=cands,
-            seconds=time.perf_counter() - t)
+            polish=polish, seconds=time.perf_counter() - t)
+
+    ## ------------------------------- float64 polish -----------------------------------
+    def _drake_rows(self, x_full, with_gradient=False):
+        """Every row of every binding in `prog.GetAllConstraints()` at `x_full`, float64:
+        `(value, lb, ub, J)` stacked over the bindings, `J` the rows' Jacobian w.r.t. the FULL
+        decision vector (None unless `with_gradient`). The gradient is one AutoDiffXd pass
+        seeded with the identity on `x_full`; a row returned with an empty derivative block
+        (a constant row) gets a zero gradient."""
+        from pydrake.autodiffutils import InitializeAutoDiff
+        prog = self.program.prog
+        n = x_full.size
+        x_ad = InitializeAutoDiff(np.asarray(x_full, dtype=float)).reshape(-1) if with_gradient else None
+        vals, lbs, ubs, grads, labels = [], [], [], [], []
+        for binding in prog.GetAllConstraints():
+            ev = binding.evaluator()
+            lb = np.asarray(ev.lower_bound(), dtype=float).reshape(-1)
+            desc = ev.get_description() or type(ev).__name__
+            subs = [(c.description or "row", k) for c in getattr(self.program, "constraints", [])
+                    for k in range(len(c))] if desc == "AllIKFlowConstraints" else []
+            labels += ([f"{desc}/{name}[{k}]" for name, k in subs] if len(subs) == lb.size else
+                       [f"{desc}[{r}]" for r in range(lb.size)])
+            ub = np.asarray(ev.upper_bound(), dtype=float).reshape(-1)
+            if with_gradient:
+                out = np.asarray(prog.EvalBinding(binding, x_ad)).reshape(-1)
+                val = np.array([a.value() for a in out], dtype=float)
+                G = np.zeros((out.size, n))
+                for r, a in enumerate(out):
+                    d = np.asarray(a.derivatives(), dtype=float).reshape(-1)
+                    if d.size == n:
+                        G[r] = d
+                    elif d.size:
+                        raise RuntimeError(f"svgd polish: {ev.get_description()!r} row {r} has a "
+                                           f"{d.size}-long derivative block, expected {n} or 0")
+                grads.append(G)
+            else:
+                val = np.asarray(prog.EvalBinding(binding, x_full), dtype=float).reshape(-1)
+            vals.append(val)
+            lbs.append(lb)
+            ubs.append(ub)
+        cat = lambda xs: np.concatenate(xs) if xs else np.zeros(0)
+        J = (np.vstack(grads) if grads else np.zeros((0, n))) if with_gradient else None
+        self._drake_row_labels = labels
+        return cat(vals), cat(lbs), cat(ubs), J
+
+    def _polish_newton(self, x_lumped, viol0):
+        """`svgd_polish = newton` (a smoke, 2026-10-18): float64 minimum-norm Gauss-Newton
+        steps on the ACTIVE rows of the returned particle, in Drake's full decision vector
+        (only the lumped coordinates move). Active = every equality row (`lb == ub`) plus every
+        inequality row within `tol` of a finite bound, targeted AT that bound so the step keeps
+        it there rather than pushing through. The step is clamped onto the variable bounds and
+        ACCEPTED only if the worst signed violation over ALL rows (`_drake_max_violation`) does
+        not rise and stays within `tol`; the first rejection ends the polish, so the returned
+        point is never worse than the unpolished one. Stops after `svgd_polish_steps` accepted
+        steps, or once a step improves the worst violation by less than 10x. Returns
+        `(x_lumped, worst_violation, stats)`."""
+        t = time.perf_counter()
+        bp = self._tg.bp
+        prog = self.program.prog
+        tol = self.tol
+        x = bp.to_drake_x(x_lumped)
+        n = x.size
+        lumped = np.zeros(n, dtype=bool)
+        lumped[bp._lumped_idx] = True
+        lo = np.full(n, -np.inf)
+        hi = np.full(n, np.inf)
+        for binding in prog.bounding_box_constraints():
+            ev = binding.evaluator()
+            idx = prog.FindDecisionVariableIndices(binding.variables())
+            lo[idx] = np.maximum(lo[idx], np.asarray(ev.lower_bound(), dtype=float).reshape(-1))
+            hi[idx] = np.minimum(hi[idx], np.asarray(ev.upper_bound(), dtype=float).reshape(-1))
+        x0 = x.copy()
+        v_cur = float(viol0)
+        val0, lb_all, ub_all, _ = self._drake_rows(x)
+        eq = lb_all == ub_all
+        fin_lb, fin_ub = np.isfinite(lb_all), np.isfinite(ub_all)
+        steps, rejected, active_ineq, n_active, step_viols = 0, 0, None, None, []
+        reject_kind, reject_row = None, None
+        for _ in range(max(0, int(self.options.svgd_polish_steps))):
+            val, lb, ub, J = self._drake_rows(x, with_gradient=True)
+            near_lb = ~eq & fin_lb & (np.abs(val - lb) <= tol)
+            near_ub = ~eq & fin_ub & (np.abs(val - ub) <= tol) & ~near_lb
+            active = eq | near_lb | near_ub
+            target = np.where(eq | near_lb, lb, ub)
+            if active_ineq is None:
+                active_ineq, n_active = int((near_lb | near_ub).sum()), int(active.sum())
+            r = (val - target)[active]
+            Ja = J[active][:, lumped]
+            if r.size == 0 or not np.all(np.isfinite(r)) or not np.all(np.isfinite(Ja)):
+                break
+            dx = np.zeros(n)
+            dx[lumped] = np.linalg.lstsq(Ja, -r, rcond=1e-12)[0]
+            x_new = np.minimum(np.maximum(x + dx, lo), hi)
+            v_new = float(self._drake_max_violation(x_new))
+            step_viols.append(v_new)
+            if not (np.isfinite(v_new) and v_new <= v_cur and v_new <= tol):
+                rejected += 1
+                ## 'outside_gate': the step left the gate (or went non-finite); 'worse': it
+                ## stayed within the gate but raised the worst violation (round-off once the
+                ## equalities are at machine precision).
+                reject_kind = "outside_gate" if not (np.isfinite(v_new) and v_new <= tol) else "worse"
+                ## Which row the rejected candidate's worst violation sits on, and whether that
+                ## row was in the active set (a diagnostic for the smoke).
+                vn, _, _, _ = self._drake_rows(x_new)
+                w = np.maximum(np.where(fin_lb, lb_all - vn, -np.inf), np.where(fin_ub, vn - ub_all, -np.inf))
+                jw = int(np.nanargmax(np.where(np.isnan(w), np.inf, w)))
+                reject_row = dict(row=self._drake_row_labels[jw], active=bool(active[jw]),
+                                  value=float(vn[jw]), value_before=float(val[jw]),
+                                  lb=float(lb_all[jw]), ub=float(ub_all[jw]),
+                                  dx=float(np.linalg.norm(x_new - x)))
+                break
+            improved_10x = v_new <= 0.1 * v_cur
+            x, v_cur, steps = x_new, v_new, steps + 1
+            if not improved_10x:
+                break
+        ## What the move did to the rows that were NOT active at the start: the largest drop in
+        ## slack toward a finite bound, and the smallest slack before and after (a diagnostic of
+        ## the minimum-norm step crossing toward a nonbinding inequality).
+        val1 = self._drake_rows(x)[0] if steps else val0
+        inactive = ~eq & ~((fin_lb & (np.abs(val0 - lb_all) <= tol)) | (fin_ub & (np.abs(val0 - ub_all) <= tol)))
+        slack = lambda v: np.minimum(np.where(fin_lb, v - lb_all, np.inf), np.where(fin_ub, ub_all - v, np.inf))
+        s0, s1 = slack(val0)[inactive], slack(val1)[inactive]
+        fin = np.isfinite(s0) & np.isfinite(s1)
+        drop = np.where(fin, s0 - s1, -np.inf)
+        labels_inactive = [lab for lab, keep in zip(self._drake_row_labels, inactive) if keep]
+        jd = int(np.argmax(drop)) if drop.size and np.isfinite(drop).any() else None
+        stats = dict(
+            polish_steps=int(steps), polish_rejected=int(rejected), polish_reject_kind=reject_kind,
+            polish_viol_before=float(viol0), polish_viol_after=float(v_cur),
+            polish_step_viols=[float(u) for u in step_viols],
+            polish_active_ineq=None if active_ineq is None else int(active_ineq),
+            polish_active_rows=n_active,
+            polish_dx=float(np.linalg.norm(x - x0)),
+            polish_inactive_slack_drop=float(np.max(s0[fin] - s1[fin], initial=0.0)),
+            polish_inactive_slack_drop_row=(None if jd is None or not drop[jd] > 0 else
+                                            dict(row=labels_inactive[jd], slack_before=float(s0[jd]),
+                                                 slack_after=float(s1[jd]))),
+            polish_reject_row=reject_row,
+            polish_inactive_min_slack_before=float(np.min(s0[fin], initial=np.inf)),
+            polish_inactive_min_slack_after=float(np.min(s1[fin], initial=np.inf)),
+            polish_seconds=time.perf_counter() - t)
+        return bp.from_drake_x(x), v_cur, stats
 
     ## ----------------------------------- solve ----------------------------------------
     def _kernel_spread(self, X, evf, feas):
@@ -1207,6 +1351,7 @@ class SvgdSolver:
             solver_feasible=bool(solver_ok), drake_feasible=bool(drake_ok),
             n_recheck_failures=len(sstats.get("recheck_failures", [])),
             feas_level=float(sstats.get("feas_level", 1.0)),
+            polish=getattr(sel, "polish", None),
             solve_seconds=total, collision_seconds=float(self._col.seconds),
             collision_backend=str(getattr(self._col.evaluator, "backend", "autodiff")),
             collision_threads=int(getattr(self._col.evaluator, "num_threads", 1)),
