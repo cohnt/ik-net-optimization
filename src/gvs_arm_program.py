@@ -27,7 +27,7 @@ reported and not attacked.
 import numpy as np
 
 import src.register_robots  # noqa: F401  -- registers every project robot with jrl.robots
-from src.flow_loading import LoadFlowSolver
+from src.charts.loading import LoadChart, WrapChart
 from src.generic_program import ProgramOptions
 from src.gvs_arm.model import GetModel, PlantSlotMap
 from src.gvs_arm.params import GetSpec, PRIMARY
@@ -66,9 +66,9 @@ class GvsArmIKProgram(SoftArmIKProgram):
                 f"drifted -- rerun src/gvs_arm/generate_sdf.py")
 
         if model is not None:
-            self.ik_solver = model
+            self.ik_solver = WrapChart(model)
         elif checkpoint is not None:
-            self.ik_solver = LoadFlowSolver(self.spec.name, checkpoint)
+            self.ik_solver = LoadChart(self.spec.name, checkpoint)
         else:
             raise ValueError(
                 f"{self.spec.name} has no pretrained chart to fall back on: pass a "
