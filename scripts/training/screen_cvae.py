@@ -131,9 +131,12 @@ def ScreenActiveUnits(model, q, pose, chunk):
 
     with torch.no_grad():
         per_dim = _Chunked(kl, q, pose, chunk=chunk).mean(dim=0).numpy()
-    return {"kl_per_dim": [float(v) for v in per_dim], "kl_total": float(per_dim.sum()),
-            "threshold_nats": ACTIVE_KL_NATS, "active_dims": int((per_dim > ACTIVE_KL_NATS).sum()),
-            "sigma_q": [float(v) for v in model.log_sigma_q.exp().detach().cpu()]}
+    out = {"kl_per_dim": [float(v) for v in per_dim], "kl_total": float(per_dim.sum()),
+           "threshold_nats": ACTIVE_KL_NATS, "active_dims": int((per_dim > ACTIVE_KL_NATS).sum())}
+    ## The learned-variance variant's fitted output sigma; the fixed variant has none.
+    if model.decoder_variance == "learned":
+        out["sigma_q"] = [float(v) for v in model.log_sigma_q.exp().detach().cpu()]
+    return out
 
 
 def ScreenRunaway(chart, model, pose, rng, n_jac, chunk):

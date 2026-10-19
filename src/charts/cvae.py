@@ -23,9 +23,20 @@ it was trained at and `decode` returns q in robot units. The output is deliberat
 squashed to the joint limits: squashing would make the program's joint-limit rows vacuous,
 which is a different formulation, and the flow is not squashed either.
 
-The likelihood is Gaussian with a LEARNED per-joint output log-variance `log_sigma_q`
-(a "calibrated decoder"), so the reconstruction-versus-KL balance is fitted rather than
-hand-picked: no beta to tune, which is what "the standard cVAE, one config, no sweep" needs.
+The decoder variance comes in two variants, the architecture field `decoder_variance`:
+
+  * "learned" (the first rung, and the default so its checkpoints and sidecars load
+    unchanged): a Gaussian likelihood with a LEARNED per-joint output log-std `log_sigma_q`
+    (a "calibrated decoder"), so the reconstruction-versus-KL balance is fitted rather than
+    hand-picked. Trained, it modelled the Panda's joints 1-3 as noise (sigma ~0.55 in
+    normalised units) instead of encoding them in z, and the screw arm collapsed (KL 0).
+  * "fixed" (Thomas, 2026-10-19): the TEXTBOOK cVAE objective, sum over joints of the squared
+    reconstruction error in normalised units + KL(q(z|q,c) || N(0, I)), beta = 1 -- a
+    Gaussian likelihood with sigma^2 = 1/2, constants dropped. The model then has NO
+    `log_sigma_q` parameter, so unlike the activation this field IS recoverable from the
+    state dict's keys and is cross-checked on every load.
+
+Decode and encode are identical in both; only the training objective differs.
 
 The paired start is "encoder only" (Thomas, 2026-10-18): `encode` returns the encoder MEAN,
 with no refinement; whatever `q - decode(c, mu)` is left over goes to the correction, and a
@@ -66,7 +77,13 @@ ACTIVATIONS = {"silu": nn.SiLU, "tanh": nn.Tanh}
 
 #: The fields that define the chart's forward pass. Everything else in a sidecar
 #: (training recipe, provenance) is carried for the record and not enforced.
-ARCH_FIELDS = ("ndof", "dim_latent_space", "hidden", "depth", "activation", "pose_dim")
+ARCH_FIELDS = ("ndof", "dim_latent_space", "hidden", "depth", "activation", "pose_dim",
+               "decoder_variance")
+
+#: The output-variance variants (module docstring). A sidecar written before the field
+#: existed has no `decoder_variance` and reads as "learned", the only variant there was.
+DECODER_VARIANCES = ("learned", "fixed")
+DEFAULT_DECODER_VARIANCE = "learned"
 
 
 def JointScale(robot):
@@ -100,14 +117,17 @@ class CVAEModel(nn.Module):
     """
 
     def __init__(self, ndof, dim_latent_space, scale, hidden=512, depth=6, activation="silu",
-                 pose_dim=POSE_DIM):
+                 pose_dim=POSE_DIM, decoder_variance=DEFAULT_DECODER_VARIANCE):
         super().__init__()
         if activation not in ACTIVATIONS:
             raise ValueError(f"activation {activation!r} not in {sorted(ACTIVATIONS)}; the "
                              "chart must be smooth (see ACTIVATIONS)")
+        if decoder_variance not in DECODER_VARIANCES:
+            raise ValueError(f"decoder_variance {decoder_variance!r} not in {DECODER_VARIANCES}")
+        self.decoder_variance = decoder_variance
         self.arch = {"ndof": int(ndof), "dim_latent_space": int(dim_latent_space),
                      "hidden": int(hidden), "depth": int(depth), "activation": activation,
-                     "pose_dim": int(pose_dim)}
+                     "pose_dim": int(pose_dim), "decoder_variance": decoder_variance}
         self.ndof = int(ndof)
         self.dim_latent_space = int(dim_latent_space)
         scale = torch.as_tensor(scale, dtype=torch.float32).reshape(-1)
@@ -119,7 +139,9 @@ class CVAEModel(nn.Module):
         ## Per-joint output log-std of the Gaussian likelihood, in NORMALISED units. Fitted
         ## jointly with the network (its optimum is the per-joint reconstruction RMS), which
         ## is what sets the reconstruction-versus-KL balance without a hand-picked weight.
-        self.log_sigma_q = nn.Parameter(torch.zeros(ndof))
+        ## The "fixed" variant has no such parameter at all (sigma^2 = 1/2 is in the loss).
+        if decoder_variance == "learned":
+            self.log_sigma_q = nn.Parameter(torch.zeros(ndof))
 
     def encode_dist(self, q, pose7):
         """(mu, logvar) of the approximate posterior; `q` in robot units."""
@@ -139,23 +161,29 @@ class CVAEModel(nn.Module):
 def elbo_loss(model, q, pose7):
     """Negative ELBO, averaged over the batch, and its parts.
 
-    Reparameterised `z = mu + exp(logvar / 2) * eps`; Gaussian NLL of `q / scale` under the
-    decoder mean and the learned per-joint `log_sigma_q`; KL(N(mu, sigma^2) || N(0, I))
-    summed over the K latent dimensions. Returns `(loss, parts)` where `parts` holds
-    `recon_nll`, `kl`, `kl_per_dim` (a [K] vector, the batch mean -- a dimension whose KL
-    stays near zero has collapsed to the prior and decodes nothing) and `recon_mse` (in
-    normalised units, comparable across robots).
+    Reparameterised `z = mu + exp(logvar / 2) * eps`; KL(N(mu, sigma^2) || N(0, I)) summed
+    over the K latent dimensions; the reconstruction term by `model.decoder_variance`:
+    "learned", the Gaussian NLL of `q / scale` under the decoder mean and the learned
+    per-joint `log_sigma_q`; "fixed", the textbook objective, the squared error of `q / scale`
+    summed over joints (the Gaussian NLL at sigma^2 = 1/2 with its constants dropped), beta = 1.
+    Returns `(loss, parts)` where `parts` holds `recon_nll` (the reconstruction term as it
+    enters the loss), `kl`, `kl_per_dim` (a [K] vector, the batch mean -- a dimension whose
+    KL stays near zero has collapsed to the prior and decodes nothing) and `recon_mse` (in
+    normalised units, comparable across robots and variants).
     """
     x = q / model.scale
     mu, logvar = model.encode_dist(q, pose7)
     z = mu + torch.exp(0.5 * logvar) * torch.randn_like(mu)
     x_hat = model.decode_normalised(z, pose7)
 
-    log_sigma = model.log_sigma_q
     sq = (x - x_hat) ** 2
-    recon_nll = 0.5 * (sq * torch.exp(-2.0 * log_sigma) + 2.0 * log_sigma
-                       + torch.log(torch.tensor(2.0 * torch.pi, dtype=x.dtype, device=x.device))
-                       ).sum(dim=-1)
+    if model.decoder_variance == "fixed":
+        recon_nll = sq.sum(dim=-1)
+    else:
+        log_sigma = model.log_sigma_q
+        recon_nll = 0.5 * (sq * torch.exp(-2.0 * log_sigma) + 2.0 * log_sigma
+                           + torch.log(torch.tensor(2.0 * torch.pi, dtype=x.dtype, device=x.device))
+                           ).sum(dim=-1)
     kl_per = 0.5 * (mu ** 2 + torch.exp(logvar) - 1.0 - logvar)
     kl = kl_per.sum(dim=-1)
     loss = (recon_nll + kl).mean()
@@ -214,7 +242,8 @@ def _Linears(state_dict, prefix):
 def ArchFromCVAEStateDict(state_dict):
     """Recover every structurally-visible field from a raw `CVAEModel` state dict.
 
-    Returns `ndof`, `dim_latent_space`, `hidden`, `depth`, `pose_dim`. `activation` is
+    Returns `ndof`, `dim_latent_space`, `hidden`, `depth`, `pose_dim` and
+    `decoder_variance` ("learned" iff a `log_sigma_q` tensor is present). `activation` is
     deliberately absent: it leaves no trace in the weights.
     """
     enc, dec = _Linears(state_dict, "encoder"), _Linears(state_dict, "decoder")
@@ -236,7 +265,8 @@ def ArchFromCVAEStateDict(state_dict):
         widths = [int(w.shape[0]) for w in layers[:-1]] + [int(w.shape[1]) for w in layers[1:]]
         if any(w != hidden for w in widths):
             problems.append(f"{name} hidden widths {widths} are not all {hidden}")
-    for name in ("log_sigma_q", "scale"):
+    decoder_variance = "learned" if "log_sigma_q" in state_dict else "fixed"
+    for name in ("log_sigma_q", "scale") if decoder_variance == "learned" else ("scale",):
         if name not in state_dict:
             problems.append(f"no '{name}' tensor")
         elif tuple(state_dict[name].shape) != (ndof,):
@@ -244,7 +274,7 @@ def ArchFromCVAEStateDict(state_dict):
     if problems:
         raise ValueError("not a well-formed cVAE state dict:\n  " + "\n  ".join(problems))
     return {"ndof": ndof, "dim_latent_space": k, "hidden": hidden, "depth": depth,
-            "pose_dim": pose_dim}
+            "pose_dim": pose_dim, "decoder_variance": decoder_variance}
 
 
 def ReadCVAEArch(checkpoint):
@@ -260,6 +290,8 @@ def ReadCVAEArch(checkpoint):
         payload = json.load(f)
     if payload.get("family") != FAMILY:
         raise ValueError(f"{sidecar} declares family {payload.get('family')!r}, not {FAMILY!r}")
+    ## Written before the field existed: the only variant there was (DECODER_VARIANCES).
+    payload.setdefault("decoder_variance", DEFAULT_DECODER_VARIANCE)
     missing = [k for k in ARCH_FIELDS if k not in payload]
     if missing:
         raise ValueError(f"{sidecar} is missing the cVAE arch fields {missing}")
@@ -269,6 +301,8 @@ def ReadCVAEArch(checkpoint):
 def VerifyCVAEArch(declared, state_dict, source):
     """Raise if the sidecar disagrees with what the weights structurally imply."""
     actual = ArchFromCVAEStateDict(state_dict)
+    declared = dict(declared)
+    declared.setdefault("decoder_variance", DEFAULT_DECODER_VARIANCE)
     mismatches = [f"{k}: sidecar says {declared[k]!r}, weights imply {actual[k]!r}"
                   for k in actual if declared[k] != actual[k]]
     if mismatches:
@@ -313,7 +347,8 @@ def LoadCVAEChart(robot_name, checkpoint, compile_model=None):
 
     model = CVAEModel(arch["ndof"], arch["dim_latent_space"], expected_scale,
                       hidden=arch["hidden"], depth=arch["depth"],
-                      activation=arch["activation"], pose_dim=arch["pose_dim"])
+                      activation=arch["activation"], pose_dim=arch["pose_dim"],
+                      decoder_variance=arch["decoder_variance"])
     model.load_state_dict(state_dict, strict=True)
     ## The same device the flow lands on: IKFlowSolver builds its network under jrl's
     ## `torch.set_default_device(DEVICE)`, i.e. CUDA whenever it is available.
