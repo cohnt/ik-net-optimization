@@ -9,6 +9,39 @@ rules, which override anything here.
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
+## STATE AS OF 2026-10-19 15:00 -- SECOND ROUND QUEUED
+
+**What the night did.** Seven cVAE runs trained and exported. `iiwa14_cvae8` hit a NaN loss at
+step 143472 (job 5955589 FAILED). Because `submit_bench.sh` checks every checkpoint in a manifest
+when a chained job starts, the missing one made all eight stage-CVAE / CVAE_SVGD jobs refuse
+(exit 3, 0 s), so **no cVAE cell was measured**. The chain continued: `screw7_p050_n6r` trained
+(15.4 h, 5955608), SCREWREDO + SCREWREDO_SVGD done, SCREWREDO_NLOPT running.
+
+**Screens of the trained charts** (`results/screen_cvae/`): rigid arms unusable as charts --
+median FK error at prior samples Panda 609-624 mm / ~105 deg, iiwa K=1 253 mm / 118 deg, screw
+746 mm / 130 deg with 0 active latent dims; soft12 21-22 mm / 4 deg. Paired-start representability
+0% on every chart (encoder round-trip residual median 0.75-2.8 rad against the 0.1 box), so every
+paired cell scores `unrepresentable_start`. No runaway (max |q| 8.6). The learned per-joint
+decoder variance absorbed Panda joints 1-3 as noise (sigma ~0.55) -- my design choice, hence:
+
+**Thomas (2026-10-19): both** -- benchmark the trained charts as they are AND train the
+textbook fixed-variance variant (`cvaef<K>`, MSE + KL) and benchmark it.
+
+| step | jobs | depends on |
+| --- | --- | --- |
+| `iiwa14_cvae8` resumed from step 140000 | 5966176 | -- |
+| cvaef training, `ONLY='_cvaef[0-9]+$' PAIRS=1 --all` | 5966292-95 | -- |
+| CVAE without iiwa14 cvae8 (232), PROCS=2 | 5966296-99 | -- |
+| CVAE_SVGD without iiwa14 cvae8 (672), crc, PROCS=2 | 5966300-03 | -- |
+| CVAEF (256), PROCS=2 | 5966304-07 | afterany: 5966292-95 |
+| CVAEF_SVGD (768), crc, PROCS=2 | 5966308-11 | afterany: 5966292-95 |
+| CVAE / CVAE_SVGD iiwa14 cvae8 items only (32 / 96), 2 jobs each | 5966315-16, 5966317-18 (crc) | afterok: 5966176 |
+
+Restaged twice under live jobs with `FORCE_STAGE=1` (29106cc, then the iiwa8 manifests): the only
+source change was `src/charts/cvae.py` (learned path bit-identical by test), which no running flow
+item imports. The `_noiiwa8` / `_iiwa8` manifests are complements of the full ones with the same
+ids; never also submit the full manifests (separate state folders -> double runs).
+
 ## STATE AS OF 2026-10-18 18:30 -- THE WHOLE CHAIN IS QUEUED (staged commit 9396d99)
 
 Submitted unattended for the night (Thomas travelling; he ruled the screen check-in before the
