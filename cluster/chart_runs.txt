@@ -37,3 +37,19 @@ cvae  screw7_p050  screw7_p050_cvae7    --dim_latent_space=7
 cvae  screw7_p050  screw7_p050_cvae1    --dim_latent_space=1
 cvae  soft12       soft12_cvae12        --dim_latent_space=12
 cvae  soft12       soft12_cvae6         --dim_latent_space=6
+
+# The FIXED-decoder-variance variant (Thomas, 2026-10-19), `cvaef<K>`: the textbook objective,
+# sum of squared reconstruction errors in normalised units + KL, beta = 1 (`--decoder_variance
+# fixed`; src/charts/cvae.py). The learned-variance rows above trained into averaging charts
+# (Panda sigma_q ~0.55 on joints 1-3: those joints modelled as noise) and a collapsed screw arm.
+# Everything else identical: architecture, data, recipe, steps, the same K values. Both variants
+# are kept and benchmarked (stages CVAEF / CVAEF_SVGD). Submit ONLY these eight with
+#   ONLY='_cvaef[0-9]+$' PAIRS=1 bash cluster/submit_chart_train.sh --all
+cvae  panda        panda_cvaef7         --dim_latent_space=7  --decoder_variance=fixed
+cvae  panda        panda_cvaef1         --dim_latent_space=1  --decoder_variance=fixed
+cvae  iiwa14       iiwa14_cvaef8        --dim_latent_space=8  --decoder_variance=fixed
+cvae  iiwa14       iiwa14_cvaef1        --dim_latent_space=1  --decoder_variance=fixed
+cvae  screw7_p050  screw7_p050_cvaef7   --dim_latent_space=7  --decoder_variance=fixed
+cvae  screw7_p050  screw7_p050_cvaef1   --dim_latent_space=1  --decoder_variance=fixed
+cvae  soft12       soft12_cvaef12       --dim_latent_space=12 --decoder_variance=fixed
+cvae  soft12       soft12_cvaef6        --dim_latent_space=6  --decoder_variance=fixed

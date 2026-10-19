@@ -12,6 +12,7 @@
 #   bash cluster/submit_chart_train.sh --smoke <robot> <K>   # 200 steps, one GPU, export+screen in RUN_DIR
 #   bash cluster/submit_chart_train.sh --pair <run_a> <run_b> [walltime]   # two rows, ONE 2-GPU job
 #   PAIRS=1 bash cluster/submit_chart_train.sh --all [walltime]           # every row, two per job
+#   ONLY='<regex>' [PAIRS=1] bash cluster/submit_chart_train.sh --all [walltime]  # rows whose run name matches
 #   bash cluster/submit_chart_train.sh --smoke-pair <robot> <K_a> <K_b>     # the pair mode's smoke
 # e.g.
 #   ROBOT=panda bash cluster/submit_chart_train.sh panda_cvae1 24:00:00 -- --dim_latent_space=1
@@ -216,8 +217,21 @@ cmd_status() {
 ## a pair is one robot). A row whose status.json already reached MAX_STEPS is skipped
 ## (resubmitting it would only resume, find the step budget spent and re-export); under PAIRS=1
 ## a pair with one finished row submits the other alone. One remote call decides that.
+## ONLY=<regex> restricts --all to the rows whose RUN NAME matches (awk ERE, on the third
+## column): e.g. ONLY='_cvaef[0-9]+$' submits exactly the eight fixed-variance cVAE rows and
+## never the learned-variance ones. A regex that matches no row refuses. Pairing (PAIRS=1) is
+## over consecutive MATCHING rows, so keep each robot's two rungs adjacent in chart_runs.txt.
+_all_rows() {
+    if [ -n "${ONLY:-}" ]; then _rows | awk -v re="$ONLY" '$3 ~ re'; else _rows; fi
+}
+
 cmd_all() {
     local WALL="$1" done_list family robot name args rc fails=0 pending=()
+    if [ -z "$(_all_rows)" ]; then
+        echo "REFUSING: ONLY='${ONLY:-}' matches no run name in $SPEC" >&2
+        return 2
+    fi
+    echo "--all over: $(_all_rows | awk '{print $3}' | tr '\n' ' ')"
     done_list=$(sc_run "cd ~/$SC_ROOT/results/train 2>/dev/null || exit 0
         for d in */status.json; do
           [ -f \"\$d\" ] || continue
@@ -241,7 +255,7 @@ cmd_all() {
             rc=$?
             [ "$rc" -eq 0 ] || { echo "  -> $name NOT submitted (rc=$rc)"; fails=$((fails + 1)); }
         fi
-    done < <(_rows)
+    done < <(_all_rows)
     if [ "${#pending[@]}" -eq 1 ]; then         # an odd row out, alone
         read -r family robot _ args <<< "$(_rows | awk -v r="${pending[0]}" '$3==r')"
         FAMILY="$family" ROBOT="$robot" submit_one "${pending[0]}" "$WALL" "$args" </dev/null \
@@ -284,7 +298,7 @@ case "${1:-}" in
     --pair)   submit_pair "${2:?usage: --pair <run_a> <run_b> [walltime]}" \
                           "${3:?usage: --pair <run_a> <run_b> [walltime]}" "${4:-24:00:00}" ;;
     ""|-h|--help)
-        sed -n '2,18p' "$0"; exit 2 ;;
+        sed -n '2,19p' "$0"; exit 2 ;;
     *)
         RUN_NAME="$1"
         WALL="${2:-24:00:00}"

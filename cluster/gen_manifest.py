@@ -4039,6 +4039,46 @@ CVAE_SMOKE_CELLS = "0:0,31:5"
 CVAE_SVGD_CELL_S = SVGD_ROUND_CELL_S[0]
 CVAE_STAGES = ("CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD")
 
+## ------------------------------------------------------------------------- CVAEF --
+##
+## The cVAE chart's SECOND variant (Thomas, 2026-10-19): the textbook objective with a FIXED
+## decoder variance (`decoder_variance="fixed"` in src/charts/cvae.py: squared reconstruction
+## error in normalised units + KL, beta = 1), because the learned-variance rung modelled the
+## Panda's joints 1-3 as noise and collapsed the screw arm. Same architecture, data, recipe and K
+## values; both variants are kept and benchmarked. Stages `CVAEF` (IPOPT) and `CVAEF_SVGD`
+## (AL-SVGD) are `CVAE` / `CVAE_SVGD` item for item with ONLY the chart swapped: checkpoint
+## `models/<robot>/<robot>__cvaef<K>__step620000.pkl`, rung label `cvaef<K>`, tag stem
+## `sc_CVAEF_`. The joint-space acceptance item is NOT repeated (stage CVAE's answers it once).
+CVAEF_RUNGS = tuple(
+    (robot, rung, seed, f"cvaef{k}", k,
+     f"models/{CVAE_MODEL_DIR[robot]}/{CVAE_MODEL_DIR[robot]}__cvaef{k}__step620000.pkl")
+    for robot, rung, seed in SVGD_RECORD_CONTEXTS for k in CVAE_WIDTHS[robot])
+CVAEF_STAGES = ("CVAEF", "CVAEF_SVGD")
+#: Filtered copies of stage CVAE's two manifests, committed, minus every item of one rung
+#: (`--exclude-rung <model dir>:<label>`): the iiwa14 K = 8 learned-variance chart was still
+#: training when the rest of the stage was ready. Item ids are the full manifest's, but
+#: run_items.sh keys its .claim/.done state by the MANIFEST'S BASENAME, so the full manifest
+#: does NOT see these as done -- see cluster/CVAE_RUNBOOK.md before submitting it afterwards.
+CVAE_FILTERED_MANIFESTS = {
+    "CVAE_noiiwa8": ("CVAE", ("iiwa14:cvae8",)),
+    "CVAE_SVGD_noiiwa8": ("CVAE_SVGD", ("iiwa14:cvae8",)),
+}
+
+
+def cvae_exclude_rungs(items, specs):
+    """`items` minus every item whose --checkpoint is `models/<dir>/<dir>__<label>__*` for a
+    spec `<dir>:<label>`. A spec that matches nothing raises (a typo must not pass silently)."""
+    out = list(items)
+    for spec in specs:
+        d, label = spec.split(":")
+        prefix = f"models/{d}/{d}__{label}__"
+        kept = [it for it in out if not ("--checkpoint" in it["args"]
+                                         and _svgd_flag(it["args"], "--checkpoint").startswith(prefix))]
+        if len(kept) == len(out):
+            raise ValueError(f"--exclude-rung {spec}: no item's checkpoint starts with {prefix}")
+        out = kept
+    return out
+
 
 def cvae_trust_region(robot, k):
     """The `--set` a rung adds for its trust region: nothing on the flow-width rung (the record's
@@ -4083,13 +4123,15 @@ def _cvae_seconds(it):
 
 
 def stage_CVAE(which="CVAE"):
-    """CVAE (IPOPT + acceptance), CVAE_SVGD (AL-SVGD), CVAESMOKE / CVAESMOKE_SVGD (see the header)."""
+    """CVAE (IPOPT + acceptance), CVAE_SVGD (AL-SVGD), CVAESMOKE / CVAESMOKE_SVGD (see the header);
+    CVAEF / CVAEF_SVGD, the fixed-variance variant (no acceptance item)."""
     smoke = which.startswith("CVAESMOKE")
     svgd = which.endswith("_SVGD")
-    stem = "CVAESMOKE" if smoke else "CVAE"
+    fixed = which.startswith("CVAEF")
+    stem = "CVAESMOKE" if smoke else ("CVAEF" if fixed else "CVAE")
     n_cells = len(CVAE_SMOKE_CELLS.split(","))
     items = []
-    for robot, rung, seed, label, k, ckpt in CVAE_RUNGS:
+    for robot, rung, seed, label, k, ckpt in (CVAEF_RUNGS if fixed else CVAE_RUNGS):
         shards = 1 if smoke else (CVAE_SVGD_SHARDS if svgd else CVAE_IPOPT_SHARDS)
         for it in _svgd_rows(60, 8, shards, stem, robot=robot, rung=rung, seed=seed):
             if svgd:
@@ -4191,6 +4233,68 @@ def _cvae_selftest():
     runs = {_svgd_flag(it["args"], "--tag") for w in ("CVAE", "CVAE_SVGD") for it in stage_CVAE(w)}
     if len([r for r in runs if r.startswith("sc_CVAE_")]) != 64:
         fails.append(f"CVAE + CVAE_SVGD: {len(runs)} logical runs, expected 64 + the acceptance run")
+
+    ## CVAEF / CVAEF_SVGD: stage CVAE / CVAE_SVGD minus the acceptance item, with exactly the
+    ## chart's label, checkpoint and tag stem substituted -- item for item, in claim order.
+    def to_fixed(it):
+        a = list(it["args"])
+        old_tag, old_ck = _svgd_flag(a, "--tag"), _svgd_flag(a, "--checkpoint")
+        m = re.fullmatch(r"(models/[^/]+/[^/]+__)cvae(\d+)(__step620000\.pkl)", old_ck)
+        new_ck = f"{m.group(1)}cvaef{m.group(2)}{m.group(3)}"
+        new_tag = old_tag.replace("sc_CVAE_", "sc_CVAEF_", 1).replace(
+            f"_cvae{m.group(2)}_", f"_cvaef{m.group(2)}_", 1)
+        a[a.index("--tag") + 1] = new_tag
+        a[a.index("--checkpoint") + 1] = new_ck
+        return dict(it, args=a, id=it["id"].replace(old_tag, new_tag, 1))
+
+    for which, src in (("CVAEF", "CVAE"), ("CVAEF_SVGD", "CVAE_SVGD")):
+        items = stage_CVAE(which)
+        want_n = 32 * (CVAE_SVGD_SHARDS if which.endswith("_SVGD") else CVAE_IPOPT_SHARDS)
+        if len(items) != want_n:
+            fails.append(f"{which}: {len(items)} items, expected {want_n}")
+        expected = [to_fixed(it) for it in stage_CVAE(src)
+                    if not _svgd_flag(it["args"], "--tag").startswith("sc_CVAEACC_")]
+        if render(items) != render(expected):
+            fails.append(f"{which}: not stage {src} (minus acceptance) with only the chart swapped "
+                         "to cvaef<K>")
+        if any("__cvaef" not in _svgd_flag(it["args"], "--checkpoint")
+               or not _svgd_flag(it["args"], "--tag").startswith("sc_CVAEF_") for it in items):
+            fails.append(f"{which}: an item without a cvaef checkpoint or the sc_CVAEF_ stem")
+    fixed_runs = {_svgd_flag(it["args"], "--tag") for w in CVAEF_STAGES for it in stage_CVAE(w)}
+    if len(fixed_runs) != 64:
+        fails.append(f"CVAEF + CVAEF_SVGD: {len(fixed_runs)} logical runs, expected 64")
+
+    ## Committed manifests are what this file generates now, and each filtered manifest is its
+    ## full manifest's committed lines minus exactly the excluded rung's (same ids, same order).
+    here = os.path.dirname(os.path.realpath(__file__))
+
+    def disk(name):
+        path = os.path.join(here, f"manifest_stage{name}.txt")
+        if not os.path.exists(path):
+            fails.append(f"cluster/manifest_stage{name}.txt is missing")
+            return None
+        with open(path) as fh:
+            return [l.rstrip("\n") for l in fh if l.strip() and not l.startswith("#")]
+
+    for which in CVAE_STAGES + CVAEF_STAGES:
+        on_disk = disk(which)
+        if on_disk is not None and on_disk != render(stage_CVAE(which)):
+            fails.append(f"cluster/manifest_stage{which}.txt is stale; regenerate it")
+    for name, (src, specs) in CVAE_FILTERED_MANIFESTS.items():
+        on_disk, full = disk(name), disk(src)
+        if on_disk is None or full is None:
+            continue
+        prefixes = [f"--checkpoint models/{d}/{d}__{l}__" for d, l in (sp.split(":") for sp in specs)]
+        minus = [l for l in full if not any(p in l for p in prefixes)]
+        n_cut = len(full) - len(minus)
+        want_cut = 4 * (CVAE_SVGD_SHARDS if src.endswith("_SVGD") else CVAE_IPOPT_SHARDS) * len(specs)
+        if on_disk != minus:
+            fails.append(f"cluster/manifest_stage{name}.txt is not manifest_stage{src}.txt minus "
+                         f"exactly the {specs} items")
+        if n_cut != want_cut:
+            fails.append(f"{name}: {n_cut} items excluded, expected {want_cut} (4 logical runs per rung)")
+        if on_disk != render(cvae_exclude_rungs(stage_CVAE(src), specs)):
+            fails.append(f"cluster/manifest_stage{name}.txt is stale; regenerate it")
     return fails
 
 
@@ -4996,6 +5100,7 @@ def _ladder_paths_match_export():
                    | {c for _, _, c in SOFT_CHART_RUNGS}
                    | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}
                    | {ck for *_, ck in CVAE_RUNGS}
+                   | {ck for *_, ck in CVAEF_RUNGS}
                    | {SCREWREDO_CKPT}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
@@ -6996,6 +7101,10 @@ def selftest():
               "+ the joint-space acceptance run, 32 / 32 smoke items; every item is its record twin "
               "(PAPER / SVGD_R2 IPOPT, R29 pin4) with only arms, checkpoint, tag and the redundancy "
               "rung's trust region changed")
+        print("ok   stages CVAEF / CVAEF_SVGD: 64 logical runs (256 / 768 items), stage CVAE / CVAE_SVGD "
+              "minus the acceptance item with only the chart swapped to cvaef<K>; CVAE(_SVGD)_noiiwa8 = "
+              "the committed full manifests minus exactly the iiwa14 cvae8 items (232 / 672); "
+              "committed manifests current")
 
     sr_fails = _screwredo_selftest()
     for msg in sr_fails[:12]:
@@ -7036,6 +7145,7 @@ def main():
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD",
+                                 "CVAEF", "CVAEF_SVGD",
                                  "SCREWREDO", "SCREWREDO_NLOPT", "SCREWREDO_SVGD",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
@@ -7091,6 +7201,10 @@ def main():
     p.add_argument("-o", "--out", default=None)
     p.add_argument("--summary", action="store_true")
     p.add_argument("--selftest", action="store_true")
+    p.add_argument("--exclude-rung", action="append", default=[], metavar="DIR:LABEL",
+                   help="chart-ablation stages only: drop every item whose checkpoint is "
+                        "models/<DIR>/<DIR>__<LABEL>__* (e.g. iiwa14:cvae8); repeatable. Item ids "
+                        "are unchanged (CVAE_FILTERED_MANIFESTS)")
     p.add_argument("--allotment", action="store_true",
                    help="REMEASURE stages: print the node-hour arithmetic (cells x arms x "
                         "expected mean wall from the record's Table 3, learned arm / 2.5 under "
@@ -7193,7 +7307,7 @@ def main():
              "ANALYTIC_SVGD": lambda: stage_ANALYTIC_SVGD(),
              "ANALYTIC_SVGD_SMOKE": lambda: stage_ANALYTIC_SVGD_SMOKE(),
              ## The chart ablation takes no grid arguments: it IS the record's shape.
-             **{s: (lambda s=s: stage_CVAE(s)) for s in CVAE_STAGES},
+             **{s: (lambda s=s: stage_CVAE(s)) for s in CVAE_STAGES + CVAEF_STAGES},
              **{s: (lambda s=s: stage_SCREWREDO(s)) for s in SCREWREDO_STAGES},
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
@@ -7283,10 +7397,16 @@ def main():
                                         args.shards, only=args.rungs),
              }[args.stage]()
 
+    if args.exclude_rung:
+        if args.stage not in CVAE_STAGES + CVAEF_STAGES:
+            raise SystemExit("--exclude-rung applies to the chart-ablation stages only")
+        items = cvae_exclude_rungs(items, args.exclude_rung)
     if args.tag_prefix:
         items = retag(items, args.tag_prefix)
     lines = render(items)
-    header = [f"# learned-ik stage {args.stage} manifest",
+    header = [f"# learned-ik stage {args.stage} manifest"
+              + (f", minus rung(s) {' '.join(args.exclude_rung)} (same item ids as the full manifest)"
+                 if args.exclude_rung else ""),
               f"# generated by cluster/gen_manifest.py (edit the spec there, not here)",
               f"# format: <id>|<env assignments or ->|<script>|<args>",
               f"# {len(lines)} items, ordered longest-estimate-first (LPT)"
