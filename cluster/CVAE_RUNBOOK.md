@@ -37,6 +37,15 @@ textbook fixed-variance variant (`cvaef<K>`, MSE + KL) and benchmark it.
 | CVAEF_SVGD (768), crc, PROCS=2 | 5966308-11 | afterany: 5966292-95 |
 | CVAE / CVAE_SVGD iiwa14 cvae8 items only (32 / 96), 2 jobs each | 5966315-16, 5966317-18 (crc) | afterok: 5966176 |
 
+**Outcomes since (2026-10-19 16:00).** `iiwa14_cvae8` diverged AGAIN on resume (inf loss at step
+142636; 5966176 FAILED): the learned-variance objective is reproducibly unstable there. Thomas:
+**record it as diverged** -- no chart, no benchmark for that rung; its four `_iiwa8` bench jobs
+(5966315-18) were cancelled. The fixed-variance `iiwa14_cvaef8` covers K = 8.
+**`screw7_p050_n6r` is bit-identical to `n6`** (all 112 tensors equal; the .pkl bytes differ only in
+pickling), so the rebuilt dataset reproduced the deleted one exactly; SCREWREDO matches the record
+cell for cell on IPOPT/SNOPT (svgd within its run-to-run noise). The record's screw flow numbers
+stand; SCREWREDO is a confirmation, not a replacement.
+
 Restaged twice under live jobs with `FORCE_STAGE=1` (29106cc, then the iiwa8 manifests): the only
 source change was `src/charts/cvae.py` (learned path bit-identical by test), which no running flow
 item imports. The `_noiiwa8` / `_iiwa8` manifests are complements of the full ones with the same

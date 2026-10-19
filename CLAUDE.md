@@ -393,9 +393,12 @@ the runaway does not buy success.**
 network only through `src/charts/` (`LoadChart`; `FlowChart` is bit-identical to the old calls).
 Rung one: a standard cVAE decoder as the chart (`src/charts/cvae.py`), K = flow width and K =
 redundancy, paired start = encoder mean (residual beyond the correction box is
-`unrepresentable_start`), IPOPT + AL-SVGD, learned arm only against the record. The screw flow is
-retrained as `n6r` on the rebuilt dataset and its record rows re-run (Thomas: data even between
-networks). LOInK deferred. Ops `cluster/CVAE_RUNBOOK.md`.
+`unrepresentable_start`), IPOPT + AL-SVGD, learned arm only against the record. The screw dataset was
+rebuilt and the flow retrained on it as `n6r`: **bit-identical to `n6`**, so the rebuild reproduced
+the original data exactly and the record stands. Standard (learned-variance) cVAE: rigid-arm charts
+unusable (median FK error 250-750 mm), paired representability 0%, iiwa K=8 diverged twice
+(recorded, not benchmarked); a fixed-variance textbook variant `cvaef<K>` is being measured too.
+LOInK deferred. Ops `cluster/CVAE_RUNBOOK.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
 
@@ -441,7 +444,7 @@ from scratch (`src/screw_arm/params.py` **is** the robot; SDF and torch FK agree
 plant without a program must repair it too. **TRAP: set `ee_frame` BEFORE `CalibrateFlowFrame`**
 (`X_ee_flow` must be identity; a test pins it). Collision filter groups need the `cfg_` prefix.
 Measured: chart ladder `n6` stands; `p025_n6` shows the gain-ceiling runaway (a property of the trained
-chart). Datasets for the screw arm are gone — rebuild first. Ops and screens
+chart). `screw7_p050`'s dataset is rebuilt (bit-identical, proved by retraining `n6`); the other pitch rungs' are still gone. Ops and screens
 `cluster/SCREW_ARM_RUNBOOK.md`; `python scripts/report_screw.py`. The curvilinear rail is deferred.
 
 ## Running on MIT SuperCloud (long form: `docs/notes-cluster.md`; playbook `cluster/README.md`)
