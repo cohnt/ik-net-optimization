@@ -63,7 +63,8 @@ from ikflow import config as ikflow_config  # noqa: E402
 from ikflow.config import DATASET_TAG_NON_SELF_COLLIDING  # noqa: E402
 from ikflow.training.lt_data import IkfLitDataset  # noqa: E402
 
-from src.charts.cvae import ACTIVATIONS, CVAEModel, JointScale, elbo_loss  # noqa: E402
+from src.charts.cvae import (  # noqa: E402
+    ACTIVATIONS, DECODER_VARIANCES, DEFAULT_DECODER_VARIANCE, CVAEModel, JointScale, elbo_loss)
 
 #: A latent dimension whose batch-mean KL to the prior is below this (nats) carries no
 #: information: the encoder ignores it and the decoder learns to ignore it too. In the
@@ -111,13 +112,13 @@ class CVAEDataset(IkfLitDataset):
 class CVAELitModel(LightningModule):
     def __init__(self, robot_name, ndof, dim_latent_space, hidden, depth, activation, scale,
                  learning_rate, gamma, step_lr_every, weight_decay, gradient_clip,
-                 log_every, fk_eval_n, run_dir):
+                 log_every, fk_eval_n, run_dir, decoder_variance=DEFAULT_DECODER_VARIANCE):
         super().__init__()
         ## Everything the exporter needs to rebuild the arch is a constructor argument, so
         ## `save_hyperparameters` puts it in every checkpoint's `hyper_parameters`.
         self.save_hyperparameters()
         self.model = CVAEModel(ndof, dim_latent_space, scale, hidden=hidden, depth=depth,
-                               activation=activation)
+                               activation=activation, decoder_variance=decoder_variance)
         self._robot = None
         self._last_tr_loss = None
 
@@ -152,14 +153,17 @@ class CVAELitModel(LightningModule):
             raise ValueError(f"non-finite loss at step {self.global_step}: {loss.item()}")
         if self.global_step % self.hparams.log_every == 0 and self.global_step > 0:
             self._last_tr_loss = float(loss.item())
-            self.safe_log_metrics({
+            metrics = {
                 "tr/loss": self._last_tr_loss,
                 "tr/recon_nll": float(parts["recon_nll"]),
                 "tr/kl": float(parts["kl"]),
                 "tr/recon_mse": float(parts["recon_mse"]),
                 "tr/learning_rate": self.get_lr(),
-                "tr/sigma_q_mean": float(self.model.log_sigma_q.exp().mean()),
-            })
+            }
+            ## Only the learned-variance variant has a sigma to report.
+            if self.model.decoder_variance == "learned":
+                metrics["tr/sigma_q_mean"] = float(self.model.log_sigma_q.exp().mean())
+            self.safe_log_metrics(metrics)
         return loss
 
     def on_after_backward(self):
@@ -258,6 +262,11 @@ def parse_args(argv=None):
     p.add_argument("--hidden", type=int, default=512)
     p.add_argument("--depth", type=int, default=6)
     p.add_argument("--activation", default="silu", choices=sorted(ACTIVATIONS))
+    p.add_argument("--decoder_variance", default=DEFAULT_DECODER_VARIANCE,
+                   choices=DECODER_VARIANCES,
+                   help="'learned': Gaussian NLL with a learned per-joint log_sigma_q (the first "
+                        "rung); 'fixed': the textbook objective, squared error in normalised "
+                        "units + KL, beta = 1 (src/charts/cvae.py)")
     p.add_argument("--batch_size", type=int, default=4096)
     p.add_argument("--learning_rate", type=float, default=1.5e-4)
     p.add_argument("--step_lr_every", type=int, default=2441)
@@ -303,10 +312,12 @@ def main():
         scale=scale.tolist(), learning_rate=args.learning_rate, gamma=args.gamma,
         step_lr_every=args.step_lr_every, weight_decay=args.weight_decay,
         gradient_clip=args.gradient_clip_val, log_every=args.log_every,
-        fk_eval_n=args.fk_eval_n, run_dir=args.run_dir)
+        fk_eval_n=args.fk_eval_n, run_dir=args.run_dir,
+        decoder_variance=args.decoder_variance)
     n_params = sum(p.numel() for p in model.model.parameters())
     print(f"[train_cvae] {args.robot_name}: ndof {robot.ndof}, K {args.dim_latent_space}, "
-          f"{args.depth} x {args.hidden} {args.activation}, {n_params} parameters")
+          f"{args.depth} x {args.hidden} {args.activation}, decoder variance "
+          f"{args.decoder_variance}, {n_params} parameters")
 
     ckpt_dir = os.path.join(args.run_dir, "checkpoints")
     loggers = [CSVLogger(save_dir=args.run_dir, name="metrics")]

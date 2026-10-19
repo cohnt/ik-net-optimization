@@ -37,19 +37,28 @@ sys.path.insert(0, os.path.join(REPO, "scripts", "training"))
 
 from export_ckpt_to_pkl import _provenance_commit  # noqa: E402
 from src.charts.cvae import (  # noqa: E402
-    ARCH_FIELDS, POSE_DIM, CVAEModel, JointScale, LoadCVAEChart, WriteCVAEArch)
+    ARCH_FIELDS, DECODER_VARIANCES, DEFAULT_DECODER_VARIANCE, POSE_DIM, CVAEModel, JointScale,
+    LoadCVAEChart, WriteCVAEArch)
 
 PREFIX = "model."
 
 
-def DefaultOutPath(robot_name, k, step):
-    return os.path.join(REPO, "models", robot_name, f"{robot_name}__cvae{k}__step{step}.pkl")
+def RungLabel(k, decoder_variance):
+    """`cvae<K>` (learned variance) or `cvaef<K>` (fixed): cluster/chart_runs.txt's labels."""
+    return f"cvae{'f' if decoder_variance == 'fixed' else ''}{k}"
+
+
+def DefaultOutPath(robot_name, k, step, decoder_variance=DEFAULT_DECODER_VARIANCE):
+    return os.path.join(REPO, "models", robot_name,
+                        f"{robot_name}__{RungLabel(k, decoder_variance)}__step{step}.pkl")
 
 
 def ArchFromHparams(hp):
+    ## A checkpoint from before the field existed trained the learned-variance variant.
     return {"ndof": int(hp["ndof"]), "dim_latent_space": int(hp["dim_latent_space"]),
             "hidden": int(hp["hidden"]), "depth": int(hp["depth"]),
             "activation": hp["activation"], "pose_dim": POSE_DIM,
+            "decoder_variance": hp.get("decoder_variance", DEFAULT_DECODER_VARIANCE),
             "robot_name": hp["robot_name"]}
 
 
@@ -58,7 +67,8 @@ def export(ckpt_path, out_path=None):
     hp = dict(ckpt["hyper_parameters"])
     arch = ArchFromHparams(hp)
     step = int(ckpt.get("global_step", -1))
-    out_path = out_path or DefaultOutPath(arch["robot_name"], arch["dim_latent_space"], step)
+    out_path = out_path or DefaultOutPath(arch["robot_name"], arch["dim_latent_space"], step,
+                                          arch["decoder_variance"])
 
     state_dict = {k[len(PREFIX):]: v.detach().cpu() for k, v in ckpt["state_dict"].items()
                   if k.startswith(PREFIX)}
@@ -86,7 +96,8 @@ def roundtrip(out_path, arch, hp, state_dict, n=256, seed=0):
     chart = LoadCVAEChart(arch["robot_name"], out_path)
     reference = CVAEModel(arch["ndof"], arch["dim_latent_space"], hp["scale"],
                           hidden=arch["hidden"], depth=arch["depth"],
-                          activation=arch["activation"])
+                          activation=arch["activation"],
+                          decoder_variance=arch["decoder_variance"])
     reference.load_state_dict(state_dict, strict=True)
     ## Explicit devices throughout: importing jrl (via the loader) made CUDA torch's default.
     reference = reference.cpu().double().eval()
@@ -107,7 +118,7 @@ def roundtrip(out_path, arch, hp, state_dict, n=256, seed=0):
 
 
 def write_untrained(robot_name, k, out_path=None, seed=0, hidden=512, depth=6,
-                    activation="silu"):
+                    activation="silu", decoder_variance=DEFAULT_DECODER_VARIANCE):
     """A randomly initialised chart in the export contract's own format."""
     from jrl.robots import get_robot
 
@@ -118,10 +129,11 @@ def write_untrained(robot_name, k, out_path=None, seed=0, hidden=512, depth=6,
     torch.manual_seed(seed)
     with torch.device("cpu"):
         model = CVAEModel(robot.ndof, k, scale, hidden=hidden, depth=depth,
-                          activation=activation)
+                          activation=activation, decoder_variance=decoder_variance)
     arch = dict(model.arch, robot_name=robot_name)
     out_path = out_path or os.path.join(
-        REPO, "models", robot_name, f"{robot_name}__cvae{k}untrained__step0.pkl")
+        REPO, "models", robot_name,
+        f"{robot_name}__{RungLabel(k, decoder_variance)}untrained__step0.pkl")
     state_dict = {name: v.detach().cpu() for name, v in model.state_dict().items()}
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "wb") as f:
@@ -143,6 +155,9 @@ if __name__ == "__main__":
     parser.add_argument("--robot", default=None, help="--untrained only")
     parser.add_argument("--dim_latent_space", type=int, default=None, help="--untrained only")
     parser.add_argument("--seed", type=int, default=0, help="--untrained only")
+    parser.add_argument("--decoder_variance", default=DEFAULT_DECODER_VARIANCE,
+                        choices=DECODER_VARIANCES, help="--untrained only (a trained "
+                        "checkpoint's own hyper_parameters say which it is)")
     parser.add_argument("--out", default=None,
                         help="default models/<robot>/<robot>__cvae<K>__step<N>.pkl")
     parser.add_argument("--skip_roundtrip", action="store_true")
@@ -151,7 +166,8 @@ if __name__ == "__main__":
         if args.ckpt_path or not args.robot or not args.dim_latent_space:
             parser.error("--untrained takes --robot and --dim_latent_space, and no checkpoint")
         out_path, arch, hp, state_dict = write_untrained(
-            args.robot, args.dim_latent_space, args.out, seed=args.seed)
+            args.robot, args.dim_latent_space, args.out, seed=args.seed,
+            decoder_variance=args.decoder_variance)
     else:
         if not args.ckpt_path:
             parser.error("a checkpoint is required (or --untrained)")
