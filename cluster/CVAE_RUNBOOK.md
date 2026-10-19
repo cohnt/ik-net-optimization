@@ -267,6 +267,42 @@ prints `not yet measured` for runs not collected. The cap check (clock AND budge
 cells voids a row) is in its diagnostics table; a VOID row is re-measured with the iteration budget
 lifted, never the clock.
 
+## The fixed-variance variant (`cvaef<K>`, Thomas 2026-10-19)
+
+The textbook cVAE objective (`--decoder_variance=fixed`: squared reconstruction error in normalised
+units + KL, beta = 1; no `log_sigma_q`), everything else identical. Eight rows at the end of
+`cluster/chart_runs.txt`; the learned-variance rows stay and are NOT resubmitted. Submit exactly
+the eight with the run-name filter (awk ERE on the run name; a regex matching nothing refuses):
+
+```bash
+ONLY='_cvaef[0-9]+$' PAIRS=1 bash cluster/submit_chart_train.sh --all 24:00:00
+```
+
+Exports `models/<robot>/<robot>__cvaef<K>__step620000.pkl` (the label is the run name minus
+`<robot>_`). Benchmarks: stages `CVAEF` (IPOPT, 256 items) and `CVAEF_SVGD` (AL-SVGD, 768 items,
+`DRAKE_ENV=crc`), item for item stage CVAE / CVAE_SVGD with only the chart swapped and no
+acceptance item; `scripts/report_chart_ablation.py` prints them as columns `cVAEf-K` / `cVAEf-k`.
+
+**Filtered stage-CVAE manifests** `manifest_stageCVAE_noiiwa8.txt` (232 items) and
+`manifest_stageCVAE_SVGD_noiiwa8.txt` (672) are the full manifests minus every `iiwa14__cvae8`
+item (`gen_manifest.py --stage CVAE --exclude-rung iiwa14:cvae8`; the selftest holds them to it),
+with the full manifests' item ids. **But run_items.sh keys its `.claim` / `.done` state by the
+MANIFEST'S BASENAME** (`$ROOT/state/<manifest name>/<id>.done`), so the full manifest does NOT see
+items done under the filtered one. Before submitting the full manifest afterwards, carry the done
+markers across (ids are identical, so the full manifest then skips them and runs only the iiwa14
+K = 8 items):
+
+```bash
+for m in manifest_stageCVAE manifest_stageCVAE_SVGD; do
+  mkdir -p ~/learned-ik/state/$m
+  cp -n ~/learned-ik/state/${m}_noiiwa8/*.done ~/learned-ik/state/$m/
+done
+```
+
+(`~/learned-ik` is the default tree; use the tree the stage ran in. Copy `.done` only, never `.claim`: a claim without a done marker is a dead item, and copying one
+would hide it from the full manifest.) Mind any job already queued on the FULL manifest: it and a
+filtered submission use different state directories and would run the same items twice.
+
 ## Resume checks
 
 - **Is a run trained?** Only `--status` says so: `step 620000`. A job leaving the queue is not

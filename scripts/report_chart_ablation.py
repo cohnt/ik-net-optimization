@@ -9,14 +9,16 @@ every cVAE cell pairs with the record's flow and joint-space cells on the same (
 and this script REFUSES the pairing unless each cVAE run carries the record run's `grid_hash` and
 `scene_fingerprint`, the same 180 s cap and the same 480 cells.
 
-Rows are robot x task x start; one block per solver (IPOPT, AL-SVGD); four columns per block:
+Rows are robot x task x start; one block per solver (IPOPT, AL-SVGD); six columns per block:
   flow   -- the record's learned arm: IPOPT stage PAPER (Panda: stage SVGD_R2, the same items at the
             same condition), AL-SVGD stage SVGD_R29 `pin4`, both via report_statusquo's loaders;
             on the SCREW rows, stage SCREWREDO's `n6r` run (the same rung retrained on the rebuilt
             dataset the cVAE trains on) replaces it wherever that run exists, else the record's
             `n6`; the source of every screw row is printed to stderr;
-  cVAE-K -- stage CVAE at K = the flow's width;
-  cVAE-k -- stage CVAE at K = the redundancy;
+  cVAE-K -- stage CVAE at K = the flow's width (learned decoder variance);
+  cVAE-k -- stage CVAE at K = the redundancy (learned decoder variance);
+  cVAEf-K, cVAEf-k -- the same two rungs with the FIXED decoder variance (the textbook objective;
+            stage CVAEF / CVAEF_SVGD, checkpoints `cvaef<K>`);
   JS     -- the record's joint-space arm: the IPOPT runs' numerical arm, AL-SVGD stage SVGD_R30
             `pin4kq` (kernel q).
 Per column: success of 480; median iterations over successes (IPOPT; AL-SVGD counts outer steps,
@@ -57,7 +59,12 @@ ROBOTS = ("panda", "iiwa", "screw7_p050", "soft12")
 ROBOT_NAME = {"panda": "Panda", "iiwa": "iiwa", "screw7_p050": "screw", "soft12": "soft PCS"}
 TASK_NAME = {"mugshelf": "grasp", "posetip": "pose"}
 SOLVERS = (("ipopt", "IPOPT (interior point)"), ("svgd", "AL-SVGD (V4 pin)"))
-COLUMNS = ("flow", "cVAE-K", "cVAE-k", "JS")
+#: The cVAE columns: (column, rung-label prefix, which rung of CVAE_WIDTHS, tag stem). `cvae` is the
+#: learned-decoder-variance variant (stage CVAE), `cvaef` the fixed one (stage CVAEF).
+CVAE_COLUMNS = (("cVAE-K", "cvae", 0, "sc_CVAE_"), ("cVAE-k", "cvae", 1, "sc_CVAE_"),
+                ("cVAEf-K", "cvaef", 0, "sc_CVAEF_"), ("cVAEf-k", "cvaef", 1, "sc_CVAEF_"))
+CVAE_COLS = tuple(c for c, *_ in CVAE_COLUMNS)
+COLUMNS = ("flow",) + CVAE_COLS + ("JS",)
 #: The record's runaway separator (scripts/report_screw.py): a failure returning |q|_inf above it.
 RUNAWAY_Q = 1e3
 MUST_MATCH = ("grid_hash", "scene_fingerprint", "wall_time")
@@ -69,9 +76,9 @@ def qinf(r):
     return float(np.max(np.abs(q))) if q is not None else float("nan")
 
 
-def cvae_label(robot, which):
-    """`cvae<K>` for the flow-width (which=0) or redundancy (which=1) rung."""
-    return f"cvae{CVAE_WIDTHS[robot][which]}"
+def cvae_label(robot, which, prefix="cvae"):
+    """`<prefix><K>` (`cvae` or `cvaef`) for the flow-width (which=0) or redundancy (which=1) rung."""
+    return f"{prefix}{CVAE_WIDTHS[robot][which]}"
 
 
 def load_columns():
@@ -86,9 +93,10 @@ def load_columns():
     svgd, _ = load_svgd_record(record)
     svgd = {(t["robot"], t["row"], t["start"]): s for tag, s in svgd.items() for t in [parse_tag(tag)]}
     cvae = {}
-    for tag, s in load("sc_CVAE_", cells=CELLS).items():
-        t = parse_tag(tag)
-        cvae[(t["solver"], t["robot"], t["rung"], t["row"], t["start"])] = (tag, s)
+    for stem in sorted({st for *_, st in CVAE_COLUMNS}):
+        for tag, s in load(stem, cells=CELLS).items():
+            t = parse_tag(tag)
+            cvae[(t["solver"], t["robot"], t["rung"], t["row"], t["start"])] = (tag, s)
 
     ## The screw flow column: stage SCREWREDO's retrained chart (`n6r`, on the rebuilt dataset the
     ## cVAE trains on) where its run exists, else the record's n6 run. Joint space stays the record's.
@@ -124,8 +132,9 @@ def load_columns():
                         src = (hit[0] if hit is not None and r is not None else
                                "the record (n6)" if r is not None else NYM)
                         print(f"flow column, {solver} {robot} {row} {start}: {src}", file=sys.stderr)
-                    for c, which in (("cVAE-K", 0), ("cVAE-k", 1)):
-                        hit = cvae.get((solver, robot, cvae_label(robot, which), row, start))
+                    for c, prefix, which, _ in CVAE_COLUMNS:
+                        label = cvae_label(robot, which, prefix)
+                        hit = cvae.get((solver, robot, label, row, start))
                         if hit is None:
                             continue
                         tag, s = hit
@@ -140,8 +149,8 @@ def load_columns():
                                 refused.append(f"{tag}: {f} {s['metadata'].get(f)!r} != the record's "
                                                f"{ref.get(f)!r}")
                         ck = s["metadata"].get("checkpoint") or ""
-                        if f"__{cvae_label(robot, which)}__" not in ck:
-                            refused.append(f"{tag}: checkpoint {ck!r} is not the {cvae_label(robot, which)} chart")
+                        if f"__{label}__" not in ck:
+                            refused.append(f"{tag}: checkpoint {ck!r} is not the {label} chart")
                         recs = s["records"]["learned"]
                         if {(x["target"], x["guess"]) for x in recs} != set(by_cell(r, "learned")):
                             refused.append(f"{tag}: does not cover the record row's cells")
@@ -190,6 +199,8 @@ def tables(data):
        "the record's learned arm (IPOPT: stage PAPER, Panda stage SVGD_R2; AL-SVGD: SVGD_R29 `pin4`); **cVAE-K** = "
        "stage CVAE at K = the flow's width (Panda 7, iiwa 8, screw 7, soft PCS 12; the record's trust region); "
        "**cVAE-k** = K = the redundancy (Panda 1, iiwa 1, screw 1, soft PCS 6; trust region round(sqrt(K) + 1.5, 2)); "
+       "both with the LEARNED decoder variance; **cVAEf-K** / **cVAEf-k** = the same two rungs with the FIXED "
+       "decoder variance (the textbook objective; stage CVAEF); "
        "**JS** = the record's joint-space arm (IPOPT: the same runs; AL-SVGD: SVGD_R30 `pin4kq`). Every cVAE run "
        "is refused unless its grid hash, scene fingerprint, cap and cells are the record row's. "
        f"`{NYM}` = no merged 480-cell cVAE run collected yet.\n")
@@ -208,11 +219,13 @@ def tables(data):
         pr(f"## {title}\n")
         pr("### Success (of 480), and McNemar of each cVAE rung against flow and joint space\n")
         pr("Pair cells: `cVAE-only / other-only, p` on the discordant cells (exact two-sided).\n")
-        pr("| row | flow | cVAE-K | cVAE-k | JS | K v flow | K v JS | k v flow | k v JS |")
-        pr("| --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |")
+        short = {"cVAE-K": "K", "cVAE-k": "k", "cVAEf-K": "fK", "cVAEf-k": "fk"}
+        vs = [f"{short[c]} v {o}" for c in CVAE_COLS for o in ("flow", "JS")]
+        pr("| row | " + " | ".join(COLUMNS) + " | " + " | ".join(vs) + " |")
+        pr("| --- |" + " ---: |" * len(COLUMNS) + " --- |" * len(vs))
         for robot, row, start, st, cols in stats:
             pairs = []
-            for c in ("cVAE-K", "cVAE-k"):
+            for c in CVAE_COLS:
                 for o in ("flow", "JS"):
                     if cols[c] is None or cols[o] is None:
                         pairs.append(NYM if cols[c] is None else "--")
@@ -227,15 +240,15 @@ def tables(data):
         if solver == "svgd":
             pr("N/A by construction: AL-SVGD counts outer steps (K = 10 inner steps each), not majors.\n")
         else:
-            pr("| row | flow | cVAE-K | cVAE-k | JS |")
-            pr("| --- | ---: | ---: | ---: | ---: |")
+            pr("| row | " + " | ".join(COLUMNS) + " |")
+            pr("| --- |" + " ---: |" * len(COLUMNS))
             for robot, row, start, st, _ in stats:
                 pr(f"| {name(robot, row, start)} | " + " | ".join(cell(st[c], "iters") for c in COLUMNS) + " |")
             pr("")
 
         pr("### Wall clock, s (median over successes)\n")
-        pr("| row | flow | cVAE-K | cVAE-k | JS |")
-        pr("| --- | ---: | ---: | ---: | ---: |")
+        pr("| row | " + " | ".join(COLUMNS) + " |")
+        pr("| --- |" + " ---: |" * len(COLUMNS))
         for robot, row, start, st, _ in stats:
             pr(f"| {name(robot, row, start)} | " + " | ".join(cell(st[c], "wall", 2) for c in COLUMNS) + " |")
         pr("")
@@ -243,11 +256,11 @@ def tables(data):
         pr("### Cost on cells both arms of the pair solved\n")
         pr(f"`median cVAE / median other (n shared)`; `--` under {MIN_COST_CELLS} shared cells. The reported "
            "cost: learned-only regularisers excluded.\n")
-        pr("| row | K v flow | K v JS | k v flow | k v JS |")
-        pr("| --- | --- | --- | --- | --- |")
+        pr("| row | " + " | ".join(vs) + " |")
+        pr("| --- |" + " --- |" * len(vs))
         for robot, row, start, _, cols in stats:
             cells = []
-            for c in ("cVAE-K", "cVAE-k"):
+            for c in CVAE_COLS:
                 for o in ("flow", "JS"):
                     if cols[c] is None or cols[o] is None:
                         cells.append(NYM if cols[c] is None else "--")
@@ -261,8 +274,8 @@ def tables(data):
         pr("`unrep` = paired starts scored `unrepresentable_start`; `clock` / `budget` = cells stopped by the wall "
            f"clock / an iteration budget (a row with >= {BUDGET_CELLS} at a BUDGET carries no verdict, flagged "
            f"**VOID**); `run` = failures returning |q|_inf > {RUNAWAY_Q:g}.\n")
-        pr("| row | flow unrep / clock / budget / run | cVAE-K | cVAE-k | JS clock / budget |")
-        pr("| --- | --- | --- | --- | --- |")
+        pr("| row | flow unrep / clock / budget / run | " + " | ".join(CVAE_COLS) + " | JS clock / budget |")
+        pr("| --- |" + " --- |" * (len(CVAE_COLS) + 2))
         for robot, row, start, st, _ in stats:
             def diag(s):
                 if s is None:
@@ -272,8 +285,8 @@ def tables(data):
             js = st["JS"]
             jsd = NYM if js is None else f"{js['clock']} / " + (
                 f"**{js['budget']} VOID**" if js["budget"] >= BUDGET_CELLS else str(js["budget"]))
-            pr(f"| {name(robot, row, start)} | {diag(st['flow'])} | {diag(st['cVAE-K'])} | "
-               f"{diag(st['cVAE-k'])} | {jsd} |")
+            pr(f"| {name(robot, row, start)} | {diag(st['flow'])} | "
+               + " | ".join(diag(st[c]) for c in CVAE_COLS) + f" | {jsd} |")
         pr("")
     return out
 
