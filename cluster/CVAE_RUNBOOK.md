@@ -9,6 +9,24 @@ rules, which override anything here.
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
+## STATE AS OF 2026-10-19 17:00 -- STAGE CVAEPROBE QUEUED (staged eb506b9)
+
+The fixed-variance variant collapsed harder (KL 0 on Panda and screw at 480-540k steps, iiwa 0.4
+nats; FK error 0.58-0.74 m; soft12 ~5.5 cm). Both standard cVAE objectives fail as charts on the
+rigid arms. Full benchmarking would cost days of the cap on cells running to the clock, so Thomas
+chose **probe the rigid arms, full soft12**: `cluster/make_cvae_probe.py` derives stage CVAEPROBE
+from the full CVAE/CVAEF manifests (soft12 rows in full; rigid paired rows as one unsharded instant
+item each; rigid native rows a 60-cell probe, guess 0 of every target, tag `_60_180_native`;
+acceptance item kept; iiwa14 cvae8 dropped). The full-stage jobs 5966296-5966311 were held, then
+cancelled.
+
+| step | jobs | depends on |
+| --- | --- | --- |
+| CVAEPROBE (180 items), PROCS=2 | 5968675-77, 5968679 | afterany: cvaef training 5966292-95 |
+| CVAEPROBE_SVGD (428 items), crc, PROCS=2 | 5968680-83 | afterany: 5966292-95 |
+
+A rigid row whose probe shows real successes is extended to its full 480 cells afterwards.
+
 ## STATE AS OF 2026-10-19 15:00 -- SECOND ROUND QUEUED
 
 **What the night did.** Seven cVAE runs trained and exported. `iiwa14_cvae8` hit a NaN loss at
