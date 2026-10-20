@@ -10,13 +10,13 @@ Pair cells: `cVAE-only / other-only, p` on the discordant cells (exact two-sided
 
 | row | flow | cVAE-K | cVAE-k | cVAEf-K | cVAEf-k | JS | K v flow | K v JS | k v flow | k v JS | fK v flow | fK v JS | fk v flow | fk v JS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp native | 480 | 46/60 | 32/60 | 31/60 | 19/60 | 448 | 0 / 14, p = 0.00012 | 3 / 13, p = 0.021 | 0 / 28, p = 7.5e-09 | 2 / 26, p = 3e-06 | 0 / 29, p = 3.7e-09 | 1 / 26, p = 4.2e-07 | 0 / 41, p = 9.1e-13 | 1 / 38, p = 1.5e-10 |
+| Panda grasp native | 480 | 353 | 228 | 31/60 | 19/60 | 448 | 0 / 127, p = 1.2e-38 | 19 / 114, p = 1.1e-17 | 0 / 252, p = 2.8e-76 | 13 / 233, p = 2.6e-53 | 0 / 29, p = 3.7e-09 | 1 / 26, p = 4.2e-07 | 0 / 41, p = 9.1e-13 | 1 / 38, p = 1.5e-10 |
 | Panda grasp paired | 479 | 0 | 0 | 0 | 0 | 449 | 0 / 479, p = 1.3e-144 | 0 / 449, p = 1.4e-135 | 0 / 479, p = 1.3e-144 | 0 / 449, p = 1.4e-135 | 0 / 479, p = 1.3e-144 | 0 / 449, p = 1.4e-135 | 0 / 479, p = 1.3e-144 | 0 / 449, p = 1.4e-135 |
-| Panda pose native | 458 | 6/60 | 4/60 | 1/60 | 1/60 | 200 | 0 / 51, p = 8.9e-16 | 3 / 23, p = 8.8e-05 | 0 / 53, p = 2.2e-16 | 3 / 25, p = 2.7e-05 | 0 / 56, p = 2.8e-17 | 1 / 26, p = 4.2e-07 | 0 / 56, p = 2.8e-17 | 1 / 26, p = 4.2e-07 |
+| Panda pose native | 458 | 58 | 44 | 1/60 | 1/60 | 200 | 1 / 401, p = 7.8e-119 | 34 / 176, p = 2.7e-24 | 0 / 414, p = 4.7e-125 | 32 / 188, p = 4.6e-28 | 0 / 56, p = 2.8e-17 | 1 / 26, p = 4.2e-07 | 0 / 56, p = 2.8e-17 | 1 / 26, p = 4.2e-07 |
 | Panda pose paired | 395 | 0 | 0 | 0 | 0 | 200 | 0 / 395, p = 2.5e-119 | 0 / 200, p = 1.2e-60 | 0 / 395, p = 2.5e-119 | 0 / 200, p = 1.2e-60 | 0 / 395, p = 2.5e-119 | 0 / 200, p = 1.2e-60 | 0 / 395, p = 2.5e-119 | 0 / 200, p = 1.2e-60 |
-| iiwa grasp native | 480 | diverged (not benchmarked) | 51/60 | 59/60 | 40/60 | 453 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 9, p = 0.0039 | 3 / 8, p = 0.23 | 0 / 1, p = 1 | 4 / 1, p = 0.38 | 0 / 20, p = 1.9e-06 | 3 / 19, p = 0.00086 |
+| iiwa grasp native | 480 | diverged (not benchmarked) | 415 | 59/60 | 40/60 | 453 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 65, p = 5.4e-20 | 20 / 58, p = 2e-05 | 0 / 1, p = 1 | 4 / 1, p = 0.38 | 0 / 20, p = 1.9e-06 | 3 / 19, p = 0.00086 |
 | iiwa grasp paired | 479 | diverged (not benchmarked) | 0 | 0 | 0 | 453 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 479, p = 1.3e-144 | 0 / 453, p = 8.6e-137 | 0 / 479, p = 1.3e-144 | 0 / 453, p = 8.6e-137 | 0 / 479, p = 1.3e-144 | 0 / 453, p = 8.6e-137 |
-| iiwa pose native | 462 | diverged (not benchmarked) | 0/60 | 3/60 | 0/60 | 312 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 56, p = 2.8e-17 | 0 / 38, p = 7.3e-12 | 0 / 53, p = 2.2e-16 | 2 / 37, p = 2.8e-09 | 0 / 56, p = 2.8e-17 | 0 / 38, p = 7.3e-12 |
+| iiwa pose native | 462 | diverged (not benchmarked) | 2 | 3/60 | 0/60 | 312 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 460, p = 6.7e-139 | 1 / 311, p = 7.5e-92 | 0 / 53, p = 2.2e-16 | 2 / 37, p = 2.8e-09 | 0 / 56, p = 2.8e-17 | 0 / 38, p = 7.3e-12 |
 | iiwa pose paired | 406 | diverged (not benchmarked) | 0 | 0 | 0 | 312 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 406, p = 1.2e-122 | 0 / 312, p = 2.4e-94 | 0 / 406, p = 1.2e-122 | 0 / 312, p = 2.4e-94 | 0 / 406, p = 1.2e-122 | 0 / 312, p = 2.4e-94 |
 | screw grasp native | 475 | 0/60 | 0/60 | 0/60 | 0/60 | 442 | 0 / 60, p = 1.7e-18 | 0 / 59, p = 3.5e-18 | 0 / 60, p = 1.7e-18 | 0 / 59, p = 3.5e-18 | 0 / 60, p = 1.7e-18 | 0 / 59, p = 3.5e-18 | 0 / 60, p = 1.7e-18 | 0 / 59, p = 3.5e-18 |
 | screw grasp paired | 473 | 0 | 0 | 0 | 0 | 442 | 0 / 473, p = 8.2e-143 | 0 / 442, p = 1.8e-133 | 0 / 473, p = 8.2e-143 | 0 / 442, p = 1.8e-133 | 0 / 473, p = 8.2e-143 | 0 / 442, p = 1.8e-133 | 0 / 473, p = 8.2e-143 | 0 / 442, p = 1.8e-133 |
@@ -31,13 +31,13 @@ Pair cells: `cVAE-only / other-only, p` on the discordant cells (exact two-sided
 
 | row | flow | cVAE-K | cVAE-k | cVAEf-K | cVAEf-k | JS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Panda grasp native | 134 | 560 | 226 | 1875 | 355 | 205 |
+| Panda grasp native | 134 | 480 | 293 | 1875 | 355 | 205 |
 | Panda grasp paired | 199 | -- | -- | -- | -- | 206 |
-| Panda pose native | 37 | 64 | 63 | 636 | 99 | 33 |
+| Panda pose native | 37 | 93 | 50 | 636 | 99 | 33 |
 | Panda pose paired | 107 | -- | -- | -- | -- | 33 |
-| iiwa grasp native | 134 | diverged (not benchmarked) | 197 | 1507 | 404 | 118 |
+| iiwa grasp native | 134 | diverged (not benchmarked) | 231 | 1507 | 404 | 118 |
 | iiwa grasp paired | 246 | diverged (not benchmarked) | -- | -- | -- | 118 |
-| iiwa pose native | 50 | diverged (not benchmarked) | -- | 1776 | -- | 28 |
+| iiwa pose native | 50 | diverged (not benchmarked) | 442 | 1776 | -- | 28 |
 | iiwa pose paired | 106 | diverged (not benchmarked) | -- | -- | -- | 28 |
 | screw grasp native | 227 | -- | -- | -- | -- | 116 |
 | screw grasp paired | 398 | -- | -- | -- | -- | 116 |
@@ -52,13 +52,13 @@ Pair cells: `cVAE-only / other-only, p` on the discordant cells (exact two-sided
 
 | row | flow | cVAE-K | cVAE-k | cVAEf-K | cVAEf-k | JS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Panda grasp native | 1.90 | 3.96 | 1.26 | 12.73 | 2.01 | 0.73 |
+| Panda grasp native | 1.90 | 3.33 | 1.93 | 12.73 | 2.01 | 0.73 |
 | Panda grasp paired | 2.86 | -- | -- | -- | -- | 0.73 |
-| Panda pose native | 0.39 | 0.37 | 0.24 | 6.04 | 0.63 | 0.09 |
+| Panda pose native | 0.39 | 0.64 | 0.24 | 6.04 | 0.63 | 0.09 |
 | Panda pose paired | 1.33 | -- | -- | -- | -- | 0.09 |
-| iiwa grasp native | 1.36 | diverged (not benchmarked) | 1.10 | 9.33 | 2.42 | 0.31 |
+| iiwa grasp native | 1.36 | diverged (not benchmarked) | 1.22 | 9.33 | 2.42 | 0.31 |
 | iiwa grasp paired | 2.61 | diverged (not benchmarked) | -- | -- | -- | 0.31 |
-| iiwa pose native | 0.41 | diverged (not benchmarked) | -- | 11.98 | -- | 0.06 |
+| iiwa pose native | 0.41 | diverged (not benchmarked) | 3.41 | 11.98 | -- | 0.06 |
 | iiwa pose paired | 0.96 | diverged (not benchmarked) | -- | -- | -- | 0.06 |
 | screw grasp native | 3.00 | -- | -- | -- | -- | 0.27 |
 | screw grasp paired | 4.83 | -- | -- | -- | -- | 0.27 |
@@ -75,13 +75,13 @@ Pair cells: `cVAE-only / other-only, p` on the discordant cells (exact two-sided
 
 | row | K v flow | K v JS | k v flow | k v JS | fK v flow | fK v JS | fk v flow | fk v JS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp native | 3.308 / 4.731 (46) | 3.256 / 2.472 (43) | 3.978 / 3.842 (32) | 3.978 / 2.381 (30) | 2.862 / 5.136 (31) | 3.054 / 2.836 (30) | 2.753 / 3.733 (19) | 2.699 / 1.508 (18) |
+| Panda grasp native | 3.771 / 4.343 (353) | 3.741 / 2.033 (334) | 3.641 / 3.909 (228) | 3.645 / 1.904 (215) | 2.862 / 5.136 (31) | 3.054 / 2.836 (30) | 2.753 / 3.733 (19) | 2.699 / 1.508 (18) |
 | Panda grasp paired | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
-| Panda pose native | -- / -- (6) | -- / -- (3) | -- / -- (4) | -- / -- (1) | -- / -- (1) | -- / -- (0) | -- / -- (1) | -- / -- (0) |
+| Panda pose native | 4.725 / 5.693 (57) | 4.849 / 8.680 (24) | 4.723 / 6.477 (44) | 4.875 / 5.872 (12) | -- / -- (1) | -- / -- (0) | -- / -- (1) | -- / -- (0) |
 | Panda pose paired | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
-| iiwa grasp native | diverged (not benchmarked) | diverged (not benchmarked) | 7.913 / 7.706 (51) | 7.893 / 2.561 (48) | 6.596 / 7.931 (59) | 6.596 / 2.579 (55) | 6.094 / 7.649 (40) | 6.022 / 2.579 (37) |
+| iiwa grasp native | diverged (not benchmarked) | diverged (not benchmarked) | 7.759 / 7.940 (415) | 7.748 / 2.657 (395) | 6.596 / 7.931 (59) | 6.596 / 2.579 (55) | 6.094 / 7.649 (40) | 6.022 / 2.579 (37) |
 | iiwa grasp paired | diverged (not benchmarked) | diverged (not benchmarked) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
-| iiwa pose native | diverged (not benchmarked) | diverged (not benchmarked) | -- / -- (0) | -- / -- (0) | -- / -- (3) | -- / -- (1) | -- / -- (0) | -- / -- (0) |
+| iiwa pose native | diverged (not benchmarked) | diverged (not benchmarked) | -- / -- (2) | -- / -- (1) | -- / -- (3) | -- / -- (1) | -- / -- (0) | -- / -- (0) |
 | iiwa pose paired | diverged (not benchmarked) | diverged (not benchmarked) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
 | screw grasp native | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
 | screw grasp paired | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
@@ -98,13 +98,13 @@ Pair cells: `cVAE-only / other-only, p` on the discordant cells (exact two-sided
 
 | row | flow unrep / clock / budget / run | cVAE-K | cVAE-k | cVAEf-K | cVAEf-k | JS clock / budget |
 | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp native | 0 / 0 / 0 / 0 | 0 / 12 / 0 / 11 | 0 / 18 / 0 / 18 | 0 / 12 / 0 / 0 | 0 / 0 / 0 / 0 | 8 / 0 |
+| Panda grasp native | 0 / 0 / 0 / 0 | 0 / 91 / 0 / 87 | 0 / 162 / 0 / 162 | 0 / 12 / 0 / 0 | 0 / 0 / 0 / 0 | 8 / 0 |
 | Panda grasp paired | 0 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 479 / 1 / 0 / 1 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 8 / 0 |
-| Panda pose native | 0 / 0 / 0 / 0 | 0 / 23 / 0 / 54 | 0 / 12 / 0 / 50 | 0 / 0 / 0 / 0 | 0 / 1 / 0 / 0 | 1 / 0 |
+| Panda pose native | 0 / 0 / 0 / 0 | 0 / 201 / 0 / 405 | 0 / 118 / 0 / 397 | 0 / 0 / 0 / 0 | 0 / 1 / 0 / 0 | 1 / 0 |
 | Panda pose paired | 0 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 1 / 0 |
-| iiwa grasp native | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 0 / 2 / 0 / 2 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 |
+| iiwa grasp native | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 0 / 19 / 0 / 10 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 |
 | iiwa grasp paired | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 0 / 0 |
-| iiwa pose native | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 0 / 0 / 0 / 29 | 0 / 1 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 |
+| iiwa pose native | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 0 / 0 / 0 / 234 | 0 / 1 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 |
 | iiwa pose paired | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 0 / 0 |
 | screw grasp native | 0 / 3 / 0 / 0 | 0 / 32 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 36 / 0 / 0 | 0 / 0 / 0 / 0 | 1 / 0 |
 | screw grasp paired | 0 / 6 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 1 / 0 |
