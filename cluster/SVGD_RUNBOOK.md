@@ -376,7 +376,8 @@ success (10/10 on both backends, both tasks). It is an EXECUTION setting like `s
 selftest does not count it as a round's one factor, and the reporter names it in full in every
 setting diff.
 
-**The binding exists only on Thomas's Drake branch `calc-robot-clearances`** (commit 15a2c97228), so
+**The pinned nightly predates the binding** (Drake master has it since #25073, 2026-10-12; the wheel is
+Thomas's branch `calc-robot-clearances`, commit 15a2c97228), so
 these four manifests run under the second environment, `~/learned-ik/venv-crc`: the project venv's
 exact freeze plus that branch's wheel, with the tarball OFF `PYTHONPATH` (`cluster/README.md`, "A
 second Drake for the svgd clearance row"). Submit them with **`DRAKE_ENV=crc`**; `submit_bench.sh`

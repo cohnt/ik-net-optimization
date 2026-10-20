@@ -267,7 +267,9 @@ upstream, never pinned around; archive pairing is no reason to keep an old insta
 **PR 25002** (sixteen NLopt options) is in no release; `CheckNloptOptions` refuses only under
 `which_solver == "nlopt"`. **Nightlies expire ~2026-11-02: move to 1.58.0 once it carries PR 25002.**
 One stated exception: the svgd rounds' clearance wheel (`DRAKE_ENV=crc`, `~/learned-ik/venv-crc`,
-`CalcRobotClearances`), a strict speed improvement; it goes when Drake ships the API.
+`CalcRobotClearances`), a strict speed improvement, cluster only. The API is in master (#25073,
+2026-10-12) and the default local pydrake: **never point local code at a non-default Drake** (Thomas,
+2026-10-20); the cluster exception goes when the pin moves.
 
 ## AL-SVGD, the fourth method class (long form: `docs/notes-svgd.md`; evidence `docs/svgd-solver.md`)
 
