@@ -161,3 +161,28 @@ cells 31 -> 7 for exactly 19/19 on success; `lift_q` reached zero runaways while
 Measured and refuted; the verdict and the per-cell instability finding are under the solver
 axis above, the evidence in `docs/closed-axes.md`.
 
+
+## The cVAE chart's runaways (chart ablation, 2026-10-20)
+
+The learned-variance cVAE rows fail by the same signature as the flow: on the six full IPOPT native
+rows, 87-405 failed cells per row end at `|q|_inf` 1e3-6e7 rad, every row's exploded `q` on **one
+ray** (pairwise `|cos|` >= 0.996, top direction >= 99.9% of the spread), dominated by one joint (Panda
+joint 4, iiwa joint 3 — not the flow's joints). The mechanism is different:
+
+- **It is extrapolation outside the `c` box, not a gain region inside it.** Every runaway cell
+  violates `CBoxConstraint` (median violation 2.2 m to 1.1e4 m; the box is a general constraint, so
+  IPOPT's iterates may leave it) and usually the latent trust region. The decoder is a SiLU MLP with
+  a linear output, asymptotically linear in its input, so `q` grows linearly with the distance `c`
+  travels.
+- **Sampling the decoder alone reproduces the ray** (`scripts/training/cvae_gain_probe.py`, 20000
+  draws, float64): with the `c` position box scaled x10 / x100, `|q|_inf` grows ~2e3 / ~2e4 and its
+  top direction matches the solver's ray to two decimals on all three charts (Panda K = 7 and 1,
+  iiwa K = 1). Scaling the `z` ball instead gives no single direction.
+- **Inside the allowed region the learned-variance decoders are already steep**: `|q|_inf` p99.9
+  440-1086 rad, max 577-1316 (Panda K = 1: 0.25% of draws > 1000) — against ~2.4-2.8 at the median.
+  The fixed-variance decoders stay at max 12-31 rad inside and grow ~10x slower outside; their rows
+  show no runaways.
+
+So both families have a single runaway ray per chart, but the flow's sits inside the domain (a
+bounded map near its gain ceiling) and the cVAE's is the unbounded decoder's linear asymptote, reached
+by leaving the `c` box. Cell analysis: `scripts/cvae_runaway_cells.py`.
