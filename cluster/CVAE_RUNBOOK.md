@@ -9,6 +9,22 @@ rules, which override anything here.
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
+## STATE AS OF 2026-10-20 18:45 -- CVAEEXT HALF DONE, SIX ROWS MERGED
+
+CVAEEXT at 54/112 items after 6 h (jobs 5976681-84 RUNNING; 5976685-88 PENDING on the node cap).
+The six complete rows (Panda cvae1/cvae7, iiwa cvae1; mugshelf + posetip, native) are merged,
+promoted and in the tables (staging `results/_cluster_staging/20261020-cvaeext1`). The remaining
+eight rows are all `cvaef` (fixed variance): expected ~01:00-02:00 on 2026-10-21; then CVAEEXT_SVGD
+(336 items, ~30 h, ~Thursday 2026-10-22 morning).
+
+A resuming session: `squeue -u $USER`; count `.done` in `~/learned-ik/state/manifest_stageCVAEEXT*/`;
+for each COMPLETE row (8 of 8 shards) not yet under `results/<robot>/benchmark/`, tar its
+`results/<robot>/benchmark/<row>_shard*of8/summary.json` (from `~/learned-ik`), pull, extract to a new
+staging dir, `cluster/merge_shard_summaries.py <staging>/results`, copy each merged run to
+`results/<robot>/benchmark/` (keep the `results/` prefix), then `report_chart_ablation.py --write`.
+Remaining after AL-SVGD: the close-out (CLAUDE.md chart section to verdicts, notes, this file).
+The runaway study (`docs/notes-chart.md`, last section) is parked by Thomas -- do not extend it.
+
 ## STATE AS OF 2026-10-20 12:30 -- STAGE CVAEEXT QUEUED (staged d094232)
 
 CVAEPROBE and CVAEPROBE_SVGD finished; all merged and promoted locally (summaries pulled as one
