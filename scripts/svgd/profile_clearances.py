@@ -1,11 +1,9 @@
 """Time the exact collision row: the autodiff loop against the batched clearances call.
 
-    PYTHONPATH=/home/tommy/opt/rlg/drake-build-crc/lib/python3.12/site-packages:$PYTHONPATH \\
-        .venv/bin/python scripts/svgd/profile_clearances.py [--Ns 64,256,1024] [--repeats 5]
+    .venv/bin/python scripts/svgd/profile_clearances.py [--Ns 64,256,1024] [--repeats 5]
 
-Needs a pydrake carrying `CollisionChecker.CalcRobotClearances` (branch
-`calc-robot-clearances`; the default environment's lacks it and this script then says so and
-exits). On both Panda scenes -- hardened pose, and grasp with the target mug welded at a
+Needs a pydrake carrying `CollisionChecker.CalcRobotClearances` (Drake master since #25073,
+2026-10-12; a pydrake that predates it makes this script say so and exit). On both Panda scenes -- hardened pose, and grasp with the target mug welded at a
 sampled collision-free configuration as `tests/test_collision_backend.py` places it (its
 helpers build the scene) -- and for each N, the row and gradient over N configurations drawn
 uniformly in the plant's limits, timed as the median of `--repeats` calls after one warm-up:
