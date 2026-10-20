@@ -9,6 +9,29 @@ rules, which override anything here.
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
+## STATE AS OF 2026-10-20 12:30 -- STAGE CVAEEXT QUEUED (staged d094232)
+
+CVAEPROBE and CVAEPROBE_SVGD finished; all merged and promoted locally (summaries pulled as one
+tarball from the cluster -- `collect_results.sh` and an `--include` rsync both walk the whole
+results tree and time out). Report written (`docs/chart-ablation-tables.md`). **Acceptance passes**:
+joint space on Panda pose paired is bit-identical to the record on all 479 cells finished inside the
+cap; the one cell the clock stopped in both runs (51316 v 50601 iterations, failed in both) agrees
+on the verdict, and the report now counts such cells apart.
+
+Probe outcome: every rigid paired row 0/480 (`unrepresentable_start`); screw native 0/60 on all 16
+rows (stays a probe); Panda and iiwa native show real successes (grasp up to 59/60, pose up to
+36/60 under AL-SVGD), so **stage CVAEEXT runs every Panda and iiwa native row in full**: its items
+are the full manifests' own, byte for byte (`make_cvae_probe.py`), so the probe's 60 cells are
+re-solved inside each row. ~270 solve-hours, ~34 h on four idle nodes.
+
+| step | jobs | depends on |
+| --- | --- | --- |
+| CVAEEXT (112 items), PROCS=2 | 5976681-84 | none |
+| CVAEEXT_SVGD (336 items), crc, PROCS=2 | 5976685-88 | none |
+
+Then: pull the CVAEEXT summaries the same way (tar of `sc_CVAE*_480_180_native_shard*`), merge,
+promote, `python scripts/report_chart_ablation.py --write` (a full row replaces its probe).
+
 ## STATE AS OF 2026-10-19 17:00 -- STAGE CVAEPROBE QUEUED (staged eb506b9)
 
 The fixed-variance variant collapsed harder (KL 0 on Panda and screw at 480-540k steps, iiwa 0.4

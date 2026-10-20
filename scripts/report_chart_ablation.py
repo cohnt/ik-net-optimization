@@ -32,9 +32,14 @@ separately; a row with >= 24 cells at a BUDGET carries no verdict), and runaways
 
 Plus the ACCEPTANCE run (`sc_CVAEACC_`): joint space re-run on the Panda's pose paired IPOPT row
 after the chart refactor, compared cell for cell with the record's joint-space arm (q, iterations,
-cost and verdict identical).
+cost and verdict identical; a cell the clock stopped in both runs need only agree on the verdict).
 
 A cVAE run not yet collected prints `not yet measured`; the record's columns print regardless.
+
+PROBE rows (stage CVAEPROBE, Thomas 2026-10-19): where a rigid-arm native row has no merged 480-cell
+run, its 60-cell probe (`..._60_180_native`, guess 0 of every target) is shown instead, printed
+`succ/60`; every pairing against it reads the other column on the same 60 cells. A full run of the
+row (stage CVAEEXT) replaces its probe as soon as it is collected.
 
 Usage:
     python scripts/report_chart_ablation.py            # print the Markdown
@@ -50,7 +55,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 sys.path.insert(0, os.path.join(REPO, "cluster"))
 from report_statusquo import (BUDGET_CELLS, CELLS, MIN_COST_CELLS, STATUS_QUO_ROWS,  # noqa: E402
-                              arm_stats, budget_bound, by_cell, clock_bound, load,
+                              budget_bound, by_cell, clock_bound, load,
                               load_record, load_svgd_record, mcnemar, median, parse_tag)
 from gen_manifest import CVAE_ACCEPT, CVAE_WIDTHS, SCREWREDO_RUNG  # noqa: E402
 
@@ -69,6 +74,15 @@ COLUMNS = ("flow",) + CVAE_COLS + ("JS",)
 RUNAWAY_Q = 1e3
 MUST_MATCH = ("grid_hash", "scene_fingerprint", "wall_time")
 NYM = "not yet measured"
+#: Charts whose training diverged: recorded, not benchmarked (Thomas, 2026-10-19).
+DIVERGED = {("iiwa", "cVAE-K"): "diverged (not benchmarked)"}
+
+
+def missing(robot, column):
+    return DIVERGED.get((robot, column), NYM)
+#: The native probe's cells (cluster/make_cvae_probe.py): guess 0 of every target.
+PROBE_TARGETS = 60
+PROBE_CELLS = {(t, 0) for t in range(PROBE_TARGETS)}
 
 
 def qinf(r):
@@ -94,9 +108,11 @@ def load_columns():
     svgd = {(t["robot"], t["row"], t["start"]): s for tag, s in svgd.items() for t in [parse_tag(tag)]}
     cvae = {}
     for stem in sorted({st for *_, st in CVAE_COLUMNS}):
-        for tag, s in load(stem, cells=CELLS).items():
-            t = parse_tag(tag)
-            cvae[(t["solver"], t["robot"], t["rung"], t["row"], t["start"])] = (tag, s)
+        for full in (False, True):  # probes first, so a full run of the same row replaces its probe
+            for tag, s in load(stem, cells=CELLS if full else PROBE_TARGETS).items():
+                t = parse_tag(tag)
+                if full or (t["cells"] == str(PROBE_TARGETS) and t["start"] == "native"):
+                    cvae[(t["solver"], t["robot"], t["rung"], t["row"], t["start"])] = (tag, s)
 
     ## The screw flow column: stage SCREWREDO's retrained chart (`n6r`, on the rebuilt dataset the
     ## cVAE trains on) where its run exists, else the record's n6 run. Joint space stays the record's.
@@ -152,7 +168,8 @@ def load_columns():
                         if f"__{label}__" not in ck:
                             refused.append(f"{tag}: checkpoint {ck!r} is not the {label} chart")
                         recs = s["records"]["learned"]
-                        if {(x["target"], x["guess"]) for x in recs} != set(by_cell(r, "learned")):
+                        want = PROBE_CELLS if len(recs) == PROBE_TARGETS else set(by_cell(r, "learned"))
+                        if {(x["target"], x["guess"]) for x in recs} != want or not want <= set(by_cell(r, "learned")):
                             refused.append(f"{tag}: does not cover the record row's cells")
                         cols[c] = recs
                     out[(solver, robot, row, start)] = cols
@@ -164,20 +181,25 @@ def load_columns():
 
 
 def pair(x, y):
-    """x against y on the same cells: x-only and y-only successes, exact p, and each one's median
-    cost on the cells both solved (None below MIN_COST_CELLS), with that count."""
+    """x against y on x's cells (all 480, or a probe's 60): x-only and y-only successes, exact p,
+    and each one's median cost on the cells both solved (None below MIN_COST_CELLS), with that
+    count. Computed here rather than through report_statusquo.arm_stats, which reads
+    `max_violation` on every cell and an `unrepresentable_start` cell never solved has none."""
     s = {"records": {"x": x, "y": y}, "metadata": {}}
     X, Y = by_cell(s, "x"), by_cell(s, "y")
     xo = sum(1 for k in X if k in Y and X[k]["feasible"] and not Y[k]["feasible"])
     yo = sum(1 for k in X if k in Y and Y[k]["feasible"] and not X[k]["feasible"])
-    a, b = arm_stats(s, "x", "y"), arm_stats(s, "y", "x")
-    return dict(xo=xo, yo=yo, p=mcnemar(xo, yo), cx=a["cost"], cy=b["cost"], n=a["n_both"])
+    both = [k for k in X if k in Y and X[k]["feasible"] and Y[k]["feasible"]]
+    ok = len(both) >= MIN_COST_CELLS
+    return dict(xo=xo, yo=yo, p=mcnemar(xo, yo), n=len(both),
+                cx=median([X[k]["cost"] for k in both]) if ok else None,
+                cy=median([Y[k]["cost"] for k in both]) if ok else None)
 
 
 def col_stats(recs):
     ok = [r for r in recs if r["feasible"]]
     fails = [r for r in recs if not r["feasible"]]
-    return dict(succ=len(ok),
+    return dict(n=len(recs), succ=len(ok),
                 iters=median([r["iterations"] for r in ok]),
                 wall=median([r["wall_time"] for r in ok]),
                 unrep=sum(1 for r in recs if r.get("fail_reason") == "unrepresentable_start"),
@@ -203,18 +225,23 @@ def tables(data):
        "decoder variance (the textbook objective; stage CVAEF); "
        "**JS** = the record's joint-space arm (IPOPT: the same runs; AL-SVGD: SVGD_R30 `pin4kq`). Every cVAE run "
        "is refused unless its grid hash, scene fingerprint, cap and cells are the record row's. "
-       f"`{NYM}` = no merged 480-cell cVAE run collected yet.\n")
+       f"`{NYM}` = no merged 480-cell cVAE run collected yet. `x/60` = the 60-cell native PROBE (stage "
+       "CVAEPROBE: guess 0 of every target), shown where the row has no full run; its pairings, costs and "
+       "medians are over those 60 cells only.\n")
     for solver, title in SOLVERS:
         rows = [(robot, row, start, data[(solver, robot, row, start)])
                 for robot in ROBOTS for row in STATUS_QUO_ROWS for start in ("native", "paired")]
-        stats = [(robot, row, start, {c: (col_stats(v) if v is not None else None) for c, v in cols.items()}, cols)
+        stats = [(robot, row, start, {c: (col_stats(v) if v is not None else
+                                          DIVERGED.get((robot, c))) for c, v in cols.items()}, cols)
                  for robot, row, start, cols in rows]
 
         def name(robot, row, start):
             return f"{ROBOT_NAME[robot]} {TASK_NAME[row]} {start}"
 
         def cell(st, key, prec=0):
-            return NYM if st is None else f(st[key], prec)
+            if st is None or isinstance(st, str):
+                return st or NYM
+            return f(st[key], prec) + (f"/{st['n']}" if key == "succ" and st["n"] != CELLS else "")
 
         pr(f"## {title}\n")
         pr("### Success (of 480), and McNemar of each cVAE rung against flow and joint space\n")
@@ -228,7 +255,7 @@ def tables(data):
             for c in CVAE_COLS:
                 for o in ("flow", "JS"):
                     if cols[c] is None or cols[o] is None:
-                        pairs.append(NYM if cols[c] is None else "--")
+                        pairs.append(missing(robot, c) if cols[c] is None else "--")
                         continue
                     p = pair(cols[c], cols[o])
                     pairs.append(f"{p['xo']} / {p['yo']}, p = {p['p']:.2g}")
@@ -263,7 +290,7 @@ def tables(data):
             for c in CVAE_COLS:
                 for o in ("flow", "JS"):
                     if cols[c] is None or cols[o] is None:
-                        cells.append(NYM if cols[c] is None else "--")
+                        cells.append(missing(robot, c) if cols[c] is None else "--")
                         continue
                     p = pair(cols[c], cols[o])
                     cells.append(f"{f(p['cx'], 3)} / {f(p['cy'], 3)} ({p['n']})")
@@ -278,8 +305,8 @@ def tables(data):
         pr("| --- |" + " --- |" * (len(CVAE_COLS) + 2))
         for robot, row, start, st, _ in stats:
             def diag(s):
-                if s is None:
-                    return NYM
+                if s is None or isinstance(s, str):
+                    return s or NYM
                 b = f"**{s['budget']} VOID**" if s["budget"] >= BUDGET_CELLS else str(s["budget"])
                 return f"{s['unrep']} / {s['clock']} / {b} / {s['runaway']}"
             js = st["JS"]
@@ -289,6 +316,13 @@ def tables(data):
                + " | ".join(diag(st[c]) for c in CVAE_COLS) + f" | {jsd} |")
         pr("")
     return out
+
+
+def same_value(a, b):
+    """Equal, counting two absent values (a cell that recorded none) and two NaNs as the same."""
+    if a is None or b is None:
+        return a is None and b is None
+    return a == b or (a != a and b != b)
 
 
 def acceptance():
@@ -315,16 +349,28 @@ def acceptance():
     A, B = by_cell(got, "numerical"), by_cell(ref, "numerical")
     if set(A) != set(B):
         return out + [f"**REFUSED**: {len(A)} cells against the record's {len(B)}; not the same cells.\n"]
+    ## A cell the wall clock stopped in BOTH runs ends wherever the node's speed put it at 180 s,
+    ## so its q and iteration count are a timing, not a determinism, check: such cells must agree
+    ## only on the verdict, and are counted apart (2026-10-20: one such cell, 51316 v 50601
+    ## iterations, both failed; every cell that finished inside the cap was bit-identical).
+    clocked = [k for k in A if clock_bound(A[k]) and clock_bound(B[k])]
+    clock_ok = sum(A[k]["feasible"] == B[k]["feasible"] for k in clocked)
     same = {k: 0 for k in ("q", "iterations", "cost", "feasible")}
     for k in A:
+        if k in clocked:
+            continue
         a, b = A[k], B[k]
         same["q"] += a.get("q") is not None and b.get("q") is not None and \
             np.array_equal(np.asarray(a["q"]), np.asarray(b["q"]))
-        same["iterations"] += a["iterations"] == b["iterations"]
-        same["cost"] += a["cost"] == b["cost"]
+        same["iterations"] += same_value(a.get("iterations"), b.get("iterations"))
+        same["cost"] += same_value(a.get("cost"), b.get("cost"))
         same["feasible"] += a["feasible"] == b["feasible"]
-    verdict = "IDENTICAL" if all(v == len(A) for v in same.values()) else "**NOT IDENTICAL**"
-    return out + [f"{verdict} -- of {len(A)} cells: " + ", ".join(f"{k} {v}" for k, v in same.items())
+    n = len(A) - len(clocked)
+    verdict = ("IDENTICAL" if all(v == n for v in same.values()) and clock_ok == len(clocked)
+               else "**NOT IDENTICAL**")
+    return out + [f"{verdict} -- of the {n} cells not stopped by the clock in both runs: "
+                  + ", ".join(f"{k} {v}" for k, v in same.items())
+                  + f"; of the {len(clocked)} clock-stopped in both, verdict identical on {clock_ok}"
                   + f" (record run `{prov.get(key, key)}`).\n"]
 
 
