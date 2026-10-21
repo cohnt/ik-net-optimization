@@ -200,9 +200,33 @@ median per-cell ratio cVAE / flow, 95% bootstrap CI over targets):
 
 **The fixed-variance decoder returns one configuration per target whatever the start**: the spread of
 its solutions across a target's 8 guesses is 0.003 under IPOPT pose (flow 0.97; joint space 0.000,
-it converges to the same point from all 8), and its IPOPT pose cost is 1.07x joint space's. The likely
-reading (not yet checked against its active-unit screen) is a collapsed latent, so the chart is
+it converges to the same point from all 8), and its IPOPT pose cost is 1.07x joint space's. The latent
+is collapsed (checked: the active-unit screen gives `soft12__cvaef{12,6}` a total KL of 0.032 nats,
+one dimension barely over the 0.01 threshold; `results/screen_cvae/`), so the chart is
 effectively one configuration per pose and the correction and `c` do the rest: the solver lands next to joint space's minimum-strain solution, where the flow's
 self-motion coverage lets it settle on a start-dependent, more strained one. Under AL-SVGD every cVAE
 column is also cheaper than joint space (0.54-0.93). Read as: on this arm the formulation without a
 real self-motion chart finds the cheap solution; not as a better chart.
+
+### Why collapse costs the soft PCS arm least (2026-10-21)
+
+Active-unit screen, every exported chart (total KL in nats; median FK error at prior draws):
+
+| chart | KL learned var (K / k) | KL fixed var (K / k) | FK error learned / fixed |
+| --- | --- | --- | --- |
+| Panda | 4.82 / 3.29 | 0.00 / 0.00 | 624 / 600 mm |
+| iiwa | diverged / 3.04 | 0.42 / 0.43 | 253 / 559-567 mm |
+| screw | 0.00 / 0.00 | 0.00 / 0.00 | 745 / 745 mm |
+| soft PCS | 2.78 / 2.88 | 0.03 / 0.03 | 21-22 / 44 mm |
+
+Every chart is collapsed or nearly so; the learned-variance ones carry 1-2 dimensions and put the
+rest of the self-motion into the decoder variance (sigma ~0.55, i.e. about the whole normalized
+range, on Panda joints 1-3, iiwa 5-7, every screw joint, and every third soft PCS strain). A
+collapsed decoder returns the conditional mean E[q | pose] (exactly so under MSE). The damage
+therefore depends on how far that mean sits from the IK fibre. Rigid arms: the fibre is a union of
+disconnected branches, each wrapping through large joint ranges, so the mean is no solution (0.25-0.75
+m). Soft PCS arm: a single connected fibre in strain space on which the tip pose is close to linear
+in strain, so the mean stays within ~4 cm, which the c box (+-0.25 m) and the correction absorb.
+The same mean is shrunk toward zero strain (|E q| <= E|q|), and cost here is strain energy, which is
+the reading of the cheaper solutions above. The fibre-geometry part is an inference from the FK
+errors, not measured on the fibres themselves.
