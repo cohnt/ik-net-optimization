@@ -186,3 +186,23 @@ joint 4, iiwa joint 3 — not the flow's joints). The mechanism is different:
 So both families have a single runaway ray per chart, but the flow's sits inside the domain (a
 bounded map near its gain ceiling) and the cVAE's is the unbounded decoder's linear asymptote, reached
 by leaving the `c` box. Cell analysis: `scripts/cvae_runaway_cells.py`.
+
+## The cVAE on the soft PCS arm, native start: cheaper solutions, per cell (2026-10-20)
+
+The one place the cVAE does not lose: success ties the flow on every row. Per cell
+(`scripts/soft_cvae_cost_cells.py`; cost = 0.5 w |strain|^2 here, so cheaper = a less-strained rod;
+median per-cell ratio cVAE / flow, 95% bootstrap CI over targets):
+
+| | IPOPT grasp | IPOPT pose | AL-SVGD grasp | AL-SVGD pose |
+| --- | --- | --- | --- | --- |
+| learned variance (K 12 / 6) | 1.59 / 1.53 (dearer) | 0.81 / 0.82 | 0.66 / 0.70 | 0.56 / 0.61 |
+| fixed variance (K 12 / 6) | 0.94 / 0.96 (CI spans 1: tie) | 0.53 / 0.52 | 0.56 / 0.53 | 0.50 / 0.51 |
+
+**The fixed-variance decoder returns one configuration per target whatever the start**: the spread of
+its solutions across a target's 8 guesses is 0.003 under IPOPT pose (flow 0.97; joint space 0.000,
+it converges to the same point from all 8), and its IPOPT pose cost is 1.07x joint space's. Its
+latent is collapsed, so the chart is effectively one configuration per pose and the correction and `c`
+do the rest: the solver lands next to joint space's minimum-strain solution, where the flow's
+self-motion coverage lets it settle on a start-dependent, more strained one. Under AL-SVGD every cVAE
+column is also cheaper than joint space (0.54-0.93). Read as: on this arm the formulation without a
+real self-motion chart finds the cheap solution; not as a better chart.
