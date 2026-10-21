@@ -200,9 +200,9 @@ median per-cell ratio cVAE / flow, 95% bootstrap CI over targets):
 
 **The fixed-variance decoder returns one configuration per target whatever the start**: the spread of
 its solutions across a target's 8 guesses is 0.003 under IPOPT pose (flow 0.97; joint space 0.000,
-it converges to the same point from all 8), and its IPOPT pose cost is 1.07x joint space's. Its
-latent is collapsed, so the chart is effectively one configuration per pose and the correction and `c`
-do the rest: the solver lands next to joint space's minimum-strain solution, where the flow's
+it converges to the same point from all 8), and its IPOPT pose cost is 1.07x joint space's. The likely
+reading (not yet checked against its active-unit screen) is a collapsed latent, so the chart is
+effectively one configuration per pose and the correction and `c` do the rest: the solver lands next to joint space's minimum-strain solution, where the flow's
 self-motion coverage lets it settle on a start-dependent, more strained one. Under AL-SVGD every cVAE
 column is also cheaper than joint space (0.54-0.93). Read as: on this arm the formulation without a
 real self-motion chart finds the cheap solution; not as a better chart.
