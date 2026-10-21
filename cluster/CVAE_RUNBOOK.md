@@ -9,13 +9,12 @@ rules, which override anything here.
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE AS OF 2026-10-20 18:45 -- CVAEEXT HALF DONE, SIX ROWS MERGED
+## STATE AS OF 2026-10-20 21:40 -- CVAEEXT DONE AND MERGED; CVAEEXT_SVGD RUNNING
 
-CVAEEXT at 54/112 items after 6 h (jobs 5976681-84 RUNNING; 5976685-88 PENDING on the node cap).
-The six complete rows (Panda cvae1/cvae7, iiwa cvae1; mugshelf + posetip, native) are merged,
-promoted and in the tables (staging `results/_cluster_staging/20261020-cvaeext1`). The remaining
-eight rows are all `cvaef` (fixed variance): expected ~01:00-02:00 on 2026-10-21; then CVAEEXT_SVGD
-(336 items, ~30 h, ~Thursday 2026-10-22 morning).
+CVAEEXT finished 20:43 (jobs 5976681-84 COMPLETED, 112/112); all 14 rows merged, promoted and in
+the tables (staging `results/_cluster_staging/20261020-cvaeext{1,2}`; the four soft12 cvaef rows in
+the second tarball were byte-identical to the promoted ones). CVAEEXT_SVGD (5976685-88) running since
+~20:35, 25/336 done at 21:29 -- far faster than estimated; expect ~08:00-10:00 on 2026-10-21.
 
 A resuming session: `squeue -u $USER`; count `.done` in `~/learned-ik/state/manifest_stageCVAEEXT*/`;
 for each COMPLETE row (8 of 8 shards) not yet under `results/<robot>/benchmark/`, tar its
