@@ -196,8 +196,10 @@ Baselines get bug fixes and standard treatments, no novel research (Thomas).
 carries no verdict until re-measured with the iteration budget lifted — never the clock** (Thomas:
 *"Don't raise the wall clock timeout. If it's that slow, it's not usable."*). Record budgets: IPOPT
 `max_iter` 1e6, SNOPT 1e5 majors / 1e8 minors. SNOPT does not check its time limit on a major with
-zero minors, so a cycling cell can run 0.4-2.2 h (never scored feasible; allow for it in item
-timeouts). The cap is a budget for the arm that evaluates a network: baselines are flat across caps.
+zero minors, so a cycling cell ran 0.4-2.2 h in the record. **Since 2026-10-21 `run_items.sh`'s
+watcher kills a solve past 1.5x its clock**; the item resumes from its per-cell JSONL and the cell
+is `killed_overrun`, `timed_out=True`, scored from its last iterate (`cluster/README.md`). The cap
+is a budget for the arm that evaluates a network: baselines are flat across caps.
 
 ## Benchmarking (`src/benchmark.py`; long form in the rules notes)
 

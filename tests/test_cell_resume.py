@@ -160,11 +160,18 @@ def main():
 
     ## The reference: one uninterrupted process.
     ref_dir = os.path.join(root, "ref")
-    run(ref_dir)
+    lines = {}
+
+    def count_lines(program):
+        with open(os.path.join(ref_dir, "summary.json.cells.jsonl")) as fh:
+            lines["n"] = sum(1 for line in fh if '"record"' in line)
+
+    run(ref_dir, {("solve", "numerical", 2, 1): count_lines})
     ref = load(ref_dir)
-    n_lines = sum(1 for _ in open(os.path.join(ref_dir, "summary.json.cells.jsonl")))
-    check(n_lines >= 1 + 2 * N_TARGETS * N_GUESSES,
-          f"the JSONL holds a header and one line per (cell, arm) ({n_lines} lines)")
+    check(lines.get("n") == 2 * N_TARGETS * N_GUESSES - 1,
+          f"the JSONL holds a line per finished (cell, arm) as the run goes ({lines.get('n')})")
+    check(not os.path.exists(os.path.join(ref_dir, "summary.json.cells.jsonl")),
+          "the JSONL is removed once the summary is final")
 
     ## Interrupted twice -- once before cell (1,0)'s learned arm, once between the two arms of
     ## cell (2,1) -- and resumed each time.
@@ -190,11 +197,18 @@ def main():
     check([e["records_loaded"] for e in got["metadata"].get("resume", [])] == [4, 11],
           f"metadata['resume'] logs each relaunch: {got['metadata'].get('resume')}")
 
-    ## Without LEARNED_IK_RESUME the JSONL is started afresh.
-    run(dir_)
-    n = sum(1 for _ in open(os.path.join(dir_, "summary.json.cells.jsonl")))
-    check("resume" not in load(dir_)["metadata"] and n == n_lines,
-          "without the resume variable the run starts afresh")
+    ## Without LEARNED_IK_RESUME an existing JSONL is started afresh.
+    try:
+        run(dir_, {("build", "learned", 1, 0): crash})
+    except Crash:
+        pass
+    try:
+        run(dir_, {("build", "numerical", 0, 1): crash})
+    except Crash:
+        pass
+    with open(os.path.join(dir_, "summary.json.cells.jsonl")) as fh:
+        n = sum(1 for line in fh if '"record"' in line)
+    check(n == 3, f"without the resume variable the run starts afresh ({n} records, not 7)")
 
     ## A torn final line (a kill mid-write) is cut off, and the run resumes.
     with open(os.path.join(dir_, "summary.json.cells.jsonl"), "a") as fh:
@@ -203,6 +217,10 @@ def main():
     check(strip(load(dir_)["records"]) == strip(ref["records"]), "a torn final line is dropped")
 
     ## A different run refuses to resume.
+    try:
+        run(dir_, {("build", "learned", 1, 0): crash})
+    except Crash:
+        pass
     try:
         run(dir_, metadata={"grid_hash": "OTHER", "solver": "ipopt"}, env={bm.RESUME_ENV: "1"})
         check(False, "a header mismatch refuses")
@@ -254,13 +272,25 @@ def main():
     check(out["summary"]["learned"]["fail_reasons"].get("killed_overrun") == 1
           and out["summary"]["learned"]["timeouts"] == 1, "the summary counts it")
 
-    ## A kill marker for a cell that already has a record is discarded.
+    ## A kill marker for a cell that already has a record is discarded, and so is one when no
+    ## JSONL is resumed (it cannot belong to this run).
+    stale_dir = os.path.join(root, "stale")
+    try:
+        run(stale_dir, {("build", "learned", 1, 0): crash}, env=env)
+    except Crash:
+        pass
     with open(os.path.join(watch_dir, "killed"), "w") as fh:
         fh.write(f"1 0 1 learned solve 0 {time.time():.3f}\n")
-    run(kill_dir, env=env)
-    check(strip(load(kill_dir)["records"]) == strip(out["records"])
+    run(stale_dir, env=env)
+    check(strip(load(stale_dir)["records"]) == strip(ref["records"])
           and not os.path.exists(os.path.join(watch_dir, "killed")),
           "a stale kill marker for a recorded cell is discarded")
+    with open(os.path.join(watch_dir, "killed"), "w") as fh:
+        fh.write(f"1 1 1 learned solve 0 {time.time():.3f}\n")
+    run(stale_dir, env=env)
+    check(strip(load(stale_dir)["records"]) == strip(ref["records"])
+          and not os.path.exists(os.path.join(watch_dir, "killed")),
+          "a kill marker with no JSONL to resume is discarded")
 
     ## IterateFile.
     path = os.path.join(root, "iterate.bin")
