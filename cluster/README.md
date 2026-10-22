@@ -467,7 +467,15 @@ from outside:
   under the watcher (`scripts/find_overrun_shards.py`, 128 shards: REMEASURE 39 incl. 5 GVS at
   PROCS=8 MPS=1, PAPER 34 at PROCS=2, ANALYTIC 37 and ANALYTIC_CPP 18 on xeon-p8 at PROCS=2), folded
   into its runs by `scripts/apply_overrun_rerun.py` (originals moved to
-  `results/archive_preoverrun/`).
+  `results/archive_preoverrun/`). Jobs 5999929-37, 2026-10-22 01:40-04:40, 128/128 items, 0 failed;
+  collected 20261022-051302, folded into 38 runs. 204 cells killed at 271-277 s, each matched by a
+  resume event; 201 of the originals' 203 overruns came back killed, 2 ended under the threshold
+  (SNOPT reached a major with minors at the clock on a node of different speed), and 3 cells the
+  originals stopped at 208-263 s were killed (the converse). `check_mergechk --prefix OVR
+  --overrun-factor 1.5`: every converged cell identical; its 8 BAD KILLs are exactly those 5 plus
+  analytic (59,0) on the three ladders. **No success count or verdict moved in any table**
+  (status quo, PAPER, time-matched, svgd 2x2, analytic, three-way); time-matched moves <= 0.3
+  points; SQP budget stops per row: learned 0-10 -> 0, joint space 0-3 -> 0-2; analytic 0.
 
 ## How work is claimed, and how to recover
 

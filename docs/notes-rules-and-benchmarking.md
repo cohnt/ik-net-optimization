@@ -165,8 +165,11 @@ its last streamed iterate as `fail_reason="killed_overrun"`, `timed_out=True` (T
 stopped it), `hit_iteration_cap=False`, with `recovered_*`. Overrun tail across all local SNOPT
 shards: ~50 cells 10-90 s past the clock, ~280 more than 300 s past; every cell >45 s past is
 infeasible except the analytic arm's iiwa pose native (59,0), which converges 643-1443 s late in
-ANALYTIC/C/T and becomes `killed_overrun` under the watcher (accepted, Thomas 2026-10-21). The
-record (REMEASURE/PAPER) was measured before the watcher and is not re-run for it. **The cap is a budget for the arm that evaluates a
+ANALYTIC/C/T and becomes `killed_overrun` under the watcher (accepted, Thomas 2026-10-21).
+**Stage OVR (2026-10-22) re-ran under the watcher every REMEASURE / PAPER / ANALYTIC* SNOPT shard
+with a cell past 1.5x** (128 shards, folded into 38 runs; 204 cells killed): no success count or
+verdict moved anywhere; time-matched <= 0.3 points; SQP budget stops per row learned 0-10 -> 0, joint
+space 0-3 -> 0-2; the analytic (59,0) cell is now a failure on all three ladders. **The cap is a budget for the arm that evaluates a
 network, not a shared budget**: across 5/10/20/45/90/180 s every baseline is flat, with one
 exception — on iiwa grasp paired the joint-space arm is itself cap-bound below 20 s, with cells
 running 1300-1430 iterations against that arm's median of 70. That arm is not uniformly cheap; it
