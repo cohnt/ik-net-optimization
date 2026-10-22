@@ -14,6 +14,11 @@ cell for cell against the original merged run:
   - cells that hit the clock in either run are reported separately and are allowed to differ,
     since where a solve is stopped depends on node contention.
 
+With `--overrun-factor F` the re-run is one made under the external overrun watcher
+(cluster/run_items.sh; stage WATCHCHK, 2026-10-21) and the cells it killed are checked too: every
+cell the ORIGINAL ran past F x the clock must come back `killed_overrun`, infeasible in both runs,
+at F x the clock (within 30 s: the watcher polls every 5 s), and no other cell may have been killed.
+
 Shards are read directly (a partial shard set does not merge, by design). Originals are the merged
 runs under results/ or results/_cluster_staging/*/results/.
 
@@ -44,6 +49,9 @@ def main():
     p.add_argument("--prefix", default="MERGECHK",
                    help="regex for the re-run's tag prefix: sc_<PREFIX>_<original tag minus sc_>. "
                         r"'SEGV\d\d' reads stage SEGVREP's copies.")
+    p.add_argument("--overrun-factor", type=float, default=None,
+                   help="the re-run was watched at this kill threshold (x the clock): check the "
+                        "killed_overrun cells against the original's overruns (stage WATCHCHK: 1.5)")
     args = p.parse_args()
     os.chdir(args.root)
 
@@ -60,7 +68,7 @@ def main():
            f"{'diff clock':>11}{'wall new/old':>13}")
     print(hdr)
     print("-" * len(hdr))
-    bad, total_conv, total_clock_diff = 0, 0, 0
+    bad, total_conv, total_clock_diff, total_killed = 0, 0, 0, 0
     for tag in sorted(shards):
         with open(shards[tag]) as fh:
             new = json.load(fh)
@@ -77,14 +85,31 @@ def main():
             continue
         for arm, recs in new["records"].items():
             O = {(r["target"], r["guess"]): r for r in old["records"][arm]}
-            same = conv_diff = clock_diff = 0
+            same = conv_diff = clock_diff = killed = 0
             ratios = []
+            cap = float(new["metadata"].get("wall_time") or 180.0)
             for r in recs:
                 o = O.get((r["target"], r["guess"]))
                 if o is None:
                     print(f"{tag} {arm}: cell {(r['target'], r['guess'])} absent from original")
                     bad += 1
                     continue
+                if args.overrun_factor is not None:
+                    limit = args.overrun_factor * cap
+                    was_over = (o.get("wall_time") or 0.0) > limit
+                    is_killed = r.get("fail_reason") == "killed_overrun"
+                    if was_over or is_killed:
+                        ok = (was_over and is_killed and not r.get("feasible")
+                              and not o.get("feasible")
+                              and limit <= (r.get("wall_time") or 0.0) <= limit + 30.0)
+                        print(f"  {'KILLED' if ok else 'BAD KILL'} {tag} {arm} cell "
+                              f"{(r['target'], r['guess'])}: original {o.get('wall_time', 0):.0f} s "
+                              f"feasible {o.get('feasible')}, now {r.get('fail_reason')} at "
+                              f"{r.get('wall_time', 0):.0f} s (recovered_feasible "
+                              f"{r.get('recovered_feasible')})")
+                        killed += ok
+                        bad += not ok
+                        continue
                 identical = (bool(r["feasible"]) == bool(o["feasible"])
                              and r.get("iterations") == o.get("iterations"))
                 clock = bool(r.get("timed_out")) or bool(o.get("timed_out"))
@@ -103,12 +128,16 @@ def main():
             bad += conv_diff
             total_conv += same + conv_diff
             total_clock_diff += clock_diff
+            total_killed += killed
             label = re.sub(rf"^sc_{args.prefix}_", "", tag)
             ratio = f"{np.median(ratios):.2f}" if ratios else "--"
             print(f"{label:<66}{arm:<10}{len(recs):>6}{same:>6}{conv_diff:>10}{clock_diff:>11}"
                   f"{ratio:>13}")
     print(f"\n{len(shards)} shards. Differences on cells that ran to the clock in either run: "
           f"{total_clock_diff} (allowed).")
+    if args.overrun_factor is not None:
+        print(f"Cells killed at {args.overrun_factor:g}x the clock where the original overran it: "
+              f"{total_killed}.")
     print("MERGE CHECK PASSED: every non-clock-bound cell reproduces exactly" if not bad
           else f"MERGE CHECK FAILED: {bad} problem(s) above")
     return 1 if bad else 0

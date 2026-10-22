@@ -5,6 +5,11 @@ record, pairwise) and `python scripts/report_threeway.py` (learned / joint space
 single start and multi-start). Raw runs: `results/_cluster_staging/20261014-015030` and `-105935`
 (local, gitignored). Numbers only; the reading is Thomas's.
 
+Measured before the overrun watcher (2026-10-21, `cluster/README.md`). One cell here would score
+differently under it: iiwa posetip native SNOPT, analytic (59,0), feasible after 643-1443 s past the
+180 s clock in ANALYTIC/ANALYTICC/ANALYTICT; a watched re-run records it `killed_overrun` (accepted,
+Thomas 2026-10-21).
+
 ## report_analytic.py
 
 ```
