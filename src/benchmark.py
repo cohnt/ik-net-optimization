@@ -32,11 +32,13 @@ import math
 import os
 import re
 import shutil
+import struct
 import sys
 import tarfile
 import threading
 import time
 import traceback
+import zlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -819,6 +821,313 @@ def _warm_up_svgd_arms(arms, targets, guesses, cells, metadata):
         metadata["svgd_warmup_seconds"] = seconds
 
 
+## ---------------- per-cell persistence, resume, and the overrun watcher ---------------- ##
+##
+## SNOPT does not check its time limit on a major iteration with zero minor iterations, so a
+## cell cycling there (elastic mode, step ~1e-12, merit constant) runs on to the major limit:
+## 0.4-2.2 h at 1e5 majors against a 180 s clock, ~3 callbacks per major (ITCAP (32,7): 301,618
+## callbacks over 1e5 majors). Nothing inside the solve may stop it -- `SolveTimeout`,
+## `CheckDeadline` and `hard_time_factor` were deleted because a solve must keep its iterate --
+## so it is bounded from OUTSIDE: `cluster/run_items.sh` watches a heartbeat this module writes,
+## SIGKILLs the process once a solve passes `LEARNED_IK_OVERRUN_FACTOR` x its clock, and
+## relaunches the item, which resumes from the per-cell JSONL and records the killed cell from
+## the last iterate streamed to disk, with fail_reason "killed_overrun".
+##
+## Three environment variables, all set by run_items.sh, so no driver, manifest or tag changes:
+##   LEARNED_IK_RESUME=1           resume from `<out_path>.cells.jsonl` instead of truncating it
+##   LEARNED_IK_WATCH_DIR=<dir>    node-local, one per item: heartbeat, start marker, iterate
+##                                 stream, kill marker and the solver logs
+##   LEARNED_IK_OVERRUN_FACTOR     the kill threshold as a multiple of `max_wall_time` (1.5)
+## Without them a run behaves as before, except that the JSONL is always written.
+
+RESUME_ENV = "LEARNED_IK_RESUME"
+WATCH_ENV = "LEARNED_IK_WATCH_DIR"
+OVERRUN_ENV = "LEARNED_IK_OVERRUN_FACTOR"
+OVERRUN_FACTOR_DEFAULT = 1.5
+KILLED_REASON = "killed_overrun"
+
+## The metadata keys that identify a run. A resume against a JSONL whose header differs in any
+## of them refuses, rather than splicing two experiments into one summary.
+_HEADER_METADATA_KEYS = ("grid_hash", "robot", "task", "solver", "start", "config", "wall_time",
+                         "seed", "overrides", "shard", "checkpoint", "cells", "n_targets",
+                         "n_guesses")
+## What run_grid itself adds to the metadata from the programs it builds. Persisted, so a resumed
+## summary carries the values the run's FIRST programs recorded, as an uninterrupted one does.
+## `resume` is the list of relaunches, one event each (host, time, records loaded, killed cell).
+_RUN_GRID_METADATA_KEYS = ("solver_options_emitted", "robot_settings", "svgd_warmup_seconds",
+                           "resume")
+## Must equal `IKFlowProgram.EVAL_COUNT_KEYS` (tests/test_cell_resume.py checks).
+_ITERATE_COUNT_KEYS = ("map_forward", "map_jacobian", "memo_hits", "callback")
+
+
+def _normalised(obj):
+    """`obj` as it reads back from JSON. Every record goes through this as it is persisted,
+    in a fresh run as in a resumed one, so a summary built from records loaded off disk and
+    one built from records just computed are built from identical objects."""
+    return json.loads(json.dumps(obj, default=_json_default))
+
+
+def _code_commit():
+    """The commit the code runs at: the staged clone's `.staged-commit` on the cluster, else
+    `git rev-parse HEAD`; None when neither is available."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        with open(os.path.join(repo, ".staged-commit")) as fh:
+            return fh.read().strip() or None
+    except OSError:
+        pass
+    try:
+        import subprocess
+        return subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True,
+                              text=True, timeout=10).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _cell_log_header(arms, metadata, n_targets, n_guesses):
+    meta = metadata or {}
+    header = {k: meta.get(k) for k in _HEADER_METADATA_KEYS}
+    header.update(arms=[a.name for a in arms], grid_targets=n_targets, grid_guesses=n_guesses,
+                  commit=_code_commit())
+    return _normalised(header)
+
+
+class CellLog:
+    """The run's records, one JSON line per finished (cell, arm), appended as each finishes.
+
+    `<out_path>.cells.jsonl`, beside the summary: line one a header (`_cell_log_header`), then
+    `{"arm", "record"}` lines and `{"metadata"}` lines (run_grid's own additions, whenever they
+    change). A crash or a kill then loses the cell in flight, not the shard. With `resume`, an
+    existing file is loaded -- a header that differs from this run's raises, and a torn final
+    line (a kill mid-write) is cut off -- and `records[(arm, ti, gi)]` holds what it recorded.
+    Without `resume` the file is started afresh, as the summary always was.
+    """
+
+    def __init__(self, path, header, resume):
+        self.path = path
+        self.records = {}
+        self.metadata = {}
+        self._written_metadata = None
+        loaded = resume and os.path.exists(path) and os.path.getsize(path) > 0
+        if loaded:
+            self._load(header)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self._f = open(path, "a" if loaded else "w")
+        if not loaded:
+            self._write({"header": header})
+
+    def _load(self, header):
+        path = self.path
+        with open(path, "rb") as fh:
+            data = fh.read()
+        good = data.rfind(b"\n") + 1
+        if good < len(data):                     # a torn final line: drop it before appending
+            with open(path, "r+b") as fh:
+                fh.truncate(good)
+        lines = data[:good].decode().splitlines()
+        first = json.loads(lines[0]).get("header") if lines else None
+        if first != header:
+            diff = sorted(k for k in set(first or {}) | set(header)
+                          if (first or {}).get(k) != header.get(k))
+            raise SystemExit(f"benchmark: {path} records a different run (differs in {diff}); "
+                             f"refusing to resume. Move it aside to start afresh.")
+        for line in lines[1:]:
+            entry = json.loads(line)
+            if "record" in entry:
+                r = entry["record"]
+                self.records[(entry["arm"], r["target"], r["guess"])] = r
+            elif "metadata" in entry:
+                self.metadata = entry["metadata"]
+        self._written_metadata = self.metadata
+
+    def _write(self, entry):
+        self._f.write(json.dumps(entry, default=_json_default) + "\n")
+        self._f.flush()
+        os.fsync(self._f.fileno())
+
+    def append(self, arm, record):
+        """Persist `record` and return it normalised (see `_normalised`)."""
+        record = _normalised(record)
+        self._write({"arm": arm, "record": record})
+        self.records[(arm, record["target"], record["guess"])] = record
+        return record
+
+    def note_metadata(self, metadata):
+        if metadata is None:
+            return
+        current = _normalised({k: metadata[k] for k in _RUN_GRID_METADATA_KEYS if k in metadata})
+        if current != self._written_metadata:
+            self._write({"metadata": current})
+            self._written_metadata = current
+
+    def close(self):
+        self._f.close()
+
+
+class IterateFile:
+    """The newest iterate of the solve in flight, on node-local disk, for a cell killed from
+    outside. One preopened fd and ONE `os.pwrite` at offset 0 per iterate: a SIGKILL cannot tear
+    a single small write, and a crc over the packed buffer rejects anything that is not whole.
+    The buffer names its cell, so an iterate is never attributed to another one. A few
+    microseconds per evaluation against milliseconds; nothing numeric is touched.
+
+    Layout: magic, crc32(arm), ti, gi, n (5 x u32/i32), the four eval counts (4 x i64), n
+    float64 values, crc32 of everything before it.
+    """
+    _MAGIC = 0x4C494B49
+    _HEAD = struct.Struct("<IIiii4q")
+
+    def __init__(self, path):
+        self.path = path
+        self._fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+
+    def _pack(self, arm, ti, gi, vars, counts):
+        vals = np.ascontiguousarray(vars, dtype=np.float64)
+        body = self._HEAD.pack(self._MAGIC, zlib.crc32(arm.encode()), ti, gi, vals.size,
+                               *[int(counts.get(k, 0)) for k in _ITERATE_COUNT_KEYS])
+        body += vals.tobytes()
+        return body + struct.pack("<I", zlib.crc32(body))
+
+    def reset(self, arm, ti, gi):
+        """Mark the start of a cell's solve: an empty iterate, so a stale one cannot survive."""
+        os.pwrite(self._fd, self._pack(arm, ti, gi, (), {}), 0)
+
+    def sink(self, arm, ti, gi):
+        """A `program.iterate_sink` for this cell."""
+        def write(vars, counts):
+            os.pwrite(self._fd, self._pack(arm, ti, gi, vars, counts), 0)
+        return write
+
+    @classmethod
+    def read(cls, path, arm, ti, gi):
+        """`(vars or None, counts)` for that cell, or None when the file holds nothing valid for
+        it."""
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+            magic, arm_crc, t, g, n, *counts = cls._HEAD.unpack_from(data, 0)
+            end = cls._HEAD.size + 8 * n
+            (crc,) = struct.unpack_from("<I", data, end)
+        except (OSError, struct.error):
+            return None
+        if (magic != cls._MAGIC or crc != zlib.crc32(data[:end])
+                or (arm_crc, t, g) != (zlib.crc32(arm.encode()), ti, gi)):
+            return None
+        vals = np.frombuffer(data[cls._HEAD.size:end], dtype=np.float64).copy()
+        return (vals if n else None), dict(zip(_ITERATE_COUNT_KEYS, counts))
+
+    def close(self):
+        os.close(self._fd)
+
+
+class CellWatch:
+    """The process's side of the external overrun watcher (`cluster/run_items.sh`).
+
+    In `LEARNED_IK_WATCH_DIR`:
+      heartbeat   one line `pid ti gi arm phase deadline`, replaced atomically. phase is `setup`
+                  from a cell's start, `solve` from just before `Solve()` -- deadline = solve
+                  start + factor x `max_wall_time`, epoch seconds -- and `post` from the moment
+                  it returns. The watcher kills only in `solve` past the deadline.
+      start.json  the cell's partial record and its solve start, before `Solve()`: the start
+                  marker a killed cell is recorded from.
+      iterate.bin `IterateFile`.
+      killed      written by the watcher before it kills: the heartbeat line and the kill time.
+      solver_logs the per-cell solver logs, so a killed cell's print file outlives its pid.
+    """
+
+    def __init__(self, directory, factor):
+        self.dir = directory
+        self.factor = float(factor)
+        os.makedirs(os.path.join(directory, "solver_logs"), exist_ok=True)
+        self.iterate = IterateFile(os.path.join(directory, "iterate.bin"))
+
+    @classmethod
+    def from_env(cls):
+        directory = os.environ.get(WATCH_ENV)
+        if not directory:
+            return None
+        return cls(directory, os.environ.get(OVERRUN_ENV) or OVERRUN_FACTOR_DEFAULT)
+
+    def _path(self, name):
+        return os.path.join(self.dir, name)
+
+    def _replace(self, name, text):
+        tmp = self._path(name + ".tmp")
+        with open(tmp, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, self._path(name))
+
+    def beat(self, arm, ti, gi, phase, deadline=0):
+        self._replace("heartbeat", f"{os.getpid()} {ti} {gi} {arm} {phase} {int(math.ceil(deadline))}\n")
+
+    def solve_starting(self, arm, ti, gi, partial_record, wall_cap):
+        """Write the start marker, reset the iterate stream, and arm the deadline. Returns the
+        solve start time, which the caller's own clock should use."""
+        t_solve = time.time()
+        self._replace("start.json", json.dumps(
+            {"arm": arm, "target": ti, "guess": gi, "t_solve": t_solve, "wall_cap": wall_cap,
+             "record": partial_record}, default=_json_default))
+        self.iterate.reset(arm, ti, gi)
+        self.beat(arm, ti, gi, "solve", t_solve + self.factor * float(wall_cap))
+        return t_solve
+
+    def killed(self):
+        """The watcher's kill marker as `{arm, target, guess, kill_epoch}`, or None."""
+        try:
+            with open(self._path("killed")) as fh:
+                _pid, ti, gi, arm, _phase, _deadline, kill_epoch = fh.read().split()[:7]
+            return dict(arm=arm, target=int(ti), guess=int(gi), kill_epoch=float(kill_epoch))
+        except (OSError, ValueError):
+            return None
+
+    def start_marker(self):
+        try:
+            with open(self._path("start.json")) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
+    def clear_killed(self):
+        try:
+            os.remove(self._path("killed"))
+        except FileNotFoundError:
+            pass
+
+    def close(self):
+        self.iterate.close()
+
+
+def _record_killed_cell(arm, ti, gi, killed, start, iterate, targets, guesses, task_gate,
+                        tol, relaxed_tol, log_path):
+    """The record of a cell the watcher killed for overrunning: the start marker's partial
+    record, the wall clock up to the kill, and the last streamed iterate verified exactly as
+    `Solve()`'s abnormal-exit path verifies one (`_recover_from_last_iterate`). The cell FAILED
+    and is scored so; `recovered_*` says what point it had reached. `timed_out` is True -- the
+    clock stopped it, enforced from outside (Thomas, 2026-10-21) -- and `hit_iteration_cap`
+    False. The program is rebuilt from the cell's seeds, which reproduces it exactly."""
+    record = dict(start["record"])
+    program = arm.make_program(targets[ti], guesses[ti][gi], (ti, gi))
+    which = getattr(program.options, "which_solver", "ipopt")
+    record["wall_time"] = killed["kill_epoch"] - start["t_solve"]
+    record["solver_success"] = False
+    try:
+        record.update(parse_log(log_path, which))
+    except Exception:
+        record.update({k: None for k in _ALL_LOG_KEYS}, exit=None)
+    record.update(timed_out=True, hit_iteration_cap=False, hit_eval_cap=False, solver=which,
+                  solution_result=None, solver_status=None, solver_detail_seconds=None)
+    vars, counts = iterate if iterate is not None else (None, {})
+    record["eval_counts"] = dict(counts)
+    record["svgd"] = None
+    record.update(feasible=False, fail_reason=KILLED_REASON, feasible_relaxed=False,
+                  fail_reason_relaxed=KILLED_REASON, q=None, max_violation=None,
+                  correction_inf=None, z_norm=None, flow_neg_log_density=None, detail={})
+    if vars is not None:
+        program.last_iterate = vars
+        _recover_from_last_iterate(program, record, task_gate, tol, relaxed_tol)
+    return record
+
+
 def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
              progress=None, metadata=None, cell_timeout=None, cells=None,
              unrepresentable_tol=None, relaxed_tol=None):
@@ -832,6 +1141,11 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     (the grid is seeded and hashed, so cell (ti, gi) of an archived summary is
     reproducible bit for bit) -- a debugging aid, not a sampling mechanism: the summary of
     a filtered run is partial and says so in its metadata.
+
+    Every finished (cell, arm) is appended to `<out_path>.cells.jsonl` as it finishes
+    (`CellLog`), and under the environment run_items.sh sets the run resumes from it and is
+    watched for overrunning solves (`CellWatch`; the section above says how). The summary is
+    always `summarise` over the full record set, however many processes produced it.
     """
     os.makedirs(log_dir, exist_ok=True)
     # `guesses` is per-target -- guesses[ti][gi] -- by decision: shared guesses made the
@@ -844,7 +1158,9 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     # lost -- which is what happened to the one stall this was meant to catch.
     # Per-cell solver logs go to node-local scratch and are rolled into one archive
     # per run at the end; see `_log_scratch_dir`.
-    scratch_dir = _log_scratch_dir(log_dir)
+    watch = CellWatch.from_env()
+    scratch_dir = (os.path.join(watch.dir, "solver_logs") if watch is not None
+                   else _log_scratch_dir(log_dir))
     stalls = open(os.path.join(scratch_dir, "stalls.txt"), "a") if cell_timeout else None
     watchdog = StallWatchdog(stalls) if cell_timeout else None
     n_targets, n_guesses = len(targets), len(guesses[0])
@@ -855,17 +1171,74 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
         if metadata is not None:
             metadata = dict(metadata, cells=sorted(cells))
 
+    resume = os.environ.get(RESUME_ENV) == "1"
+    cell_log = CellLog(out_path + ".cells.jsonl",
+                       _cell_log_header(arms, metadata, n_targets, n_guesses), resume)
+    killed = watch.killed() if watch is not None else None
+    if killed is not None and (killed["arm"], killed["target"], killed["guess"]) in cell_log.records:
+        ## The solve returned in the instant before the kill landed: its record stands.
+        killed = None
+        watch.clear_killed()
+
     _warm_up_svgd_arms(arms, targets, guesses, cells, metadata)
+
+    if cell_log.records and metadata is not None:
+        event = dict(host=provenance()["host"], time=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                     records_loaded=len(cell_log.records),
+                     killed_cell=([killed["arm"], killed["target"], killed["guess"]]
+                                  if killed is not None else None))
+        if "svgd_warmup_seconds" in metadata:
+            event["svgd_warmup_seconds"] = metadata["svgd_warmup_seconds"]
+        metadata.update(cell_log.metadata)          # the first programs' values, as recorded
+        metadata["resume"] = list(metadata.get("resume", [])) + [event]
+        cell_log.note_metadata(metadata)
 
     for ti in range(n_targets):
         for gi in range(n_guesses):
             if cells is not None and (ti, gi) not in cells:
                 continue
             for arm in arms:
+                done = cell_log.records.get((arm.name, ti, gi))
+                if done is not None:                # recorded by an earlier process
+                    records[arm.name].append(done)
+                    _abort_on_dead_arm(arm.name, records[arm.name])
+                    if progress is not None:
+                        progress(arm.name, ti, gi, done)
+                    continue
                 log_path = os.path.join(scratch_dir, f"{arm.name}_{ti}_{gi}.txt")
+                if killed is not None and (killed["arm"], killed["target"], killed["guess"]) \
+                        == (arm.name, ti, gi):
+                    start_marker = watch.start_marker()
+                    if start_marker is not None and (
+                            start_marker["arm"], start_marker["target"],
+                            start_marker["guess"]) == (arm.name, ti, gi):
+                        try:
+                            record = _record_killed_cell(
+                                arm, ti, gi, killed, start_marker,
+                                IterateFile.read(watch.iterate.path, arm.name, ti, gi),
+                                targets, guesses, task_gate, tol, relaxed_tol, log_path)
+                        except Exception as exc:    # never let one cell kill a sweep
+                            record = dict(start_marker["record"], feasible=False,
+                                          fail_reason=KILLED_REASON, solver_success=False,
+                                          timed_out=True, hit_iteration_cap=False,
+                                          wall_time=killed["kill_epoch"] - start_marker["t_solve"],
+                                          error=f"{type(exc).__name__}: {exc}")
+                        record = cell_log.append(arm.name, record)
+                        killed = None
+                        watch.clear_killed()
+                        records[arm.name].append(record)
+                        if progress is not None:
+                            progress(arm.name, ti, gi, record)
+                        continue
+                    ## No start marker for it (cannot happen with the watcher as written, which
+                    ## kills only in `solve`): the cell is simply run again.
+                    killed = None
+                    watch.clear_killed()
                 if os.path.exists(log_path):
                     os.remove(log_path)
                 record = dict(target=ti, guess=gi)
+                if watch is not None:
+                    watch.beat(arm.name, ti, gi, "setup")
                 t0 = time.time()
                 # If a cell wedges somewhere the solver's own caps cannot reach -- program
                 # construction, verification, a solve that overruns even the hard cap --
@@ -911,6 +1284,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                         record["solver_success"] = False
                         record["wall_time"] = 0.0
                         record["solver"] = getattr(program.options, "which_solver", None)
+                        record = cell_log.append(arm.name, record)
                         records[arm.name].append(record)
                         if progress is not None:
                             progress(arm.name, ti, gi, record)
@@ -923,9 +1297,15 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                         ## SETUP: a grasp grid has a new scene per target, and that setup
                         ## must not land in whichever arm's clock happens to run first.
                         record["svgd_prepare_time"] = program.PrepareSvgdSolve()
+                    wall_cap = getattr(program.options, "max_wall_time", None)
+                    if watch is not None and wall_cap:
+                        watch.solve_starting(arm.name, ti, gi, record, wall_cap)
+                        program.iterate_sink = watch.iterate.sink(arm.name, ti, gi)
                     start = time.time()
                     result = program.Solve()
                     record["wall_time"] = time.time() - start
+                    if watch is not None:
+                        watch.beat(arm.name, ti, gi, "post")
                     record["solver_success"] = bool(result.is_success())
                     which = getattr(program.options, "which_solver", "ipopt")
                     record.update(parse_log(log_path, which))
@@ -1022,6 +1402,12 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
                     except Exception as exc:        # a record, never a reason to die
                         metadata.setdefault("robot_settings", {}).setdefault(
                             arm.name, {"error": f"{type(exc).__name__}: {exc}"})
+                if program is not None:
+                    program.iterate_sink = None
+                if watch is not None:
+                    watch.beat(arm.name, ti, gi, "post")
+                record = cell_log.append(arm.name, record)
+                cell_log.note_metadata(metadata)
                 records[arm.name].append(record)
                 _abort_on_dead_arm(arm.name, records[arm.name])
                 if progress is not None:
@@ -1033,6 +1419,10 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     if stalls is not None:
         watchdog.cancel()
         stalls.close()
+    cell_log.close()
+    if watch is not None:
+        watch.beat("-", -1, -1, "done")
+        watch.close()
     _roll_up_logs(scratch_dir, log_dir)
     return records
 
