@@ -478,6 +478,11 @@ from outside:
   analytic (59,0) on the three ladders. **No success count or verdict moved in any table**
   (status quo, PAPER, time-matched, svgd 2x2, analytic, three-way); time-matched moves <= 0.3
   points; SQP budget stops per row: learned 0-10 -> 0, joint space 0-3 -> 0-2; analytic 0.
+- Stage `GVSO2` (2026-10-22): the GVS arm's `o2` rung at record conditions, REMEASURE's items with
+  the rung swapped (64 items, staged a090cb9). Jobs 6001801-04, 4 volta nodes, PROCS=2, no MPS,
+  07:54-15:02 (7.1 h), 64/64 items, 0 failed; collected 20261022-150431, promoted to
+  `results/gvs_pushrod9_o2/`. 8 watcher kills = 8 `killed_overrun` records (272-274 s), 0 withdrawn.
+  Tables `docs/gvs-arm-tables.md`.
 
 ## How work is claimed, and how to recover
 
