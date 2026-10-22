@@ -198,7 +198,8 @@ carries no verdict until re-measured with the iteration budget lifted — never 
 `max_iter` 1e6, SNOPT 1e5 majors / 1e8 minors. SNOPT does not check its time limit on a major with
 zero minors, so a cycling cell ran 0.4-2.2 h in the record. **Since 2026-10-21 `run_items.sh`'s
 watcher kills a solve past 1.5x its clock**; the item resumes from its per-cell JSONL and the cell
-is `killed_overrun`, `timed_out=True`, scored from its last iterate (`cluster/README.md`). The cap
+is `killed_overrun`, `timed_out=True`, scored from its last iterate (`cluster/README.md`). Stage
+OVR re-ran every affected record SNOPT shard under it (2026-10-22): no verdict moved. The cap
 is a budget for the arm that evaluates a network: baselines are flat across caps.
 
 ## Benchmarking (`src/benchmark.py`; long form in the rules notes)
