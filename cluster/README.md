@@ -93,8 +93,8 @@ the name the benchmark manifest expects — so the two halves meet there and now
 
 The record runs on ONE Drake, the tarball pin, and that does not change. The svgd solver's
 batched clearance collision row (`--set svgd_collision_backend=clearances`) needs
-`CollisionChecker.CalcRobotClearances`, which only Thomas's Drake branch `calc-robot-clearances`
-carries, and Thomas ruled on 2026-10-11 that the svgd rounds use it from R11 on. So there is a
+`CollisionChecker.CalcRobotClearances`, which the pinned nightly predates (it is in master since #25073, 2026-10-12;
+the wheel is Thomas's branch `calc-robot-clearances`), and Thomas ruled on 2026-10-11 that the svgd rounds use it from R11 on. So there is a
 second environment, selected per STAGE (never per item) by `DRAKE_ENV`:
 
 | | unset (every stage of record, the IPOPT twins, svgd R1-R10) | `DRAKE_ENV=crc` |

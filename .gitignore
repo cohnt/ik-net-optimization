@@ -42,3 +42,5 @@ models/screw7_p*/*.pkl
 
 ## The analytic C++ backend's build output (cpp/build.sh); built per machine, never tracked.
 cpp/build/
+## Untrained cVAE plumbing charts (scripts/training/export_cvae.py --untrained), same rule.
+models/*/*__cvae*untrained__*

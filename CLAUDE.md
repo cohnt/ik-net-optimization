@@ -267,7 +267,9 @@ upstream, never pinned around; archive pairing is no reason to keep an old insta
 **PR 25002** (sixteen NLopt options) is in no release; `CheckNloptOptions` refuses only under
 `which_solver == "nlopt"`. **Nightlies expire ~2026-11-02: move to 1.58.0 once it carries PR 25002.**
 One stated exception: the svgd rounds' clearance wheel (`DRAKE_ENV=crc`, `~/learned-ik/venv-crc`,
-`CalcRobotClearances`), a strict speed improvement; it goes when Drake ships the API.
+`CalcRobotClearances`), a strict speed improvement, cluster only. The API is in master (#25073,
+2026-10-12) and the default local pydrake: **never point local code at a non-default Drake** (Thomas,
+2026-10-20); the cluster exception goes when the pin moves.
 
 ## AL-SVGD, the fourth method class (long form: `docs/notes-svgd.md`; evidence `docs/svgd-solver.md`)
 
@@ -389,6 +391,19 @@ measure and report as a stated deviation, not adopt. **Damping an exact Jacobian
 inconsistent**; damping belongs on the Newton step, which Drake's IPOPT does not expose. **Suppressing
 the runaway does not buy success.**
 
+**Chart ablation, rung one CLOSED (branch `chart-cvae`, merged to main 2026-10-21).** The
+program reaches its network only through `src/charts/` (`LoadChart`; `FlowChart` bit-identical to the
+old calls), built so LOInK (the next push, its own campaign) plugs in. Rung: a standard cVAE decoder
+as the chart, learned and fixed (textbook) decoder variance x K = flow width / redundancy, IPOPT +
+AL-SVGD. **Verdict: a loss.** Every rigid native row loses to the flow and to joint space under both
+solvers (one IPOPT tie with joint space); screw 0 on every probe; paired start 0/480 everywhere
+(encoder round trip 0.75-2.8 rad off); iiwa K=8 learned variance diverged twice (recorded, not
+benchmarked). Soft PCS ties the flow, with cheaper cells, only because the decoder returns a low-strain
+configuration. **Mechanism: every chart's latent is collapsed or nearly so** (active-unit screen) --
+the decoder returns E[q | pose], unusable where the IK fibre is disconnected branches. The screw
+dataset rebuild was bit-identical (`n6r` = `n6`). Long form `docs/notes-chart.md`; ops
+`cluster/CVAE_RUNBOOK.md`.
+
 ## Other robots (long form: `docs/notes-robots.md`)
 
 **The analytic chart.** Panda's 8 branches = wrist/shoulder/elbow signs (`analytic_branches`, default
@@ -433,7 +448,7 @@ from scratch (`src/screw_arm/params.py` **is** the robot; SDF and torch FK agree
 plant without a program must repair it too. **TRAP: set `ee_frame` BEFORE `CalibrateFlowFrame`**
 (`X_ee_flow` must be identity; a test pins it). Collision filter groups need the `cfg_` prefix.
 Measured: chart ladder `n6` stands; `p025_n6` shows the gain-ceiling runaway (a property of the trained
-chart). Datasets for the screw arm are gone — rebuild first. Ops and screens
+chart). `screw7_p050`'s dataset is rebuilt (bit-identical, proved by retraining `n6`); the other pitch rungs' are still gone. Ops and screens
 `cluster/SCREW_ARM_RUNBOOK.md`; `python scripts/report_screw.py`. The curvilinear rail is deferred.
 
 ## Running on MIT SuperCloud (long form: `docs/notes-cluster.md`; playbook `cluster/README.md`)

@@ -4,6 +4,7 @@ import time
 import pydrake.math
 import torch
 from ikflow.config import DEVICE
+from src.charts.flow import FlowDecode
 import numpy as np
 from collections import namedtuple
 from dataclasses import dataclass, field, fields as dataclass_fields
@@ -734,7 +735,7 @@ class ProgramOptions:
     svgd_warmup_iters: int = field(default=10, metadata={"help": "svgd: CEM warm-up iterations"})
     svgd_warmup_elite: float = field(default=0.1, metadata={"help": "svgd: CEM elite fraction"})
     svgd_compile: bool = field(default=False, metadata={"help": "svgd: torch.compile the split step's three stages (src/svgd/fused.py; compiled by WarmUpSvgdStep, outside any timed cell)"})
-    svgd_collision_backend: str = field(default="autodiff", metadata={"help": "svgd: how the exact collision row is evaluated -- 'autodiff', the program's own MinimumDistanceLowerBoundConstraint on AutoDiffXd one configuration at a time (serial, GIL-bound); 'clearances', the same functional from ONE CollisionChecker.CalcRobotClearances call (batched, GIL-released, Drake-threaded) plus Drake's penalty aggregation in numpy. 'clearances' needs a Drake carrying CalcRobotClearances (branch calc-robot-clearances) and is refused where the running pydrake lacks it"})
+    svgd_collision_backend: str = field(default="autodiff", metadata={"help": "svgd: how the exact collision row is evaluated -- 'autodiff', the program's own MinimumDistanceLowerBoundConstraint on AutoDiffXd one configuration at a time (serial, GIL-bound); 'clearances', the same functional from ONE CollisionChecker.CalcRobotClearances call (batched, GIL-released, Drake-threaded) plus Drake's penalty aggregation in numpy. 'clearances' needs a Drake carrying CalcRobotClearances (master since #25073, 2026-10-12) and is refused where the running pydrake lacks it"})
     svgd_cuda_graph: bool = field(default=False, metadata={"help": "svgd: replay the compiled stages as CUDA graphs, captured by WarmUpSvgdStep before the first timed cell (requires svgd_compile and CUDA)"})
 
     vars_file: str = field(default=None, metadata={"help": "If provided, saves variable trajectories to this file"})
@@ -845,13 +846,18 @@ ORIENTATION_ERROR_FORMS = ("rpy", "rpy_boxed")
 
 
 def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.0,
-                      with_logdet=False):
+                      with_logdet=False, decode=None):
     """`vars -> (q, q)`, the shape `jacrev(..., has_aux=True)` wants.
 
     Returning q twice is what lets one reverse pass yield both dq/dvars and q, instead of
     evaluating the network again for the value. `vars` is [conditioning pose as xyz + wxyz,
-    latent, correction]; the trailing zero on the conditioning row is the padding the flow
-    was trained with.
+    latent, correction].
+
+    `decode` is the chart's (`src/charts/base.py`): `decode(nn_model, z [1, K], pose7 [1, 7])
+    -> (q, logdet)`. The default is the flow's, so a caller holding a bare network (the
+    screens, the tests) gets exactly what this function always computed. It is closed over
+    with the network, so it must hold no per-program state either (`FlowChart.decode` is a
+    partial of a module-level function for that reason).
 
     `chart_error_scale` adds a deterministic, smooth, seeded perturbation
     `eps * sin(W [c; z] + b)` to the network's output -- an experimental knob that
@@ -877,16 +883,17 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
         b = torch.randn(num_arm_dof, generator=gen,
                         dtype=torch.float64, device="cpu").to(device)
 
+    if decode is None:
+        decode = partial(FlowDecode, num_dof=num_arm_dof)
+
     def flow_inference(vars):
         c, z, correction = vars[:7], vars[7:7 + width], vars[7 + width:]
-        c_torch = torch.cat(
-            [c.unsqueeze(0), torch.zeros((1, 1), dtype=vars.dtype, device=device)], dim=1)
         if with_logdet:
-            output, logdet = nn_model(z.unsqueeze(0), c=c_torch, rev=True)
+            output, logdet = decode(nn_model, z.unsqueeze(0), c.unsqueeze(0))
             y = torch.cat([output[0, :num_arm_dof] + correction,
                            logdet.reshape(1).to(output.dtype)])
             return y, y
-        output, _ = nn_model(z.unsqueeze(0), c=c_torch, rev=True)
+        output, _ = decode(nn_model, z.unsqueeze(0), c.unsqueeze(0))
         q = output[0, :num_arm_dof] + correction
         if chart_error_scale:
             q = q + chart_error_scale * torch.sin(
@@ -968,15 +975,19 @@ class GraphedFlowCall:
         return tuple(t.clone() for t in self.static_out)
 
 
-def _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet=False):
+def _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet=False,
+             family="ikflow"):
     ## `with_logdet` changes the function's output, so it must key the compiled-jacrev and
-    ## CUDA-graph caches: without it one variant would be handed the other's graph.
+    ## CUDA-graph caches: without it one variant would be handed the other's graph. The
+    ## chart family keys them too: `decode` is the family's, and the network's id alone
+    ## says nothing about which function was compiled around it.
     return (id(nn_model), width, num_arm_dof, str(device),
-            next(nn_model.parameters()).dtype, float(chart_error_scale), bool(with_logdet))
+            next(nn_model.parameters()).dtype, float(chart_error_scale), bool(with_logdet),
+            family)
 
 
 def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_error_scale=0.0,
-                    cuda_graph=False, with_logdet=False):
+                    cuda_graph=False, with_logdet=False, decode=None, family="ikflow"):
     """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked, and
     replayed as a CUDA graph on top of that if asked.
 
@@ -985,11 +996,12 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
     """
     jacobian_gen = torch.func.jacrev(
         MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale,
-                          with_logdet=with_logdet),
+                          with_logdet=with_logdet, decode=decode),
         has_aux=True)
     if not compile_it:
         return jacobian_gen
-    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet)
+    key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet,
+                   family)
     if key not in _COMPILED_JACOBIANS:
         _COMPILED_JACOBIANS[key] = torch.compile(jacobian_gen)
     if not cuda_graph:
@@ -1001,17 +1013,17 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
 
 
 def FlowValueGen(nn_model, width, num_arm_dof, device, chart_error_scale=0.0,
-                 with_logdet=False):
+                 with_logdet=False, decode=None, family="ikflow"):
     """`vars -> (q, q)` for the plain forward pass: compiled, under no_grad, CUDA-graphed.
 
     Used only under `flow_cuda_graph`; otherwise the forward pass stays the eager
     `MakeFlowInference`, so a run without the switch is exactly what it always was.
     """
     key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale,
-                   with_logdet) + ("value",)
+                   with_logdet, family) + ("value",)
     if key not in _FLOW_GRAPHS:
         infer = MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale,
-                                  with_logdet=with_logdet)
+                                  with_logdet=with_logdet, decode=decode)
 
         def forward(vars):
             with torch.no_grad():
@@ -1331,7 +1343,7 @@ class IKFlowProgram:
             on = self._FlowLogDetOn()
             fn = make(self.ik_solver.nn_model, self.ik_solver.network_width,
                       self.num_arm_dof, DEVICE, self.options.chart_error_scale,
-                      with_logdet=on)
+                      with_logdet=on, **self._ChartDecodeArgs(make))
             if on:
                 fn = self._StashingFlowCall(fn, jacobian=False)
             self._flow_inference = fn
@@ -1342,8 +1354,29 @@ class IKFlowProgram:
         gen = FlowJacobianGen(
             self.ik_solver.nn_model, self.ik_solver.network_width, self.num_arm_dof,
             DEVICE, self.options.compile_flow_jacobian, self.options.chart_error_scale,
-            cuda_graph=getattr(self.options, "flow_cuda_graph", False), with_logdet=on)
+            cuda_graph=getattr(self.options, "flow_cuda_graph", False), with_logdet=on,
+            **self._ChartDecodeArgs(FlowJacobianGen))
         return self._StashingFlowCall(gen, jacobian=True) if on else gen
+
+    def _ChartDecodeArgs(self, make):
+        """The chart's `decode` (and, for the memoised makers, its family as a cache key)."""
+        args = dict(decode=self.ik_solver.decode)
+        if make is not MakeFlowInference:
+            args["family"] = self.ik_solver.family
+        return args
+
+    def CheckChartOptions(self):
+        """Refuse an option naming a quantity the chart does not have.
+
+        The rule options naming learned-only variables live under, one level down: the
+        log-det term is the density of a FLOW (`has_density`), and a chart without one
+        (an encoder-decoder) has no `log|det dx/dz|` to weight. Refused at construction
+        rather than at the first cost evaluation, which would be inside a timed solve.
+        """
+        if self._FlowLogDetOn() and not self.ik_solver.has_density:
+            raise ValueError(
+                f"flow_logdet_weight > 0 needs a chart with a density; the "
+                f"{self.ik_solver.family!r} chart has none (has_density=False)")
 
     ## ------------------- the flow's log-det (flow_logdet_weight) ------------------- ##
     ##
@@ -1422,9 +1455,13 @@ class IKFlowProgram:
         `-log p(x | c)` up to a constant (on the iiwa, of `(q, pad)`). One eager forward
         pass, outside any solve -- a recorded diagnostic, never part of a program, so it
         neither reads nor fills the memo and never touches a CUDA graph."""
+        if not self.ik_solver.has_density:
+            raise ValueError(f"FlowNegLogDensity: the {self.ik_solver.family!r} chart has "
+                             "no density")
         flow_vars = self._FlowVars(np.asarray(lumped, dtype=float), False)
         infer = MakeFlowInference(self.ik_solver.nn_model, self.ik_solver.network_width,
-                                  self.num_arm_dof, DEVICE, with_logdet=True)
+                                  self.num_arm_dof, DEVICE, with_logdet=True,
+                                  decode=self.ik_solver.decode)
         with torch.no_grad():
             y, _ = infer(torch.tensor(flow_vars, dtype=self.torch_dtype, device=DEVICE))
         width = self.ik_solver.network_width
@@ -1710,21 +1747,23 @@ class IKFlowProgram:
         return getattr(self, "ee_frame", self.frame)
 
     def InvertFlow(self, q_arm, c):
-        '''The latent that reproduces `q_arm` under conditioning pose `c`.
+        '''The latent that reproduces `q_arm` under conditioning pose `c`: the chart's
+        `encode`.
 
-        IKFlow is a normalizing flow, so this is the network run forwards (`rev=False`)
-        and is exact -- not an optimisation. It is what lets the learned formulation start
-        from the *same* configuration as the joint-space one, the way ../codebase seeds
-        its analytic formulation by recovering `psi` and `GC` from `q_initial`.
+        For IKFlow, a normalizing flow, this is the network run forwards (`rev=False`)
+        and is exact -- not an optimisation (`exact_inverse`). It is what lets the learned
+        formulation start from the *same* configuration as the joint-space one, the way
+        ../codebase seeds its analytic formulation by recovering `psi` and `GC` from
+        `q_initial`. A chart without an exact inverse returns its encoder's estimate, and
+        the residual is the correction's to absorb (or the cell is unrepresentable).
         '''
         dtype = self.torch_dtype
         pose7 = self.CToPose7(np.asarray(c, dtype=float))
-        c_t = torch.tensor(np.concatenate([pose7, [0.0]])[None, :], dtype=dtype, device=DEVICE)
-        x = np.zeros((1, self.ik_solver.network_width))
-        x[0, :self.num_arm_dof] = np.asarray(q_arm, dtype=float)[:self.num_arm_dof]
-        x_t = torch.tensor(x, dtype=dtype, device=DEVICE)
+        pose_t = torch.tensor(pose7[None, :], dtype=dtype, device=DEVICE)
+        q_t = torch.tensor(np.asarray(q_arm, dtype=float)[None, :self.num_arm_dof],
+                           dtype=dtype, device=DEVICE)
         with torch.no_grad():
-            z, _ = self.ik_solver.nn_model(x_t, c=c_t, rev=False)
+            z = self.ik_solver.encode(self.ik_solver.nn_model, q_t, pose_t)
         return z.squeeze(0).detach().cpu().numpy().astype(float)
 
     def SetStartFromQ(self, q_arm):
@@ -1872,9 +1911,13 @@ class IKFlowProgram:
 
     def ConfigureNetworkDtype(self):
         '''Cast the flow to the working dtype. Idempotent, so it is safe to call on a
-        solver instance shared between programs.'''
+        solver instance shared between programs.
+
+        Every learned `__init__` calls this once its chart and options are both set, so it
+        is also where the chart is checked against the options (`CheckChartOptions`).'''
         self.ik_solver.nn_model.to(self.torch_dtype)
         self.ik_solver.nn_model.eval()
+        self.CheckChartOptions()
 
     def ConfigLimits(self):
         '''`(lower, upper)` for the CONFIGURATION, which is what the joint-limit row bounds.

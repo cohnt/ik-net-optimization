@@ -1,13 +1,11 @@
 """`ClearanceEvaluator` (one batched `CalcRobotClearances` call) against the program's own row.
 
-RUNS ONLY WHERE THE BINDING EXISTS. `CollisionChecker.CalcRobotClearances` is on Drake branch
-`calc-robot-clearances`, installed temporarily at /home/tommy/opt/rlg/drake-build-crc; the
-default environment's pydrake lacks it, so there this file checks only that
-`svgd_collision_backend="clearances"` is REFUSED at options construction with the reason, prints
-SKIP and exits 0. Run it against the new install with
+RUNS ONLY WHERE THE BINDING EXISTS. `CollisionChecker.CalcRobotClearances` is in Drake master
+(#25073, 6ad25878d5, 2026-10-12) and so in the default local pydrake; a pydrake that predates it
+(the record's nightly 20260918) gets only the check that `svgd_collision_backend="clearances"` is
+REFUSED at options construction with the reason, prints SKIP and exits 0.
 
-    PYTHONPATH=/home/tommy/opt/rlg/drake-build-crc/lib/python3.12/site-packages:$PYTHONPATH \\
-        .venv/bin/python tests/test_collision_clearances.py
+    .venv/bin/python tests/test_collision_clearances.py
 
 THE PROGRAM IS THE ORACLE, as in `tests/test_collision_backend.py`: every value and gradient is
 compared with `program.collision_free_constraint_eval.Eval(InitializeAutoDiff(q))` times

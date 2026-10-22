@@ -1,0 +1,55 @@
+# Chart-family training runs: networks that are NOT IKFlow flows (branch chart-cvae).
+# One line per run: <family> <robot> <run_name> <trainer args...>
+#
+# A SIBLING of ladder_runs.txt, not rows in it, on purpose. ladder_runs.txt is read by
+# submit_ladder.sh --next and chain_ladder.sh, which submit every row as a 4-node IKFlow DDP
+# rung through submit_train.sh; a cVAE row there would be picked up as "the next untrained
+# flow rung" and launched with the flow trainer. The family column is what lets the next
+# family (LOInK, ...) join this file without touching either. gen_manifest.py's
+# _ladder_paths_match_export reads both files, so every run here must be benchmarked by a
+# stage and every chart a stage names must be exported by a row here.
+#
+# Submitted by cluster/submit_chart_train.sh (one single-GPU job per run, NOT --exclusive,
+# so two runs share a volta node); --all submits every row of this file. The run name is
+# <robot>_<label>, and the in-job export writes models/<robot>/<robot>__<label>__step620000.pkl
+# -- the path stage CVAE's items name (CVAE_RUNGS in gen_manifest.py).
+#
+# The cVAE (src/charts/cvae.py): encoder E(q, c) -> N(mu, sigma), decoder D(c, z) -> q, ELBO,
+# 6 x 512 SiLU, one config, no sweep. Two latent rungs per robot, both PRE-REGISTERED and both
+# benchmarked, final checkpoint (there is no chart selection to make):
+#   * K = the flow's width (Panda 7, iiwa 8, screw 7, soft PCS 12), so the program's
+#     decision-variable count is the record's and only the network differs;
+#   * K = the redundancy, DOF - 6 (Panda 1, iiwa 1, screw 1, soft PCS 6), the latent the
+#     self-motion actually needs.
+# Recipe matched to the flow rungs (AdamW, lr 1.5e-4, StepLR 0.9795 every 2441 steps, 620000
+# steps, batch 4096 on one GPU = the flows' 8 x 512 global batch, seed 0, the same datasets);
+# those are the trainer's defaults, so only the latent width travels here.
+#
+# THE SCREW DATASET MUST BE REBUILT FIRST (cluster/CVAE_RUNBOOK.md): the original was deleted
+# with ~/learned-ik-helix on 2026-10-02, and a rebuild is a NEW dataset, so the screw cVAEs are
+# trained on different samples than the screw flow chart they are compared against.
+
+cvae  panda        panda_cvae7          --dim_latent_space=7
+cvae  panda        panda_cvae1          --dim_latent_space=1
+cvae  iiwa14       iiwa14_cvae8         --dim_latent_space=8
+cvae  iiwa14       iiwa14_cvae1         --dim_latent_space=1
+cvae  screw7_p050  screw7_p050_cvae7    --dim_latent_space=7
+cvae  screw7_p050  screw7_p050_cvae1    --dim_latent_space=1
+cvae  soft12       soft12_cvae12        --dim_latent_space=12
+cvae  soft12       soft12_cvae6         --dim_latent_space=6
+
+# The FIXED-decoder-variance variant (Thomas, 2026-10-19), `cvaef<K>`: the textbook objective,
+# sum of squared reconstruction errors in normalised units + KL, beta = 1 (`--decoder_variance
+# fixed`; src/charts/cvae.py). The learned-variance rows above trained into averaging charts
+# (Panda sigma_q ~0.55 on joints 1-3: those joints modelled as noise) and a collapsed screw arm.
+# Everything else identical: architecture, data, recipe, steps, the same K values. Both variants
+# are kept and benchmarked (stages CVAEF / CVAEF_SVGD). Submit ONLY these eight with
+#   ONLY='_cvaef[0-9]+$' PAIRS=1 bash cluster/submit_chart_train.sh --all
+cvae  panda        panda_cvaef7         --dim_latent_space=7  --decoder_variance=fixed
+cvae  panda        panda_cvaef1         --dim_latent_space=1  --decoder_variance=fixed
+cvae  iiwa14       iiwa14_cvaef8        --dim_latent_space=8  --decoder_variance=fixed
+cvae  iiwa14       iiwa14_cvaef1        --dim_latent_space=1  --decoder_variance=fixed
+cvae  screw7_p050  screw7_p050_cvaef7   --dim_latent_space=7  --decoder_variance=fixed
+cvae  screw7_p050  screw7_p050_cvaef1   --dim_latent_space=1  --decoder_variance=fixed
+cvae  soft12       soft12_cvaef12       --dim_latent_space=12 --decoder_variance=fixed
+cvae  soft12       soft12_cvaef6        --dim_latent_space=6  --decoder_variance=fixed

@@ -84,6 +84,13 @@ screw7_p050  screw7_p050_n8   --nb_nodes=8 --dim_latent_space=7
 screw7_p025  screw7_p025_n6   --nb_nodes=6 --dim_latent_space=7
 screw7_p100  screw7_p100_n6   --nb_nodes=6 --dim_latent_space=7
 
+# The fielded rung screw7_p050_n6, the SAME rung retrained on the REBUILT dataset (2026-10-18):
+# the original screw7 datasets were deleted and rebuilt with the same generator and seed, but the
+# file is not provably the original, so the flow is retrained on it (Thomas) and the screw record's
+# learned-arm rows are re-measured with it (stages SCREWREDO*), so flow and cVAE charts see the
+# same data. Args identical to screw7_p050_n6's; exports models/screw7_p050/screw7_p050__n6r__step620000.pkl.
+screw7_p050  screw7_p050_n6r  --nb_nodes=6 --dim_latent_space=7
+
 # The GVS push-rod arm (branch gvs-actuated-arm). Pre-registered at n6 like the soft PCS
 # arm; the latent is the INPUT width, nine rod forces, on every rung -- the order ladder
 # changes the backbone's fidelity, not the problem's width. Order 0 is spec-only (no chart)

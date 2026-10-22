@@ -23,8 +23,8 @@ same constraint on a rebuilt scene, for callers holding no program.) This is bac
 **The clearances backend (`svgd_collision_backend="clearances"`, `ClearanceEvaluator`)** computes
 the SAME functional from ONE `CollisionChecker.CalcRobotClearances(Q, influence_distance)` call --
 batched, GIL-released, parallel over the checker's per-thread contexts (`Parallelism.Max()`) --
-which Thomas added on Drake branch `calc-robot-clearances`. The cluster's Drake (and this repo's
-default pydrake) lacks it, so the default stays `autodiff` and `clearances` is refused at options
+which Thomas added to Drake (#25073, in master since 2026-10-12). The record's Drake pin (nightly
+20260918) predates it, so the default stays `autodiff` and `clearances` is refused at options
 construction where the binding is missing. The aggregation replicates
 `solvers/minimum_value_constraint.cc` (`MinimumValueLowerBoundConstraint`, the class
 `MinimumDistanceLowerBoundConstraint` delegates to) in numpy float64:
@@ -414,8 +414,7 @@ def clearances_unavailable_reason():
         return "pydrake.planning does not import (%s)" % e
     if not hasattr(CollisionChecker, "CalcRobotClearances"):
         return ("the running pydrake (%s) has no CollisionChecker.CalcRobotClearances -- it "
-                "needs a Drake built from branch `calc-robot-clearances` (temporarily "
-                "/home/tommy/opt/rlg/drake-build-crc; prepend its site-packages to PYTHONPATH)"
+                "needs a Drake from master at or after #25073 (2026-10-12)"
                 % os.path.dirname(pydrake.__file__))
     return None
 
