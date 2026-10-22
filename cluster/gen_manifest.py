@@ -2633,17 +2633,37 @@ def stage_REMEASURE(variant="REMEASURE"):
         if not want:
             continue
         for it in _REMEASURE_BUILDERS[builder](only=only, solvers=",".join(want), tag=tag):
-            args = list(it["args"])
-            solver = args[args.index("--solver") + 1]
-            task = args[args.index("--task") + 1]
-            ## The builders hard-code `--config latent`; the trust-region A/B is the same
-            ## stage under `latent_rule`, which differs from `latent` in exactly one flag.
-            args[args.index("--config") + 1] = config
-            budget = _itcap_extra(solver)[1] if solver in ("ipopt", "snopt") else []
-            args += REMEASURE_GRAPH + budget + list(extra_set)
-            items.append(dict(it, args=args, order=_remeasure_order(solver, task, wsg),
-                              seconds=_remeasure_seconds(robot, task, solver, args)))
+            items.append(_remeasure_item(it, robot, wsg, config, extra_set))
     return items
+
+
+def _remeasure_item(it, robot, wsg, config="latent", extra_set=(), seconds_robot=None):
+    """A builder's item at REMEASURE's conditions: graphs, lifted budgets, its claim order."""
+    args = list(it["args"])
+    solver = args[args.index("--solver") + 1]
+    task = args[args.index("--task") + 1]
+    ## The builders hard-code `--config latent`; the trust-region A/B is the same
+    ## stage under `latent_rule`, which differs from `latent` in exactly one flag.
+    args[args.index("--config") + 1] = config
+    budget = _itcap_extra(solver)[1] if solver in ("ipopt", "snopt") else []
+    args += REMEASURE_GRAPH + budget + list(extra_set)
+    return dict(it, args=args, order=_remeasure_order(solver, task, wsg),
+                seconds=_remeasure_seconds(seconds_robot or robot, task, solver, args))
+
+
+#: Stage GVSO2 (Thomas, 2026-10-22: the o2 rung "at record conditions"). Stage GVS measured both
+#: trained GVS rungs before the scene fix and the unified settings; REMEASURE re-measured only
+#: o1 (`REMEASURE_ROBOTS`). This is stage GVS's o2 rung through REMEASURE's own transform --
+#: the o1 items with the rung and its checkpoint swapped, nothing else -- under its own tag,
+#: run under the overrun watcher at PROCS=2. Outside the record, like every GVS row. The
+#: allotment estimate borrows o1's record walls (o2 has none at these conditions).
+GVSO2_RUNG = "gvs_pushrod9_o2"
+
+
+def stage_GVSO2():
+    return [_remeasure_item(it, GVSO2_RUNG, True, seconds_robot=GVS_PRIMARY)
+            for it in _REMEASURE_BUILDERS["GVS"](only=GVSO2_RUNG, solvers=GVS_SOLVERS,
+                                                 tag="GVSO2")]
 
 
 #: Table 3 of docs/status-quo-tables.md (mean wall over ALL cells, each clamped at the 180 s
@@ -4998,6 +5018,70 @@ def stage_SEGVFIX(cell_copies=30, full_copies=2, dump_every=5):
         out.append(it)
     return out
 
+## Two items of stage PAPER that hold SNOPT cells cycling past the clock (one solve per V100, as the
+## record ran): four learned cells of the iiwa pose paired row, (9,5) (25,7) (49,1) (57,2) at
+## 803-1055 s -- the same four in REMEASURE -- and the Panda grasp native row's joint-space (50,5)
+## at 569 s.
+WATCHCHK_ITEMS = ("sc_PAPER_iiwa_n4_snopt_posetip_480_180_paired_shard1of8",
+                  "sc_PAPER_panda_n6_snopt_mugshelf_480_180_native_shard2of8")
+
+
+def stage_WATCHCHK():
+    """Validate the external overrun watcher (cluster/run_items.sh, src/benchmark.py's persistence
+    section) against the record: WATCHCHK_ITEMS re-run VERBATIM under the tag sc_WATCHCHK_...,
+    at PROCS=2 as stage PAPER ran. `scripts/check_mergechk.py --prefix WATCHCHK` then requires every
+    converged cell to reproduce exactly and every cell the original ran past the kill threshold to
+    come back `killed_overrun`, infeasible, at ~1.5x the clock.
+    """
+    base = [it for it in stage_PAPER() if it["id"] in WATCHCHK_ITEMS]
+    assert sorted(it["id"] for it in base) == sorted(WATCHCHK_ITEMS), base
+    return retag(base, "WATCHCHK")
+
+
+#: Stage OVR's sub-stages: (committed manifest, partition, PROCS, MPS) -- each the condition its
+#: original stage ran under, so a re-run shard is measured exactly as the shard it replaces.
+OVR_STAGES = {"OVR_REMEASURE": ("REMEASURE", "xeon-g6-volta", 8, 1),
+              "OVR_PAPER": ("PAPER", "xeon-g6-volta", 2, 0),
+              "OVR_ANALYTIC": ("ANALYTIC", "xeon-p8", 2, 0),
+              "OVR_ANALYTIC_CPP": ("ANALYTIC_CPP", "xeon-p8", 2, 0)}
+
+
+def _committed_items(manifest, ids=None):
+    """Items of a COMMITTED manifest, verbatim, in its claim order (`order` = line index)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = []
+    with open(os.path.join(here, f"manifest_stage{manifest}.txt")) as fh:
+        for line in fh:
+            if not line.strip() or line.startswith("#"):
+                continue
+            ident, env, script, args = line.rstrip("\n").split("|", 3)
+            if ids is None or ident in ids:
+                out.append(dict(id=ident, env=env, script=script, args=args.split(),
+                                order=len(out), seconds=0))
+    return out
+
+
+def stage_OVR(which):
+    """Re-run the record's SNOPT shards that hold a cell past the overrun watcher's threshold.
+
+    The record was measured before the watcher (2026-10-21), so a cycling SNOPT cell ran on to the
+    major limit, 0.4-2.2 h. Thomas (2026-10-21): re-run every affected SHARD whole and verbatim
+    under the watcher -- REMEASURE (the record's rows and the GVS arm), PAPER (the record's
+    seconds), and the analytic arm's ANALYTIC/ANALYTICT/ANALYTICC SNOPT rows -- and update the
+    numbers. The shards are listed in `cluster/overrun_rerun_items.txt` (written by
+    scripts/find_overrun_shards.py) and taken VERBATIM from the committed manifest each came from,
+    re-tagged sc_OVR_...; submit each sub-stage under OVR_STAGES' conditions.
+    """
+    manifest = OVR_STAGES[which][0]
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "overrun_rerun_items.txt")) as fh:
+        ids = {line.strip().split("|", 1)[1] for line in fh
+               if line.strip() and not line.startswith("#") and line.split("|", 1)[0] == manifest}
+    items = _committed_items(manifest, ids)
+    assert {it["id"] for it in items} == ids, sorted(ids - {it["id"] for it in items})
+    return retag(items, "OVR")
+
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -6221,6 +6305,40 @@ def selftest():
             args = " ".join(it["args"]).replace("sc_MERGECHK_", "sc_", 1)
             if on_disk.get(orig) != (it["env"], it["script"], args):
                 mc_fails.append(f"{it['id']} is not its committed original {orig} re-tagged")
+    with open(os.path.join(here, "manifest_stagePAPER.txt")) as fh:
+        for line in fh:
+            if line.strip() and not line.startswith("#"):
+                ident, env, script, args = line.rstrip("\n").split("|", 3)
+                on_disk[ident] = (env, script, args)
+    wc = stage_WATCHCHK()
+    if len(wc) != len(WATCHCHK_ITEMS):
+        mc_fails.append(f"WATCHCHK has {len(wc)} items, expected {len(WATCHCHK_ITEMS)}")
+    for it in wc:
+        orig = it["id"].replace("sc_WATCHCHK_", "sc_", 1)
+        args = " ".join(it["args"]).replace("sc_WATCHCHK_", "sc_", 1)
+        if orig not in WATCHCHK_ITEMS or on_disk.get(orig) != (it["env"], it["script"], args):
+            mc_fails.append(f"{it['id']} is not its committed original {orig} re-tagged")
+    for name in OVR_STAGES:
+        manifest = OVR_STAGES[name][0]
+        theirs = {it["id"]: it for it in _committed_items(manifest)}
+        for it in stage_OVR(name):
+            orig = it["id"].replace("sc_OVR_", "sc_", 1)
+            o = theirs.get(orig)
+            if (o is None or " ".join(it["args"]).replace("sc_OVR_", "sc_", 1) != " ".join(o["args"])
+                    or (it["env"], it["script"]) != (o["env"], o["script"])
+                    or "_snopt_" not in it["id"]):
+                mc_fails.append(f"{it['id']} is not a SNOPT item of {manifest} re-tagged")
+    ## GVSO2 is REMEASURE's committed o1 items with the rung swapped and nothing else.
+    theirs = {it["id"]: it for it in _committed_items("REMEASURE")}
+    o2 = stage_GVSO2()
+    if len(o2) != 64:
+        mc_fails.append(f"GVSO2 has {len(o2)} items, expected 64 (REMEASURE's o1 count)")
+    for it in o2:
+        back = lambda s: s.replace("sc_GVSO2_", "sc_REMEASURE_", 1).replace(GVSO2_RUNG, GVS_PRIMARY)
+        o = theirs.get(back(it["id"]))
+        if (o is None or back(" ".join(it["args"])) != " ".join(o["args"])
+                or (it["env"], it["script"]) != (o["env"], o["script"])):
+            mc_fails.append(f"{it['id']} is not REMEASURE's {GVS_PRIMARY} item with the rung swapped")
     seg = stage_SEGVREP()
     if len(seg) != 32 or len({it["id"] for it in seg}) != 32:
         mc_fails.append("SEGVREP must be 32 distinctly tagged copies")
@@ -7132,7 +7250,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "WATCHCHK", "OVR_REMEASURE", "OVR_PAPER", "OVR_ANALYTIC", "OVR_ANALYTIC_CPP", "GVSO2", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
                                  "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
                                  "SVGD_R3", "SVGD_R4", "SVGD_R5", "SVGD_R6", "SVGD_R8",
                                  "SVGD_R9", "SVGD_R10", "SVGD_R11", "SVGD_R12", "SVGD_R7",
@@ -7286,6 +7404,9 @@ def main():
              "MERGECHKSCREW": lambda: stage_MERGECHK("SCREW"),
              "SEGVREP": lambda: stage_SEGVREP(),
              "SEGVFIX": lambda: stage_SEGVFIX(),
+             "WATCHCHK": lambda: stage_WATCHCHK(),
+             "GVSO2": lambda: stage_GVSO2(),
+             **{name: (lambda name=name: stage_OVR(name)) for name in OVR_STAGES},
              "ITCAP": lambda: stage_ITCAP(),
              "CUDAGRAPH": lambda: stage_CUDAGRAPH(),
              "CUDAGRAPHP2": lambda: stage_CUDAGRAPH("P2"),

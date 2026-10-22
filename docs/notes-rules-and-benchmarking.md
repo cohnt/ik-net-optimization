@@ -156,8 +156,20 @@ learned arm 0-14. Three soft LADDER verdicts moved (soft PCS arm's section). Tho
 carries no verdict until it is re-measured with the iteration budget lifted (the clock never is)**;
 within a push, flag it and re-run it as a follow-up. Lifting SNOPT's has one cost:
 **SNOPT does not check its time limit on a major with zero minors**, so a cycling cell runs to the
-major limit -- 0.4-2.2 h at 1e5 -- and none has ever been scored feasible, so no verdict depends on
-it, but mean-wall columns carry the overrun and an item timeout must allow for it. **The cap is a budget for the arm that evaluates a
+major limit -- 0.4-2.2 h at 1e5 (~3 callbacks per major) -- and in the record stages none has ever
+been scored feasible, so no verdict depends on it, but the record's mean-wall columns carry the
+overrun. **Since 2026-10-21 it is bounded from outside** (`cluster/run_items.sh`'s watcher,
+`src/benchmark.py`'s persistence section; ops in `cluster/README.md`): a solve past 1.5x its clock
+is SIGKILLed, the item relaunches and resumes from its per-cell JSONL, and the cell is recorded from
+its last streamed iterate as `fail_reason="killed_overrun"`, `timed_out=True` (Thomas: the clock
+stopped it), `hit_iteration_cap=False`, with `recovered_*`. Overrun tail across all local SNOPT
+shards: ~50 cells 10-90 s past the clock, ~280 more than 300 s past; every cell >45 s past is
+infeasible except the analytic arm's iiwa pose native (59,0), which converges 643-1443 s late in
+ANALYTIC/C/T and becomes `killed_overrun` under the watcher (accepted, Thomas 2026-10-21).
+**Stage OVR (2026-10-22) re-ran under the watcher every REMEASURE / PAPER / ANALYTIC* SNOPT shard
+with a cell past 1.5x** (128 shards, folded into 38 runs; 204 cells killed): no success count or
+verdict moved anywhere; time-matched <= 0.3 points; SQP budget stops per row learned 0-10 -> 0, joint
+space 0-3 -> 0-2; the analytic (59,0) cell is now a failure on all three ladders. **The cap is a budget for the arm that evaluates a
 network, not a shared budget**: across 5/10/20/45/90/180 s every baseline is flat, with one
 exception — on iiwa grasp paired the joint-space arm is itself cap-bound below 20 s, with cells
 running 1300-1430 iterations against that arm's median of 70. That arm is not uniformly cheap; it

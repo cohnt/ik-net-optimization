@@ -1536,6 +1536,13 @@ class IKFlowProgram:
     ## for a program that never solved.
     EVAL_COUNT_KEYS = ("map_forward", "map_jacobian", "memo_hits", "callback")
 
+    ## Where `RecordIterate` also hands every iterate, or None. The benchmark harness sets it
+    ## on a watched run (`src/benchmark.py:IterateFile`) so a cell killed from OUTSIDE the
+    ## process for overrunning its clock still leaves its last point on disk. Deliberately not
+    ## `vars_file`: that path runs `VarsToQ` on every evaluation, a second network pass inside
+    ## the timed solve.
+    iterate_sink = None
+
     def ResetEvalCounts(self):
         '''Zero the cross-solver evaluation counters. Called at the top of `Solve`.
 
@@ -2455,6 +2462,8 @@ class IKFlowProgram:
         '''
         self.last_iterate = np.array(vars, dtype=float)
         self.eval_counts["callback"] += 1
+        if self.iterate_sink is not None:
+            self.iterate_sink(self.last_iterate, self.eval_counts)
         visualization_callback(vars, diagram=self.diagram, diagram_context=self.diagram_context,
                                plant=self.plant, plant_context=self.plant_context,
                                vars_to_q=self.VarsToQ, vars_file=self.options.vars_file,
