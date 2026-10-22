@@ -40,7 +40,7 @@ from pydrake.all import (AutoDiffXd, MathematicalProgram, Quaternion, RigidTrans
                          RollPitchYaw)
 
 import src.soft_arm.register  # noqa: F401  -- registers the rungs with jrl.robots
-from src.flow_loading import LoadFlowSolver
+from src.charts.loading import LoadChart, WrapChart
 from src.generic_program import IKFlowConstraints, IKFlowProgram, ProgramOptions
 from src.soft_arm import kinematics as K
 from src.soft_arm.params import GetSpec
@@ -76,9 +76,9 @@ class SoftArmIKProgram(IKFlowProgram):
                 f"drifted -- rerun src/soft_arm/generate_sdf.py")
 
         if model is not None:
-            self.ik_solver = model
+            self.ik_solver = WrapChart(model)
         elif checkpoint is not None:
-            self.ik_solver = LoadFlowSolver(self.spec.name, checkpoint)
+            self.ik_solver = LoadChart(self.spec.name, checkpoint)
         else:
             raise ValueError(
                 f"{self.spec.name} has no upstream pretrained chart to fall back on: pass "

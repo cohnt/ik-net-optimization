@@ -205,7 +205,8 @@ artifacts **expire after 45 days (~2026-11-02)**, so **move the pin to 1.58.0 th
 PR 25002** and restore the published-checksum path.
 
 **One stated exception, for the svgd rounds only (Thomas, 2026-10-11).** The batched collision row
-needs `CollisionChecker::CalcRobotClearances`, which no release carries, so a wheel built from his
+needs `CollisionChecker::CalcRobotClearances`, which the pinned nightly predates (master since #25073,
+2026-10-12), so a wheel built from his
 branch `calc-robot-clearances` (`0.0.20261011+crc.15a2c97`) lives in a SECOND cluster venv,
 `~/learned-ik/venv-crc`, selected per submission by `DRAKE_ENV=crc` (`cluster/run_items.sh`,
 `cluster/submit_bench.sh`; refused on a manifest without the clearance row and vice versa). The

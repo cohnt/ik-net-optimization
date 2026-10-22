@@ -439,6 +439,9 @@ def main():
                                         overrides=overrides, start=args.start,
                                         n_targets=args.targets, n_guesses=args.guesses,
                                         shard=args.shard, checkpoint=args.checkpoint,
+                                        # The chart actually loaded (its resolved sidecar, with `family`), so a
+                                        # run records which network it solved through, not only a path.
+                                        chart_arch=ik_solver.arch,
                                         nb_nodes=args.nb_nodes,
                                         **bm.provenance()))
     bar.close()

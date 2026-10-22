@@ -723,6 +723,12 @@ class BatchedProgram:
                 ## as one extra row of the split step's jacrev.
                 if not self.is_learned:
                     raise NotImplementedError("FlowLogDetCost on a program without a latent")
+                ## The program refuses the term for a chart without a density at
+                ## construction (`CheckChartOptions`); this is the replay's own statement.
+                if not self.program.ik_solver.has_density:
+                    raise NotImplementedError(
+                        f"FlowLogDetCost on a {self.program.ik_solver.family!r} chart, "
+                        "which has no density")
                 self._costs.append(_CostTerm(desc, "flow_logdet", reported))
             elif desc == "JointLimitPenaltyCost":
                 raise NotImplementedError("JointLimitPenaltyCost is not replayed")

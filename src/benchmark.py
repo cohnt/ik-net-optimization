@@ -568,11 +568,16 @@ def verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None):
             x[program.prog.FindDecisionVariableIndices(program.z)]))
         ## The chart's own `-log p(x | c)` (up to a constant) at the returned point, on every
         ## learned cell whatever `flow_logdet_weight` is: what the density term (R27) acts on.
-        try:
-            detail["flow_neg_log_density"] = float(program.FlowNegLogDensity(
-                x[program.prog.FindDecisionVariableIndices(program.lumped_vars)]))
-        except Exception as exc:                  # never let instrumentation kill a cell
-            detail["flow_neg_log_density_error"] = f"{type(exc).__name__}: {exc}"
+        ## Only a chart with a density has one (`has_density`, a flow); otherwise None,
+        ## decided here rather than left to the `except` below to swallow.
+        if not program.ik_solver.has_density:
+            detail["flow_neg_log_density"] = None
+        else:
+            try:
+                detail["flow_neg_log_density"] = float(program.FlowNegLogDensity(
+                    x[program.prog.FindDecisionVariableIndices(program.lumped_vars)]))
+            except Exception as exc:              # never let instrumentation kill a cell
+                detail["flow_neg_log_density_error"] = f"{type(exc).__name__}: {exc}"
 
     ok, task_detail = task_gate(program, verify_q)
     detail.update(task_detail)

@@ -18,7 +18,7 @@ from pydrake.all import (
 )
 from src.panda_analytic_ik import Analytic_IK_Panda
 from src.analytic_program import AnalyticProgramMixin
-from src.flow_loading import LoadFlowSolver
+from src.charts.loading import LoadChart, WrapChart
 
 
 #: The joint-space arm's variable bound BEFORE unification (2026-10-08): +-10 rad on every
@@ -54,19 +54,22 @@ class PandaIKProgram(IKFlowProgram):
         self.num_pos = self.plant.num_positions()
         self.num_arm_dof = 7
 
+        # `ik_solver` is a Chart (src/charts/base.py) whatever the network: a model passed in
+        # bare, or the upstream solver, is wrapped as the flow it is.
         if model is not None:
-            self.ik_solver = model
+            self.ik_solver = WrapChart(model)
         elif checkpoint is not None:
             # A locally trained chart: its architecture comes from the `.arch.json` sidecar
             # and is cross-checked against the weights. `nb_nodes` and `rnvp_clamp` change
             # the forward pass without changing any parameter shape, so a mismatch would
             # otherwise load silently.
-            self.ik_solver = LoadFlowSolver("panda", checkpoint)
+            self.ik_solver = LoadChart("panda", checkpoint)
         else:
             # The upstream pretrained chart, whose hyperparameters ikflow reads from its
             # own model_descriptions.yaml.
             model_name = "panda__full__lp191_5.25m"
-            self.ik_solver, _ = get_ik_solver(model_name)
+            solver, _ = get_ik_solver(model_name)
+            self.ik_solver = WrapChart(solver)
 
         self.options = options
         self.ConfigureNetworkDtype()

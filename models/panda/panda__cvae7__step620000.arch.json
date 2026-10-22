@@ -1,0 +1,22 @@
+{
+  "activation": "silu",
+  "depth": 6,
+  "dim_latent_space": 7,
+  "family": "cvae",
+  "hidden": 512,
+  "ndof": 7,
+  "pose_dim": 7,
+  "provenance": {
+    "global_step": 620000,
+    "source_checkpoint": "/home/gridsan/tcohn/learned-ik/results/train/panda_cvae7/checkpoints/cvae-checkpoint-step=620000.ckpt",
+    "staged_learned_ik_commit": "9396d9937b5705298687dd309ed7cefb71de7ec7"
+  },
+  "robot_name": "panda",
+  "training": {
+    "gamma": 0.9795,
+    "gradient_clip": 1.0,
+    "learning_rate": 0.00015,
+    "step_lr_every": 2441,
+    "weight_decay": 1.8e-05
+  }
+}

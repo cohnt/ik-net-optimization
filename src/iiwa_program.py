@@ -2,7 +2,8 @@ from ikflow.config import DEVICE
 import torch
 import numpy as np
 from src.utils import Mug, RepoDir
-from src.flow_loading import LEGACY_IIWA_ARCH, LoadFlowSolver
+from src.flow_loading import LEGACY_IIWA_ARCH
+from src.charts.loading import LoadChart, WrapChart
 from src.generic_program import *
 from pydrake.all import (
     MathematicalProgram,
@@ -65,11 +66,11 @@ class Iiwa14IKProgram(IKFlowProgram):
             # load silently. `nb_nodes` survives only as the fallback for a sidecar-less
             # checkpoint; where a sidecar exists it wins.
             fallback = dict(LEGACY_IIWA_ARCH, nb_nodes=nb_nodes)
-            self.ik_solver = LoadFlowSolver(
+            self.ik_solver = LoadChart(
                 "iiwa14", checkpoint if checkpoint is not None else default_ckpt,
                 fallback_arch=fallback)
         else:
-            self.ik_solver = model
+            self.ik_solver = WrapChart(model)
 
         self.options = options
         self.ConfigureNetworkDtype()

@@ -26,7 +26,8 @@ from pydrake.all import (AutoDiffXd, MathematicalProgram, Quaternion, RigidTrans
                          RollPitchYaw, RollPitchYaw_, RotationMatrix, RotationMatrix_)
 
 import src.register_robots  # noqa: F401  -- before anything resolves a robot by name
-from src.flow_loading import LEGACY_ARCH_BY_ROBOT, LoadFlowSolver
+from src.flow_loading import LEGACY_ARCH_BY_ROBOT
+from src.charts.loading import LoadChart, WrapChart
 from src.generic_program import *  # noqa: F401,F403
 from src.generic_program import (IKFlowConstraints, IKFlowProgram, ProgramOptions,
                                  regularize_jacobian)
@@ -105,11 +106,11 @@ class ScrewArmIKProgram(IKFlowProgram):
                     f"{self.spec.name} has no published chart, so --checkpoint is required. "
                     f"A missing one is not an error you would notice: it is a column of "
                     f"zeros.")
-            self.ik_solver = LoadFlowSolver(
+            self.ik_solver = LoadChart(
                 self.spec.name, checkpoint,
                 fallback_arch=LEGACY_ARCH_BY_ROBOT[self.spec.name])
         else:
-            self.ik_solver = model
+            self.ik_solver = WrapChart(model)
 
         self.options = options
         self.ConfigureNetworkDtype()
