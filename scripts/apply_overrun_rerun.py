@@ -11,9 +11,13 @@ picks it up unchanged. Every merged copy it supersedes -- in results/ or in any 
 -- is MOVED, never deleted, to results/archive_preoverrun/<same relative path>. Shards are left in
 place (no reader of merged runs reads them).
 
-Every re-run shard is first checked against its original: grid hash and cell set equal, and every
-cell the original ran past the threshold is `killed_overrun` in the re-run. The merged metadata
-records which shards were re-run (`overrun_rerun_shards`).
+Every re-run shard is first checked against its original: grid hash and cell set equal; no re-run
+cell past the threshold + 30 s (the watcher polls every 5 s) and no killed cell under it; every
+cell killed accounted for by a resume event; and no verdict changed on a cell the original stopped
+under the threshold, unless either run hit the clock. Where SNOPT stops a cycling cell depends on
+node speed, so an original overrun may end under the threshold in the re-run and a cell the
+original stopped just under it may be killed; both are counted. The merged metadata records which
+shards were re-run (`overrun_rerun_shards`).
 
     python scripts/apply_overrun_rerun.py            # dry run: what would be folded and moved
     python scripts/apply_overrun_rerun.py --apply
@@ -71,7 +75,9 @@ def main():
         if args.apply:
             return 1
 
-    by_base, bad = {}, 0
+    by_base, bad, tally = {}, 0, dict.fromkeys(
+        ("killed", "overran, now killed", "overran, now under the threshold",
+         "killed, original under the threshold"), 0)
     for orig in wanted:
         new = "sc_OVR_" + orig[3:]
         if new not in reruns:
@@ -85,19 +91,40 @@ def main():
             print(f"BAD {new}: grid or cells differ from {orig}")
             bad += 1
             continue
+        # What the watcher guarantees, and nothing stricter: where SNOPT stops a cycling cell
+        # depends on node speed, so an original overrun may end under the threshold in the
+        # re-run, and a cell the original stopped just under it may be killed now.
+        limit, problems, under = args.factor * cap, [], 0
         for arm, recs in o["records"].items():
             N = {(r["target"], r["guess"]): r for r in n["records"][arm]}
             for r in recs:
-                if (r.get("wall_time") or 0.0) > args.factor * cap:
+                m = N[(r["target"], r["guess"])]
+                w_o, w_n = r.get("wall_time") or 0.0, m.get("wall_time") or 0.0
+                is_killed = m.get("fail_reason") == "killed_overrun"
+                killed += is_killed
+                if w_n > limit + 30.0 or (is_killed and w_n < limit):
+                    problems.append(f"{arm} {r['target'],r['guess']} at {w_n:.0f} s")
+                if w_o > limit:
                     over += 1
-                    killed += N[(r["target"], r["guess"])].get("fail_reason") == "killed_overrun"
-        if killed != over:
-            print(f"BAD {new}: {killed} of the original's {over} overrun cell(s) came back killed")
+                    under += not is_killed
+                elif bool(r.get("feasible")) != bool(m.get("feasible")) and not (
+                        r.get("timed_out") or m.get("timed_out")):
+                    problems.append(f"{arm} {r['target'],r['guess']} verdict changed under the clock")
+        events = sum(1 for e in n["metadata"].get("resume") or [] if e.get("killed_cell"))
+        if killed != events:
+            problems.append(f"{killed} killed cell(s) but {events} resume event(s) naming one")
+        if problems:
+            print(f"BAD {new}: " + "; ".join(problems))
             bad += 1
             continue
+        tally["killed"] += killed
+        tally["overran, now killed"] += over - under
+        tally["overran, now under the threshold"] += under
+        tally["killed, original under the threshold"] += killed - (over - under)
         base, k, count = SHARD_RE.match(orig).groups()
         by_base.setdefault(base, {"count": int(count), "rerun": {}})["rerun"][int(k)] = \
             (reruns[new][-1], n)
+    print("cells: " + ", ".join(f"{v} {k}" for k, v in tally.items()))
     if bad:
         print(f"{bad} re-run shard(s) failed their check; nothing applied")
         return 1
