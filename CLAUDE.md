@@ -391,16 +391,18 @@ measure and report as a stated deviation, not adopt. **Damping an exact Jacobian
 inconsistent**; damping belongs on the Newton step, which Drake's IPOPT does not expose. **Suppressing
 the runaway does not buy success.**
 
-**Chart ablation, in progress (branch `chart-cvae`, 2026-10-18).** The program reaches its
-network only through `src/charts/` (`LoadChart`; `FlowChart` is bit-identical to the old calls).
-Rung one: a standard cVAE decoder as the chart (`src/charts/cvae.py`), K = flow width and K =
-redundancy, paired start = encoder mean (residual beyond the correction box is
-`unrepresentable_start`), IPOPT + AL-SVGD, learned arm only against the record. The screw dataset was
-rebuilt and the flow retrained on it as `n6r`: **bit-identical to `n6`**, so the rebuild reproduced
-the original data exactly and the record stands. Standard (learned-variance) cVAE: rigid-arm charts
-unusable (median FK error 250-750 mm), paired representability 0%, iiwa K=8 diverged twice
-(recorded, not benchmarked); a fixed-variance textbook variant `cvaef<K>` is being measured too.
-LOInK deferred. Ops `cluster/CVAE_RUNBOOK.md`.
+**Chart ablation, rung one CLOSED (branch `chart-cvae`, 2026-10-21; awaiting Thomas's merge).** The
+program reaches its network only through `src/charts/` (`LoadChart`; `FlowChart` bit-identical to the
+old calls), built so LOInK (the next push, its own campaign) plugs in. Rung: a standard cVAE decoder
+as the chart, learned and fixed (textbook) decoder variance x K = flow width / redundancy, IPOPT +
+AL-SVGD. **Verdict: a loss.** Every rigid native row loses to the flow and to joint space under both
+solvers (one IPOPT tie with joint space); screw 0 on every probe; paired start 0/480 everywhere
+(encoder round trip 0.75-2.8 rad off); iiwa K=8 learned variance diverged twice (recorded, not
+benchmarked). Soft PCS ties the flow, with cheaper cells, only because the decoder returns a low-strain
+configuration. **Mechanism: every chart's latent is collapsed or nearly so** (active-unit screen) --
+the decoder returns E[q | pose], unusable where the IK fibre is disconnected branches. The screw
+dataset rebuild was bit-identical (`n6r` = `n6`). Long form `docs/notes-chart.md`; ops
+`cluster/CVAE_RUNBOOK.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
 
