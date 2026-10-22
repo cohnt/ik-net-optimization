@@ -2633,17 +2633,37 @@ def stage_REMEASURE(variant="REMEASURE"):
         if not want:
             continue
         for it in _REMEASURE_BUILDERS[builder](only=only, solvers=",".join(want), tag=tag):
-            args = list(it["args"])
-            solver = args[args.index("--solver") + 1]
-            task = args[args.index("--task") + 1]
-            ## The builders hard-code `--config latent`; the trust-region A/B is the same
-            ## stage under `latent_rule`, which differs from `latent` in exactly one flag.
-            args[args.index("--config") + 1] = config
-            budget = _itcap_extra(solver)[1] if solver in ("ipopt", "snopt") else []
-            args += REMEASURE_GRAPH + budget + list(extra_set)
-            items.append(dict(it, args=args, order=_remeasure_order(solver, task, wsg),
-                              seconds=_remeasure_seconds(robot, task, solver, args)))
+            items.append(_remeasure_item(it, robot, wsg, config, extra_set))
     return items
+
+
+def _remeasure_item(it, robot, wsg, config="latent", extra_set=(), seconds_robot=None):
+    """A builder's item at REMEASURE's conditions: graphs, lifted budgets, its claim order."""
+    args = list(it["args"])
+    solver = args[args.index("--solver") + 1]
+    task = args[args.index("--task") + 1]
+    ## The builders hard-code `--config latent`; the trust-region A/B is the same
+    ## stage under `latent_rule`, which differs from `latent` in exactly one flag.
+    args[args.index("--config") + 1] = config
+    budget = _itcap_extra(solver)[1] if solver in ("ipopt", "snopt") else []
+    args += REMEASURE_GRAPH + budget + list(extra_set)
+    return dict(it, args=args, order=_remeasure_order(solver, task, wsg),
+                seconds=_remeasure_seconds(seconds_robot or robot, task, solver, args))
+
+
+#: Stage GVSO2 (Thomas, 2026-10-22: the o2 rung "at record conditions"). Stage GVS measured both
+#: trained GVS rungs before the scene fix and the unified settings; REMEASURE re-measured only
+#: o1 (`REMEASURE_ROBOTS`). This is stage GVS's o2 rung through REMEASURE's own transform --
+#: the o1 items with the rung and its checkpoint swapped, nothing else -- under its own tag,
+#: run under the overrun watcher at PROCS=2. Outside the record, like every GVS row. The
+#: allotment estimate borrows o1's record walls (o2 has none at these conditions).
+GVSO2_RUNG = "gvs_pushrod9_o2"
+
+
+def stage_GVSO2():
+    return [_remeasure_item(it, GVSO2_RUNG, True, seconds_robot=GVS_PRIMARY)
+            for it in _REMEASURE_BUILDERS["GVS"](only=GVSO2_RUNG, solvers=GVS_SOLVERS,
+                                                 tag="GVSO2")]
 
 
 #: Table 3 of docs/status-quo-tables.md (mean wall over ALL cells, each clamped at the 180 s
@@ -6308,6 +6328,17 @@ def selftest():
                     or (it["env"], it["script"]) != (o["env"], o["script"])
                     or "_snopt_" not in it["id"]):
                 mc_fails.append(f"{it['id']} is not a SNOPT item of {manifest} re-tagged")
+    ## GVSO2 is REMEASURE's committed o1 items with the rung swapped and nothing else.
+    theirs = {it["id"]: it for it in _committed_items("REMEASURE")}
+    o2 = stage_GVSO2()
+    if len(o2) != 64:
+        mc_fails.append(f"GVSO2 has {len(o2)} items, expected 64 (REMEASURE's o1 count)")
+    for it in o2:
+        back = lambda s: s.replace("sc_GVSO2_", "sc_REMEASURE_", 1).replace(GVSO2_RUNG, GVS_PRIMARY)
+        o = theirs.get(back(it["id"]))
+        if (o is None or back(" ".join(it["args"])) != " ".join(o["args"])
+                or (it["env"], it["script"]) != (o["env"], o["script"])):
+            mc_fails.append(f"{it['id']} is not REMEASURE's {GVS_PRIMARY} item with the rung swapped")
     seg = stage_SEGVREP()
     if len(seg) != 32 or len({it["id"] for it in seg}) != 32:
         mc_fails.append("SEGVREP must be 32 distinctly tagged copies")
@@ -7219,7 +7250,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "WATCHCHK", "OVR_REMEASURE", "OVR_PAPER", "OVR_ANALYTIC", "OVR_ANALYTIC_CPP", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "WATCHCHK", "OVR_REMEASURE", "OVR_PAPER", "OVR_ANALYTIC", "OVR_ANALYTIC_CPP", "GVSO2", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
                                  "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
                                  "SVGD_R3", "SVGD_R4", "SVGD_R5", "SVGD_R6", "SVGD_R8",
                                  "SVGD_R9", "SVGD_R10", "SVGD_R11", "SVGD_R12", "SVGD_R7",
@@ -7374,6 +7405,7 @@ def main():
              "SEGVREP": lambda: stage_SEGVREP(),
              "SEGVFIX": lambda: stage_SEGVFIX(),
              "WATCHCHK": lambda: stage_WATCHCHK(),
+             "GVSO2": lambda: stage_GVSO2(),
              **{name: (lambda name=name: stage_OVR(name)) for name in OVR_STAGES},
              "ITCAP": lambda: stage_ITCAP(),
              "CUDAGRAPH": lambda: stage_CUDAGRAPH(),
