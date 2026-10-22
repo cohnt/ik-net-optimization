@@ -4998,6 +4998,26 @@ def stage_SEGVFIX(cell_copies=30, full_copies=2, dump_every=5):
         out.append(it)
     return out
 
+## Two items of stage PAPER that hold SNOPT cells cycling past the clock (one solve per V100, as the
+## record ran): four learned cells of the iiwa pose paired row, (9,5) (25,7) (49,1) (57,2) at
+## 803-1055 s -- the same four in REMEASURE -- and the Panda grasp native row's joint-space (50,5)
+## at 569 s.
+WATCHCHK_ITEMS = ("sc_PAPER_iiwa_n4_snopt_posetip_480_180_paired_shard1of8",
+                  "sc_PAPER_panda_n6_snopt_mugshelf_480_180_native_shard2of8")
+
+
+def stage_WATCHCHK():
+    """Validate the external overrun watcher (cluster/run_items.sh, src/benchmark.py's persistence
+    section) against the record: WATCHCHK_ITEMS re-run VERBATIM under the tag sc_WATCHCHK_...,
+    at PROCS=2 as stage PAPER ran. `scripts/check_mergechk.py --prefix WATCHCHK` then requires every
+    converged cell to reproduce exactly and every cell the original ran past the kill threshold to
+    come back `killed_overrun`, infeasible, at ~1.5x the clock.
+    """
+    base = [it for it in stage_PAPER() if it["id"] in WATCHCHK_ITEMS]
+    assert sorted(it["id"] for it in base) == sorted(WATCHCHK_ITEMS), base
+    return retag(base, "WATCHCHK")
+
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -6221,6 +6241,19 @@ def selftest():
             args = " ".join(it["args"]).replace("sc_MERGECHK_", "sc_", 1)
             if on_disk.get(orig) != (it["env"], it["script"], args):
                 mc_fails.append(f"{it['id']} is not its committed original {orig} re-tagged")
+    with open(os.path.join(here, "manifest_stagePAPER.txt")) as fh:
+        for line in fh:
+            if line.strip() and not line.startswith("#"):
+                ident, env, script, args = line.rstrip("\n").split("|", 3)
+                on_disk[ident] = (env, script, args)
+    wc = stage_WATCHCHK()
+    if len(wc) != len(WATCHCHK_ITEMS):
+        mc_fails.append(f"WATCHCHK has {len(wc)} items, expected {len(WATCHCHK_ITEMS)}")
+    for it in wc:
+        orig = it["id"].replace("sc_WATCHCHK_", "sc_", 1)
+        args = " ".join(it["args"]).replace("sc_WATCHCHK_", "sc_", 1)
+        if orig not in WATCHCHK_ITEMS or on_disk.get(orig) != (it["env"], it["script"], args):
+            mc_fails.append(f"{it['id']} is not its committed original {orig} re-tagged")
     seg = stage_SEGVREP()
     if len(seg) != 32 or len({it["id"] for it in seg}) != 32:
         mc_fails.append("SEGVREP must be 32 distinctly tagged copies")
@@ -7132,7 +7165,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "WATCHCHK", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
                                  "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
                                  "SVGD_R3", "SVGD_R4", "SVGD_R5", "SVGD_R6", "SVGD_R8",
                                  "SVGD_R9", "SVGD_R10", "SVGD_R11", "SVGD_R12", "SVGD_R7",
@@ -7286,6 +7319,7 @@ def main():
              "MERGECHKSCREW": lambda: stage_MERGECHK("SCREW"),
              "SEGVREP": lambda: stage_SEGVREP(),
              "SEGVFIX": lambda: stage_SEGVFIX(),
+             "WATCHCHK": lambda: stage_WATCHCHK(),
              "ITCAP": lambda: stage_ITCAP(),
              "CUDAGRAPH": lambda: stage_CUDAGRAPH(),
              "CUDAGRAPHP2": lambda: stage_CUDAGRAPH("P2"),
