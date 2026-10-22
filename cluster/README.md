@@ -441,7 +441,9 @@ from outside:
   newest iterate to `iterate.bin` (one `pwrite` per evaluation, crc-checked).
 - `Watch` polls the heartbeat every `WATCH_POLL` (5) s. A solve past `OVERRUN_FACTOR x
   max_wall_time` (270 s at 180 s) gets the `killed` marker, a line in the worker log and in
-  `$STATE_DIR/kills.log`, then `SIGKILL`.
+  `$STATE_DIR/kills.log`, then `SIGKILL`. Every `collect_results.sh` run (or `--kills` alone)
+  fetches the kill logs whole into `results/_cluster_kills/<SC_ROOT>/<manifest>/kills.log`;
+  stage OVR's four log 204 kills, 0 withdrawn, one per resume event in the records.
 - The item is relaunched (each launch gets what is left of `ITEM_TIMEOUT`, at most `MAX_OVERRUNS`
   (16) relaunches). It resumes after the last recorded cell and records the killed one from its
   last iterate: `fail_reason="killed_overrun"`, `timed_out=True` (ruled 2026-10-21),
