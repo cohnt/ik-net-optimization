@@ -9,6 +9,16 @@ rules, which override anything here.
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
+## STATE AS OF 2026-10-21 21:10 -- CAMPAIGN COMPLETE; NOTHING RUNNING
+
+CVAEEXT_SVGD finished 20:38 (jobs 5976685-88 COMPLETED, 336/336); all 14 rows merged, promoted and in
+`docs/chart-ablation-tables.md` (e25bfff). Every stage of this campaign is merged; no cVAE job is
+queued. Verdict and mechanism: `docs/notes-chart.md` ("The cVAE chart ablation: verdict"). Cleanup
+done: the cluster staging tarballs (`~/cvae_sums.tgz`, `~/cvaeext{1,2}.tgz`, `~/cvaesvgd{1,2}.tgz`,
+pure copies of the shard summaries still under `~/learned-ik/results/`) removed; the local staging
+dirs (each merged run checked byte-identical to its promoted copy) trashed with `gio trash`.
+Remaining: Thomas's review and merge of `chart-cvae`. The next ablation (LOInK) is its own campaign.
+
 ## STATE AS OF 2026-10-20 21:40 -- CVAEEXT DONE AND MERGED; CVAEEXT_SVGD RUNNING
 
 CVAEEXT finished 20:43 (jobs 5976681-84 COMPLETED, 112/112); all 14 rows merged, promoted and in

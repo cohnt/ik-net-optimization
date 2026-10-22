@@ -162,6 +162,47 @@ Measured and refuted; the verdict and the per-cell instability finding are under
 axis above, the evidence in `docs/closed-axes.md`.
 
 
+## The cVAE chart ablation: verdict (branch `chart-cvae`, closed 2026-10-21)
+
+The record's learned formulation with the flow chart replaced by a standard conditional VAE decoder
+`q = D(c, z)`, nothing else changed. Two objectives (learned decoder variance `cvae<K>`; fixed
+variance, the textbook MSE + KL, `cvaef<K>`) x two latent widths (K = the flow's width; k = the
+redundancy), IPOPT and AL-SVGD (pin V4), 480 cells, record conditions. Tables
+`docs/chart-ablation-tables.md`; ops `cluster/CVAE_RUNBOOK.md`.
+
+**Rigid arms: a loss on every row, under both solvers.** Native start, success of 480 (flow 480 on
+every row under both solvers except IPOPT Panda pose 458 / iiwa pose 462); columns cVAE-K / cVAE-k /
+cVAEf-K / cVAEf-k:
+
+| row | IPOPT | AL-SVGD |
+| --- | --- | --- |
+| Panda grasp | 353 / 228 / 251 / 146 | 350 / 245 / 196 / 154 |
+| Panda pose | 58 / 44 / 8 / 6 | 179 / 117 / 51 / 41 |
+| iiwa grasp | diverged / 415 / 465 / 343 | diverged / 432 / 444 / 318 |
+| iiwa pose | diverged / 2 / 22 / 7 | diverged / 70 / 277 / 213 |
+
+Every cVAE row loses to the flow (McNemar p <= 6e-5) and to joint space, except IPOPT iiwa grasp
+cVAEf-K, level with joint space (26 v 14, p = 0.08). No row is budget-bound. Under IPOPT the
+learned-variance rows fail by runaway (next section); under AL-SVGD (runaways resampled) nearly
+every failure is a cell that never reached a feasible point inside the clock. AL-SVGD lifts pose
+(iiwa fixed variance 7-22 -> 213-277) but reaches the ceiling nowhere. Cost on shared cells
+(median cVAE / median flow) is mixed -- 0.67-0.98 on IPOPT Panda rows and iiwa grasp, 1.04-1.98 on
+AL-SVGD rows except Panda fixed variance (0.85-0.93) -- and is taken over the subset of cells the
+cVAE solved, so it carries no verdict where success is this far below the flow's. AL-SVGD wall is
+1.4-37x the flow's. **Screw**: 0/60 on every native probe row, both solvers
+(not extended). **Paired start**: 0/480 on every row of every robot (soft PCS learned variance 1-2)
+-- the encoder round trip lands 0.75-2.8 rad from the start, far outside the +-0.1 correction box.
+
+**Soft PCS arm**: success ties the flow on every native row, both solvers, and the per-cell cost is
+lower (section below) -- because the latent is collapsed and the decoder returns a low-strain
+configuration, not because the chart is better.
+
+**Mechanism**: every chart's latent is collapsed or nearly so (last section); a standard cVAE
+decoder trained on these datasets does not represent the self-motion manifold, which is the property
+the formulation needs. Reading: the simplest network that nominally represents self-motion does not
+do so once trained, so it is not a usable chart; which property of the flow (exact inverse,
+bijectivity, the likelihood objective) is responsible is not separated by this rung.
+
 ## The cVAE chart's runaways (chart ablation, 2026-10-20)
 
 The learned-variance cVAE rows fail by the same signature as the flow: on the six full IPOPT native
@@ -195,7 +236,7 @@ median per-cell ratio cVAE / flow, 95% bootstrap CI over targets):
 
 | | IPOPT grasp | IPOPT pose | AL-SVGD grasp | AL-SVGD pose |
 | --- | --- | --- | --- | --- |
-| learned variance (K 12 / 6) | 1.59 / 1.53 (dearer) | 0.81 / 0.82 | 0.66 / 0.70 | 0.56 / 0.61 |
+| learned variance (K 12 / 6) | 1.59 / 1.53 (costlier) | 0.81 / 0.82 | 0.66 / 0.70 | 0.56 / 0.61 |
 | fixed variance (K 12 / 6) | 0.94 / 0.96 (CI spans 1: tie) | 0.53 / 0.52 | 0.56 / 0.53 | 0.50 / 0.51 |
 
 **The fixed-variance decoder returns one configuration per target whatever the start**: the spread of
