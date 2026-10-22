@@ -123,13 +123,13 @@ Pair cells: `cVAE-only / other-only, p` on the discordant cells (exact two-sided
 
 | row | flow | cVAE-K | cVAE-k | cVAEf-K | cVAEf-k | JS | K v flow | K v JS | k v flow | k v JS | fK v flow | fK v JS | fk v flow | fk v JS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp native | 480 | 350 | 245 | 24/60 | 154 | 480 | 0 / 130, p = 1.5e-39 | 0 / 130, p = 1.5e-39 | 0 / 235, p = 3.6e-71 | 0 / 235, p = 3.6e-71 | 0 / 36, p = 2.9e-11 | 0 / 36, p = 2.9e-11 | 0 / 326, p = 1.5e-98 | 0 / 326, p = 1.5e-98 |
+| Panda grasp native | 480 | 350 | 245 | 196 | 154 | 480 | 0 / 130, p = 1.5e-39 | 0 / 130, p = 1.5e-39 | 0 / 235, p = 3.6e-71 | 0 / 235, p = 3.6e-71 | 0 / 284, p = 6.4e-86 | 0 / 284, p = 6.4e-86 | 0 / 326, p = 1.5e-98 | 0 / 326, p = 1.5e-98 |
 | Panda grasp paired | 480 | 0 | 0 | 0 | 0 | 480 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 |
-| Panda pose native | 480 | 179 | 117 | 8/60 | 6/60 | 480 | 0 / 301, p = 4.9e-91 | 0 / 301, p = 4.9e-91 | 0 / 363, p = 1.1e-109 | 0 / 363, p = 1.1e-109 | 0 / 52, p = 4.4e-16 | 0 / 52, p = 4.4e-16 | 0 / 54, p = 1.1e-16 | 0 / 54, p = 1.1e-16 |
+| Panda pose native | 480 | 179 | 117 | 51 | 41 | 480 | 0 / 301, p = 4.9e-91 | 0 / 301, p = 4.9e-91 | 0 / 363, p = 1.1e-109 | 0 / 363, p = 1.1e-109 | 0 / 429, p = 1.4e-129 | 0 / 429, p = 1.4e-129 | 0 / 439, p = 1.4e-132 | 0 / 439, p = 1.4e-132 |
 | Panda pose paired | 480 | 0 | 0 | 0 | 0 | 480 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 |
 | iiwa grasp native | 480 | diverged (not benchmarked) | 432 | 444 | 318 | 480 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 48, p = 7.1e-15 | 0 / 48, p = 7.1e-15 | 0 / 36, p = 2.9e-11 | 0 / 36, p = 2.9e-11 | 0 / 162, p = 3.4e-49 | 0 / 162, p = 3.4e-49 |
 | iiwa grasp paired | 480 | diverged (not benchmarked) | 0 | 0 | 0 | 480 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 |
-| iiwa pose native | 480 | diverged (not benchmarked) | 70 | 36/60 | 28/60 | 480 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 410, p = 7.6e-124 | 0 / 410, p = 7.6e-124 | 0 / 24, p = 1.2e-07 | 0 / 24, p = 1.2e-07 | 0 / 32, p = 4.7e-10 | 0 / 32, p = 4.7e-10 |
+| iiwa pose native | 480 | diverged (not benchmarked) | 70 | 277 | 213 | 480 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 410, p = 7.6e-124 | 0 / 410, p = 7.6e-124 | 0 / 203, p = 1.6e-61 | 0 / 203, p = 1.6e-61 | 0 / 267, p = 8.4e-81 | 0 / 267, p = 8.4e-81 |
 | iiwa pose paired | 480 | diverged (not benchmarked) | 0 | 0 | 0 | 480 | diverged (not benchmarked) | diverged (not benchmarked) | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 | 0 / 480, p = 6.4e-145 |
 | screw grasp native | 480 | 0/60 | 0/60 | 0/60 | 0/60 | 463 | 0 / 60, p = 1.7e-18 | 0 / 57, p = 1.4e-17 | 0 / 60, p = 1.7e-18 | 0 / 57, p = 1.4e-17 | 0 / 60, p = 1.7e-18 | 0 / 57, p = 1.4e-17 | 0 / 60, p = 1.7e-18 | 0 / 57, p = 1.4e-17 |
 | screw grasp paired | 480 | 0 | 0 | 0 | 0 | 464 | 0 / 480, p = 6.4e-145 | 0 / 464, p = 4.2e-140 | 0 / 480, p = 6.4e-145 | 0 / 464, p = 4.2e-140 | 0 / 480, p = 6.4e-145 | 0 / 464, p = 4.2e-140 | 0 / 480, p = 6.4e-145 | 0 / 464, p = 4.2e-140 |
@@ -148,13 +148,13 @@ N/A by construction: AL-SVGD counts outer steps (K = 10 inner steps each), not m
 
 | row | flow | cVAE-K | cVAE-k | cVAEf-K | cVAEf-k | JS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Panda grasp native | 1.22 | 2.18 | 1.73 | 6.86 | 21.37 | 0.91 |
+| Panda grasp native | 1.22 | 2.18 | 1.73 | 9.06 | 21.37 | 0.91 |
 | Panda grasp paired | 1.33 | -- | -- | -- | -- | 0.91 |
-| Panda pose native | 0.68 | 4.39 | 3.31 | 29.36 | 1.45 | 0.64 |
+| Panda pose native | 0.68 | 4.39 | 3.31 | 2.02 | 1.41 | 0.64 |
 | Panda pose paired | 0.68 | -- | -- | -- | -- | 0.64 |
 | iiwa grasp native | 0.65 | diverged (not benchmarked) | 1.07 | 3.09 | 24.16 | 1.20 |
 | iiwa grasp paired | 0.63 | diverged (not benchmarked) | -- | -- | -- | 1.18 |
-| iiwa pose native | 0.66 | diverged (not benchmarked) | 2.22 | 11.68 | 23.42 | 0.67 |
+| iiwa pose native | 0.66 | diverged (not benchmarked) | 2.22 | 8.97 | 18.94 | 0.67 |
 | iiwa pose paired | 0.62 | diverged (not benchmarked) | -- | -- | -- | 0.70 |
 | screw grasp native | 0.88 | -- | -- | -- | -- | 1.16 |
 | screw grasp paired | 0.87 | -- | -- | -- | -- | 1.12 |
@@ -171,13 +171,13 @@ N/A by construction: AL-SVGD counts outer steps (K = 10 inner steps each), not m
 
 | row | K v flow | K v JS | k v flow | k v JS | fK v flow | fK v JS | fk v flow | fk v JS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp native | 5.221 / 3.297 (350) | 5.221 / 3.179 (350) | 4.640 / 3.164 (245) | 4.640 / 2.932 (245) | 3.089 / 2.925 (24) | 3.089 / 2.714 (24) | 2.669 / 3.098 (154) | 2.669 / 2.673 (154) |
+| Panda grasp native | 5.221 / 3.297 (350) | 5.221 / 3.179 (350) | 4.640 / 3.164 (245) | 4.640 / 2.932 (245) | 2.641 / 3.108 (196) | 2.641 / 2.880 (196) | 2.669 / 3.098 (154) | 2.669 / 2.673 (154) |
 | Panda grasp paired | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
-| Panda pose native | 4.610 / 4.192 (179) | 4.610 / 4.057 (179) | 4.231 / 4.068 (117) | 4.231 / 4.011 (117) | -- / -- (8) | -- / -- (8) | -- / -- (6) | -- / -- (6) |
+| Panda pose native | 4.610 / 4.192 (179) | 4.610 / 4.057 (179) | 4.231 / 4.068 (117) | 4.231 / 4.011 (117) | 3.743 / 4.035 (51) | 3.743 / 3.711 (51) | 3.775 / 4.042 (41) | 3.775 / 3.583 (41) |
 | Panda pose paired | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
 | iiwa grasp native | diverged (not benchmarked) | diverged (not benchmarked) | 5.852 / 3.517 (432) | 5.852 / 3.913 (432) | 6.018 / 3.512 (444) | 6.018 / 4.002 (444) | 5.702 / 3.523 (318) | 5.702 / 3.944 (318) |
 | iiwa grasp paired | diverged (not benchmarked) | diverged (not benchmarked) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
-| iiwa pose native | diverged (not benchmarked) | diverged (not benchmarked) | 5.512 / 3.280 (70) | 5.512 / 2.196 (70) | 8.307 / 3.955 (36) | 8.307 / 3.551 (36) | 7.477 / 3.925 (28) | 7.477 / 3.505 (28) |
+| iiwa pose native | diverged (not benchmarked) | diverged (not benchmarked) | 5.512 / 3.280 (70) | 5.512 / 2.196 (70) | 8.130 / 4.194 (277) | 8.130 / 3.839 (277) | 8.085 / 4.076 (213) | 8.085 / 4.211 (213) |
 | iiwa pose paired | diverged (not benchmarked) | diverged (not benchmarked) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
 | screw grasp native | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
 | screw grasp paired | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) | -- / -- (0) |
@@ -194,13 +194,13 @@ N/A by construction: AL-SVGD counts outer steps (K = 10 inner steps each), not m
 
 | row | flow unrep / clock / budget / run | cVAE-K | cVAE-k | cVAEf-K | cVAEf-k | JS clock / budget |
 | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp native | 0 / 0 / 0 / 0 | 0 / 131 / 0 / 0 | 0 / 239 / 0 / 0 | 0 / 36 / 0 / 0 | 0 / 340 / 0 / 0 | 0 / 0 |
+| Panda grasp native | 0 / 0 / 0 / 0 | 0 / 131 / 0 / 0 | 0 / 239 / 0 / 0 | 0 / 285 / 0 / 0 | 0 / 340 / 0 / 0 | 0 / 0 |
 | Panda grasp paired | 0 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 479 / 1 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 0 / 0 |
-| Panda pose native | 0 / 0 / 0 / 0 | 0 / 309 / 0 / 0 | 0 / 363 / 0 / 0 | 0 / 52 / 0 / 0 | 0 / 54 / 0 / 0 | 0 / 0 |
+| Panda pose native | 0 / 0 / 0 / 0 | 0 / 309 / 0 / 0 | 0 / 363 / 0 / 0 | 0 / 429 / 0 / 0 | 0 / 439 / 0 / 0 | 0 / 0 |
 | Panda pose paired | 0 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 0 / 0 |
 | iiwa grasp native | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 0 / 49 / 0 / 0 | 0 / 39 / 0 / 0 | 0 / 192 / 0 / 0 | 0 / 0 |
 | iiwa grasp paired | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 0 / 0 |
-| iiwa pose native | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 0 / 410 / 0 / 0 | 0 / 24 / 0 / 0 | 0 / 34 / 0 / 0 | 0 / 0 |
+| iiwa pose native | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 0 / 410 / 0 / 0 | 0 / 203 / 0 / 0 | 0 / 278 / 0 / 0 | 0 / 0 |
 | iiwa pose paired | 0 / 0 / 0 / 0 | diverged (not benchmarked) | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 0 / 0 |
 | screw grasp native | 0 / 0 / 0 / 0 | 0 / 60 / 0 / 0 | 0 / 60 / 0 / 0 | 0 / 60 / 0 / 0 | 0 / 60 / 0 / 0 | 17 / 0 |
 | screw grasp paired | 0 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 480 / 0 / 0 / 0 | 16 / 0 |
