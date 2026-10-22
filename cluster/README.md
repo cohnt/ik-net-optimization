@@ -458,8 +458,16 @@ from outside:
   except the analytic arm's iiwa pose native (59,0), which converged 643-1443 s late in stages
   ANALYTIC/C/T. Under the watcher it is `killed_overrun` (accepted, Thomas 2026-10-21). At a clock
   much below 180 s, 1.5x is tighter than a legitimate overrun (up to ~90 s): raise `OVERRUN_FACTOR`.
-- Validation: stage `WATCHCHK` (`gen_manifest.py`), two stage-PAPER items re-run verbatim,
-  read with `scripts/check_mergechk.py --prefix WATCHCHK --overrun-factor 1.5`.
+- Validation, stage `WATCHCHK` (2026-10-22, job 5999354, PROCS=2, 50 min): PAPER's iiwa pose
+  paired shard 1 and Panda grasp native shard 2 re-run verbatim. `scripts/check_mergechk.py
+  --prefix WATCHCHK --overrun-factor 1.5` PASSED: every converged cell identical; the five cells
+  the originals ran 569-1055 s came back `killed_overrun` at 271-276 s, infeasible as before
+  (recovered_feasible False on all five); 8 clock-bound cells differ (allowed).
+- Stage `OVR` (2026-10-22): every record SNOPT shard with a cell past 1.5x the clock re-run whole
+  under the watcher (`scripts/find_overrun_shards.py`, 128 shards: REMEASURE 39 incl. 5 GVS at
+  PROCS=8 MPS=1, PAPER 34 at PROCS=2, ANALYTIC 37 and ANALYTIC_CPP 18 on xeon-p8 at PROCS=2), folded
+  into its runs by `scripts/apply_overrun_rerun.py` (originals moved to
+  `results/archive_preoverrun/`).
 
 ## How work is claimed, and how to recover
 
