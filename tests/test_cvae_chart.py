@@ -251,7 +251,9 @@ def test_batched_dataloaders(robot_name="iiwa14"):
     data = CVAEDataset(robot_name, 4096, 1000, [DATASET_TAG_NON_SELF_COLLIDING])
     q, pose = next(iter(data.train_dataloader()))
     assert q.shape == (4096, data._samples_tr.shape[1]) and pose.shape == (4096, 7)
-    assert q.device.type == "cpu"
+    ## Batched indexing moves nothing: a batch is on the device the dataset was saved from
+    ## (the fork loads without map_location; the laptop's iiwa14 tensors are CUDA).
+    assert q.device == data._samples_tr.device and pose.device == data._endpoints_tr.device
     ## Each batch row must still be a (sample, its own pose) pair after batched indexing.
     rows = (data._samples_tr[:, None, :] == q[None, :8, :]).all(dim=2).nonzero()
     assert torch.equal(data._endpoints_tr[rows[:, 0]], pose[rows[:, 1]])
