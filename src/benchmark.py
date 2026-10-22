@@ -900,7 +900,9 @@ class CellLog:
     change). A crash or a kill then loses the cell in flight, not the shard. With `resume`, an
     existing file is loaded -- a header that differs from this run's raises, and a torn final
     line (a kill mid-write) is cut off -- and `records[(arm, ti, gi)]` holds what it recorded.
-    Without `resume` the file is started afresh, as the summary always was.
+    Without `resume` the file is started afresh, as the summary always was. Once the final
+    summary is written the file is removed (`discard`): `summary.json` holds the same records,
+    and a result directory keeps the file count it had (cluster/README.md, the file-count policy).
     """
 
     def __init__(self, path, header, resume):
@@ -909,6 +911,9 @@ class CellLog:
         self.metadata = {}
         self._written_metadata = None
         loaded = resume and os.path.exists(path) and os.path.getsize(path) > 0
+        ## True when this process continues a run an earlier one started: only then can a kill
+        ## marker in the watch directory belong to this run.
+        self.loaded = bool(loaded)
         if loaded:
             self._load(header)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -962,6 +967,13 @@ class CellLog:
 
     def close(self):
         self._f.close()
+
+    def discard(self):
+        self.close()
+        try:
+            os.remove(self.path)
+        except FileNotFoundError:
+            pass
 
 
 class IterateFile:
@@ -1175,14 +1187,16 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     cell_log = CellLog(out_path + ".cells.jsonl",
                        _cell_log_header(arms, metadata, n_targets, n_guesses), resume)
     killed = watch.killed() if watch is not None else None
-    if killed is not None and (killed["arm"], killed["target"], killed["guess"]) in cell_log.records:
-        ## The solve returned in the instant before the kill landed: its record stands.
+    if killed is not None and (not cell_log.loaded or (
+            killed["arm"], killed["target"], killed["guess"]) in cell_log.records):
+        ## Not this run's (no JSONL was resumed), or the solve returned in the instant before
+        ## the kill landed and its record stands.
         killed = None
         watch.clear_killed()
 
     _warm_up_svgd_arms(arms, targets, guesses, cells, metadata)
 
-    if cell_log.records and metadata is not None:
+    if cell_log.loaded and metadata is not None:
         event = dict(host=provenance()["host"], time=time.strftime("%Y-%m-%dT%H:%M:%S"),
                      records_loaded=len(cell_log.records),
                      killed_cell=([killed["arm"], killed["target"], killed["guess"]]
@@ -1419,7 +1433,7 @@ def run_grid(arms, targets, guesses, task_gate, log_dir, out_path, tol,
     if stalls is not None:
         watchdog.cancel()
         stalls.close()
-    cell_log.close()
+    cell_log.discard()                          # the summary now holds every record
     if watch is not None:
         watch.beat("-", -1, -1, "done")
         watch.close()
