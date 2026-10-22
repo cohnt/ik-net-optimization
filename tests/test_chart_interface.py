@@ -53,12 +53,15 @@ def chart(robot):
 
 
 def _inputs(width, ndof, dtype, dev, n=16, seed=0):
+    ## Drawn on the CPU explicitly: importing jrl sets the process default device to CUDA
+    ## whenever one is visible, and a CPU generator refuses a CUDA draw.
     g = torch.Generator(device="cpu").manual_seed(seed)
-    z = torch.randn((n, width), generator=g, dtype=torch.float64)
-    xyz = 0.3 * torch.randn((n, 3), generator=g, dtype=torch.float64) + torch.tensor([0.4, 0.0, 0.5], dtype=torch.float64)
-    quat = torch.randn((n, 4), generator=g, dtype=torch.float64)
+    cpu = dict(generator=g, dtype=torch.float64, device="cpu")
+    z = torch.randn((n, width), **cpu)
+    xyz = 0.3 * torch.randn((n, 3), **cpu) + torch.tensor([0.4, 0.0, 0.5], dtype=torch.float64, device="cpu")
+    quat = torch.randn((n, 4), **cpu)
     quat = quat / quat.norm(dim=1, keepdim=True)
-    q = 2.0 * torch.rand((n, ndof), generator=g, dtype=torch.float64) - 1.0
+    q = 2.0 * torch.rand((n, ndof), **cpu) - 1.0
     pose7 = torch.cat([xyz, quat], dim=1)
     return (z.to(dtype=dtype, device=dev), pose7.to(dtype=dtype, device=dev),
             q.to(dtype=dtype, device=dev))

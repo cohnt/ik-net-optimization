@@ -1120,4 +1120,12 @@ if __name__ == "__main__":
     test_pose_kernel_ignores_self_motion()
     test_pose_jacobian_matches_finite_differences_on_the_panda()
     test_joint_space_refuses_latent_kernels()
-    print("ALL PASS")
+    print("ALL PASS", flush=True)
+    ## Exit without interpreter finalization. With CUDA visible, torch's autograd device thread
+    ## (`pt_autograd_0`) can drop its last GraphTask while CPython is finalizing; the decref
+    ## asks for the GIL, Python 3.12 answers with pthread_exit, and the forced unwind through a
+    ## noexcept destructor is std::terminate -- rc 134 after ALL PASS (gdb, 2026-10-22; also 1
+    ## in 20 runs of a bare torch CUDA backward, so torch's, not this repo's). A failing test
+    ## has raised before this line.
+    sys.stderr.flush()
+    os._exit(0)

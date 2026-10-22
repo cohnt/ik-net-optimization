@@ -36,10 +36,10 @@ Proposed: 480/480 on all 16 rows, wall 0.70-2.00 s, 0 clock stops, 33-61 feasibl
 | --- | --- | --- | --- |
 | B: JS + AL-SVGD | 0.70-7.13 s | 12 / 2 / 2 | Panda grasp native, Panda grasp paired |
 | A: learned + IPOPT | 0.61-11.11 s | 12 / 2 / 2 | soft PCS grasp native, soft PCS pose native |
-| A: learned + SNOPT | 1.28-26.72 s | 16 / 0 / 0 | none |
+| A: learned + SNOPT | 1.28-26.98 s | 16 / 0 / 0 | none |
 | A: learned + NLopt | 49.85-178.88 s | 16 / 0 / 0 | none |
 | base: JS + IPOPT | 0.09-6.07 s | 4 / 2 / 10 | Panda pose native, Panda pose paired, iiwa pose native, iiwa pose paired, screw grasp native, screw grasp paired, screw pose native, screw pose paired, soft PCS pose native, soft PCS pose paired |
-| base: JS + SNOPT | 1.39-19.87 s | 16 / 0 / 0 | none |
+| base: JS + SNOPT | 1.39-19.94 s | 16 / 0 / 0 | none |
 | base: JS + NLopt | 142.98-180.00 s | 16 / 0 / 0 | none |
 
 ### Time-matched: the corner restarting inside the proposed method's wall on each cell
@@ -50,7 +50,7 @@ Proposed: 480/480 on all 16 rows, wall 0.70-2.00 s, 0 clock stops, 33-61 feasibl
 | A: learned + SNOPT | 51.0-100.0% | 2 | iiwa pose paired 51.0%, screw grasp paired 58.9%, screw pose paired 59.3% |
 | A: learned + NLopt | 0.6-75.3% | 0 | Panda grasp paired 0.6%, soft PCS grasp paired 0.8%, screw grasp paired 0.8% |
 | base: JS + IPOPT | 83.1-99.6% | 2 | Panda pose native 83.1%, Panda pose paired 83.1%, soft PCS pose native 90.4% |
-| base: JS + SNOPT | 82.5-94.2% | 0 | iiwa grasp paired 82.5%, iiwa grasp native 82.6%, soft PCS grasp native 84.7% |
+| base: JS + SNOPT | 82.4-94.2% | 0 | iiwa grasp paired 82.4%, iiwa grasp native 82.6%, soft PCS grasp native 84.7% |
 | base: JS + NLopt | 0.0-29.4% | 0 | Panda grasp native 0.0%, Panda grasp paired 0.0%, iiwa grasp native 0.0% |
 
 ## Success (feasible cells of 480; proposed-only / corner-only cells, p)
@@ -109,20 +109,20 @@ Proposed: 480/480 on all 16 rows, wall 0.70-2.00 s, 0 clock stops, 33-61 feasibl
 
 | row | proposed | B: JS + AL-SVGD | A: learned + IPOPT | A: learned + SNOPT | A: learned + NLopt | base: JS + IPOPT | base: JS + SNOPT | base: JS + NLopt |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp native | 1.91 s, 0 clock, 58 feas | 1.14 s, 0 clock, 3 feas | 3.00 s | 3.54 s | 60.01 s | 6.07 s | 12.94 s | 180.00 s |
-| Panda grasp paired | 2.00 s, 0 clock, 57 feas | 1.14 s, 0 clock, 3 feas | 5.01 s | 12.15 s | 178.88 s | 6.06 s | 12.92 s | 180.00 s |
+| Panda grasp native | 1.91 s, 0 clock, 58 feas | 1.14 s, 0 clock, 3 feas | 3.00 s | 3.54 s | 60.01 s | 6.07 s | 12.96 s | 180.00 s |
+| Panda grasp paired | 2.00 s, 0 clock, 57 feas | 1.14 s, 0 clock, 3 feas | 5.01 s | 12.13 s | 178.88 s | 6.06 s | 12.92 s | 180.00 s |
 | Panda pose native | 0.77 s, 0 clock, 44 feas | 0.71 s, 0 clock, 13 feas | 0.77 s | 1.67 s | 77.68 s | 0.53 s | 1.39 s | 142.98 s |
 | Panda pose paired | 0.76 s, 0 clock, 43 feas | 0.70 s, 0 clock, 13 feas | 2.02 s | 8.30 s | 138.10 s | 0.53 s | 1.41 s | 142.98 s |
-| iiwa grasp native | 1.12 s, 0 clock, 51 feas | 1.48 s, 0 clock, 4 feas | 2.68 s | 3.15 s | 63.48 s | 1.02 s | 14.56 s | 180.00 s |
-| iiwa grasp paired | 0.99 s, 0 clock, 51 feas | 1.45 s, 0 clock, 4 feas | 6.27 s | 14.83 s | 175.89 s | 1.01 s | 14.50 s | 180.00 s |
+| iiwa grasp native | 1.12 s, 0 clock, 51 feas | 1.48 s, 0 clock, 4 feas | 2.68 s | 3.14 s | 63.48 s | 1.02 s | 14.55 s | 180.00 s |
+| iiwa grasp paired | 0.99 s, 0 clock, 51 feas | 1.45 s, 0 clock, 4 feas | 6.27 s | 14.84 s | 175.89 s | 1.01 s | 14.55 s | 180.00 s |
 | iiwa pose native | 0.72 s, 0 clock, 35 feas | 0.90 s, 0 clock, 27 feas | 0.67 s | 1.28 s | 78.74 s | 0.09 s | 1.58 s | 169.95 s |
 | iiwa pose paired | 0.70 s, 0 clock, 35 feas | 0.89 s, 0 clock, 27 feas | 1.61 s | 13.14 s | 142.06 s | 0.09 s | 1.58 s | 169.95 s |
-| screw grasp native | 1.32 s, 0 clock, 43 feas | 7.13 s, 17 clock, 3 feas | 6.93 s | 9.30 s | 60.71 s | 1.08 s | 9.11 s | 162.88 s |
-| screw grasp paired | 1.41 s, 0 clock, 42 feas | 6.79 s, 16 clock, 3 feas | 11.11 s | 13.10 s | 178.52 s | 1.08 s | 9.11 s | 162.87 s |
+| screw grasp native | 1.32 s, 0 clock, 43 feas | 7.13 s, 17 clock, 3 feas | 6.93 s | 9.30 s | 60.71 s | 1.08 s | 9.10 s | 162.88 s |
+| screw grasp paired | 1.41 s, 0 clock, 42 feas | 6.79 s, 16 clock, 3 feas | 11.11 s | 13.11 s | 178.52 s | 1.08 s | 9.13 s | 162.87 s |
 | screw pose native | 0.97 s, 0 clock, 33 feas | 2.39 s, 4 clock, 25 feas | 1.10 s | 2.35 s | 78.08 s | 0.12 s | 1.78 s | 159.39 s |
-| screw pose paired | 0.97 s, 0 clock, 33 feas | 2.39 s, 4 clock, 25 feas | 1.95 s | 5.19 s | 149.11 s | 0.12 s | 1.76 s | 159.37 s |
+| screw pose paired | 0.97 s, 0 clock, 33 feas | 2.39 s, 4 clock, 25 feas | 1.95 s | 5.20 s | 149.11 s | 0.12 s | 1.78 s | 159.37 s |
 | soft PCS grasp native | 2.00 s, 0 clock, 61 feas | 3.14 s, 0 clock, 12 feas | 1.21 s | 6.69 s | 49.85 s | 3.19 s | 19.86 s | 166.74 s |
-| soft PCS grasp paired | 1.94 s, 0 clock, 60 feas | 3.15 s, 0 clock, 12 feas | 6.12 s | 26.72 s | 178.52 s | 3.21 s | 19.87 s | 166.74 s |
+| soft PCS grasp paired | 1.94 s, 0 clock, 60 feas | 3.15 s, 0 clock, 12 feas | 6.12 s | 26.98 s | 178.52 s | 3.21 s | 19.94 s | 166.74 s |
 | soft PCS pose native | 1.12 s, 0 clock, 58 feas | 2.36 s, 0 clock, 40 feas | 0.61 s | 3.97 s | 50.56 s | 0.34 s | 2.42 s | 178.70 s |
 | soft PCS pose paired | 1.12 s, 0 clock, 58 feas | 2.31 s, 0 clock, 40 feas | 8.70 s | 22.11 s | 64.88 s | 0.35 s | 2.40 s | 178.70 s |
 
@@ -130,22 +130,22 @@ Proposed: 480/480 on all 16 rows, wall 0.70-2.00 s, 0 clock stops, 33-61 feasibl
 | --- | --- | --- |
 | B: JS + AL-SVGD | 0.70-7.13 s | 12 / 2 / 2 |
 | A: learned + IPOPT | 0.61-11.11 s | 12 / 2 / 2 |
-| A: learned + SNOPT | 1.28-26.72 s | 16 / 0 / 0 |
+| A: learned + SNOPT | 1.28-26.98 s | 16 / 0 / 0 |
 | A: learned + NLopt | 49.85-178.88 s | 16 / 0 / 0 |
 | base: JS + IPOPT | 0.09-6.07 s | 4 / 2 / 10 |
-| base: JS + SNOPT | 1.39-19.87 s | 16 / 0 / 0 |
+| base: JS + SNOPT | 1.39-19.94 s | 16 / 0 / 0 |
 | base: JS + NLopt | 142.98-180.00 s | 16 / 0 / 0 |
 
 ## Time-matched (the corner restarts inside the proposed method's wall on each cell, the running solve finishing; success share, starved share, median starts taken). The proposed method is 100% on every row.
 
 | row | A: learned + IPOPT | A: learned + SNOPT | A: learned + NLopt | base: JS + IPOPT | base: JS + SNOPT | base: JS + NLopt |
 | --- | --- | --- | --- | --- | --- | --- |
-| Panda grasp native | 100.0% (starved 0.0%, 1 starts) | 97.7% (starved 0.0%, 1 starts) | 67.3% (starved 0.0%, 1 starts) | 96.5% (starved 0.0%, 1 starts) | 88.9% (starved 0.0%, 1 starts) | 0.0% (starved 0.0%, 1 starts) |
+| Panda grasp native | 100.0% (starved 0.0%, 1 starts) | 97.6% (starved 0.0%, 1 starts) | 67.3% (starved 0.0%, 1 starts) | 96.5% (starved 0.0%, 1 starts) | 88.9% (starved 0.0%, 1 starts) | 0.0% (starved 0.0%, 1 starts) |
 | Panda grasp paired | 99.9% (starved 0.0%, 1 starts) | 69.8% (starved 0.0%, 1 starts) | 0.6% (starved 0.0%, 1 starts) | 96.8% (starved 0.0%, 1 starts) | 89.0% (starved 0.0%, 1 starts) | 0.0% (starved 0.0%, 1 starts) |
 | Panda pose native | 96.5% (starved 0.0%, 1 starts) | 93.2% (starved 0.0%, 1 starts) | 63.2% (starved 0.0%, 1 starts) | 83.1% (starved 0.1%, 2 starts) | 88.2% (starved 2.2%, 2 starts) | 29.4% (starved 0.0%, 1 starts) |
 | Panda pose paired | 84.6% (starved 0.0%, 1 starts) | 61.3% (starved 0.0%, 1 starts) | 27.0% (starved 0.0%, 1 starts) | 83.1% (starved 0.0%, 2 starts) | 87.8% (starved 1.9%, 2 starts) | 29.3% (starved 0.0%, 1 starts) |
 | iiwa grasp native | 100.0% (starved 0.0%, 1 starts) | 93.4% (starved 0.0%, 1 starts) | 65.3% (starved 0.0%, 1 starts) | 97.2% (starved 0.0%, 1 starts) | 82.6% (starved 0.0%, 1 starts) | 0.0% (starved 0.0%, 1 starts) |
-| iiwa grasp paired | 99.8% (starved 0.0%, 1 starts) | 61.5% (starved 0.0%, 1 starts) | 2.3% (starved 0.0%, 1 starts) | 97.3% (starved 0.0%, 1 starts) | 82.5% (starved 0.0%, 1 starts) | 0.0% (starved 0.0%, 1 starts) |
+| iiwa grasp paired | 99.8% (starved 0.0%, 1 starts) | 61.5% (starved 0.0%, 1 starts) | 2.3% (starved 0.0%, 1 starts) | 97.3% (starved 0.0%, 1 starts) | 82.4% (starved 0.0%, 1 starts) | 0.0% (starved 0.0%, 1 starts) |
 | iiwa pose native | 97.8% (starved 0.0%, 1 starts) | 95.5% (starved 0.0%, 1 starts) | 62.2% (starved 0.0%, 1 starts) | 98.9% (starved 0.0%, 1 starts) | 91.6% (starved 0.1%, 1 starts) | 8.4% (starved 0.0%, 1 starts) |
 | iiwa pose paired | 90.2% (starved 0.0%, 1 starts) | 51.0% (starved 0.0%, 1 starts) | 23.3% (starved 0.0%, 1 starts) | 98.8% (starved 0.0%, 1 starts) | 91.3% (starved 0.1%, 1 starts) | 8.5% (starved 0.0%, 1 starts) |
 | screw grasp native | 99.0% (starved 0.0%, 1 starts) | 86.7% (starved 0.0%, 1 starts) | 67.2% (starved 0.0%, 1 starts) | 96.7% (starved 0.0%, 1 starts) | 86.8% (starved 0.0%, 1 starts) | 10.0% (starved 0.0%, 1 starts) |
@@ -153,7 +153,7 @@ Proposed: 480/480 on all 16 rows, wall 0.70-2.00 s, 0 clock stops, 33-61 feasibl
 | screw pose native | 97.2% (starved 0.0%, 1 starts) | 89.3% (starved 0.0%, 1 starts) | 62.8% (starved 0.0%, 1 starts) | 97.4% (starved 0.0%, 1 starts) | 93.7% (starved 0.0%, 1 starts) | 17.5% (starved 0.0%, 1 starts) |
 | screw pose paired | 93.1% (starved 0.0%, 1 starts) | 59.3% (starved 0.0%, 1 starts) | 19.3% (starved 0.0%, 1 starts) | 97.6% (starved 0.0%, 1 starts) | 94.2% (starved 0.0%, 1 starts) | 17.5% (starved 0.0%, 1 starts) |
 | soft PCS grasp native | 100.0% (starved 0.0%, 1 starts) | 100.0% (starved 0.0%, 1 starts) | 75.3% (starved 0.0%, 1 starts) | 99.6% (starved 0.0%, 1 starts) | 84.7% (starved 0.0%, 1 starts) | 7.7% (starved 0.0%, 1 starts) |
-| soft PCS grasp paired | 99.4% (starved 0.0%, 1 starts) | 74.8% (starved 0.0%, 1 starts) | 0.8% (starved 0.0%, 1 starts) | 99.5% (starved 0.0%, 1 starts) | 84.9% (starved 0.0%, 1 starts) | 7.7% (starved 0.0%, 1 starts) |
+| soft PCS grasp paired | 99.4% (starved 0.0%, 1 starts) | 74.8% (starved 0.0%, 1 starts) | 0.8% (starved 0.0%, 1 starts) | 99.5% (starved 0.0%, 1 starts) | 85.0% (starved 0.0%, 1 starts) | 7.7% (starved 0.0%, 1 starts) |
 | soft PCS pose native | 99.4% (starved 0.0%, 1 starts) | 99.8% (starved 0.0%, 1 starts) | 74.7% (starved 0.0%, 1 starts) | 90.4% (starved 0.0%, 1 starts) | 90.5% (starved 0.0%, 1 starts) | 10.7% (starved 0.0%, 1 starts) |
 | soft PCS pose paired | 92.3% (starved 0.0%, 1 starts) | 83.0% (starved 0.0%, 1 starts) | 67.6% (starved 0.0%, 1 starts) | 90.5% (starved 0.0%, 1 starts) | 90.2% (starved 0.0%, 1 starts) | 10.5% (starved 0.0%, 1 starts) |
 
@@ -163,5 +163,5 @@ Proposed: 480/480 on all 16 rows, wall 0.70-2.00 s, 0 clock stops, 33-61 feasibl
 | A: learned + SNOPT | 51.0-100.0% | 2 |
 | A: learned + NLopt | 0.6-75.3% | 0 |
 | base: JS + IPOPT | 83.1-99.6% | 2 |
-| base: JS + SNOPT | 82.5-94.2% | 0 |
+| base: JS + SNOPT | 82.4-94.2% | 0 |
 | base: JS + NLopt | 0.0-29.4% | 0 |

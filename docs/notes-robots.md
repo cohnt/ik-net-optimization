@@ -305,7 +305,10 @@ with rod forces on the +-1 box. A property of the problem to report, like every 
 rows ran on the defective wsg scene and are void; its stage REMEASURE rows, reported beside the
 record in `docs/status-quo-tables.md`, replace them (IPOPT 3 learned / 1 tie, SNOPT 2 / 2: grasp
 native 480 v 467 and 476 v 366 are now learned wins, grasp paired 470 v 467 and 343 v 366 ties).
-Stage GVS's own tables, cap check and pre-registered verdicts: `docs/gvs-arm-tables.md`.
+**Stage GVSO2 (2026-10-22) measured `o2` the same way** (REMEASURE's items, rung swapped, PROCS=2):
+the same verdict on every row, so 10 learned / 6 ties / 0 losses over both rungs; no row
+budget-bound; no rung separates. Tables, time-matched columns and acceptance:
+`docs/gvs-arm-tables.md`.
 
 **What is queued and what is not.** Stage `GVS` (`cluster/gen_manifest.py`: two trained rungs x two
 experiments x two protocols x **IPOPT and SNOPT, no NLopt** -- Thomas, 2026-10-02: *"it's a waste of
