@@ -439,7 +439,8 @@ normalized rod forces; forward map is **SoRoMoX's own static equilibrium** (Thom
 use that repo"* — SoRoMoX is the model, not an oracle; test the wrapper). Redundancy enforced
 (`ninputs > 6`) and measured; the taper avoids the vacuity trap (a uniform rod zeroes higher Legendre
 orders). Joint-space failures are force saturation. IPOPT and SNOPT only, no NLopt (Thomas: *"it's a
-waste of time"*). `GVS_ARM_XLA_THREADS=1`. Notes `docs/gvs-arm.md`, tables `docs/gvs-arm-tables.md`,
+waste of time"*). At record conditions (o1 REMEASURE, o2 GVSO2 2026-10-22): learned 10 / tie 6 /
+loss 0, no rung separates. `GVS_ARM_XLA_THREADS=1`. Notes `docs/gvs-arm.md`, tables `docs/gvs-arm-tables.md`,
 ops `cluster/GVS_ARM_RUNBOOK.md`.
 
 **The screw-joint arm** (`screw7_p*`, `src/screw_arm/`) — **always "screw", never "helix"**. A

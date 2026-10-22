@@ -52,13 +52,15 @@ and `scripts/report_paper.py` pairs every run with its REMEASURE twin.
 **The GVS arm is OUTSIDE the record** (Thomas, 2026-10-05: *"the GVS arm doesn't help our story. We
 can still merge it into main, but it certainly doesn't replace the other soft arm"*). Stage REMEASURE
 measured it under identical conditions (`gvs_pushrod9_o1` `n6`, IPOPT and SNOPT; it never ran
-NLopt), and its eight rows print as a separate block at the end, with their own tally. They enter
-none of the record's tables, tally or flags.
+NLopt); stage GVSO2 (2026-10-22, jobs 6001801-04, 64/64 items) measured `gvs_pushrod9_o2` `n6`
+with REMEASURE's items, rung swapped, at PROCS=2 with no MPS, so **o1 seconds are PROCS=8 `MPS=1`
+and o2 seconds paper conditions: never compare runtime across the two rungs.** Their sixteen rows
+print as a separate block at the end, with their own tally. They enter none of the record's tables,
+tally or flags; `docs/gvs-arm-tables.md` carries the time-matched columns.
 
 The flag criteria's 45 s references predate REMEASURE, so flag 1 on a wsg grasp row conflates the
 cap with the scene fix and the settings; NLopt's references are 60-cell runs and are not paired at
 all. `scripts/report_remeasure.py nlopt` prints the NLopt rows' before/after against the old record.
-
 ---
 
 THE CAMPAIGN OF RECORD -- stage REMEASURE (2026-10-09), 480 cells, 180 s cap, seed 1
@@ -77,8 +79,8 @@ AL-SVGD (PS): 16 of 16 rows, each TWO runs, one per arm -- learned from stage
   SVGD_R29 (_pin4), joint space from SVGD_R30 (_pin4kq, kernel q); the V4 pin, patience 3
   -- at paper conditions (PROCS=2, no MPS), on the clearance collision row under the
   clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.
-The GVS arm (gvs_pushrod9_o1) was measured in the same stage under identical
-  conditions and is OUTSIDE the record: its rows print as a separate block at the end,
+The GVS arm (gvs_pushrod9_o1, gvs_pushrod9_o2) was measured under identical conditions
+  (o1 in this stage, o2 in stage GVSO2) and is OUTSIDE the record: its rows print as a separate block at the end,
   with their own tally, and enter none of the record's tables, tally or flags.
 Arms: learned vs joint space (numerical). The analytic reference column is scripts/report_analytic.py.
 NOTE: solver options move the JOINT-SPACE arm too -- that arm never evaluates the
@@ -421,7 +423,8 @@ with the scene fix and the settings; scripts/report_remeasure.py attributes them
 
 
 === GVS ARM, MEASURED UNDER IDENTICAL CONDITIONS, OUTSIDE THE RECORD
-Stage REMEASURE, the same conditions as the record above; IPOPT and SNOPT only (the GVS
+Stage REMEASURE (o1) and stage GVSO2 (o2, 2026-10-22, REMEASURE's items with the rung
+swapped), the same conditions as the record above; IPOPT and SNOPT only (the GVS
 arm never ran NLopt, so its AL column is N/A). Thomas, 2026-10-05: "the GVS arm doesn't
 help our story ... it certainly doesn't replace the other soft arm".
 
@@ -437,10 +440,14 @@ help our story ... it certainly doesn't replace the other soft arm".
   gvs_pushrod9_o1 grasp contained paired     *0.979**      *0.973*          N/A          N/A      *0.715*      *0.762*
   gvs_pushrod9_o1 pose contained native     *1.000**        0.648          N/A          N/A      *1.000*        0.525
   gvs_pushrod9_o1 pose contained paired     *0.798**        0.648          N/A          N/A      *0.573*      *0.525*
+  gvs_pushrod9_o2 grasp contained native     *0.998**        0.960          N/A          N/A      *0.975*        0.721
+  gvs_pushrod9_o2 grasp contained paired     *0.969**      *0.960*          N/A          N/A      *0.669*      *0.721*
+  gvs_pushrod9_o2 pose contained native     *1.000**        0.656          N/A          N/A      *0.998*        0.573
+  gvs_pushrod9_o2 pose contained paired     *0.810**        0.656          N/A          N/A      *0.575*      *0.573*
 
-  Of the 8 solver x experiment cells, learned wins 5, ties 3, loses 0  (verdicts by exact McNemar on the same cells the table shows)
-    IP   learned 3, ties 1, joint space 0
-    SQP  learned 2, ties 2, joint space 0
+  Of the 16 solver x experiment cells, learned wins 10, ties 6, loses 0  (verdicts by exact McNemar on the same cells the table shows)
+    IP   learned 6, ties 2, joint space 0
+    SQP  learned 4, ties 4, joint space 0
 
   Table 2 -- optimal cost, cells BOTH arms solved, learned-only regularizers excluded
   lower is better; N/A means fewer than 10 shared solved cells, so no comparison exists
@@ -449,6 +456,10 @@ help our story ... it certainly doesn't replace the other soft arm".
   gvs_pushrod9_o1 grasp contained paired        0.596     *0.259**          N/A          N/A        0.313      *0.259*
   gvs_pushrod9_o1 pose contained native        1.057      *0.707*          N/A          N/A     *0.706**        0.720
   gvs_pushrod9_o1 pose contained paired        0.836      *0.733*          N/A          N/A        0.734     *0.684**
+  gvs_pushrod9_o2 grasp contained native        0.668     *0.259**          N/A          N/A        0.276      *0.259*
+  gvs_pushrod9_o2 grasp contained paired        0.634     *0.259**          N/A          N/A        0.391      *0.262*
+  gvs_pushrod9_o2 pose contained native        1.060      *0.733*          N/A          N/A     *0.707**        0.733
+  gvs_pushrod9_o2 pose contained paired        0.836      *0.733*          N/A          N/A        0.733     *0.707**
 
   Table 3 -- mean runtime, s, over ALL cells, each clamped at the 180 s clock
   lower is better; this machine only, never compared across machines. Clamped because SNOPT overruns its clock on cycling cells (none feasible) once the iteration budget is lifted
@@ -457,6 +468,10 @@ help our story ... it certainly doesn't replace the other soft arm".
   gvs_pushrod9_o1 grasp contained paired        16.88      *4.75**          N/A          N/A        56.87      *23.27*
   gvs_pushrod9_o1 pose contained native      *1.24**         1.57          N/A          N/A         3.80       *2.35*
   gvs_pushrod9_o1 pose contained paired        20.84      *1.51**          N/A          N/A        68.80       *2.29*
+  gvs_pushrod9_o2 grasp contained native      *5.93**         9.26          N/A          N/A      *16.37*        29.10
+  gvs_pushrod9_o2 grasp contained paired        21.84      *9.25**          N/A          N/A        64.12      *29.02*
+  gvs_pushrod9_o2 pose contained native      *1.74**         1.79          N/A          N/A         5.79       *3.33*
+  gvs_pushrod9_o2 pose contained paired        22.49      *1.78**          N/A          N/A        65.22       *3.38*
 
   Table 4 -- median major iterations over solved cells
   lower is better; AL is N/A BY CONSTRUCTION -- NloptSolverDetails carries a single status and NLopt has no major iteration to count
@@ -465,6 +480,10 @@ help our story ... it certainly doesn't replace the other soft arm".
   gvs_pushrod9_o1 grasp contained paired           88        *51**          N/A          N/A          613        *102*
   gvs_pushrod9_o1 pose contained native        *18**           29          N/A          N/A           67         *26*
   gvs_pushrod9_o1 pose contained paired           56         *29*          N/A          N/A          644        *26**
+  gvs_pushrod9_o2 grasp contained native        *41**           50          N/A          N/A          244        *100*
+  gvs_pushrod9_o2 grasp contained paired           93        *50**          N/A          N/A          688        *100*
+  gvs_pushrod9_o2 pose contained native        *19**           29          N/A          N/A           68         *24*
+  gvs_pushrod9_o2 pose contained paired           59         *29*          N/A          N/A          596        *24**
 
 === PER-SOLVER DETAIL -- GVS arm, measured under identical conditions, outside the record
 
@@ -476,6 +495,10 @@ help our story ... it certainly doesn't replace the other soft arm".
   gvs_pushrod9_o1 grasp contained paired    470  467   11    8    0.648          tie       88     51    7.36   1.92   0.596   0.259  459    9    1
   gvs_pushrod9_o1 pose contained (tip) native  480  311  169    0 2.67e-51      learned       18     29    0.77   0.92   1.057   0.707  311    0    0
   gvs_pushrod9_o1 pose contained (tip) paired  383  311  122   50 3.95e-08      learned       56     29    3.80   0.88   0.836   0.733  261   31    0
+  gvs_pushrod9_o2 grasp contained native    479  461   19    1 4.01e-05      learned       41     50    3.52   2.29   0.668   0.259  460    1    7
+  gvs_pushrod9_o2 grasp contained paired    465  461   19   15    0.608          tie       93     50    8.68   2.30   0.634   0.259  446   16    7
+  gvs_pushrod9_o2 pose contained (tip) native  480  315  165    0 4.28e-50      learned       19     29    0.99   1.17   1.060   0.733  315    0    0
+  gvs_pushrod9_o2 pose contained (tip) paired  389  315  120   46 8.35e-09      learned       59     29    5.18   1.16   0.836   0.733  269   30    0
 
 === SNOPT (SQP)   [Major step limit = 0.5]
 
@@ -485,6 +508,10 @@ help our story ... it certainly doesn't replace the other soft arm".
   gvs_pushrod9_o1 grasp contained paired    343  366   75   98   0.0941          tie      613    102   39.14   3.17   0.313   0.259  268   73   49
   gvs_pushrod9_o1 pose contained (tip) native  480  252  228    0 4.64e-69      learned       67     26    1.79   0.54   0.706   0.720  252    0    4
   gvs_pushrod9_o1 pose contained (tip) paired  275  252  109   86    0.115          tie      644     26   47.94   0.52   0.734   0.684  166  130    4
+  gvs_pushrod9_o2 grasp contained native    468  346  132   10 2.57e-28      learned      244    100   10.65   3.56   0.276   0.259  336    3   73
+  gvs_pushrod9_o2 grasp contained paired    321  346   85  110   0.0854          tie      688    100   51.07   3.52   0.391   0.262  236   93   73
+  gvs_pushrod9_o2 pose contained (tip) native  479  275  205    1 4.03e-60      learned       68     24    2.10   0.63   0.707   0.733  274    0    7
+  gvs_pushrod9_o2 pose contained (tip) paired  276  275   93   92        1          tie      596     24   54.03   0.62   0.733   0.707  183  124    7
 
 ---
 
