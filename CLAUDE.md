@@ -391,7 +391,7 @@ measure and report as a stated deviation, not adopt. **Damping an exact Jacobian
 inconsistent**; damping belongs on the Newton step, which Drake's IPOPT does not expose. **Suppressing
 the runaway does not buy success.**
 
-**Chart ablation, rung one CLOSED (branch `chart-cvae`, 2026-10-21; awaiting Thomas's merge).** The
+**Chart ablation, rung one CLOSED (branch `chart-cvae`, merged to main 2026-10-21).** The
 program reaches its network only through `src/charts/` (`LoadChart`; `FlowChart` bit-identical to the
 old calls), built so LOInK (the next push, its own campaign) plugs in. Rung: a standard cVAE decoder
 as the chart, learned and fixed (textbook) decoder variance x K = flow width / redundancy, IPOPT +
