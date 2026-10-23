@@ -22,7 +22,10 @@ Every model here is UNTRAINED (every model fit is a cluster job). The network co
 4. The export contract: bare state dict + mandatory `"family": "loink"` sidecar, identical
    round trip; a sidecar contradicting the weights RAISES (units, depth, ndof, mu, the head's
    presence, K, task_dim, head_hidden), a missing one RAISES, another family / robot RAISES, a
-   same-DoF robot RAISES on the joint scale; the activation is the documented hole.
+   same-DoF robot RAISES on the joint scale; the activation is the documented hole. The
+   exporter's `n_dys` ladder: a chart whose round trip fails at its own `n_dys` (1, no extra
+   Newton step: residual ~5e-2) is written at the smallest passing rung (100), through the
+   sidecar on disk; a ladder with no passing rung RAISES and leaves the sidecar at its first.
 5. `LoadChart` dispatches `"loink"`; `loink_loss` is finite for m, x, u; the trainer's
    `training_step` / validation step run and its nu guard clamps.
 6. The program: `PandaIKProgram(checkpoint=<untrained loink>)` constructs, `SetStartFromQ`
@@ -51,7 +54,7 @@ sys.path.insert(0, os.path.join(REPO, "scripts", "training"))
 from src.charts.loink import (  # noqa: E402
     BARRIER_EPS, ArchFromLoinkStateDict, LoadLoinkChart, LoinkChart, LoinkModel, NominalConfiguration,
     Pose7ToXyzRpy, RpyCutDistance, TrainingCost, XyzRpyToPose7, loink_loss)
-from export_loink import BuildLoinkModel, write_untrained  # noqa: E402
+from export_loink import BuildLoinkModel, NDysLadder, roundtrip_ladder, write_untrained  # noqa: E402
 from jrl.robots import get_robot  # noqa: E402
 from src.flow_loading import SidecarPath  # noqa: E402
 
@@ -243,6 +246,26 @@ def test_export_roundtrip_identical(tmp):
         assert torch.equal(chart.decode(loaded, z, c6)[0], original(z, c6)), \
             "reloaded decode is not identical"
     print("PASS export -> LoadLoinkChart round trip identical (panda m/tanh)")
+
+
+def test_export_ndys_ladder(tmp):
+    out, arch, hp, state_dict = write_untrained("panda", "u", "relu", n_dys=1, n_newton=0,
+                                                out_path=os.path.join(tmp, "ladder.pkl"))
+    assert NDysLadder(1) == [1, 100, 200, 400, 800, 1600, 3200]
+    assert NDysLadder(100) == [100, 200, 400, 800, 1600, 3200]
+    chosen = roundtrip_ladder(out, arch, hp, state_dict)
+    with open(SidecarPath(out)) as f:
+        sidecar = json.load(f)
+    assert chosen["n_dys"] == 100 and sidecar["n_dys"] == 100 and sidecar["n_newton"] == 0, \
+        (chosen["n_dys"], sidecar["n_dys"])
+    assert sidecar["n_dys_source"] == "export ladder (smallest passing of 1..3200)", sidecar
+    assert LoadLoinkChart("panda", out).arch["n_dys"] == 100
+    _expect_raise(lambda: roundtrip_ladder(out, arch, hp, state_dict, ladder=[1, 2]),
+                  AssertionError, "an n_dys ladder with no passing rung")
+    with open(SidecarPath(out)) as f:
+        assert json.load(f)["n_dys"] == 1, "a failed ladder must leave the sidecar at its first rung"
+    print("PASS export n_dys ladder: fails at n_dys 1 (n_newton 0), writes the smallest passing "
+          "rung 100 into the sidecar")
 
 
 def test_contradicting_sidecars_raise(tmp):
@@ -514,6 +537,7 @@ if __name__ == "__main__":
             chart = test_chart_functions(tmp, robot_name, robot, cost, act)
             test_jacrev_through_make_flow_inference(chart, robot)
         test_export_roundtrip_identical(tmp)
+        test_export_ndys_ladder(tmp)
         test_contradicting_sidecars_raise(tmp)
         test_same_dof_other_robot_raises(tmp)
         test_load_chart_dispatch(tmp)
