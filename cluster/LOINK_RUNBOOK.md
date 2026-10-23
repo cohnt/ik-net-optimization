@@ -10,7 +10,36 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE -- 2026-10-23 13:10 cluster time: the six soft12 charts are being re-exported and screened
+## STATE -- 2026-10-23 16:20 cluster time: the soft12 smokes are queued on the graph-capture fix
+
+What a resuming session checks FIRST:
+
+```bash
+ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; for m in manifest_stageLOINKSMOKE_soft12P manifest_stageLOINKSMOKE_SVGD_soft12P; do s=~/learned-ik/state/$m; echo "$m claims $(ls -d $s/*.claim 2>/dev/null | wc -l) done $(ls $s/*.done 2>/dev/null | wc -l)"; done; ls ~/learned-ik/results/soft12/benchmark/ | grep -c LOINKSMOKE'
+```
+
+-1. **Jobs 6018466 / 6018467 (LOINKSMOKE_soft12P, PROCS=2) and 6018468 / 6018469
+   (LOINKSMOKE_SVGD_soft12P, crc, PROCS=2)**, submitted 16:17 on staged commit 9be5e9b. The
+   first submission (6016941-44, 13:41) lost all 48 items at `WarmUpJacobian`'s CUDA-graph
+   capture: `_linalg_check_errors(..., 'torch.linalg.solve')` -> "operation not permitted when
+   stream is capturing". The chart's forward used the non-syncing solve; the jacrev graph is
+   captured under `enable_grad`, and in that mode `linalg_solve`'s BACKWARD recomputes through a
+   plain `at::linalg_solve` with its host-syncing info check (torch 2.14 on the cluster; local
+   2.11 on CPU never hit it). Fix 9be5e9b: `_solve` = `lu_factor_ex` + `lu_solve` (derivatives
+   graph-safe both ways); tests pass; the six sidecar triples re-pass the 2048-sample round trip
+   (max 4e-12). Dead claims reclaimed (`collect_results.sh --reclaim`, 48). Worker logs appear
+   in `state/<manifest>/logs/` ONLY when a worker finishes; a run dir under
+   `~/learned-ik/repo/results/soft12/benchmark/` is the first sign an item got past warm-up.
+   **Smoke pass = every item exits 0, family loink, no dead arm, paired `start_q_error` ~0
+   with `clip_distance` ~8.6 recorded (the latent starts outside the box, by diagnosis).**
+   Then: `PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKPROBE_soft12P.txt 4` (200
+   items incl. the 8-item acceptance run on `panda__n6`, must print IDENTICAL) and
+   `DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKPROBE_SVGD_soft12P.txt 4`
+   (576); then collect, merge, `scripts/report_loink.py --write`, notes, CLAUDE.md (< 40k).
+   Thomas emails the authors early the week of 2026-10-26 (the questions are at the end of
+   this file); the cells should be in by then.
+
+### Earlier state (13:10): the six soft12 charts being re-exported and screened (done, rc=0 all)
 
 What a resuming session checks FIRST (everything local died at any pause; the cluster side is
 fire-and-forget):
