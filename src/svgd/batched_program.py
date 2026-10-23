@@ -1460,7 +1460,12 @@ class BatchedProgram:
         with torch.no_grad():
             _, (quat, pos) = self._frame_poses(self.config_to_plant_q(q))
             c6 = torch.cat([pos, rpy_from_quat(canonical_quat(quat))], dim=1)
-            z = self.flow.invert(q, c6)
+            if getattr(self.flow.chart, "invert", None) is not None:
+                ## A chart with its own inverse (`src/charts/base.py`, LOInK): `c` is the
+                ## chart's own raw task estimate, as `IKFlowProgram.SetStartFromQ` takes it.
+                c6, z = self.flow.chart.invert(self.flow.model, q)
+            else:
+                z = self.flow.invert(q, c6)
             q_flow = self.flow.q(c6, z, torch.zeros_like(q))
             residual = q - q_flow
             bound = self.correction_bound

@@ -252,7 +252,7 @@ class SoftArmIKProgram(IKFlowProgram):
             vars = torch.tensor(vars, device=DEVICE, dtype=self.torch_dtype)
         if not add_correction:
             width = self.ik_solver.network_width
-            vars = torch.cat([vars[:7 + width],
+            vars = torch.cat([vars[:self.ChartTaskDim() + width],
                               torch.zeros(self.num_arm_dof, dtype=vars.dtype, device=DEVICE)])
         cfg, _ = self.FlowInference()(vars)
         return cfg

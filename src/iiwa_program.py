@@ -18,6 +18,7 @@ import pydrake.math
 
 from src.iiwa_analytic_ik import Analytic_IK_7DoF, iiwa_limits_lower, iiwa_limits_upper
 from src.analytic_program import AnalyticProgramMixin
+from src.nominal_configurations import IIWA_Q_NOMINAL
     
 
 
@@ -27,8 +28,9 @@ class Iiwa14IKProgram(IKFlowProgram):
     #: (joints 1, 3, 5 and 7 collinear; manipulator-Jacobian sigma_min 0.0 measured), so
     #: the nominal is the common mild elbow bend. Measured in the hardened scene
     #: (2026-10-08): inside the limits by 0.344 rad at the closest joint, sigma_min 0.252,
-    #: collision value 0.22 (clear). The ONE place this robot's home pose lives.
-    Q_NOMINAL = np.array([0.0, 0.6, 0.0, -1.75, 0.0, 1.0, 0.0])
+    #: collision value 0.22 (clear). The ONE place this robot's home pose lives is
+    #: `src/nominal_configurations.py` (numpy only, so the LOInK trainer reads it too).
+    Q_NOMINAL = IIWA_Q_NOMINAL
 
     def NominalConfiguration(self):
         return self.Q_NOMINAL.copy()
@@ -148,7 +150,7 @@ class Iiwa14IKProgram(IKFlowProgram):
             vars = torch.tensor(vars, device=DEVICE, dtype=self.torch_dtype)
         if not add_correction:
             width = self.ik_solver.network_width
-            vars = torch.cat([vars[:7 + width],
+            vars = torch.cat([vars[:self.ChartTaskDim() + width],
                               torch.zeros(self.num_arm_dof, dtype=vars.dtype, device=DEVICE)])
         q, _ = self.FlowInference()(vars)
         return q
@@ -166,14 +168,11 @@ class Iiwa14IKProgram(IKFlowProgram):
         width = self.ik_solver.network_width
         n = self.num_task_vars
 
-        vars = np.zeros(7 + width + 7, dtype=AutoDiffXd if ad else np.float64)
-        xyz, quaternion = self.TaskVarsToPose7(rpy_vars[:n], t)
-        vars[:3] = xyz
-        vars[3:7] = quaternion
-        vars[7:7 + width] = rpy_vars[n:n + width]
-        ## Explicit end index: under `lift_q` the lumped vector carries the lifted
-        ## configuration after the correction, so an open-ended slice would be 14 wide.
-        vars[7 + width:] = rpy_vars[n + width:n + width + self.num_arm_dof]
+        ## `[c7 | z | correction]` (or `[c6 | z | correction]` for an xyzrpy chart), the
+        ## lumping `IKFlowProgram._FlowVars` performs -- for a pose7 chart the same ops this
+        ## method used to write out inline. Explicit end index there: under `lift_q` the
+        ## lumped vector carries the lifted configuration after the correction.
+        vars = self._FlowVars(rpy_vars, ad)
 
         if not ad:
             q = np.zeros(self.num_pos)

@@ -16,7 +16,7 @@ from src.charts.base import Chart
 from src.charts.flow import FlowChart
 
 DEFAULT_FAMILY = "ikflow"
-FAMILIES = ("ikflow", "cvae")
+FAMILIES = ("ikflow", "cvae", "loink")
 
 
 def ChartFamily(checkpoint):
@@ -48,6 +48,13 @@ def LoadChart(robot_name, checkpoint, fallback_arch=None, compile_model=None):
             raise ImportError(f"{checkpoint} declares family 'cvae', but src.charts.cvae "
                               f"could not provide LoadCVAEChart: {e}") from e
         return LoadCVAEChart(robot_name, checkpoint, compile_model=compile_model)
+    if family == "loink":
+        try:
+            from src.charts.loink import LoadLoinkChart
+        except ImportError as e:
+            raise ImportError(f"{checkpoint} declares family 'loink', but src.charts.loink "
+                              f"could not provide LoadLoinkChart: {e}") from e
+        return LoadLoinkChart(robot_name, checkpoint, compile_model=compile_model)
     raise ValueError(f"{checkpoint}: unknown chart family {family!r} in its sidecar "
                      f"(known: {', '.join(FAMILIES)})")
 

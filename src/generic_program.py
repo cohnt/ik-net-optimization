@@ -846,12 +846,14 @@ ORIENTATION_ERROR_FORMS = ("rpy", "rpy_boxed")
 
 
 def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.0,
-                      with_logdet=False, decode=None):
+                      with_logdet=False, decode=None, task_dim=7):
     """`vars -> (q, q)`, the shape `jacrev(..., has_aux=True)` wants.
 
     Returning q twice is what lets one reverse pass yield both dq/dvars and q, instead of
-    evaluating the network again for the value. `vars` is [conditioning pose as xyz + wxyz,
-    latent, correction].
+    evaluating the network again for the value. `vars` is [the chart's task input, latent,
+    correction]; the task input is `task_dim` wide: the conditioning pose as xyz + wxyz (7,
+    every chart with `task_input == "pose7"`, the default) or the program's raw `c = [xyz,
+    rpy]` (6, `task_input == "xyzrpy"`: LOInK, see `src/charts/base.py`).
 
     `decode` is the chart's (`src/charts/base.py`): `decode(nn_model, z [1, K], pose7 [1, 7])
     -> (q, logdet)`. The default is the flow's, so a caller holding a bare network (the
@@ -878,7 +880,7 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
         # Explicit device="cpu": ikflow installs a global default-device override that
         # would otherwise pair the CPU generator with a CUDA allocation and fail.
         gen = torch.Generator(device="cpu").manual_seed(0)
-        W = torch.randn((7 + width, num_arm_dof), generator=gen,
+        W = torch.randn((task_dim + width, num_arm_dof), generator=gen,
                         dtype=torch.float64, device="cpu").to(device)
         b = torch.randn(num_arm_dof, generator=gen,
                         dtype=torch.float64, device="cpu").to(device)
@@ -887,7 +889,8 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
         decode = partial(FlowDecode, num_dof=num_arm_dof)
 
     def flow_inference(vars):
-        c, z, correction = vars[:7], vars[7:7 + width], vars[7 + width:]
+        c, z, correction = (vars[:task_dim], vars[task_dim:task_dim + width],
+                            vars[task_dim + width:])
         if with_logdet:
             output, logdet = decode(nn_model, z.unsqueeze(0), c.unsqueeze(0))
             y = torch.cat([output[0, :num_arm_dof] + correction,
@@ -897,7 +900,7 @@ def MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale=0.
         q = output[0, :num_arm_dof] + correction
         if chart_error_scale:
             q = q + chart_error_scale * torch.sin(
-                vars[:7 + width].to(W.dtype) @ W + b).to(q.dtype)
+                vars[:task_dim + width].to(W.dtype) @ W + b).to(q.dtype)
         return q, q
     return flow_inference
 
@@ -976,18 +979,19 @@ class GraphedFlowCall:
 
 
 def _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet=False,
-             family="ikflow"):
+             family="ikflow", task_dim=7):
     ## `with_logdet` changes the function's output, so it must key the compiled-jacrev and
     ## CUDA-graph caches: without it one variant would be handed the other's graph. The
     ## chart family keys them too: `decode` is the family's, and the network's id alone
     ## says nothing about which function was compiled around it.
     return (id(nn_model), width, num_arm_dof, str(device),
             next(nn_model.parameters()).dtype, float(chart_error_scale), bool(with_logdet),
-            family)
+            family, int(task_dim))
 
 
 def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_error_scale=0.0,
-                    cuda_graph=False, with_logdet=False, decode=None, family="ikflow"):
+                    cuda_graph=False, with_logdet=False, decode=None, family="ikflow",
+                    task_dim=7):
     """`vars -> (dq/dvars, q)`, compiled once per (network, shape, dtype) if asked, and
     replayed as a CUDA graph on top of that if asked.
 
@@ -996,12 +1000,12 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
     """
     jacobian_gen = torch.func.jacrev(
         MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale,
-                          with_logdet=with_logdet, decode=decode),
+                          with_logdet=with_logdet, decode=decode, task_dim=task_dim),
         has_aux=True)
     if not compile_it:
         return jacobian_gen
     key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale, with_logdet,
-                   family)
+                   family, task_dim)
     if key not in _COMPILED_JACOBIANS:
         _COMPILED_JACOBIANS[key] = torch.compile(jacobian_gen)
     if not cuda_graph:
@@ -1013,17 +1017,17 @@ def FlowJacobianGen(nn_model, width, num_arm_dof, device, compile_it, chart_erro
 
 
 def FlowValueGen(nn_model, width, num_arm_dof, device, chart_error_scale=0.0,
-                 with_logdet=False, decode=None, family="ikflow"):
+                 with_logdet=False, decode=None, family="ikflow", task_dim=7):
     """`vars -> (q, q)` for the plain forward pass: compiled, under no_grad, CUDA-graphed.
 
     Used only under `flow_cuda_graph`; otherwise the forward pass stays the eager
     `MakeFlowInference`, so a run without the switch is exactly what it always was.
     """
     key = _FlowKey(nn_model, width, num_arm_dof, device, chart_error_scale,
-                   with_logdet, family) + ("value",)
+                   with_logdet, family, task_dim) + ("value",)
     if key not in _FLOW_GRAPHS:
         infer = MakeFlowInference(nn_model, width, num_arm_dof, device, chart_error_scale,
-                                  with_logdet=with_logdet, decode=decode)
+                                  with_logdet=with_logdet, decode=decode, task_dim=task_dim)
 
         def forward(vars):
             with torch.no_grad():
@@ -1358,9 +1362,21 @@ class IKFlowProgram:
             **self._ChartDecodeArgs(FlowJacobianGen))
         return self._StashingFlowCall(gen, jacobian=True) if on else gen
 
+    def ChartTaskDim(self):
+        """Width of the chart's task input in the flow-vars layout: 7 (`[xyz, wxyz]`) for a
+        chart with `task_input == "pose7"` (the flow, the cVAE), 6 (the raw `c = [xyz, rpy]`)
+        for one with `task_input == "xyzrpy"` (LOInK). See `src/charts/base.py`."""
+        task_input = getattr(self.ik_solver, "task_input", "pose7")
+        if task_input == "pose7":
+            return 7
+        if task_input == "xyzrpy":
+            return 6
+        raise ValueError(f"unknown chart task_input {task_input!r}")
+
     def _ChartDecodeArgs(self, make):
-        """The chart's `decode` (and, for the memoised makers, its family as a cache key)."""
-        args = dict(decode=self.ik_solver.decode)
+        """The chart's `decode` and task-input width (and, for the memoised makers, its
+        family as a cache key)."""
+        args = dict(decode=self.ik_solver.decode, task_dim=self.ChartTaskDim())
         if make is not MakeFlowInference:
             args["family"] = self.ik_solver.family
         return args
@@ -1405,9 +1421,26 @@ class IKFlowProgram:
 
     def _FlowVars(self, rpy_vars, autodiff):
         """`[xyz | wxyz | z | correction]`, the layout `MakeFlowInference` consumes, from the
-        lumped decision vector: the same lumping every robot's `VarsToQ` performs."""
+        lumped decision vector: the lumping every robot's `VarsToQ` performs.
+
+        For a chart with `task_input == "xyzrpy"` (LOInK) the task block is the raw
+        `c = [xyz, rpy]` itself, `[xyz | rpy | z | correction]`, with NO rpy -> quaternion ->
+        rpy round trip: the chart's input is then continuous across the rpy cut, and the
+        AutoDiffXd chain rule sees identity rows for it. Every program's task variables ARE
+        that pose (`TaskVarsToPose7` is the identity in all but coordinates), which is
+        checked rather than assumed."""
         width = self.ik_solver.network_width
         n = self.num_task_vars
+        if self.ChartTaskDim() == 6:
+            if n != 6:
+                raise ValueError(f"an xyzrpy chart needs the task variables to be c = [xyz, "
+                                 f"rpy]; this program has {n}")
+            vars = np.zeros(6 + width + self.num_arm_dof,
+                            dtype=AutoDiffXd if autodiff else np.float64)
+            vars[:6] = rpy_vars[:6]
+            vars[6:6 + width] = rpy_vars[n:n + width]
+            vars[6 + width:] = rpy_vars[n + width:n + width + self.num_arm_dof]
+            return vars
         vars = np.zeros(7 + width + self.num_arm_dof,
                         dtype=AutoDiffXd if autodiff else np.float64)
         xyz, quaternion = self.TaskVarsToPose7(
@@ -1476,8 +1509,10 @@ class IKFlowProgram:
         the compile.
         """
         width = self.ik_solver.network_width
-        vars = np.zeros(7 + width + self.num_arm_dof)
-        vars[3] = 1.0                                  # a unit quaternion, w first
+        task_dim = self.ChartTaskDim()
+        vars = np.zeros(task_dim + width + self.num_arm_dof)
+        if task_dim == 7:
+            vars[3] = 1.0                              # a unit quaternion, w first
         tensor = torch.tensor(vars, dtype=self.torch_dtype, device=DEVICE)
         start = time.time()
         gen = self.MakeJacobianGen()
@@ -1773,6 +1808,22 @@ class IKFlowProgram:
             z = self.ik_solver.encode(self.ik_solver.nn_model, q_t, pose_t)
         return z.squeeze(0).detach().cpu().numpy().astype(float)
 
+    def InvertChart(self, q_arm):
+        '''`(c, z)` reproducing `q_arm` through a chart with its own `invert`
+        (`src/charts/base.py`): the chart's own task estimate as the RAW `c = [xyz, rpy]` --
+        an `xyzrpy` chart's input is the program's `c` itself, so nothing is converted and
+        `c` may sit off the rpy principal domain -- and its latent. Unclipped, as
+        `InvertFlow`'s.'''
+        if self.ChartTaskDim() != 6:
+            raise ValueError("InvertChart needs a chart with task_input 'xyzrpy'")
+        dtype = self.torch_dtype
+        q_t = torch.tensor(np.asarray(q_arm, dtype=float)[None, :self.num_arm_dof],
+                           dtype=dtype, device=DEVICE)
+        with torch.no_grad():
+            c, z = self.ik_solver.invert(self.ik_solver.nn_model, q_t)
+        return (c.squeeze(0).detach().cpu().numpy().astype(float),
+                z.squeeze(0).detach().cpu().numpy().astype(float))
+
     def SetStartFromQ(self, q_arm):
         '''Start this program at the configuration `q_arm`, in its own variables.
 
@@ -1793,7 +1844,16 @@ class IKFlowProgram:
         # there. Measured: |z| goes from 1.6 to 6.2e7 between the two orders. Inverting
         # first keeps the latent inside the typical set and lets the box move only the
         # conditioning pose, which is the quantity the box is actually about.
-        z = self.InvertFlow(q_arm, c)
+        if getattr(self.ik_solver, "invert", None) is not None:
+            ## A chart whose task output is its own (`src/charts/base.py`, LOInK): `q_arm`
+            ## is reproduced at the pose the CHART assigns it, not at its FK pose, so `c` is
+            ## taken from the chart. How far that is from the FK pose is recorded per cell.
+            c_fk = c
+            c, z = self.InvertChart(q_arm)
+            self.start_c_error = float(np.linalg.norm(c - c_fk))
+        else:
+            z = self.InvertFlow(q_arm, c)
+            self.start_c_error = 0.0
         # The c region is a general linear constraint now, not a variable bound, so
         # _SetClipped/_BoxDistance no longer see it; measure and (for legacy) apply the
         # clip against the stored region instead.

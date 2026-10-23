@@ -109,6 +109,12 @@ class BatchedFlow:
         self.dtype = dtype
         self.device = torch.device(device)
         self.chart_error_scale = float(chart_error_scale)
+        ## What the chart's decode takes as the task (`src/charts/base.py`): the pose7 the
+        ## flow and the cVAE are conditioned on, or (LOInK) the particles' raw `c6` itself.
+        self.task_input = getattr(chart, "task_input", "pose7")
+        if self.task_input not in ("pose7", "xyzrpy"):
+            raise ValueError(f"unknown chart task_input {self.task_input!r}")
+        self.task_dim = 7 if self.task_input == "pose7" else 6
         self.shared_model = nn_model
         network_dtype = next(nn_model.parameters()).dtype
         if network_dtype == dtype:
@@ -121,10 +127,10 @@ class BatchedFlow:
                              "this wrapper never moves the shared network")
         if self.chart_error_scale:
             # The SAME seeded perturbation `MakeFlowInference` adds: a CPU generator at seed
-            # 0, W of shape (7 + width, ndof) then b of shape (ndof,), both float64, moved to
-            # the device. Drawn in this order so the matrices are bit-identical.
+            # 0, W of shape (task_dim + width, ndof) then b of shape (ndof,), both float64,
+            # moved to the device. Drawn in this order so the matrices are bit-identical.
             gen = torch.Generator(device="cpu").manual_seed(0)
-            W = torch.randn((7 + self.width, self.ndof), generator=gen,
+            W = torch.randn((self.task_dim + self.width, self.ndof), generator=gen,
                             dtype=torch.float64, device="cpu").to(self.device)
             b = torch.randn(self.ndof, generator=gen,
                             dtype=torch.float64, device="cpu").to(self.device)
@@ -157,6 +163,11 @@ class BatchedFlow:
             raise ValueError(f"c6 must be [B, 6], got {tuple(c6.shape)}")
         return torch.cat([c6[:, :3], quat_from_rpy_batched(c6[:, 3:6])], dim=1)
 
+    def task(self, c6: Tensor) -> Tensor:
+        """The chart's task input for particles' `c6`: `pose7(c6)` for a pose7 chart, `c6`
+        itself, unconverted, for an xyzrpy one (as `IKFlowProgram._FlowVars` lumps it)."""
+        return self.pose7(c6) if self.task_input == "pose7" else c6
+
     def conditioning(self, c6: Tensor) -> Tensor:
         """`[xyz, rpy]` [B, 6] -> a FLOW's conditioning row `[xyz, wxyz, 0]` [B, 8].
 
@@ -170,13 +181,13 @@ class BatchedFlow:
 
     def q(self, c6: Tensor, z: Tensor, qc: Tensor) -> Tensor:
         """`chart(c, z)[:, :ndof] + q_c`, [B, ndof]. Differentiable in all three arguments."""
-        pose7 = self.pose7(c6)
-        output, _ = self.chart.decode(self.model, z, pose7)
+        task = self.task(c6)
+        output, _ = self.chart.decode(self.model, z, task)
         q = output[:, :self.ndof] + qc
         if self.chart_error_scale:
             # A function of the conditioning pose and latent only, exactly as on the
             # program's side, so the correction's identity block is untouched.
-            inputs = torch.cat([pose7, z], dim=1).to(self._W.dtype)
+            inputs = torch.cat([task, z], dim=1).to(self._W.dtype)
             q = q + self.chart_error_scale * torch.sin(inputs @ self._W + self._b).to(q.dtype)
         return q
 
@@ -211,5 +222,5 @@ class BatchedFlow:
         if q.dim() != 2 or q.shape[1] != self.ndof:
             raise ValueError(f"q must be [B, {self.ndof}], got {tuple(q.shape)}")
         with torch.no_grad():
-            z = self.chart.encode(self.model, q, self.pose7(c6))
+            z = self.chart.encode(self.model, q, self.task(c6))
         return z

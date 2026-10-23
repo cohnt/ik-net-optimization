@@ -14,7 +14,8 @@ What is pinned:
      (per-cell records before and after, IPOPT and AL-SVGD) was run once at the refactor.
   2. `LoadChart` on a sidecar WITHOUT `family` gives a `FlowChart` (every pre-ablation
      sidecar), an explicit `"family": "ikflow"` likewise, an unknown family raises;
-     `WrapChart` wraps a bare solver and passes a chart through.
+     `WrapChart` wraps a bare solver and passes a chart through; `"family": "loink"` gives a
+     `LoinkChart`, the one family with an `invert` (the flow's is None).
   3. `flow_logdet_weight > 0` with a chart whose `has_density` is False is REFUSED at program
      construction (a dummy chart: the flow's own decode / encode with the density switched
      off), while the same chart at weight 0 constructs; `FlowNegLogDensity` refuses it too.
@@ -152,6 +153,28 @@ def test_load_chart_family_dispatch():
     print("PASS LoadChart: no family = ikflow, explicit ikflow loads, unknown raises; WrapChart")
 
 
+def test_load_chart_loink_dispatch():
+    """A `"family": "loink"` sidecar loads a `LoinkChart` (untrained, written to a temp dir);
+    it carries `invert`, while the flow's `invert` is the base default None -- the switch
+    `SetStartFromQ` reads, so the flow and cVAE paths stay as they were."""
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "scripts", "training"))
+    from export_loink import write_untrained
+    from src.charts.loink import LoinkChart
+
+    assert chart("panda").invert is None, "the flow chart must not carry an invert"
+    tmp = tempfile.mkdtemp(prefix="chart_loink_")
+    try:
+        with HiddenPrints():
+            pkl = write_untrained("panda", "m", "relu", out_path=os.path.join(tmp, "l.pkl"))[0]
+            ch = LoadChart("panda", pkl)
+        assert type(ch) is LoinkChart and ch.family == "loink" and ch.arch["family"] == "loink"
+        assert ch.invert is not None and not ch.has_density and ch.exact_inverse
+        assert ch.network_width == 1 and WrapChart(ch) is ch
+    finally:
+        shutil.rmtree(tmp)
+    print("PASS LoadChart: family loink -> LoinkChart (with invert); the flow's invert is None")
+
+
 class DensityFreeChart(Chart):
     """The flow with its density switched off: everything a program reads, nothing else."""
     family = "dummy"
@@ -197,5 +220,6 @@ if __name__ == "__main__":
     print(f"device: {DEVICE}")
     test_flow_chart_bit_identical()
     test_load_chart_family_dispatch()
+    test_load_chart_loink_dispatch()
     test_density_option_refused_without_density()
     print("ALL PASS")

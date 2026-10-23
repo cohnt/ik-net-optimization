@@ -639,6 +639,10 @@ def start_diagnostics(program, q_init):
     regions are bounds. Read it beside `start_q_error`, which is measured on the guess.
     """
     out = {"clip_distance": _finite(getattr(program, "clip_distance", None))}
+    ## `|c - c_FK|` of a learned paired start: 0.0 for a chart started at the FK pose (the
+    ## flow, the cVAE), the offset of the chart's own pose estimate for one with `invert`
+    ## (LOInK; `IKFlowProgram.SetStartFromQ`), None where no paired learned start was set.
+    out["start_c_error"] = _finite(getattr(program, "start_c_error", None))
     n = getattr(program, "num_arm_dof", 7)
     try:
         x0 = program.prog.GetInitialGuess(program.lumped_vars)
@@ -1583,6 +1587,8 @@ def summarise(records, arms, n_targets, n_guesses):
             median_clip_distance=_median(recs, "clip_distance"),
             median_start_q_error=_median(recs, "start_q_error"),
             max_start_q_error=_max(recs, "start_q_error"),
+            median_start_c_error=_median(recs, "start_c_error"),
+            max_start_c_error=_max(recs, "start_c_error"),
             median_start_z_norm=_median(recs, "start_z_norm"),
             median_correction_inf=_median(ok, "correction_inf"),
             correction_binding=_binding_fraction(ok),

@@ -38,6 +38,7 @@ sys.path.append(REPO_ROOT)
 sys.path.append(os.path.join(REPO_ROOT, "scripts/training"))
 
 from pole_metric import ProjectRobotNames, ScreenDomain, load_solver  # noqa: E402
+from src.charts.base import ChartTaskFromPose7  # noqa: E402
 
 
 def main():
@@ -98,7 +99,8 @@ def main():
             # flow that appends the softflow noise column, zero at test time.
             out = solver.decode(
                 model, torch.tensor(z[i:i + args.chunk], dtype=torch.float64, device=dev),
-                torch.tensor(pose[i:i + args.chunk], dtype=torch.float64, device=dev))[0]
+                ChartTaskFromPose7(solver, torch.tensor(pose[i:i + args.chunk],
+                                                        dtype=torch.float64, device=dev)))[0]
             chunks.append(out[:, :ndof].abs().amax(dim=1).cpu().numpy())
     qinf = np.concatenate(chunks)
 

@@ -19,6 +19,7 @@ from pydrake.all import (
 from src.panda_analytic_ik import Analytic_IK_Panda
 from src.analytic_program import AnalyticProgramMixin
 from src.charts.loading import LoadChart, WrapChart
+from src.nominal_configurations import PANDA_Q_NOMINAL
 
 
 #: The joint-space arm's variable bound BEFORE unification (2026-10-08): +-10 rad on every
@@ -33,9 +34,10 @@ class PandaIKProgram(IKFlowProgram):
     #: lower limit, is singular, and is in collision with the table in the hardened scene.
     #: Measured in the hardened scene (2026-10-08): inside the limits by 0.716 rad at the
     #: closest joint, manipulator-Jacobian sigma_min 0.224, collision value 0.62 (clear).
-    #: The ONE place this robot's home pose lives; every Panda program reads it through
+    #: The ONE place this robot's home pose lives is `src/nominal_configurations.py` (numpy
+    #: only, so the LOInK trainer reads it too); every Panda program reads it through
     #: `NominalConfiguration`.
-    Q_NOMINAL = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+    Q_NOMINAL = PANDA_Q_NOMINAL
 
     def NominalConfiguration(self):
         return self.Q_NOMINAL.copy()
@@ -156,7 +158,7 @@ class PandaIKProgram(IKFlowProgram):
             vars = torch.tensor(vars, device=DEVICE, dtype=self.torch_dtype)
         if not add_correction:
             width = self.ik_solver.network_width
-            vars = torch.cat([vars[:7 + width],
+            vars = torch.cat([vars[:self.ChartTaskDim() + width],
                               torch.zeros(self.num_arm_dof, dtype=vars.dtype, device=DEVICE)])
         q, _ = self.FlowInference()(vars)
         return q
@@ -181,14 +183,11 @@ class PandaIKProgram(IKFlowProgram):
         width = self.ik_solver.network_width
         n = self.num_task_vars
 
-        vars = np.zeros(7 + width + 7, dtype=AutoDiffXd if ad else np.float64)
-        xyz, quaternion = self.TaskVarsToPose7(rpy_vars[:n], t)
-        vars[:3] = xyz
-        vars[3:7] = quaternion
-        vars[7:7 + width] = rpy_vars[n:n + width]
-        ## Explicit end index: under `lift_q` the lumped vector carries the lifted
-        ## configuration after the correction, so an open-ended slice would be 14 wide.
-        vars[7 + width:] = rpy_vars[n + width:n + width + self.num_arm_dof]
+        ## `[c7 | z | correction]` (or `[c6 | z | correction]` for an xyzrpy chart), the
+        ## lumping `IKFlowProgram._FlowVars` performs -- for a pose7 chart the same ops this
+        ## method used to write out inline. Explicit end index there: under `lift_q` the
+        ## lumped vector carries the lifted configuration after the correction.
+        vars = self._FlowVars(rpy_vars, ad)
 
 
         if not ad:
