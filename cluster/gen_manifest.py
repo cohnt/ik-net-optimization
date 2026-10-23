@@ -4386,6 +4386,20 @@ LOINK_STAGES = ("LOINKSMOKE", "LOINKSMOKE_SVGD", "LOINKPROBE", "LOINKPROBE_SVGD"
 LOINK_EXT_STAGES = ("LOINKEXT", "LOINKEXT_SVGD")
 #: The would-be full stages: never committed or submitted, the source LOINKEXT selects whole rows of.
 LOINK_FULL_STAGES = ("LOINKFULL", "LOINKFULL_SVGD")
+#: Filtered copies of the four committed LOINK manifests (the CVAE_FILTERED_MANIFESTS precedent,
+#: `--exclude-rung <model dir>:<label>`), the ones SUBMITTED: only soft12's six project-recipe
+#: (`P`) charts exist. Every rigid-arm chart (Panda, iiwa14, screw7_p050; all twelve labels) never fit
+#: the task at K = n - 6 = 1 and its training was cancelled, and every paper-recipe (`A`) chart was
+#: cancelled when its plateau schedule collapsed the learning rate (docs/notes-chart.md, "Training
+#: outcome (2026-10-23)"). So the 42 excluded rungs are the three rigid model dirs x all twelve
+#: labels plus soft12's six `A` labels. LOINKPROBE's joint-space acceptance item names no LOInK
+#: checkpoint, so the exclusion keeps it. Item ids are the full manifests'; run_items.sh keys its
+#: state by the MANIFEST'S BASENAME (cluster/LOINK_RUNBOOK.md, "What actually ran").
+LOINK_EXCLUDED_RUNGS = tuple(
+    f"{CVAE_MODEL_DIR[robot]}:{label}"
+    for robot, _, _ in SVGD_RECORD_CONTEXTS for label in LOINK_LABELS
+    if robot in LOINK_RIGID or not label.endswith("P"))
+LOINK_FILTERED_MANIFESTS = {f"{src}_soft12P": (src, LOINK_EXCLUDED_RUNGS) for src in LOINK_STAGES}
 
 
 def loink_trust_region(robot):
@@ -4697,6 +4711,39 @@ def _loink_selftest():
         whole = [l for l in full_lines if l.split("|", 1)[0].rsplit("_shard", 1)[0] in rows_in]
         if whole != on_disk:
             fails.append(f"cluster/manifest_stage{which}.txt holds a row without all of its shards")
+    ## The filtered (submitted) manifests: soft12's six P charts and, in the IPOPT probe, the
+    ## acceptance run -- the committed full manifest minus exactly the excluded rungs' items.
+    kept_labels = sorted(l for l in LOINK_LABELS if l.endswith("P"))
+    if len(LOINK_EXCLUDED_RUNGS) != 42 or len(set(LOINK_EXCLUDED_RUNGS)) != 42 or \
+            sorted(sp.split(":")[1] for sp in LOINK_EXCLUDED_RUNGS if sp.startswith("soft12:")) != \
+            sorted(l for l in LOINK_LABELS if l.endswith("A")) or len(kept_labels) != 6:
+        fails.append("LOINK_EXCLUDED_RUNGS is not the 36 rigid rungs + soft12's six A rungs")
+    soft_ck = re.compile(r"^models/soft12/soft12__loink[mxu][rt]P__step620000\.pkl$")
+    for name, (src, specs) in LOINK_FILTERED_MANIFESTS.items():
+        on_disk, full = disk(name), disk(src)
+        if on_disk is None or full is None:
+            continue
+        prefixes = [f"--checkpoint models/{d}/{d}__{l}__" for d, l in (sp.split(":") for sp in specs)]
+        minus = [l for l in full if not any(p in l for p in prefixes)]
+        if on_disk != minus:
+            fails.append(f"cluster/manifest_stage{name}.txt is not manifest_stage{src}.txt minus "
+                         f"exactly the {len(specs)} excluded rungs' items")
+        items = cvae_exclude_rungs(built[src], specs)
+        if on_disk != render(items):
+            fails.append(f"cluster/manifest_stage{name}.txt is stale; regenerate it")
+        per_row = 1 if src.startswith("LOINKSMOKE") else \
+            (CVAE_SVGD_SHARDS if src.endswith("_SVGD") else CVAE_IPOPT_SHARDS)
+        n_acc = len(_loink_acceptance()) if src == "LOINKPROBE" else 0
+        if len(items) != 6 * 4 * per_row + n_acc:
+            fails.append(f"{name}: {len(items)} items, expected {6 * 4 * per_row + n_acc} "
+                         f"(6 charts x 4 rows x {per_row}{f' + {n_acc} acceptance' if n_acc else ''})")
+        acc = [it for it in items if _svgd_flag(it["args"], "--tag").startswith(f"{LOINK_TAG_PREFIX}_LOINKACC_")]
+        if len(acc) != n_acc:
+            fails.append(f"{name}: {len(acc)} acceptance items, expected {n_acc}")
+        bad = [it["id"] for it in items if it not in acc
+               and (it["robot"] != "soft12" or not soft_ck.match(_svgd_flag(it["args"], "--checkpoint")))]
+        if bad:
+            fails.append(f"{name}: {len(bad)} items not on a soft12 P chart, e.g. {bad[0]}")
     return fails
 
 
@@ -7622,7 +7669,9 @@ def selftest():
               "twin (PAPER / SVGD_R2 IPOPT, R29 pin4) with only arms, checkpoint, tag (sc_LOINK) and the rule "
               "trust region changed; the probe covers each of LOINKFULL(_SVGD)'s 384 runs once; the ext "
               "rule selects whole rows; chart_runs.txt's 48 loink rows match; committed manifests current "
-              "(LOINKEXT(_SVGD): whole rigid rows of the full stage)")
+              "(LOINKEXT(_SVGD): whole rigid rows of the full stage); the four _soft12P manifests (the "
+              "submitted ones) = the full ones minus exactly the 42 rigid / soft12-A rungs: 24 / 24 / 200 / 576 "
+              "items, soft12 P charts only (+ the acceptance run in LOINKPROBE_soft12P)")
 
     sr_fails = _screwredo_selftest()
     for msg in sr_fails[:12]:

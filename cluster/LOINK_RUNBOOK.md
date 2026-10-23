@@ -206,6 +206,40 @@ item is submitted.** The gates are pass/fail; the rest is what the report quotes
 A chart failing (b), (d) or (f) is a bug in the chart or its export, not a result: stop and report,
 do not benchmark it.
 
+### What actually ran: the four `_soft12P` manifests
+
+Only soft12's six project-recipe charts exist (`models/soft12/soft12__loink{m,x,u}{r,t}P__step620000.pkl`):
+every rigid-arm chart never fit the task at K = 1 and every paper-recipe (`A`) chart collapsed, so
+their training was cancelled (`docs/notes-chart.md`, "Training outcome (2026-10-23)"). The
+benchmark is submitted from FILTERED manifests, committed, `gen_manifest.py`'s
+`LOINK_FILTERED_MANIFESTS`: each full manifest minus the 42 `LOINK_EXCLUDED_RUNGS` (three rigid model
+dirs x twelve labels + soft12's six `A` labels; `--exclude-rung`, the cVAE `_noiiwa8` precedent; the
+selftest holds them to it). Steps 4 and 5 below run these, not the full manifests:
+
+```bash
+cluster/stage_code.sh
+PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKSMOKE_soft12P.txt 2                 # 24 items
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKSMOKE_SVGD_soft12P.txt 2   # 24
+# smokes passed:
+PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKPROBE_soft12P.txt 4                 # 200
+DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKPROBE_SVGD_soft12P.txt 4   # 576
+```
+
+| manifest | items | item-hours | LPT wall on 4 nodes x 2 |
+| --- | ---: | ---: | ---: |
+| LOINKSMOKE_soft12P | 24 (6 charts x 4 rows) | 1.3 | ~0.2 h |
+| LOINKSMOKE_SVGD_soft12P | 24 | 1.3 | ~0.2 h |
+| LOINKPROBE_soft12P | 200 (6 x 4 rows x 8 shards + the 8-item acceptance run) | 23.8 | ~3.0 h |
+| LOINKPROBE_SVGD_soft12P | 576 (6 x 4 x 24 shards) | 44.8 | ~5.6 h |
+
+The acceptance run stays in `LOINKPROBE_soft12P` (its `--checkpoint` is the Panda flow
+`panda__n6`, which no exclusion matches). With no rigid probe, step 6's LOINKEXT is empty by
+construction: nothing to submit. **Do NOT submit the full manifests**: item ids are the full
+manifests', but `run_items.sh` keys its `.claim` / `.done` state by the MANIFEST'S BASENAME, so a
+full manifest would not see the filtered one's items as done and would run them again
+(`submit_bench.sh` refuses the full ones anyway while any `--checkpoint` they name is missing). If a full manifest is ever
+wanted afterwards, carry the `.done` markers across first, as `cluster/CVAE_RUNBOOK.md` shows.
+
 ### 4. Stage, then the benchmark smokes
 
 ```bash
