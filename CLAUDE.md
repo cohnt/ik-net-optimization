@@ -410,11 +410,15 @@ network designed for a structured latent (`G(q) = [task; z]`, `z = 0` the cost m
 is `G^{-1}`, Davis-Yin + Newton polish, IFT derivative; it takes the program's RAW `c`,
 `task_input="xyzrpy"`). Question: does a latent structured for ONE cost help under OUR objective?
 Ladder cost m/x/u x relu/tanh x recipe P/A. Paper replicated first (`docs/loink-replication.md`):
-Sec. V reproduces at `lambda = 0.01`; Table II does not. **Rigid arms (2026-10-23): the chart never
-fits the task at LOInK's own `K = n - 6 = 1`** (a K ladder shows the latent width is the
-mechanism, not the rpy cut); recipe A's plateau
-schedule collapses the LR by 40k steps. Soft12 (`K = 6`) pending. A padded-latent rung is a
-method change: Thomas's call. Long form `docs/notes-chart.md`; ops `cluster/LOINK_RUNBOOK.md`.
+Sec. V reproduces at `lambda = 0.01`; Table II does not. **Rigid arms: the chart never fits the
+task at LOInK's own `K = n - 6 = 1`** (a K ladder shows the latent width is the mechanism); recipe
+A's plateau schedule collapses the LR. **Soft12 (`K = 6`) learns but no chart fits** (task error
+0.18-0.29 m, `z = 0` a metre off, cost head R^2 < 0); the true latent of every real `q` lies
+OUTSIDE the +-5 box, so paired starts always clip; inside the box the decode is exact. Inverting:
+the Newton polish does the work, its step rule a per-chart sidecar field (`newton_damping`:
+undamped for relu, backtracking for tanh) chosen by the exporter's cost-ordered ladder. Cells:
+soft12 only. A padded-latent rung is a method change: Thomas's call. Long form
+`docs/notes-chart.md`; ops `cluster/LOINK_RUNBOOK.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
 
