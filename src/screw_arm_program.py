@@ -182,7 +182,7 @@ class ScrewArmIKProgram(IKFlowProgram):
             vars = torch.tensor(vars, device=DEVICE, dtype=self.torch_dtype)
         if not add_correction:
             width = self.ik_solver.network_width
-            vars = torch.cat([vars[:7 + width],
+            vars = torch.cat([vars[:self.ChartTaskDim() + width],
                               torch.zeros(self.num_arm_dof, dtype=vars.dtype, device=DEVICE)])
         q, _ = self.FlowInference()(vars)
         return q
@@ -211,14 +211,10 @@ class ScrewArmIKProgram(IKFlowProgram):
         n = self.num_task_vars
         ndof = self.num_arm_dof
 
-        vars = np.zeros(7 + width + ndof, dtype=AutoDiffXd if ad else np.float64)
-        xyz, quaternion = self.TaskVarsToPose7(rpy_vars[:n], t)
-        vars[:3] = xyz
-        vars[3:7] = quaternion
-        vars[7:7 + width] = rpy_vars[n:n + width]
-        ## Explicit end index: under `lift_q` the lumped vector carries the lifted
-        ## configuration after the correction, so an open-ended slice would be too wide.
-        vars[7 + width:] = rpy_vars[n + width:n + width + ndof]
+        ## `[c7 | z | correction]` (or `[c6 | z | correction]` for an xyzrpy chart), the
+        ## lumping `IKFlowProgram._FlowVars` performs -- for a pose7 chart the same ops this
+        ## method used to write out inline (explicit end index, for `lift_q`).
+        vars = self._FlowVars(rpy_vars, ad)
 
         if not ad:
             q = np.zeros(self.num_pos)

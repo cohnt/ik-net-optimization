@@ -15,8 +15,9 @@ There is no LOInK code online (2026-10-22); BiLipNet's is the official PLNet rep
 https://github.com/acfr/PLNet (MIT), JAX/Flax, `surrogte_loss/rb20d_solver.py` and
 `surrogte_loss/layer.py`. This module is a line-by-line port of that code, checked against a
 float64 golden file generated from it (`tests/test_loink_reference.py`,
-`tests/data/loink_reference/`). This file holds ONLY the network core, its inversion, the
-LOInK model and its loss; the chart wrapper, sidecar and loader come later.
+`tests/data/loink_reference/`). The first part of this file is the network core, its
+inversion, the LOInK model and its loss; the second ("the chart family", at the end) the task
+representation, the training costs, the chart wrapper, the sidecar and the loader.
 
 What is here, and the equations it implements
 ---------------------------------------------
@@ -578,3 +579,423 @@ def loink_loss(model, q, y, j=None, lam=1.0, tau_penalty=1e-3):
         parts["aux_mse"] = aux_mse
     parts["loss"] = loss
     return loss, parts
+
+
+## ====================================================================== the chart family
+##
+## Everything below makes `LoinkModel` a chart of the learned formulation, the way
+## `src/charts/cvae.py` does for the cVAE: the task representation, the training costs, the
+## `Chart` wrapper, the mandatory sidecar and the loader. Imported here rather than at the top
+## so that the core above stays exactly the port the golden check pins.
+
+import json  # noqa: E402
+import os  # noqa: E402
+import pickle  # noqa: E402
+import re  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+from src.charts.base import Chart  # noqa: E402
+
+## `src.flow_loading` (SidecarPath, WriteArch) is imported inside the functions that need it:
+## it imports ikflow and jrl, and jrl sets torch's default device to CUDA at import, which
+## must not happen to a script that only wants the network core above.
+
+#: The task the chart's first `p` outputs fit: `y = [x, y, z, roll, pitch, yaw]`, the
+#: program's own `c` variables (Drake `RollPitchYaw`). A stated choice: there is no
+#: continuous 6-parameter chart of SE(3), so the rpy cut (roll or yaw = +-pi, pitch = +-pi/2)
+#: is an irreducible floor of a Lipschitz map near it; `screen_loink.py` (e) measures it.
+TASK_DIM = 6
+
+#: The LOInK eq. 18 barrier's floor, `-log(max(1 - q_hat^2, eps))`.
+BARRIER_EPS = 1e-3
+
+#: The fields that define the chart's forward pass and its cost semantics. Everything else
+#: in a sidecar (training recipe, loss weights, provenance) is carried for the record only.
+ARCH_FIELDS = ("ndof", "task_dim", "dim_latent_space", "units", "depth", "mu", "activation",
+               "cost", "head_hidden", "j_mean", "j_std", "n_dys", "n_newton")
+
+#: The one architecture of the campaign (no ladder): the paper's manipulator example.
+DEFAULT_ARCH = {"units": (256, 256, 256, 256), "depth": 2, "mu": 0.1, "head_hidden": 128,
+                "n_dys": 100, "n_newton": 2}
+
+
+## ---------------------------------------------------------------------- task representation
+
+def Pose7ToXyzRpy(pose7):
+    """`[B, 7]` `[x, y, z, qw, qx, qy, qz]` -> `[B, 6]` `[x, y, z, roll, pitch, yaw]`.
+
+    Drake's convention, `R = Rz(yaw) Ry(pitch) Rx(roll)` (extrinsic x-y-z), by the standard
+    atan2 formulas on the rotation matrix of the normalised quaternion:
+        roll = atan2(R21, R22), pitch = atan2(-R20, hypot(R00, R10)), yaw = atan2(R10, R00),
+    so roll, yaw in (-pi, pi] and pitch in [-pi/2, pi/2] -- the principal domain Drake's
+    `RollPitchYaw(RotationMatrix(q)).vector()` returns (matched to 1e-12 by
+    `tests/test_loink_chart.py`). The quaternion's sign does not matter. Smooth away from
+    the cut; at gimbal lock (|pitch| = pi/2 exactly) its derivative is not finite.
+    """
+    xyz, q = pose7[:, :3], pose7[:, 3:7]
+    q = q / torch.linalg.norm(q, dim=1, keepdim=True)
+    w, x, y, z = q.unbind(1)
+    R00 = 1 - 2 * (y * y + z * z)
+    R10 = 2 * (x * y + w * z)
+    R20 = 2 * (x * z - w * y)
+    R21 = 2 * (y * z + w * x)
+    R22 = 1 - 2 * (x * x + y * y)
+    roll = torch.atan2(R21, R22)
+    pitch = torch.atan2(-R20, torch.sqrt(R00 * R00 + R10 * R10))
+    yaw = torch.atan2(R10, R00)
+    return torch.cat([xyz, torch.stack([roll, pitch, yaw], dim=1)], dim=1)
+
+
+def XyzRpyToPose7(y):
+    """`[B, 6]` `[x, y, z, roll, pitch, yaw]` -> `[B, 7]` `[x, y, z, qw, qx, qy, qz]`, the
+    quaternion canonicalised to `w >= 0` as Drake's `ToQuaternion` returns it
+    (`src.svgd.batched_flow.quat_from_rpy_batched`, the tree's one rpy -> quaternion map).
+    Defined for ANY rpy; `Pose7ToXyzRpy(XyzRpyToPose7(y)) == y` only on the principal domain.
+    """
+    from src.svgd.batched_flow import quat_from_rpy_batched
+    return torch.cat([y[:, :3], quat_from_rpy_batched(y[:, 3:6])], dim=1)
+
+
+def RpyCutDistance(rpy):
+    """Distance in radians to the nearest rpy cut, `min(pi - |roll|, pi - |yaw|, pi/2 - |pitch|)`."""
+    roll, pitch, yaw = rpy[..., 0], rpy[..., 1], rpy[..., 2]
+    return torch.minimum(torch.minimum(math.pi - roll.abs(), math.pi - yaw.abs()),
+                         math.pi / 2 - pitch.abs())
+
+
+## ---------------------------------------------------------------------- training costs
+
+def NominalConfiguration(robot_name, ndof):
+    """The program's `NominalConfiguration()` constant for `robot_name`, without a program:
+    Panda / iiwa from `src.nominal_configurations` (what their programs read), the screw arm
+    from its spec, the soft PCS arms zeros (the generic program's default)."""
+    if robot_name == "panda":
+        from src.nominal_configurations import PANDA_Q_NOMINAL as q
+    elif robot_name == "iiwa14":
+        from src.nominal_configurations import IIWA_Q_NOMINAL as q
+    elif robot_name.startswith("screw7_"):
+        from src.screw_arm.params import GetSpec
+        q = GetSpec(robot_name).q_nominal
+    elif re.fullmatch(r"soft\d+", robot_name):
+        q = np.zeros(ndof)
+    else:
+        raise ValueError(f"no nominal configuration known for {robot_name!r} "
+                         "(panda, iiwa14, screw7_*, soft*)")
+    q = np.asarray(q, dtype=float).reshape(-1)
+    if q.shape != (ndof,):
+        raise ValueError(f"{robot_name}: nominal has shape {q.shape}, expected ({ndof},)")
+    return q
+
+
+class _TrainingCost:
+    """`q [B, n] -> j [B]`, in configuration units; constants cast to `q`'s dtype/device."""
+
+    def __init__(self, kind, q_nom=None, mid=None, half=None, eps=BARRIER_EPS):
+        self.kind, self.eps = kind, float(eps)
+        self.q_nom, self.mid, self.half = q_nom, mid, half
+
+    def __call__(self, q):
+        if self.kind == "m":
+            d = q - self.q_nom.to(dtype=q.dtype, device=q.device)
+            return 0.5 * (d * d).sum(-1)
+        q_hat = (q - self.mid.to(dtype=q.dtype, device=q.device)) / self.half.to(
+            dtype=q.dtype, device=q.device)
+        return -torch.log(torch.clamp(1 - q_hat * q_hat, min=self.eps)).sum(-1)
+
+
+def TrainingCost(robot_name, kind, robot=None):
+    """The cost a `kind` chart's head is trained to fit, or None for `kind == "u"`.
+
+      * `m` (matched): `0.5 |q - q_nom|^2`, the program's reported joint-centering cost, with
+        `q_nom` = `NominalConfiguration(robot_name)` (soft PCS: `0.5 |strain|^2`).
+      * `x` (mismatched): LOInK eq. 18, `-sum_i log(max(1 - q_hat_i^2, eps))`, `eps = 1e-3`,
+        on `q_hat = (q - mid) / half` from the robot's joint limits (soft PCS: +-1).
+      * `u` (unstructured): no head, no cost -- `None`.
+
+    Both in the configuration units the dataset holds (the soft PCS dataset is normalised
+    strain already). `robot` (a jrl `Robot`) is resolved by name when not given.
+    """
+    if kind not in COSTS:
+        raise ValueError(f"cost {kind!r} not in {COSTS}")
+    if kind == "u":
+        return None
+    if robot is None:
+        from jrl.robots import get_robot
+        robot = get_robot(robot_name)
+    ndof = int(robot.ndof)
+    if kind == "m":
+        q_nom = torch.tensor(NominalConfiguration(robot_name, ndof), dtype=torch.float64,
+                             device="cpu")
+        return _TrainingCost("m", q_nom=q_nom)
+    lo, hi = (torch.tensor(v, dtype=torch.float64, device="cpu")
+              for v in zip(*robot.actuated_joints_limits))
+    return _TrainingCost("x", mid=0.5 * (lo + hi), half=0.5 * (hi - lo))
+
+
+## ---------------------------------------------------------------------- the chart
+
+def LoinkDecode(model, z, c6):
+    """`(q [B, ndof], None)`: `model.forward(z, c6)` = scale * G^{-1}([c6, z]) at the
+    program's RAW task `c6 = [xyz, rpy]` (`task_input = "xyzrpy"`): no rpy -> quaternion ->
+    rpy round trip, so the input is continuous where `c`'s roll crosses +-pi (G is defined on
+    all of R^n; off the principal domain it extrapolates, the cut's floor, screen (e)).
+    Through `forward` so a compiled wrapper compiles this call (`LoinkModel`)."""
+    return model(z, c6), None
+
+
+def LoinkEncode(model, q, c6):
+    """`z = G_2(q / scale)`: exact, and the task is IGNORED -- the chart's own task estimate
+    `y_hat = G_1(q)` is what reproduces `q`, which `LoinkInvert` returns and `SetStartFromQ`
+    uses. Decoding this `z` at any other task (the FK pose's) gives a different `q`."""
+    return model.encode(q)
+
+
+def LoinkInvert(model, q):
+    """`(c6 [B, 6], z [B, K]) = G(q / scale)`, `c6` the RAW `y_hat` (not wrapped to the rpy
+    principal domain), so `LoinkDecode(model, z, c6) == q` for EVERY `q`."""
+    return model.invert(q)
+
+
+class LoinkChart(Chart):
+    """LOInK as a chart: `decode` is `G^{-1}` at the program's raw `c = [xyz, rpy]`
+    (`task_input = "xyzrpy"`), `encode` is `G_2`, and `invert(model, q) -> (c6, z)` is the
+    chart's own exact inverse (`src/charts/base.py`). Screens holding a dataset pose7 form
+    the input with `ChartTaskFromPose7` (`Pose7ToXyzRpy`).
+
+    `decode` / `encode` / `invert` are module-level functions held as plain instance
+    attributes -- not bound methods -- for the reason `FlowChart` gives: `MakeFlowInference`
+    closes over `decode` and torch.compile guards on what a compiled closure holds, so it must
+    carry no reference to this object (a no-argument `functools.partial` would be the same).
+
+    Compile and CUDA graphs: the Davis-Yin loop is `n_dys` fixed iterations per monotone
+    layer with no data-dependent control flow, so dynamo unrolls it and a CUDA graph captures
+    it (a graph replays whatever kernels ran during capture). Measured on the laptop CPU
+    (2026-10-22, untrained Panda chart, float64, 4 threads; `FlowJacobianGen(compile_it=True)`
+    compile + first call, then steady state against eager): relu 33 s at n_dys 2, 38 s at
+    10, 114 s at 100 (19 ms v 121 ms eager; 103 s re-measured through the raw-c6 path); tanh 163 s at n_dys 20, 566 s at 100 (83 ms v
+    213 ms) -- the tanh prox's inner 8-step solve multiplies the unrolled graph. Jacobians
+    equal eager to 1e-14. `flow_cuda_graph` compiles a second, value-only function on top.
+    The lever on compile time is `n_dys` itself (`screen_loink.py` (b): the Newton polish
+    makes the value exact at small counts inside the basin). Wrapping the DYS loop in
+    `torch.compiler.disable` is NOT a fallback: dynamo cannot break a graph inside a
+    `torch.func` transform, so the whole compiled `jacrev` silently runs eager (measured:
+    0.4 s "compile", steady time = eager, bit-identical).
+    """
+
+    family = FAMILY
+    has_density = False
+    exact_inverse = True
+    task_input = "xyzrpy"
+
+    def __init__(self, nn_model, robot, arch, arch_source=None):
+        self.nn_model = nn_model
+        self.robot = robot
+        self.arch = dict(arch)
+        self.arch_source = arch_source
+        self.network_width = int(arch["dim_latent_space"])
+        self.ndof = int(robot.ndof)
+        self.decode = LoinkDecode
+        self.encode = LoinkEncode
+        self.invert = LoinkInvert
+
+    def cost_hat_raw(self, z, y_hat, model=None):
+        """The head's cost estimate in the training cost's own units,
+        `j_mean + j_std * J_hat(z, y_hat)` (the head fits the standardised cost)."""
+        if self.arch["cost"] == "u":
+            raise ValueError("a cost-'u' LOInK chart has no cost head")
+        model = self.nn_model if model is None else model
+        return self.arch["j_mean"] + self.arch["j_std"] * model.cost_hat(z, y_hat)
+
+
+## ---------------------------------------------------------------------- sidecar and loading
+
+def WriteLoinkArch(checkpoint_pkl, arch, provenance=None):
+    """Write `<stem>.arch.json` for a LOInK chart, with `"family": "loink"`."""
+    from src.flow_loading import WriteArch
+    missing = [k for k in ARCH_FIELDS if k not in arch]
+    if missing:
+        raise ValueError(f"LOInK arch is missing {missing}")
+    arch = dict(arch, units=[int(u) for u in arch["units"]])
+    return WriteArch(checkpoint_pkl, dict(arch, family=FAMILY), provenance=provenance)
+
+
+def _Indexed(state_dict, pattern):
+    return sorted({int(m.group(1)) for k in state_dict if (m := re.fullmatch(pattern, k))})
+
+
+def ArchFromLoinkStateDict(state_dict):
+    """Recover every field the weights determine from a raw `LoinkModel` state dict.
+
+    From SHAPES: `ndof` (`G.uni.0.W`), `depth` (the number of `G.mon.*`), `units` (each
+    `G.mon.k.Fab{j}`), and, when a cost head is present, `task_dim` and `head_hidden`
+    (`H.0.weight`) and `dim_latent_space` (`H.4.weight` has 1 + K^2 rows). From a BUFFER'S
+    VALUE: `mu`, the product of the per-layer `G.mon.k.mu` (`load_state_dict` would install it
+    whatever the sidecar said, so it is checked rather than trusted). Whether there is a head
+    (`has_head`, i.e. cost "u" or not) from the keys.
+
+    What NO check can catch -- the reason the sidecar is mandatory, as `rnvp_clamp` is for
+    flows (`src/flow_loading.py`) and `activation` for the cVAE: `activation` (relu and tanh
+    weights are identical in shape), the cost letter between "m" and "x" (the same head fits
+    either target), `j_mean` / `j_std` (the head's standardisation, which only `cost_hat_raw`
+    reads), `n_dys` / `n_newton` (iteration counts of the inverse), and, on a cost-"u" chart,
+    `task_dim` / `head_hidden`.
+    """
+    unis = _Indexed(state_dict, r"G\.uni\.(\d+)\.W")
+    mons = _Indexed(state_dict, r"G\.mon\.(\d+)\.Fq")
+    if not unis or not mons:
+        raise ValueError("state dict has no 'G.uni.*.W' / 'G.mon.*.Fq' keys -- not a LOInK chart")
+    problems = []
+    ndof = int(state_dict["G.uni.0.W"].shape[0])
+    depth = len(mons)
+    if mons != list(range(depth)) or unis != list(range(depth + 1)):
+        problems.append(f"unexpected layer layout: uni {unis}, mon {mons}")
+    units = None
+    for k in mons:
+        blocks = _Indexed(state_dict, rf"G\.mon\.{k}\.Fab(\d+)")
+        u = tuple(int(state_dict[f"G.mon.{k}.Fab{j}"].shape[1]) for j in blocks)
+        nz_1 = 0
+        for j, nz in zip(blocks, u):
+            shape = tuple(state_dict[f"G.mon.{k}.Fab{j}"].shape)
+            if shape != (nz + nz_1, nz):
+                problems.append(f"G.mon.{k}.Fab{j} has shape {shape}, expected ({nz + nz_1}, {nz})")
+            nz_1 = nz
+        if tuple(state_dict[f"G.mon.{k}.Fq"].shape) != (ndof, sum(u)):
+            problems.append(f"G.mon.{k}.Fq has shape {tuple(state_dict[f'G.mon.{k}.Fq'].shape)}, "
+                            f"expected ({ndof}, {sum(u)})")
+        if units is None:
+            units = u
+        elif u != units:
+            problems.append(f"G.mon.{k} units {u} differ from G.mon.0's {units}")
+    for k in unis:
+        if tuple(state_dict[f"G.uni.{k}.W"].shape) != (ndof, ndof):
+            problems.append(f"G.uni.{k}.W is not ({ndof}, {ndof})")
+    mu = float(np.prod([float(state_dict[f"G.mon.{k}.mu"]) for k in mons]))
+    if "scale" not in state_dict or tuple(state_dict["scale"].shape) != (ndof,):
+        problems.append(f"no 'scale' tensor of shape ({ndof},)")
+    out = {"ndof": ndof, "depth": depth, "units": list(units or ()), "mu": mu,
+           "has_head": "H.0.weight" in state_dict}
+    if out["has_head"]:
+        p, hh = int(state_dict["H.0.weight"].shape[1]), int(state_dict["H.0.weight"].shape[0])
+        rows = int(state_dict["H.4.weight"].shape[0])
+        k = ndof - p
+        if rows != 1 + k * k:
+            problems.append(f"H.4.weight has {rows} rows, expected 1 + K^2 = {1 + k * k} "
+                            f"(K = ndof {ndof} - task_dim {p})")
+        out.update(task_dim=p, head_hidden=hh, dim_latent_space=k)
+    if problems:
+        raise ValueError("not a well-formed LOInK state dict:\n  " + "\n  ".join(problems))
+    return out
+
+
+def ReadLoinkArch(checkpoint):
+    """Read the MANDATORY sidecar of a LOInK checkpoint; raise if absent or not a LOInK's."""
+    from src.flow_loading import SidecarPath
+    sidecar = SidecarPath(checkpoint)
+    if not os.path.exists(sidecar):
+        raise FileNotFoundError(
+            f"no architecture sidecar at {sidecar}. A LOInK chart has no legacy fallback: the "
+            "activation, the cost letter, the head's standardisation and the inverse's "
+            "iteration counts cannot be recovered from the weights. Export it with "
+            "scripts/training/export_loink.py.")
+    with open(sidecar) as f:
+        payload = json.load(f)
+    if payload.get("family") != FAMILY:
+        raise ValueError(f"{sidecar} declares family {payload.get('family')!r}, not {FAMILY!r}")
+    missing = [k for k in ARCH_FIELDS if k not in payload]
+    if missing:
+        raise ValueError(f"{sidecar} is missing the LOInK arch fields {missing}")
+    return payload, sidecar
+
+
+def VerifyLoinkArch(declared, state_dict, source):
+    """Raise if the sidecar disagrees with what the weights imply, or with itself."""
+    actual = ArchFromLoinkStateDict(state_dict)
+    d = dict(declared)
+    mismatches = []
+    for key in ("ndof", "depth"):
+        if int(d[key]) != actual[key]:
+            mismatches.append(f"{key}: sidecar says {d[key]!r}, weights imply {actual[key]!r}")
+    if [int(u) for u in d["units"]] != actual["units"]:
+        mismatches.append(f"units: sidecar says {list(d['units'])}, weights imply {actual['units']}")
+    if not math.isclose(float(d["mu"]), actual["mu"], rel_tol=1e-6):
+        mismatches.append(f"mu: sidecar says {d['mu']!r}, the weights' mu buffers multiply "
+                          f"to {actual['mu']!r}")
+    if d["cost"] not in COSTS:
+        mismatches.append(f"cost: {d['cost']!r} not in {COSTS}")
+    elif (d["cost"] != "u") != actual["has_head"]:
+        mismatches.append(f"cost: sidecar says {d['cost']!r}, the weights "
+                          f"{'have' if actual['has_head'] else 'have no'} cost head")
+    if d["activation"] not in ACTIVATIONS:
+        mismatches.append(f"activation: {d['activation']!r} not in {ACTIVATIONS}")
+    if int(d["task_dim"]) != TASK_DIM:
+        mismatches.append(f"task_dim: sidecar says {d['task_dim']!r}; the chart's task is "
+                          f"xyz + rpy, {TASK_DIM}")
+    if int(d["dim_latent_space"]) != int(d["ndof"]) - int(d["task_dim"]):
+        mismatches.append(f"dim_latent_space: sidecar says {d['dim_latent_space']!r}, but "
+                          f"ndof - task_dim = {int(d['ndof']) - int(d['task_dim'])}")
+    if actual["has_head"]:
+        for key in ("task_dim", "head_hidden", "dim_latent_space"):
+            if int(d[key]) != actual[key]:
+                mismatches.append(f"{key}: sidecar says {d[key]!r}, weights imply {actual[key]!r}")
+        if not (d["j_mean"] is not None and d["j_std"] is not None and float(d["j_std"]) > 0):
+            mismatches.append(f"j_mean / j_std: a cost head needs a finite standardisation, "
+                              f"got {d['j_mean']!r} / {d['j_std']!r}")
+    if int(d["n_dys"]) < 1 or int(d["n_newton"]) < 0:
+        mismatches.append(f"n_dys {d['n_dys']!r} / n_newton {d['n_newton']!r} out of range")
+    if mismatches:
+        raise ValueError(
+            f"architecture in {source} does not match the weights:\n  " + "\n  ".join(mismatches)
+            + "\nLoading this checkpoint would silently produce a different chart.")
+
+
+def BuildLoinkModel(arch, scale):
+    """An (untrained) `LoinkModel` for `arch`, on the CPU (jrl may have made CUDA the default)."""
+    with torch.device("cpu"):
+        return LoinkModel(int(arch["ndof"]), int(arch["task_dim"]), scale,
+                          units=tuple(int(u) for u in arch["units"]), depth=int(arch["depth"]),
+                          mu=float(arch["mu"]), activation=arch["activation"],
+                          cost=arch["cost"], head_hidden=int(arch["head_hidden"]),
+                          n_dys=int(arch["n_dys"]), n_newton=int(arch["n_newton"]))
+
+
+def LoadLoinkChart(robot_name, checkpoint, compile_model=None):
+    """Build a `LoinkChart` from a bare state-dict `.pkl` and its mandatory sidecar.
+
+    Every field the weights determine is cross-checked and a contradiction RAISES
+    (`VerifyLoinkArch`). As for the cVAE: the sidecar's `robot_name` (when present) must be the
+    one asked for, and the `scale` buffer must equal the robot's own joint scaling
+    (`src.charts.cvae.JointScale`) -- what stops a Panda chart loading against the 7-DoF screw
+    arm, which no shape check can tell apart.
+    """
+    from jrl.config import DEVICE
+    from jrl.robots import get_robot
+
+    from src.charts.cvae import JointScale
+
+    payload, source = ReadLoinkArch(checkpoint)
+    if payload.get("robot_name") not in (None, robot_name):
+        raise ValueError(f"{source} was trained for {payload['robot_name']!r}, "
+                         f"not {robot_name!r}")
+    arch = {k: payload[k] for k in ARCH_FIELDS}
+
+    with open(checkpoint, "rb") as f:
+        state_dict = pickle.load(f)
+    VerifyLoinkArch(arch, state_dict, source)
+
+    robot = get_robot(robot_name)
+    if int(robot.ndof) != int(arch["ndof"]):
+        raise ValueError(f"{source}: chart has ndof {arch['ndof']}, robot {robot_name!r} "
+                         f"has {robot.ndof}")
+    expected_scale = JointScale(robot)
+    if not torch.allclose(state_dict["scale"].float().cpu(), expected_scale, rtol=0, atol=1e-6):
+        raise ValueError(f"{source}: the chart's joint scale {state_dict['scale'].tolist()} is "
+                         f"not robot {robot_name!r}'s {expected_scale.tolist()} -- trained for "
+                         "a different robot?")
+
+    model = BuildLoinkModel(arch, expected_scale)
+    model.load_state_dict(state_dict, strict=True)
+    model = model.to(DEVICE).eval()
+    nn_model = torch.compile(model, **compile_model) if compile_model is not None else model
+    return LoinkChart(nn_model, robot, dict(arch, family=FAMILY, robot_name=robot_name),
+                      arch_source=source)

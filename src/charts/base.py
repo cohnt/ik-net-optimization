@@ -29,17 +29,55 @@ Attributes every chart carries (the ones the code already read off an `IKFlowSol
     robot           the jrl `Robot` it was trained on (FK for frame calibration, limits)
     arch            the resolved architecture (the sidecar), recorded in run metadata
     arch_source     where `arch` came from
-    family          "ikflow", "cvae", ...
+    family          "ikflow", "cvae", "loink", ...
     has_density     True when `decode` returns a log-det (only a flow has one)
-    exact_inverse   True when `encode` reproduces `q` exactly (a bijection); False when it
-                    is an encoder's estimate and the residual is left to the correction
+    exact_inverse   True when the chart can express `q` EXACTLY in its own variables: for a
+                    chart without `invert`, `decode(encode(q, pose7), pose7) == q` at the FK
+                    pose (a flow, a bijection for every pose); for a chart with `invert`,
+                    `decode(*reversed(invert(q)))` -- i.e. at the task the chart itself
+                    assigns `q`. False when `encode` is an encoder's estimate and the residual
+                    is left to the correction (the cVAE)
+    task_input      what `decode` / `encode` take as the task: "pose7" (the default; the
+                    flow, the cVAE) is `[x, y, z, qw, qx, qy, qz]` as above; "xyzrpy" (LOInK)
+                    is the program's RAW `c = [x, y, z, roll, pitch, yaw]`, unconverted. The
+                    program lumps `[c7 | z | correction]` or `[c6 | z | correction]`
+                    accordingly (`IKFlowProgram.ChartTaskDim`, `_FlowVars`), and so does the
+                    swarm (`BatchedFlow.task`). An xyzrpy chart's input is continuous across
+                    the rpy cut, where `c`'s roll may cross +-pi; a pose7 chart's is not
+                    defined in rpy at all. `ChartTaskFromPose7` forms the input from a
+                    dataset / FK pose7 for screens.
+
+One OPTIONAL member, `None` unless a chart provides it:
+
+    invert(model, q [B, ndof]) -> (task [B, task_dim], z [B, K])
+
+for a chart whose task output is its OWN: the task (in the chart's `task_input` form) is the
+chart's estimate of `q`'s pose, not `q`'s FK pose, and only the two together reproduce `q`
+(LOInK, whose `G : q -> (y_hat, z)` fits the task approximately, `task` = the raw `y_hat`).
+`SetStartFromQ` uses it when present -- `c` the returned task, `z` as returned -- and records
+how far that `c` sits from the FK pose's as `start_c_error`. A chart with `invert = None` is
+started as before: `c` at the FK pose, `z = encode(q, pose7_FK)`.
 """
+
+
+TASK_INPUTS = ("pose7", "xyzrpy")
+
+
+def ChartTaskFromPose7(chart, pose7):
+    """The chart's task input for a `[B, 7]` pose (a dataset pose, an FK pose): `pose7`
+    itself for a "pose7" chart, its xyz + Drake rpy for an "xyzrpy" one."""
+    if getattr(chart, "task_input", "pose7") == "pose7":
+        return pose7
+    from src.charts.loink import Pose7ToXyzRpy
+    return Pose7ToXyzRpy(pose7)
 
 
 class Chart:
     family = None
     has_density = False
     exact_inverse = False
+    invert = None
+    task_input = "pose7"
 
     @property
     def num_dof(self):

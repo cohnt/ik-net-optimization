@@ -36,6 +36,7 @@ sys.path.append(REPO_ROOT)
 sys.path.append(os.path.join(REPO_ROOT, "scripts/training"))
 
 from pole_metric import ProjectRobotNames, ScreenDomain, load_solver  # noqa: E402
+from src.charts.base import ChartTaskFromPose7  # noqa: E402
 
 RUNAWAY_RAD = 10.0
 
@@ -82,7 +83,8 @@ def main():
             # flow that is the 8-wide conditioning row with a zero softflow column.
             out = solver.decode(
                 model, torch.tensor(z[i:i + args.chunk], dtype=torch.float64, device=dev),
-                torch.tensor(pose[i:i + args.chunk], dtype=torch.float64, device=dev))[0]
+                ChartTaskFromPose7(solver, torch.tensor(pose[i:i + args.chunk],
+                                                        dtype=torch.float64, device=dev)))[0]
             qs.append(out[:, :ndof].cpu().numpy())
     q_out = np.concatenate(qs)
 
