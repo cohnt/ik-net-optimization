@@ -12,7 +12,7 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 ## STATE -- 2026-10-23 19:05 cluster time: smokes flagged, PROBE cancelled, re-ladder jobs queued.
 Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; ls ~/learned-ik/results/reladder/'`.
- 0. What happened: the smoke check (`scratchpad smoke_check.py`, 40 of 48 items at 18:55)
+ 0. What happened: the smoke check (`cluster/loink_smoke_check.py`, run as its first line says; 40 of 48 items at 18:55)
     flagged 3 items, all relu charts on the pose task with the paired start: cells scored
     `unrepresentable_start` (start_q_error 0.76-1.67). Mechanism: the exporter's ladder chose
     each chart's decode budget on latents from N(0, I); real configurations' latents (|z| 13-25
@@ -27,9 +27,14 @@ Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; ls ~/learned-ik/results/
     budget inverts exactly on real latents (the relu charts: undamped Newton leaves 0.05-0.3%
     failing at every budget, backtracking stalls at the kinks; prior+box stay hard gates, the
     real draw's failure fraction is minimised and written as `real_latent_fail_fraction`).
-    UNTESTED past round one: the three-draw gate and --reladder passed
-    tests/test_loink_chart.py (ALL PASS); the best-effort rule, caps and their tests never ran.
-    `tests/test_loink_chart.py` must be run (cluster or laptop, OMP_NUM_THREADS=4) before merge.
+    Tested: the three-draw gate and --reladder passed tests/test_loink_chart.py (ALL PASS);
+    the best-effort rule, the caps and the --reladder CLI passed a localized untrained-chart
+    check (19:03; `real_tol=0.0` -> BEST EFFORT fraction 1.0, exact path unchanged, caps cut the
+    ladder, provenance.reladder with `replaced`). The file's own extended ladder test has not
+    run; run it ONCE on the cluster (a CPU job, OMP_NUM_THREADS=8) before merge, never as a
+    local gate (Thomas: a 10-30 min test is too expensive).
+    `~/learned-ik/repo/.staged-commit` was set by hand to d417150 (full hash) so provenance
+    is right; the next real `stage_code.sh` overwrites it.
  2. Queued 19:03: jobs 6019621-26 (`lik_reladder_{mrP,xrP,mtP,xtP,urP,utP}`, xeon-p8, -s 8,
     8 h, `cluster/reladder_loink_job.sh`, N_DYS_MAX 400, N_NEWTON_MAX 50). Each rewrites ONLY
     the inverse fields of `~/learned-ik/repo/models/soft12/<stem>.arch.json`; logs and
@@ -40,7 +45,7 @@ Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; ls ~/learned-ik/results/
     (`~/learned-ik/results/soft12/benchmark/sc_LOINKSMOKE_*` -> `..._prefix_budget/` or delete
     after mining; they hold nothing the tables need), `collect_results.sh --reclaim` both smoke
     manifests AND clear their `.done` markers (`rm ~/learned-ik/state/manifest_stageLOINKSMOKE*_soft12P/*.done`),
-    resubmit (`submit_bench.sh`, PROCS=2, DRAKE_ENV=crc for SVGD), run `smoke_check.py`: pass =
+    resubmit (`submit_bench.sh`, PROCS=2, DRAKE_ENV=crc for SVGD), run `cluster/loink_smoke_check.py`: pass =
     0 flagged (paired `start_q_error` ~0 except the recorded `real_latent_fail_fraction` share on
     relu charts). Copy the six new sidecars back to the laptop's `models/soft12/` (gitignored)
     and record the chosen triples and the per-iteration wall change in `docs/notes-chart.md`.
