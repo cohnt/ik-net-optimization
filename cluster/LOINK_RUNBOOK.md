@@ -32,10 +32,16 @@ ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; for m in manifest_stageLOINKSMOKE
    `~/learned-ik/repo/results/soft12/benchmark/` is the first sign an item got past warm-up.
    **Smoke pass = every item exits 0, family loink, no dead arm, paired `start_q_error` ~0
    with `clip_distance` ~8.6 recorded (the latent starts outside the box, by diagnosis).**
-   Then: `PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKPROBE_soft12P.txt 4` (200
-   items incl. the 8-item acceptance run on `panda__n6`, must print IDENTICAL) and
-   `DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKPROBE_SVGD_soft12P.txt 4`
-   (576); then collect, merge, `scripts/report_loink.py --write`, notes, CLAUDE.md (< 40k).
+   16:54: the first 6 smoke items published, 0 flagged (paired `start_q_error` 0, clip 8.9-124,
+   every cell `constraint` within the clock). **PROBE queued 17:00 behind the smokes**
+   (`DEPENDENCY=afterany:6018466:...:6018469`): jobs 6018815-18 (LOINKPROBE_soft12P, 204 items:
+   200 x 60-cell shards + the 4 `panda__n6` acceptance items, must print IDENTICAL) and
+   6018819/23/24/25 (LOINKPROBE_SVGD_soft12P, crc, 580 items). **If the full smoke check
+   (`scratchpad/smoke_check.py` over `~/learned-ik/results/soft12/benchmark/sc_LOINKSMOKE_*`)
+   flags any item, `scancel` the eight PROBE jobs before they start** (claims are atomic; a
+   PROBE job that has not started has touched nothing). Estimate: SVGD ~half a day, IPOPT up
+   to 3 days if every LOInK cell runs to the 180 s clock. Then collect, merge,
+   `scripts/report_loink.py --write`, notes, CLAUDE.md (< 40k).
    Thomas emails the authors early the week of 2026-10-26 (the questions are at the end of
    this file); the cells should be in by then.
 
