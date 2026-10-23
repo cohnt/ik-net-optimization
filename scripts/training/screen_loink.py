@@ -73,7 +73,7 @@ from jrl.math_utils import geodesic_distance_between_quaternions  # noqa: E402
 from screen_cvae import LoadTestSplit  # noqa: E402
 from src.charts.loink import (  # noqa: E402
     LoadLoinkChart, Pose7ToXyzRpy, RpyCutDistance, TrainingCost, XyzRpyToPose7,
-    bilipnet_jacobian, damped_newton_step, dys_inverse, invert_bilipnet)
+    _solve, bilipnet_jacobian, damped_newton_step, dys_inverse, invert_bilipnet)
 
 LATENT_BOX = 5.0                       # IKFlowProgram.LatentBoxConstraint
 DYS_COUNTS = (10, 20, 50, 100, 200, 400)
@@ -150,7 +150,7 @@ def _Newton(net, x, w, steps, damping="none"):
             x = damped_newton_step(net, x, w)
             continue
         J = bilipnet_jacobian(net, x)
-        x = x + torch.linalg.solve(J, (w - net(x)).unsqueeze(-1)).squeeze(-1)
+        x = x + _solve(J, (w - net(x)).unsqueeze(-1)).squeeze(-1)   # the chart's own solve
     return x
 
 

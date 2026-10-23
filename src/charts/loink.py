@@ -67,8 +67,13 @@ Compile / jacrev / CUDA-graph discipline
 Pure torch, dtype and device follow the parameters, batched over a leading dimension. Every
 loop runs a FIXED number of times (from Python ints and the architecture), there is no
 `.item()`, no Python branch on a tensor value (`torch.where` / `torch.clamp` instead), and
-linear solves use `torch.linalg.solve_ex(check_errors=False)`, which unlike
-`torch.linalg.solve` does not synchronise on the info check (graph capture). No
+linear solves go through `_solve` = `lu_factor_ex(check_errors=False)` + `lu_solve`,
+NOT `torch.linalg.solve` or `solve_ex`: the program captures the compiled `jacrev` as a
+CUDA graph under `enable_grad`, and in that mode `linalg_solve`'s BACKWARD recomputes its
+gradient with a plain `at::linalg_solve`, whose info check (`_linalg_check_errors`) is a
+host sync that stream capture forbids ("operation not permitted when stream is
+capturing", every soft12 LOINKSMOKE item on torch 2.14, 2026-10-23). `lu_solve`'s
+derivatives are `lu_solve` and triangular solves on both sides, with no check anywhere. No
 `torch.autograd.Function`: the inverse's derivative comes from the IFT step's structure.
 """
 
@@ -94,8 +99,10 @@ PROX_TANH_STEPS = 8
 
 
 def _solve(A, B, left=True):
-    """`A^{-1} B` (left) or `B A^{-1}` (left=False), without the info-check sync."""
-    return torch.linalg.solve_ex(A, B, left=left, check_errors=False)[0]
+    """`A^{-1} B` (left) or `B A^{-1}` (left=False), with no info-check sync in either the
+    forward or the backward pass (see the module docstring)."""
+    LU, pivots, _info = torch.linalg.lu_factor_ex(A, check_errors=False)
+    return torch.linalg.lu_solve(LU, pivots, B, left=left)
 
 
 def _act(activation, x):
