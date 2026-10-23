@@ -81,7 +81,10 @@ from train_cvae import CVAEDataset, ResolveRobot  # noqa: E402
 
 RECIPES = ("P", "A")
 
-#: Per-recipe defaults; an explicit flag always wins (`ResolveRecipe`).
+#: Per-recipe defaults; an explicit flag always wins (`ResolveRecipe`). Recipe A clips gradients at
+#: 1.0 although the paper names no clipping: the replication (docs/loink-replication.md, Sec. VII)
+#: hit a loss spike at ~step 5800 without it, after which the plateau scheduler drove the learning
+#: rate to 2e-7. The paper's own recipe is otherwise unchanged.
 RECIPE_DEFAULTS = {
     "P": {"optimizer": "adamw", "learning_rate": 1.5e-4, "weight_decay": 1.8e-5,
           "scheduler": "step", "gamma": 0.9795, "step_lr_every": 2441, "gradient_clip_val": 1.0,
@@ -89,7 +92,7 @@ RECIPE_DEFAULTS = {
           "checkpoint_every": 20000},
     "A": {"optimizer": "adam", "learning_rate": 1e-3, "weight_decay": 0.0,
           "scheduler": "plateau", "plateau_factor": 0.5, "plateau_patience": 500,
-          "plateau_ema": 0.99, "gradient_clip_val": 0.0, "batch_size": 500,
+          "plateau_ema": 0.99, "gradient_clip_val": 1.0, "batch_size": 500,
           "max_steps": 150000, "eval_every": 10000, "checkpoint_every": 10000},
 }
 
@@ -337,7 +340,10 @@ def parse_args(argv=None):
     p.add_argument("--head_hidden", type=int, default=DEFAULT_ARCH["head_hidden"])
     p.add_argument("--n_dys", type=int, default=DEFAULT_ARCH["n_dys"])
     p.add_argument("--n_newton", type=int, default=DEFAULT_ARCH["n_newton"])
-    p.add_argument("--lam", type=float, default=1.0, help="aux (cost) loss weight, eq. 16")
+    p.add_argument("--lam", type=float, default=0.01,
+                   help="aux (cost) loss weight, eq. 16; the paper gives no value. 0.01 is what "
+                        "reproduced Fig. 3 (docs/loink-replication.md): lambda = 1 underfits the "
+                        "task (0.207 m v 0.021 m validation RMSE on the planar 3-DoF example)")
     p.add_argument("--tau_penalty", type=float, default=1e-3,
                    help="weight of the distortion penalty tau_penalty * log(tau)")
     ## Recipe-dependent: None means "the recipe's default" (RECIPE_DEFAULTS).
