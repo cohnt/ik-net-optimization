@@ -10,26 +10,33 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE -- PAUSED 2026-10-23 10:00 cluster time; three soft12 training jobs running
+## STATE -- 2026-10-23 13:10 cluster time: the six soft12 charts are being re-exported and screened
 
-What a resuming session checks FIRST (everything local died at the pause; the cluster side is
+What a resuming session checks FIRST (everything local died at any pause; the cluster side is
 fire-and-forget):
 
 ```bash
-ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; cd ~/learned-ik/results/train; for r in soft12_loink{m,x,u}{r,t}P; do tail -c 400 $r/status.json; echo; done; ls ~/learned-ik/repo/models/soft12/; tail -3 ~/learned-ik/results/train/pair_*/launch.log-60129{63,64,65}'
+ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; cd ~/learned-ik/results/train; grep -h rc= pair_soft12_*/launch.log-601685*; ls ~/learned-ik/results/screen_loink/; ls ~/learned-ik/repo/models/soft12/'
 ```
 
-1. **Jobs 6012963 / 6012964 / 6012965** (pairs `soft12_loinkmrP+mtP`, `xrP+xtP`, `urP+utP`,
+0. **Jobs 6016852 / 6016853 / 6016854** (the same three pairs resubmitted 13:08 with 03:00:00,
+   staged commit 18a2bd2): training resumes at step 620000 and returns at once, then the
+   in-job export runs the NEW ladder (n_dys x n_newton x newton_damping, nested 256/2048
+   gate; locally the tanh chart chose (25, 5, backtrack), the relu chart (25, 50, none))
+   and the screen. `rc=6` now means the ladder found no passing triple (the log lists all
+   96); `rc=7` the screen failed. Then step 4 below.
+
+1. (done 12:30) **Jobs 6012963 / 6012964 / 6012965** (pairs `soft12_loinkmrP+mtP`, `xrP+xtP`, `urP+utP`,
    recipe P, K = 6, 14 h walltime, started 06:43) were at 340-360k of 620k steps at 09:56 (~20k
    steps per 11.5 min): expected done ~12:35 cluster time. Each then runs the IN-JOB export with
    the STAGED (old) exporter, n_dys = 100 only, so expect `rc=6` (round trip fails) on some or
    all: that is the old exporter, not news. The checkpoints are what matter
    (`results/train/<run>/checkpoints/loink-checkpoint-step=620000.ckpt`).
-2. Validation at 340k steps (constant predictor 504 mm): pos RMSE 207-331 mm, rot 30-58 deg,
-   tau 9e3-4e4 and rising, fixed-iteration inverse residual 7-1900. The charts learn
+2. Validation at 620k steps (constant predictor 504 mm): pos RMSE 205-332 mm, rot 29-58 deg,
+   tau 1.1e4-4.6e4. The charts learn
    something (unlike the rigid arms) but plateau far from a usable fit. Do not read a verdict
    off this; the screens decide.
-3. **After the queue drains** (nothing of ours in `squeue`): `cluster/stage_code.sh` (stages
+3. (done 13:08) **After the queue drains** (nothing of ours in `squeue`): `cluster/stage_code.sh` (stages
    the exporter ladder, ba583f0, and the `_soft12P` manifests), then re-export + screen each
    run by name with a short walltime (the "Trained but not exported" recipe below):
    `for r in soft12_loink{m,x,u}{r,t}P; do bash cluster/submit_chart_train.sh $r 01:00:00; done`
