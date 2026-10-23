@@ -10,29 +10,58 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE -- NOTHING SUBMITTED YET
+## STATE -- PAUSED 2026-10-23 10:00 cluster time; three soft12 training jobs running
 
-Plumbing written (chart_runs.txt rows, train_chart.sh `loink)` case, gen_manifest stages, the
-committed LOINKSMOKE / LOINKPROBE manifests, empty LOINKEXT manifests). Phase 0 (the paper
-replication, `docs/loink-replication.md`) gates the training; Thomas reads it first.
+What a resuming session checks FIRST (everything local died at the pause; the cluster side is
+fire-and-forget):
+
+```bash
+ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; cd ~/learned-ik/results/train; for r in soft12_loink{m,x,u}{r,t}P; do tail -c 400 $r/status.json; echo; done; ls ~/learned-ik/repo/models/soft12/; tail -3 ~/learned-ik/results/train/pair_*/launch.log-60129{63,64,65}'
+```
+
+1. **Jobs 6012963 / 6012964 / 6012965** (pairs `soft12_loinkmrP+mtP`, `xrP+xtP`, `urP+utP`,
+   recipe P, K = 6, 14 h walltime, started 06:43) were at 340-360k of 620k steps at 09:56 (~20k
+   steps per 11.5 min): expected done ~12:35 cluster time. Each then runs the IN-JOB export with
+   the STAGED (old) exporter, n_dys = 100 only, so expect `rc=6` (round trip fails) on some or
+   all: that is the old exporter, not news. The checkpoints are what matter
+   (`results/train/<run>/checkpoints/loink-checkpoint-step=620000.ckpt`).
+2. Validation at 340k steps (constant predictor 504 mm): pos RMSE 207-331 mm, rot 30-58 deg,
+   tau 9e3-4e4 and rising, fixed-iteration inverse residual 7-1900. The charts learn
+   something (unlike the rigid arms) but plateau far from a usable fit. Do not read a verdict
+   off this; the screens decide.
+3. **After the queue drains** (nothing of ours in `squeue`): `cluster/stage_code.sh` (stages
+   the exporter ladder, ba583f0, and the `_soft12P` manifests), then re-export + screen each
+   run by name with a short walltime (the "Trained but not exported" recipe below):
+   `for r in soft12_loink{m,x,u}{r,t}P; do bash cluster/submit_chart_train.sh $r 01:00:00; done`
+   (the GrpTRES cap meters them). A run whose ladder passes at no rung (exit 6 again, the log
+   lists all six rungs) has no usable chart: record it and leave its rung out of the manifests
+   (add its label to `LOINK_EXCLUDED_RUNGS`, regenerate, commit, restage).
+4. Read `results/screen_loink/soft12__loink*.json` (collect with `cluster/collect_results.sh`
+   or scp): gates (b) polished residual < 1e-10, (d) gain <= bound, (f) representability
+   ~1e-10; (a)/(c) are the task-error and z = 0 numbers to report.
+5. Only then the four `_soft12P` manifests ("What actually ran" below), smokes first.
+6. Rigid-arm rows and every `A` rung: cancelled, "chart does not fit" (`docs/notes-chart.md`);
+   `scripts/report_loink.py` still prints `not yet measured` for them -- change that before
+   `--write`. Decisions reserved for Thomas: a padded-latent rung, a workable paper recipe.
+
+Cancelled 2026-10-23 ~06:40: 6012955, 6012958-62, 6012966-77 (rigid P/A, every A pair; each
+resumable from `last.ckpt`, but there is no reason to).
+
+Original step table (what was planned; the rigid and A rows were cancelled after wave 1):
 
 | step | jobs | depends on | state |
 | --- | --- | --- | --- |
-| stage_code (training half) | -- | -- | |
-| smoke `panda --cost=m --activation=relu --recipe=P` | | -- | |
-| smoke `soft12 --cost=u --activation=tanh --recipe=A` | | -- | |
-| co-scheduling / GrpTRES measurement (or skip: pairs) | -- | both smokes running | |
-| P recipe, `ONLY='_loink[mxu][rt]P$' PAIRS=1 --all` (24 runs, 12 jobs) | | smokes passed | |
-| A recipe, `ONLY='_loink[mxu][rt]A$' PAIRS=1 --all` (24 runs, 12 jobs) | | smokes passed | |
-| collect; read the screens; **check in with Thomas** | -- | all 48 exported | |
+| stage_code (training half) | -- | -- | done 2026-10-22 |
+| smokes | | -- | passed |
+| P recipe, `ONLY='_loink[mxu][rt]P$' PAIRS=1 --all` (24 runs, 12 jobs) | 6012954-65 | smokes passed | rigid cancelled; soft12 running |
+| A recipe, `ONLY='_loink[mxu][rt]A$' PAIRS=1 --all` (24 runs, 12 jobs) | 6012966-77 | smokes passed | cancelled (LR collapse) |
+| collect; read the screens; **check in with Thomas** | -- | soft12 exported | |
 | stage_code (benchmark half) | -- | training drained | |
-| LOINKSMOKE (192), PROCS=2 | | | |
-| LOINKSMOKE_SVGD (192), crc, PROCS=2 | | | |
-| LOINKPROBE (536 incl. acceptance), PROCS=2 | | smokes passed | |
-| LOINKPROBE_SVGD (1296), crc, PROCS=2 | | smokes passed | |
-| collect probes; `make_loink_ext.py`; commit; stage | -- | probes collected | |
-| LOINKEXT (<= 1152), PROCS=2 | | | |
-| LOINKEXT_SVGD (<= 3456), crc, PROCS=2 | | | |
+| LOINKSMOKE_soft12P (24), PROCS=2 | | | |
+| LOINKSMOKE_SVGD_soft12P (24), crc, PROCS=2 | | | |
+| LOINKPROBE_soft12P (200 incl. acceptance), PROCS=2 | | smokes passed | |
+| LOINKPROBE_SVGD_soft12P (576), crc, PROCS=2 | | smokes passed | |
+| LOINKEXT: empty by construction (no rigid probe) | -- | -- | n/a |
 | collect, merge, promote; the report | -- | | |
 
 ## What runs
