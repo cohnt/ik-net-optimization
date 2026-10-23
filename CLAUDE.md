@@ -316,8 +316,7 @@ no iterations). Proposed = learned + AL-SVGD; ablation A = learned under the Dra
   solution-quality result against joint space, and the paper must not claim one.**
 
 **Open**: twelve screw-arm segfaults in R22/R23 (a race at PROCS=2 is what is left; recorded, not
-chased). Float64 Newton polish being smoked on branch `svgd-polish` (must not break inequality rows).
-GVS under svgd deferred. The soft PCS arm takes the split step (forward-mode row Jacobians).
+chased). Float64 Newton polish smoked on branch `svgd-polish`. GVS under svgd deferred. The soft PCS arm takes the split step (forward-mode row Jacobians).
 
 ## Results: the campaign of record (long form: `docs/notes-record.md`)
 
@@ -409,16 +408,11 @@ the decoder returns E[q | pose], unusable where the IK fibre is disconnected bra
 network designed for a structured latent (`G(q) = [task; z]`, `z = 0` the cost minimiser; the chart
 is `G^{-1}`, Davis-Yin + Newton polish, IFT derivative; it takes the program's RAW `c`,
 `task_input="xyzrpy"`). Question: does a latent structured for ONE cost help under OUR objective?
-Ladder cost m/x/u x relu/tanh x recipe P/A. Paper replicated first (`docs/loink-replication.md`):
-Sec. V reproduces at `lambda = 0.01`; Table II does not. **Rigid arms: the chart never fits the
-task at LOInK's own `K = n - 6 = 1`** (a K ladder shows the latent width is the mechanism); recipe
-A's plateau schedule collapses the LR. **Soft12 (`K = 6`) learns but no chart fits** (task error
-0.18-0.29 m, `z = 0` a metre off, cost head R^2 < 0); the true latent of every real `q` lies
-OUTSIDE the +-5 box, so paired starts always clip; inside the box the decode is exact. Inverting:
-the Newton polish does the work, its step rule a per-chart sidecar field (`newton_damping`:
-undamped for relu, backtracking for tanh) chosen by the exporter's cost-ordered ladder. Cells:
-soft12 only. A padded-latent rung is a method change: Thomas's call. Long form
-`docs/notes-chart.md`; ops `cluster/LOINK_RUNBOOK.md`.
+Replication (`docs/loink-replication.md`): Sec. V reproduces, Table II does not. **Rigid arms: the chart never fits the task at LOInK's own `K = n - 6 = 1`** (the latent width is the mechanism). **Soft12 (`K = 6`) learns
+but no chart fits** (task error 0.18-0.29 m, `z = 0` a metre off, cost head R^2 < 0); every real
+`q`'s latent lies OUTSIDE the +-5 box, so paired starts always clip; in the box the decode is
+exact. Cells: soft12 only. A padded-latent rung: Thomas's call.
+Long form `docs/notes-chart.md`; ops `cluster/LOINK_RUNBOOK.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
 
