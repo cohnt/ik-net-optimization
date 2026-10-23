@@ -30,7 +30,8 @@ Diagnostics, per chart x row (success-of-480 cells = all cells of the run):
   clock / budget -- cells stopped by the wall clock / by an iteration budget (a row with >= 24 at a
               budget carries no verdict, flagged VOID).
 
-A run not yet collected prints `not yet measured`; the record's columns print regardless. `x/60` = the
+A run not yet collected prints `not yet measured`, a cancelled rung (LOINK_EXCLUDED_RUNGS) its reason
+(`chart does not fit (K = 1)` on the rigid arms, `recipe A: LR collapsed` on soft12 A); the record's columns print regardless. `x/60` = the
 60-cell probe (guess 0 of every target; stage LOINKPROBE), shown where the row has no full run; every
 pairing, cost and median against it reads the other column on those 60 cells. A full run (LOINKEXT)
 replaces its probe. Tags: `sc_LOINK_<robot>_<label>_<solver>_<row>_<cells>_180_<start>`; smokes
@@ -58,7 +59,8 @@ sys.path.insert(0, os.path.join(REPO, "cluster"))
 from report_statusquo import (BUDGET_CELLS, CELLS, MIN_COST_CELLS, STATUS_QUO_ROWS,  # noqa: E402
                               budget_bound, by_cell, clock_bound, load,
                               load_record, load_svgd_record, mcnemar, median, parse_tag)
-from gen_manifest import CVAE_ACCEPT, LOINK_LABELS, LOINK_RECIPES, SCREWREDO_RUNG  # noqa: E402
+from gen_manifest import (CVAE_ACCEPT, CVAE_MODEL_DIR, LOINK_EXCLUDED_RUNGS, LOINK_LABELS,  # noqa: E402
+                          LOINK_RECIPES, SCREWREDO_RUNG)
 
 DEFAULT_OUT = "docs/loink-tables.md"
 ROBOTS = ("panda", "iiwa", "screw7_p050", "soft12")
@@ -73,6 +75,19 @@ TRUST_TOL = 1e-6
 BOOT = 1000
 MUST_MATCH = ("grid_hash", "scene_fingerprint", "wall_time")
 NYM = "not yet measured"
+#: (robot, label) -> why a cancelled rung will never be measured. LOINK_EXCLUDED_RUNGS names model dirs
+#: (`iiwa14:loinkmrP`), the script keys robots (`iiwa`), hence CVAE_MODEL_DIR; the rigid arms' reason wins.
+_DIR_ROBOT = {d: r for r, d in CVAE_MODEL_DIR.items()}
+REASON = {}
+for _e in LOINK_EXCLUDED_RUNGS:
+    _dir, _label = _e.split(":")
+    REASON[(_DIR_ROBOT[_dir], _label)] = ("recipe A: LR collapsed" if _dir == "soft12"
+                                          else "chart does not fit (K = 1)")
+
+
+def nym(robot, label):
+    """What a missing run prints: the cancellation reason if the rung was excluded, else NYM."""
+    return REASON.get((robot, label), NYM)
 RECIPES = tuple(LOINK_RECIPES)                      # ("P", "A")
 LABELS = {r: tuple(l for l in LOINK_LABELS if l[-1] == r) for r in RECIPES}
 ROWS = [(robot, row, start) for robot in ROBOTS for row in STATUS_QUO_ROWS for start in ("native", "paired")]
@@ -213,9 +228,9 @@ def f(x, prec=0):
     return "--" if x is None or x != x else f"{x:.{prec}f}"
 
 
-def cell_str(recs, key, prec=0):
+def cell_str(recs, key, prec=0, miss=NYM):
     if recs is None:
-        return NYM
+        return miss
     st = col_stats(recs)
     return f(st[key], prec) + (f"/{st['n']}" if key == "succ" and st["n"] != CELLS else "")
 
@@ -228,16 +243,16 @@ def table(pr, header, rows):
     pr("")
 
 
-def mc_cell(x, y):
+def mc_cell(x, y, miss=NYM):
     if x is None or y is None:
-        return NYM if x is None else "--"
+        return miss if x is None else "--"
     p = pair(x, y)
     return f"{p['xo']} / {p['yo']}, p = {p['p']:.2g}"
 
 
-def cost_cell(x, y):
+def cost_cell(x, y, miss=NYM):
     if x is None or y is None:
-        return NYM if x is None else "--"
+        return miss if x is None else "--"
     p = pair(x, y)
     if p["ratio"] is None:
         return f"-- ({p['n']})"
@@ -271,7 +286,10 @@ def tally(data, solver):
                     n_full += 1
                 else:
                     n_probe += 1
-        out.append([label] + cells + [f"{n_full} full + {n_probe} probe" if n_full + n_probe else NYM])
+        # every robot's rung cancelled: the reasons (rigid first), else the plain NYM
+        why = list(dict.fromkeys(REASON[(r, label)] for r in ROBOTS if (r, label) in REASON))
+        miss = "; ".join(why) if all((r, label) in REASON for r in ROBOTS) else NYM
+        out.append([label] + cells + [f"{n_full} full + {n_probe} probe" if n_full + n_probe else miss])
     return out
 
 
@@ -290,9 +308,9 @@ def trust_fraction(recs, meta):
     return f"{np.mean([z >= radius - TRUST_TOL for z in zs]):.2f}"
 
 
-def diag_row(label, entry):
+def diag_row(label, entry, miss=NYM):
     if entry is None:
-        return [NYM] * 8
+        return [miss] * 8
     recs, meta = entry if isinstance(entry, tuple) else (entry, None)
     n = len(recs)
     unrep = sum(1 for r in recs if r.get("fail_reason") == "unrepresentable_start")
@@ -320,7 +338,9 @@ def tables(data, recipes):
        f"{LOINK_RECIPES['A'][1]} steps); K = DOF - 6 (Panda 1, iiwa 1, screw 1, soft PCS 6), trust region "
        "round(sqrt(K) + 1.5, 2). Every chart run is refused unless its grid hash, scene fingerprint, cap and cells "
        "are the record row's and its checkpoint is the chart its tag names. "
-       f"`{NYM}` = no merged chart run collected. `x/60` = the 60-cell PROBE (guess 0 of every target), shown where "
+       f"`{NYM}` = no merged chart run collected. `chart does not fit (K = 1)` (every Panda, iiwa and screw "
+       "chart) and `recipe A: LR collapsed` (soft PCS recipe A) mark the 42 rungs cancelled after their training "
+       "wave, never to be measured; mechanism in `docs/notes-chart.md`, \"Training outcome (2026-10-23)\". `x/60` = the 60-cell PROBE (guess 0 of every target), shown where "
        "the row has no full run; its pairings, costs and medians are over those 60 cells only. McNemar cells: "
        "`chart-only / other-only, p` on the discordant cells (exact two-sided). Cost cells: `median per-cell ratio "
        f"chart / other [95% bootstrap CI over targets, {BOOT} resamples] (n shared cells)`, on cells both arms of "
@@ -340,13 +360,13 @@ def tables(data, recipes):
             rows = [(r, data[(solver,) + r]) for r in ROWS]
 
             def cells(key, prec=0):
-                return [[name(*r)] + [cell_str(recs_of(c[x]), key, prec) for x in cols] for r, c in rows]
+                return [[name(*r)] + [cell_str(recs_of(c[x]), key, prec, nym(r[0], x)) for x in cols] for r, c in rows]
             pr("#### Success (of 480)\n")
             table(pr, ["row"] + list(cols), cells("succ"))
             for other in ("flow", "JS"):
                 pr(f"#### Success: McNemar of each chart against {other}\n")
                 table(pr, ["row"] + [f"{l} v {other}" for l in labels],
-                      [[name(*r)] + [mc_cell(recs_of(c[l]), c[other]) for l in labels] for r, c in rows])
+                      [[name(*r)] + [mc_cell(recs_of(c[l]), c[other], nym(r[0], l)) for l in labels] for r, c in rows])
             pr("#### Iterations (median over successes)\n")
             if solver == "svgd":
                 pr("N/A by construction: AL-SVGD counts outer steps (K = 10 inner steps each), not majors.\n")
@@ -357,7 +377,7 @@ def tables(data, recipes):
             for other in ("flow", "JS"):
                 pr(f"#### Cost on shared cells: chart / {other}\n")
                 table(pr, ["row"] + [f"{l} / {other}" for l in labels],
-                      [[name(*r)] + [cost_cell(recs_of(c[l]), c[other]) for l in labels] for r, c in rows])
+                      [[name(*r)] + [cost_cell(recs_of(c[l]), c[other], nym(r[0], l)) for l in labels] for r, c in rows])
         pr(f"### LOInK diagnostics, {title.split(' (')[0]}\n")
         pr(f"`unrep` = cells scored `unrepresentable_start`; `q err` = median `start_q_error`; `c err` = median / "
            f"max `start_c_error`; `runaway` = failures returning |q|_inf > {RUNAWAY_Q:g}; `trust` = fraction of "
@@ -366,7 +386,7 @@ def tables(data, recipes):
         for r in ROWS:
             c = data[(solver,) + r]
             for label in ("flow",) + LOINK_LABELS:
-                d = diag_row(label, c[label])
+                d = diag_row(label, c[label], nym(r[0], label))
                 rows.append([name(*r), label] + d)
         table(pr, ["row", "chart", "unrep", "q err", "c err med", "c err max", "runaway", "trust", "clock",
                    "budget"], rows)
