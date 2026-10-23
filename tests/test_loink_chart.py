@@ -18,14 +18,23 @@ Every model here is UNTRAINED (every model fit is a cluster job). The network co
    to 1e-9 on EVERY row for Panda (K = 1) and soft12 (K = 6), including rows whose y_hat lies
    off the rpy principal domain; `decode` is continuous across roll = pi. `jacrev` through
    `MakeFlowInference(..., task_dim=6)` matches central differences in c6 and z, on and off
-   the domain.
+   the domain. The damped Newton polish (`damped_newton_step`), from a
+   deliberately bad start (n_dys = 1) on an untrained soft12 chart, relu and tanh, float64 and
+   float32: every sample's residual is non-increasing step to step (up to a few ulps of |w|:
+   rounding depends on the batch shape) and reaches the floor, and
+   `invert_bilipnet` is exactly DYS + that polish + the IFT step (whose derivative the jacrev
+   test above and `tests/test_loink_core.py`'s IFT test check).
 4. The export contract: bare state dict + mandatory `"family": "loink"` sidecar, identical
    round trip; a sidecar contradicting the weights RAISES (units, depth, ndof, mu, the head's
    presence, K, task_dim, head_hidden), a missing one RAISES, another family / robot RAISES, a
    same-DoF robot RAISES on the joint scale; the activation is the documented hole. The
-   exporter's `n_dys` ladder: a chart whose round trip fails at its own `n_dys` (1, no extra
-   Newton step: residual ~5e-2) is written at the smallest passing rung (100), through the
-   sidecar on disk; a ladder with no passing rung RAISES and leaves the sidecar at its first.
+   exporter's inverse ladder (`n_dys` x `n_newton` x `newton_damping`): a chart whose round
+   trip fails at its own settings (n_dys 1, no extra Newton step) is written at the cheapest
+   passing triple of those tried (visited in cost order, every cheaper one failing, a failure
+   decided on the 256-sample prefix, a pass on all 2048), all three in the sidecar on disk; a
+   backtrack-only ladder writes "backtrack"; a ladder with no passing triple RAISES and puts
+   the sidecar back at the chart's own; an unknown damping RAISES on load and a sidecar
+   without the field loads as "none".
 5. `LoadChart` dispatches `"loink"`; `loink_loss` is finite for m, x, u; the trainer's
    `training_step` / validation step run and its nu guard clamps.
 6. The program: `PandaIKProgram(checkpoint=<untrained loink>)` constructs, `SetStartFromQ`
@@ -37,6 +46,7 @@ Every model here is UNTRAINED (every model fit is a cluster job). The network co
    `flow_logdet_weight > 0` is refused.
 """
 
+import copy
 import json
 import os
 import sys
@@ -52,9 +62,12 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "scripts", "training"))
 
 from src.charts.loink import (  # noqa: E402
-    BARRIER_EPS, ArchFromLoinkStateDict, LoadLoinkChart, LoinkChart, LoinkModel, NominalConfiguration,
-    Pose7ToXyzRpy, RpyCutDistance, TrainingCost, XyzRpyToPose7, loink_loss)
-from export_loink import BuildLoinkModel, NDysLadder, roundtrip_ladder, write_untrained  # noqa: E402
+    BARRIER_EPS, STEP_SIZES, ArchFromLoinkStateDict, LoadLoinkChart, LoinkChart, LoinkModel,
+    NominalConfiguration, Pose7ToXyzRpy, RpyCutDistance, TrainingCost, XyzRpyToPose7,
+    _solve, bilipnet_jacobian, damped_newton_step, dys_inverse, invert_bilipnet, loink_loss)
+from export_loink import (  # noqa: E402
+    LADDER_SOURCE, N_DYS_LADDER, N_NEWTON_LADDER, ROUNDTRIP_PREFIX, ROUNDTRIP_SAMPLES,
+    BuildLoinkModel, InverseCost, LadderOrder, roundtrip_ladder, write_untrained)
 from jrl.robots import get_robot  # noqa: E402
 from src.flow_loading import SidecarPath  # noqa: E402
 
@@ -221,6 +234,85 @@ def test_jacrev_through_make_flow_inference(chart, robot):
           f"({robot.name}, K={k}): rel err {errs[0]:.1e} on-domain, {errs[1]:.1e} past the cut")
 
 
+def test_damped_polish_monotone(tmp, robot_name, robot, activation):
+    """The damped Newton polish (`damped_newton_step`) from a deliberately bad start (DYS at
+    n_dys = 1): every sample's residual |G(x) - w|_2 is non-increasing over the steps, in
+    float64 and float32, it reaches the floor, and `invert_bilipnet(..., "backtrack")` is
+    exactly that polish followed by the (unchanged, full) IFT step ("none", the default, the
+    undamped loop); `jacrev(decode)` under "backtrack" is the IFT Jacobian."""
+    _, chart = _chart(tmp, robot_name, "m", activation, name=f"damped_{robot_name}_{activation}.pkl")
+    G = chart.nn_model.double().G
+    g = _gen(3)
+    q = _q_in_limits(robot, 512, g)
+    with torch.no_grad():
+        w = G(q / chart.nn_model.scale)
+        ## Off the data: the same task, a latent far from the prior's bulk on half the rows.
+        w[256:, 6:] = 3.0 * torch.randn((256, robot.ndof - 6), generator=g, dtype=F64)
+    n_steps = 25
+    floors = {}
+    for dtype, floor_tol in ((torch.float64, 1e-10), (torch.float32, 1e-3)):
+        Gd = copy.deepcopy(G).to(dtype)
+        wd = w.to(dtype)
+        with torch.no_grad():
+            x = dys_inverse(Gd, wd, 1)
+            res = [(Gd(x) - wd).norm(dim=-1)]
+            for _ in range(n_steps):
+                x = damped_newton_step(Gd, x, wd)
+                res.append((Gd(x) - wd).norm(dim=-1))
+        res = torch.stack(res)                                         # [steps + 1, B]
+        assert torch.isfinite(res).all()
+        ## Non-increasing up to rounding: the step compares candidates evaluated in ONE
+        ## [S * B] batch with G(x) at [B], and a BLAS kernel's rounding depends on the batch
+        ## shape, so the residual re-measured here can differ from the step's by a few ulps of
+        ## |w| (float32 at the floor: ~2e-7); a real rise (the undamped polish's) is O(1).
+        ulp_tol = 16 * torch.finfo(dtype).eps * (1.0 + wd.norm(dim=-1).max().item())
+        rise = (res[1:] - res[:-1]).max().item()
+        assert rise <= ulp_tol, f"{dtype}: a residual rose by {rise:.3e} (tol {ulp_tol:.1e})"
+        assert res[-1].max().item() < floor_tol, (dtype, res[-1].max().item())
+        floors[dtype] = (res[0].max().item(), res[-1].max().item())
+        ## invert_bilipnet = DYS + the same polish + the IFT step.
+        with torch.no_grad():
+            x_dys = dys_inverse(Gd, wd, 1)
+            for _ in range(n_steps):
+                x_dys = damped_newton_step(Gd, x_dys, wd)
+            J = bilipnet_jacobian(Gd, x_dys)
+            ref = x_dys + _solve(J, (wd - Gd(x_dys)).unsqueeze(-1)).squeeze(-1)
+            got = invert_bilipnet(Gd, wd, 1, n_steps, "backtrack")
+        assert torch.equal(got, ref), (got - ref).abs().max().item()
+        ## ... and "none" (the default) is the undamped loop + the IFT step.
+        with torch.no_grad():
+            x_u = dys_inverse(Gd, wd, 1)
+            for _ in range(3):
+                x_u = x_u + _solve(bilipnet_jacobian(Gd, x_u),
+                                   (wd - Gd(x_u)).unsqueeze(-1)).squeeze(-1)
+            ref_u = x_u + _solve(bilipnet_jacobian(Gd, x_u), (wd - Gd(x_u)).unsqueeze(-1)).squeeze(-1)
+            assert torch.equal(invert_bilipnet(Gd, wd, 1, 3), ref_u)
+            assert torch.equal(invert_bilipnet(Gd, wd, 1, 3, "none"), ref_u)
+    _expect_raise(lambda: invert_bilipnet(G, w[:2], 1, 1, "linesearch"), ValueError,
+                  "an unknown newton damping")
+    ## The derivative under the damped polish is still the IFT one: jacrev(decode) at w equals
+    ## diag(scale) J_G(x*)^{-1} (the IFT step is unchanged).
+    model = chart.nn_model.double()
+    model.newton_damping = "backtrack"
+    model.n_dys, model.n_newton = 1, n_steps
+    jerr = []
+    for i in (0, 300):
+        wi = w[i]
+        Jq = torch.func.jacrev(lambda v: model.decode(v[None, :6], v[None, 6:])[0])(wi)
+        with torch.no_grad():
+            xs = model.decode(wi[None, :6], wi[None, 6:]) / model.scale
+            ift = model.scale[:, None] * torch.linalg.inv(bilipnet_jacobian(G, xs)[0])
+        jerr.append(((Jq - ift).abs().max() / ift.abs().max()).item())
+    assert max(jerr) < 1e-9, jerr
+    model.newton_damping = "none"
+    print(f"PASS damped polish ({robot_name} {activation}, untrained): residual per-sample "
+          f"non-increasing (to rounding) over {n_steps} steps from DYS n_dys = 1 (max "
+          f"{floors[torch.float64][0]:.1e} -> {floors[torch.float64][1]:.1e} float64, "
+          f"{floors[torch.float32][0]:.1e} -> {floors[torch.float32][1]:.1e} float32); "
+          "invert_bilipnet == DYS + that polish + the IFT step ('none' == the undamped loop); "
+          f"jacrev(decode) under 'backtrack' == diag(scale) J_G(x*)^-1 to {max(jerr):.1e}")
+
+
 ## ---------------------------------------------------------------------- 4
 
 def test_export_roundtrip_identical(tmp):
@@ -251,21 +343,94 @@ def test_export_roundtrip_identical(tmp):
 def test_export_ndys_ladder(tmp):
     out, arch, hp, state_dict = write_untrained("panda", "u", "relu", n_dys=1, n_newton=0,
                                                 out_path=os.path.join(tmp, "ladder.pkl"))
-    assert NDysLadder(1) == [1, 100, 200, 400, 800, 1600, 3200]
-    assert NDysLadder(100) == [100, 200, 400, 800, 1600, 3200]
-    chosen = roundtrip_ladder(out, arch, hp, state_dict)
+    assert arch["newton_damping"] == "none"
+    ## The search order: every triple, cheapest first (ties to "none", then the smaller
+    ## polish), n_dys ascending within one (n_newton, damping); n_newton = 0 only as "none".
+    rank = {"none": 0, "backtrack": 1}
+    order = LadderOrder(N_DYS_LADDER, N_NEWTON_LADDER, 7)
+    assert len(order) == len(N_DYS_LADDER) * len(N_NEWTON_LADDER) * 2 == len(set(order))
+    keys = [(InverseCost(d, nn, 7, dm), rank[dm], nn) for d, nn, dm in order]
+    assert keys == sorted(keys), order
+    for nn in N_NEWTON_LADDER:
+        for dm in ("none", "backtrack"):
+            assert [d for d, m, k in order if m == nn and k == dm] == list(N_DYS_LADDER)
+    assert LadderOrder([1, 2], [0, 2], 7) == [(1, 0, "none"), (2, 0, "none"), (1, 2, "none"),
+                                              (2, 2, "none"), (1, 2, "backtrack"),
+                                              (2, 2, "backtrack")]
+    assert InverseCost(50, 10, 12) == InverseCost(50, 10, 12, "none") == 50 + 13 * 10
+    assert InverseCost(50, 10, 12, "backtrack") == 50 + (13 + len(STEP_SIZES)) * 10 == 250
+    _expect_raise(lambda: InverseCost(1, 1, 7, "linesearch"), ValueError,
+                  "InverseCost of an unknown damping")
+
+    def check(chosen, tried, n_dys_ladder, n_newton_ladder, damping_ladder=("none", "backtrack")):
+        with open(SidecarPath(out)) as f:
+            sidecar = json.load(f)
+        passing = [(c, rank[dm], nn, d, dm) for d, nn, dm, c, _, _, _, _, ok in tried if ok]
+        assert passing, tried
+        best = min(passing)
+        assert (chosen["n_dys"], chosen["n_newton"], chosen["newton_damping"]) == \
+            (best[3], best[2], best[4]), (chosen, tried)
+        assert tried[-1][-1] and not any(t[-1] for t in tried[:-1]), \
+            "the search stops at its first pass, every cheaper triple having failed"
+        order = LadderOrder(n_dys_ladder, n_newton_ladder, 7, damping_ladder)
+        assert [t[:3] for t in tried] == order[:len(tried)], "triples tried out of cost order"
+        ## The two-stage gate: a pass is decided on all 2048 samples; a failure on 256 or 2048.
+        assert tried[-1][4] == ROUNDTRIP_SAMPLES, tried[-1]
+        assert all(t[4] in (ROUNDTRIP_PREFIX, ROUNDTRIP_SAMPLES) for t in tried), tried
+        assert (sidecar["n_dys"], sidecar["n_newton"], sidecar["newton_damping"]) == \
+            (chosen["n_dys"], chosen["n_newton"], chosen["newton_damping"]), (sidecar, chosen)
+        assert sidecar["n_dys_source"] == LADDER_SOURCE == (
+            "export ladder (cheapest passing of n_dys x n_newton x newton_damping, cost = n_dys "
+            "+ (ndof+1+extra) n_newton, extra = len(STEP_SIZES) under backtrack, 0 under none)"), \
+            sidecar["n_dys_source"]
+        assert len(sidecar["inverse_ladder"]) == len(tried)
+        assert [r["newton_damping"] for r in sidecar["inverse_ladder"]] == [t[2] for t in tried]
+        loaded = LoadLoinkChart("panda", out)
+        assert (loaded.arch["n_dys"], loaded.arch["n_newton"], loaded.arch["newton_damping"]) \
+            == (chosen["n_dys"], chosen["n_newton"], chosen["newton_damping"])
+        assert (loaded.nn_model.n_dys, loaded.nn_model.n_newton, loaded.nn_model.newton_damping) \
+            == (chosen["n_dys"], chosen["n_newton"], chosen["newton_damping"])
+
+    ## The real ladder (an untrained chart passes at its cheapest triple) ...
+    chosen, tried = roundtrip_ladder(out, arch, hp, state_dict)
+    check(chosen, tried, N_DYS_LADDER, N_NEWTON_LADDER)
+    ## ... a ladder that must climb: (1, 0) fails (residual ~5e-2), and the walk crosses
+    ## n_newton rows in cost order to the cheapest passing triple, every failure on the prefix ...
+    small = ([1, 2, 25], [0, 2])
+    chosen2, tried2 = roundtrip_ladder(out, arch, hp, state_dict, *small)
+    check(chosen2, tried2, *small)
+    assert len(tried2) >= 2 and tried2[0][:3] == (1, 0, "none") and not tried2[0][-1], tried2
+    assert tried2[0][4] == ROUNDTRIP_PREFIX, "a prefix failure must not evaluate all samples"
+    ## ... and a damping-only ladder writes that damping, which the loader carries to decode.
+    chosen3, tried3 = roundtrip_ladder(out, arch, hp, state_dict, [25], [2],
+                                       damping_ladder=("backtrack",))
+    check(chosen3, tried3, [25], [2], ("backtrack",))
+    assert chosen3["newton_damping"] == "backtrack"
+    _expect_raise(lambda: roundtrip_ladder(out, arch, hp, state_dict, n_dys_ladder=[1, 2],
+                                           n_newton_ladder=[0]),
+                  AssertionError, "a ladder with no passing triple")
     with open(SidecarPath(out)) as f:
-        sidecar = json.load(f)
-    assert chosen["n_dys"] == 100 and sidecar["n_dys"] == 100 and sidecar["n_newton"] == 0, \
-        (chosen["n_dys"], sidecar["n_dys"])
-    assert sidecar["n_dys_source"] == "export ladder (smallest passing of 1..3200)", sidecar
-    assert LoadLoinkChart("panda", out).arch["n_dys"] == 100
-    _expect_raise(lambda: roundtrip_ladder(out, arch, hp, state_dict, ladder=[1, 2]),
-                  AssertionError, "an n_dys ladder with no passing rung")
-    with open(SidecarPath(out)) as f:
-        assert json.load(f)["n_dys"] == 1, "a failed ladder must leave the sidecar at its first rung"
-    print("PASS export n_dys ladder: fails at n_dys 1 (n_newton 0), writes the smallest passing "
-          "rung 100 into the sidecar")
+        failed = json.load(f)
+    assert (failed["n_dys"], failed["n_newton"], failed["newton_damping"]) == (1, 0, "none"), \
+        "a failed ladder must put the sidecar back at the checkpoint's own settings"
+    ## The sidecar field: an unknown damping is refused, and a sidecar written before the
+    ## field existed loads as "none".
+    payload = dict(failed, newton_damping="linesearch")
+    with open(SidecarPath(out), "w") as f:
+        json.dump(payload, f)
+    _expect_raise(lambda: LoadLoinkChart("panda", out), ValueError,
+                  "a sidecar with an unknown newton_damping")
+    payload.pop("newton_damping")
+    with open(SidecarPath(out), "w") as f:
+        json.dump(payload, f)
+    old = LoadLoinkChart("panda", out)
+    assert old.arch["newton_damping"] == "none" and old.nn_model.newton_damping == "none"
+    print(f"PASS export inverse ladder: the default ladder writes its cheapest passing triple "
+          f"{chosen['n_dys'], chosen['n_newton'], chosen['newton_damping']} ({len(tried)} tried); "
+          f"from (1, 0) (fails on the {ROUNDTRIP_PREFIX}-sample prefix) the walk climbs to "
+          f"{chosen2['n_dys'], chosen2['n_newton'], chosen2['newton_damping']} after "
+          f"{len(tried2) - 1} failing triple(s); a backtrack-only ladder writes backtrack; all "
+          "three settings in the sidecar; an unknown damping raises, a pre-field sidecar is 'none'")
 
 
 def test_contradicting_sidecars_raise(tmp):
@@ -536,6 +701,8 @@ if __name__ == "__main__":
                                              ("soft12", soft12, "m", "relu")):
             chart = test_chart_functions(tmp, robot_name, robot, cost, act)
             test_jacrev_through_make_flow_inference(chart, robot)
+        for act in ("relu", "tanh"):
+            test_damped_polish_monotone(tmp, "soft12", soft12, act)
         test_export_roundtrip_identical(tmp)
         test_export_ndys_ladder(tmp)
         test_contradicting_sidecars_raise(tmp)
