@@ -34,7 +34,16 @@ Every model here is UNTRAINED (every model fit is a cluster job). The network co
    decided on the 256-sample prefix, a pass on all 2048), all three in the sidecar on disk; a
    backtrack-only ladder writes "backtrack"; a ladder with no passing triple RAISES and puts
    the sidecar back at the chart's own; an unknown damping RAISES on load and a sidecar
-   without the field loads as "none".
+   without the field loads as "none". The round trip reports its inverse residual on each of
+   its three latent draws (prior, box, real), their max the gated one, a smaller `n_eval` a
+   prefix of the same samples, and the ladder's record carries them; `reladder` on that export
+   rewrites the sidecar at the same triple with a `provenance.reladder` note (naming the
+   triple it replaced) and every other field unchanged, an explicit triple writes it with the
+   explicit source, and a failing one RAISES and restores the sidecar byte for byte. With the
+   real draw made unpassable (`real_tol = 0`) the ladder walks every triple and falls back to
+   the cheapest triple passing prior + box on all 2048 samples, `real_latent_fail_fraction`
+   1.0 and the best-effort source in the sidecar; `CappedLadders` (`--n_dys_max` /
+   `--n_newton_max`) restricts the ladder.
 5. `LoadChart` dispatches `"loink"`; `loink_loss` is finite for m, x, u; the trainer's
    `training_step` / validation step run and its nu guard clamps.
 6. The program: `PandaIKProgram(checkpoint=<untrained loink>)` constructs, `SetStartFromQ`
@@ -66,8 +75,9 @@ from src.charts.loink import (  # noqa: E402
     NominalConfiguration, Pose7ToXyzRpy, RpyCutDistance, TrainingCost, XyzRpyToPose7,
     _solve, bilipnet_jacobian, damped_newton_step, dys_inverse, invert_bilipnet, loink_loss)
 from export_loink import (  # noqa: E402
-    LADDER_SOURCE, N_DYS_LADDER, N_NEWTON_LADDER, ROUNDTRIP_PREFIX, ROUNDTRIP_SAMPLES,
-    BuildLoinkModel, InverseCost, LadderOrder, roundtrip_ladder, write_untrained)
+    BEST_EFFORT_SOURCE, EXPLICIT_SOURCE, LADDER_SOURCE, LATENT_DRAWS, N_DYS_LADDER,
+    N_NEWTON_LADDER, ROUNDTRIP_PREFIX, ROUNDTRIP_SAMPLES, BuildLoinkModel, CappedLadders,
+    InverseCost, LadderOrder, reladder, roundtrip_ladder, roundtrip_residuals, write_untrained)
 from jrl.robots import get_robot  # noqa: E402
 from src.flow_loading import SidecarPath  # noqa: E402
 
@@ -365,7 +375,7 @@ def test_export_ndys_ladder(tmp):
     def check(chosen, tried, n_dys_ladder, n_newton_ladder, damping_ladder=("none", "backtrack")):
         with open(SidecarPath(out)) as f:
             sidecar = json.load(f)
-        passing = [(c, rank[dm], nn, d, dm) for d, nn, dm, c, _, _, _, _, ok in tried if ok]
+        passing = [(c, rank[dm], nn, d, dm) for d, nn, dm, c, *_, ok in tried if ok]
         assert passing, tried
         best = min(passing)
         assert (chosen["n_dys"], chosen["n_newton"], chosen["newton_damping"]) == \
@@ -385,6 +395,12 @@ def test_export_ndys_ladder(tmp):
             sidecar["n_dys_source"]
         assert len(sidecar["inverse_ladder"]) == len(tried)
         assert [r["newton_damping"] for r in sidecar["inverse_ladder"]] == [t[2] for t in tried]
+        ## The per-draw residuals, in the tuples and the record; the gated one is their max.
+        for t, r in zip(tried, sidecar["inverse_ladder"]):
+            assert tuple(t[8]) == LATENT_DRAWS and t[7] == max(t[8].values()), t
+            assert r["max_inverse_residual_by_draw"] == t[8] and r["max_inverse_residual"] == t[7]
+            assert r["real_fail_fraction"] == t[9] and r["passes_prior_box"] == t[10], (r, t)
+        assert tried[-1][9] == 0.0 and sidecar["real_latent_fail_fraction"] == 0.0, sidecar
         loaded = LoadLoinkChart("panda", out)
         assert (loaded.arch["n_dys"], loaded.arch["n_newton"], loaded.arch["newton_damping"]) \
             == (chosen["n_dys"], chosen["n_newton"], chosen["newton_damping"])
@@ -394,6 +410,43 @@ def test_export_ndys_ladder(tmp):
     ## The real ladder (an untrained chart passes at its cheapest triple) ...
     chosen, tried = roundtrip_ladder(out, arch, hp, state_dict)
     check(chosen, tried, N_DYS_LADDER, N_NEWTON_LADDER)
+    ## The three latent draws: per-draw residuals at the chosen triple (the sidecar on disk),
+    ## the gated one their max, and the 256-sample stage a prefix of the 2048.
+    finite, err, res, per_draw, real_fail = roundtrip_residuals(out, chosen, hp, state_dict)
+    assert finite and tuple(per_draw) == LATENT_DRAWS and res == max(per_draw.values()), per_draw
+    assert real_fail == 0.0, real_fail
+    _, _, res_p, per_draw_p, _ = roundtrip_residuals(out, chosen, hp, state_dict,
+                                                     n_eval=ROUNDTRIP_PREFIX)
+    assert all(per_draw_p[d] <= per_draw[d] for d in LATENT_DRAWS), (per_draw_p, per_draw)
+    ## `reladder` on that export: the same objects as the export, so the same ladder, the same
+    ## triple and record; only `provenance.reladder` is added.
+    with open(SidecarPath(out)) as f:
+        before = json.load(f)
+    old, new = reladder(out)
+    with open(SidecarPath(out)) as f:
+        after = json.load(f)
+    triple = (chosen["n_dys"], chosen["n_newton"], chosen["newton_damping"])
+    assert old == new == triple, (old, new, triple)
+    note = after["provenance"].pop("reladder")
+    assert "date" in note and len(note) == 3, note
+    assert note["replaced"] == {"n_dys": triple[0], "n_newton": triple[1],
+                                "newton_damping": triple[2]}, note
+    assert after == before, sorted(k for k in set(before) | set(after)
+                                   if before.get(k) != after.get(k))
+    ## ... an explicit triple is round-tripped once and written as given (no stale record) ...
+    old_x, new_x = reladder(out, n_dys=25, n_newton=2, newton_damping="none")
+    with open(SidecarPath(out)) as f:
+        explicit = json.load(f)
+    assert new_x == (25, 2, "none"), new_x
+    assert explicit["n_dys_source"] == EXPLICIT_SOURCE and "inverse_ladder" not in explicit
+    assert (explicit["n_dys"], explicit["n_newton"]) == (25, 2) and "reladder" in explicit["provenance"]
+    ## ... and a failing one RAISES with the sidecar restored byte for byte.
+    with open(SidecarPath(out)) as f:
+        text = f.read()
+    _expect_raise(lambda: reladder(out, n_dys=1, n_newton=0, newton_damping="none"),
+                  AssertionError, "reladder at a failing explicit triple")
+    with open(SidecarPath(out)) as f:
+        assert f.read() == text, "a failed reladder must restore the sidecar"
     ## ... a ladder that must climb: (1, 0) fails (residual ~5e-2), and the walk crosses
     ## n_newton rows in cost order to the cheapest passing triple, every failure on the prefix ...
     small = ([1, 2, 25], [0, 2])
@@ -401,6 +454,29 @@ def test_export_ndys_ladder(tmp):
     check(chosen2, tried2, *small)
     assert len(tried2) >= 2 and tried2[0][:3] == (1, 0, "none") and not tried2[0][-1], tried2
     assert tried2[0][4] == ROUNDTRIP_PREFIX, "a prefix failure must not evaluate all samples"
+    ## ... the best-effort rule: with the real draw unpassable (the `real_tol` test hook), the
+    ## ladder walks every triple and takes the cheapest passing prior + box on all 2048 ...
+    chosen_fb, tried_fb = roundtrip_ladder(out, arch, hp, state_dict, *small, real_tol=0.0)
+    with open(SidecarPath(out)) as f:
+        fb = json.load(f)
+    assert [t[:3] for t in tried_fb] == LadderOrder(*small, 7) and not any(t[-1] for t in tried_fb)
+    candidates = [t for t in tried_fb if t[10] and t[4] == ROUNDTRIP_SAMPLES]
+    assert candidates and all(t[9] == 1.0 for t in candidates), tried_fb
+    triple_fb = (chosen_fb["n_dys"], chosen_fb["n_newton"], chosen_fb["newton_damping"])
+    assert triple_fb == candidates[0][:3], (triple_fb, candidates)
+    assert (fb["n_dys"], fb["n_newton"], fb["newton_damping"]) == triple_fb, fb
+    assert fb["real_latent_fail_fraction"] == 1.0 and fb["n_dys_source"] == BEST_EFFORT_SOURCE
+    assert "best effort" in fb["n_dys_source"], fb["n_dys_source"]
+    assert [r["real_fail_fraction"] for r in fb["inverse_ladder"]] == [t[9] for t in tried_fb]
+    ## ... the CLI caps restrict the ladder to the counts at or below them ...
+    assert CappedLadders() == {"n_dys_ladder": N_DYS_LADDER, "n_newton_ladder": N_NEWTON_LADDER}
+    capped = CappedLadders(n_dys_max=50, n_newton_max=5)
+    assert capped == {"n_dys_ladder": (25, 50), "n_newton_ladder": (2, 5)}, capped
+    capped_order = LadderOrder(capped["n_dys_ladder"], capped["n_newton_ladder"], 7)
+    assert len(capped_order) == 2 * 2 * 2 and all(d <= 50 and nn <= 5 for d, nn, _ in capped_order)
+    assert [t for t in LadderOrder(N_DYS_LADDER, N_NEWTON_LADDER, 7) if t in capped_order] \
+        == capped_order, "a capped ladder is the full ladder's order, restricted"
+    _expect_raise(lambda: CappedLadders(n_dys_max=10), ValueError, "a cap below every rung")
     ## ... and a damping-only ladder writes that damping, which the loader carries to decode.
     chosen3, tried3 = roundtrip_ladder(out, arch, hp, state_dict, [25], [2],
                                        damping_ladder=("backtrack",))
@@ -430,7 +506,11 @@ def test_export_ndys_ladder(tmp):
           f"from (1, 0) (fails on the {ROUNDTRIP_PREFIX}-sample prefix) the walk climbs to "
           f"{chosen2['n_dys'], chosen2['n_newton'], chosen2['newton_damping']} after "
           f"{len(tried2) - 1} failing triple(s); a backtrack-only ladder writes backtrack; all "
-          "three settings in the sidecar; an unknown damping raises, a pre-field sidecar is 'none'")
+          "three settings in the sidecar; an unknown damping raises, a pre-field sidecar is 'none'; "
+          f"per-draw residuals at the choice ({', '.join(f'{d} {per_draw[d]:.1e}' for d in LATENT_DRAWS)}) "
+          "in the record; reladder rewrites the same triple with only provenance.reladder added; "
+          f"with the real draw unpassable the best effort is {triple_fb} (real failing 1.0, "
+          f"{len(candidates)} prior+box pass(es) of {len(tried_fb)}); the caps restrict the ladder")
 
 
 def test_contradicting_sidecars_raise(tmp):
