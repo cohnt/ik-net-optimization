@@ -10,7 +10,45 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE -- 2026-10-23 16:20 cluster time: the soft12 smokes are queued on the graph-capture fix
+## STATE -- 2026-10-23 19:05 cluster time: smokes flagged, PROBE cancelled, re-ladder jobs queued.
+Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; ls ~/learned-ik/results/reladder/'`.
+ 0. What happened: the smoke check (`scratchpad smoke_check.py`, 40 of 48 items at 18:55)
+    flagged 3 items, all relu charts on the pose task with the paired start: cells scored
+    `unrepresentable_start` (start_q_error 0.76-1.67). Mechanism: the exporter's ladder chose
+    each chart's decode budget on latents from N(0, I); real configurations' latents (|z| 13-25
+    on m/x charts) fail to invert there (relu 47-49%, tanh 15-21% of 2048 real q). The 8
+    PROBE jobs (6018815-18, 6018819/23/24/25) were `scancel`led before starting (nothing
+    touched). The IPOPT smokes 6018466/67 finished; SVGD smokes 6018468/69 were still running.
+ 1. Fix (commit d417150, staged by copying the three files from a GitHub clone at
+    `~/learned-ik/src-clone` into `~/learned-ik/repo` -- stage_code.sh was too slow for the
+    laptop's deadline; the chart module is unchanged): the gate covers three latent draws
+    (prior, +-5 box, real), `export_loink.py --reladder PKL` rechooses an exported chart's
+    budget in place, caps `--n_dys_max/--n_newton_max`, and a best-effort rule for a chart no
+    budget inverts exactly on real latents (the relu charts: undamped Newton leaves 0.05-0.3%
+    failing at every budget, backtracking stalls at the kinks; prior+box stay hard gates, the
+    real draw's failure fraction is minimised and written as `real_latent_fail_fraction`).
+    UNTESTED past round one: the three-draw gate and --reladder passed
+    tests/test_loink_chart.py (ALL PASS); the best-effort rule, caps and their tests never ran.
+    `tests/test_loink_chart.py` must be run (cluster or laptop, OMP_NUM_THREADS=4) before merge.
+ 2. Queued 19:03: jobs 6019621-26 (`lik_reladder_{mrP,xrP,mtP,xtP,urP,utP}`, xeon-p8, -s 8,
+    8 h, `cluster/reladder_loink_job.sh`, N_DYS_MAX 400, N_NEWTON_MAX 50). Each rewrites ONLY
+    the inverse fields of `~/learned-ik/repo/models/soft12/<stem>.arch.json`; logs and
+    before/after sidecars under `~/learned-ik/results/reladder/`. Read every log's CHOSEN line
+    (or its failure) first. If a job failed on a code error, fix locally, re-stage the file the
+    same way, resubmit that chart.
+ 3. Then rerun the smokes on the new budgets: move the old results aside
+    (`~/learned-ik/results/soft12/benchmark/sc_LOINKSMOKE_*` -> `..._prefix_budget/` or delete
+    after mining; they hold nothing the tables need), `collect_results.sh --reclaim` both smoke
+    manifests AND clear their `.done` markers (`rm ~/learned-ik/state/manifest_stageLOINKSMOKE*_soft12P/*.done`),
+    resubmit (`submit_bench.sh`, PROCS=2, DRAKE_ENV=crc for SVGD), run `smoke_check.py`: pass =
+    0 flagged (paired `start_q_error` ~0 except the recorded `real_latent_fail_fraction` share on
+    relu charts). Copy the six new sidecars back to the laptop's `models/soft12/` (gitignored)
+    and record the chosen triples and the per-iteration wall change in `docs/notes-chart.md`.
+ 4. Then PROBE as before (gen_manifest LOINKPROBE / LOINKPROBE_SVGD, DEPENDENCY on the smokes).
+    Thomas emails the authors early the week of 2026-10-26; the HSA Table II gap is the artefact.
+
+### Earlier state (16:20)
+STATE -- 2026-10-23 16:20 cluster time: the soft12 smokes are queued on the graph-capture fix
 
 What a resuming session checks FIRST:
 
