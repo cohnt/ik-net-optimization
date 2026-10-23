@@ -389,3 +389,67 @@ bug**: at its own `K = n - p` LOInK cannot chart the 6-D pose task of a 7-DoF ar
 padded-latent LOInK (`K` = the flow's width, the cVAE's "K = flow width" rung; `decode` drops the
 dummy coordinates) is a rung worth fielding is a modification of the method and Thomas's call;
 so is a usable paper recipe (their schedule is one of the questions for the authors).
+
+### The soft PCS charts (2026-10-23): K = 6 learns, but no chart fits, and the latent is not where the box is
+
+The six project-recipe charts (`m/x/u` x `relu/tanh`, 620k steps, jobs 6012963-65) do learn,
+unlike the rigid arms, and plateau far from usable by 340k steps. Validation at 620k (constant
+predictor 504 mm) and the screens (`results/screen_loink/soft12__loink*__step620000.json`, test
+split, float64):
+
+| chart | val pos / rot RMSE | tau | task error median pos / ang (p95) | z = 0 solution: FK error, cost ratio v cheapest neighbour | J_hat R^2 | inverse (n_dys, n_newton, damping) |
+| --- | --- | --- | --- | --- | --- | --- |
+| mrP | 291 mm / 41 deg | 2.1e4 | 241 mm / 17 deg (500 / 106) | 1236 mm, 96x | -5.9 | 25, 10, none |
+| mtP | 332 / 58 | 1.1e4 | 294 / 28 (543 / 143) | 967 mm, 41x | -9.8 | 25, 5, backtrack |
+| xrP | 293 / 41 | 2.0e4 | 243 / 16 (503 / 106) | 1097 mm, 86x | -5.6 | 25, 10, none |
+| xtP | 331 / 56 | 1.2e4 | 291 / 27 (548 / 138) | 1015 mm, 29x | -9.6 | 50, 5, backtrack |
+| urP | 205 / 29 | 4.6e4 | 177 / 11 (343 / 53) | 679 mm, 8x | - | 25, 50, none |
+| utP | 224 / 45 | 4.5e4 | 188 / 20 (386 / 117) | 513 mm, 49x | - | 25, 10, backtrack |
+
+98-100% of test poses have more than 50 mm of task error; the unstructured charts (`u`, no cost
+head) fit best, so the cost head costs task accuracy here too. The z = 0 point, LOInK's own
+solution, is 0.5-1.2 m off the target with 8-96x the cheapest neighbouring sample's cost, and the
+cost head's `J_hat` has negative R^2 against the true cost: the latent structure the method is
+built for did not form. tau grew throughout training to 1e4-4.6e4 (nu = 1e3-4.6e3 at mu = 0.1),
+i.e. the net spent its inverse-Lipschitz room as distortion, not as fit. Gates (d) (gain
+0.16-0.92 of the certified bound `scale/mu`, bi-Lipschitz inequality violated on 0 of 10k pairs)
+and (b) (decode residual at the sidecar's setting: float64 p99 1e-13 to 8e-13; float32 plateau
+3e-5 to 3e-4) pass on all six; urP keeps one unconverged decode in ~5000 (residual ~5) that no
+fixed budget removes.
+
+**Inverting the charts: the polish, not the splitting, does the work** (`src/charts/loink.py`,
+`scripts/training/export_loink.py`, commit 18a2bd2). Davis-Yin alone leaves a residual of 5-20
+on the relu charts at any count (the per-layer step `alpha = mu/gamma` shrinks as nu grows), and
+the old exporter ladder (n_dys up to 3200, n_newton = 2) passed only mtP, at 3200. Measured on the
+440k/480k checkpoints: the undamped Newton polish cycles on rare inputs of the smooth tanh charts
+(a pair passing a 256-sample round trip fails on 2048 at residual ~60), and a greedy backtracking
+(per-sample best of steps 1 .. 1/64 on the residual norm, static and graph-safe) stalls at the
+kinks of the piecewise-linear relu charts (every pair up to 50 steps fails at ~1e2) while the
+full step crosses them. So the step rule is a per-chart sidecar field, `newton_damping`
+(`none` | `backtrack`), and the exporter walks `n_dys x n_newton x damping` in order of decode
+cost (`n_dys + (ndof + 1 + candidates) * n_newton` network passes), gating each triple on the
+first 256 of 2048 fixed samples and then on all 2048. Result: every chart inverts at 25-50 DYS
+iterations (tanh with 5-10 damped steps, relu with 10-50 undamped ones). The attached IFT step
+and the derivative are unchanged by the damping.
+
+**Gate (f), representability, fails on the four cost-head charts (48-51% relu, 14-22% tanh) and
+is an artefact of where the latent lives, not of the conversion.** The true latent `z = G_2(q)` of
+EVERY real configuration lies outside the benchmark's +-5 box: |z|_inf median 13-16 (max 25) on
+the `m`/`x` charts and 100-1100 on the `u` charts (2000 uniform q per chart, scratch diagnosis).
+Out there the sidecar's polish budget, chosen on in-box draws, is unfinished (DYS residual 5-20,
+polish not converged; 2x the Newton steps repairs 96-100% of the failures, 2x the DYS count
+17-68%); y_hat off the principal rpy domain is 0.2-3% of samples and no more frequent among the
+failures. Inside the box (z uniform in [-5, 5]^6, y either the chart's own y_hat or the true FK
+pose) the decode converges on all six charts: float64 median 1e-13, max 1e-12 to 4e-5 with at
+most 3 of 2000 above 1e-6 (urP's one outlier at ~1); float32 1e-5 to 1e-4. **What this means for
+the cells**: every solve stays in the box, so the chart is exact where the solver visits; the
+paired start inverts `q_init` to a latent 2-5x outside the box and is clipped on every cell
+(recorded `clip_distance`, `start_q_error`), so the paired protocol starts from a projected
+point as the cVAE's did, for a different reason (the cVAE's latent was collapsed; LOInK's is
+real but on a scale the +-5 box and the `sqrt(K) + 1.5` trust region were never set for). The
+`N(0, I)` native draw and `z = 0` sit in a region the training data's latent never occupies.
+Standardising `J` to z = O(1) assumed the cost head would fit; it did not.
+
+Benchmarked anyway, soft12 only (the four `_soft12P` manifests, PROCS=2): the question the
+rung asks is answered by cells, and the cVAE precedent ran its collapsed charts. Cells
+`docs/loink-tables.md`.
