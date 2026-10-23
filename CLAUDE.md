@@ -396,16 +396,23 @@ the runaway does not buy success.**
 
 **Chart ablation, rung one CLOSED (branch `chart-cvae`, merged to main 2026-10-21).** The
 program reaches its network only through `src/charts/` (`LoadChart`; `FlowChart` bit-identical to the
-old calls), built so LOInK (the next push, its own campaign) plugs in. Rung: a standard cVAE decoder
-as the chart, learned and fixed (textbook) decoder variance x K = flow width / redundancy, IPOPT +
-AL-SVGD. **Verdict: a loss.** Every rigid native row loses to the flow and to joint space under both
-solvers (one IPOPT tie with joint space); screw 0 on every probe; paired start 0/480 everywhere
-(encoder round trip 0.75-2.8 rad off); iiwa K=8 learned variance diverged twice (recorded, not
-benchmarked). Soft PCS ties the flow, with cheaper cells, only because the decoder returns a low-strain
-configuration. **Mechanism: every chart's latent is collapsed or nearly so** (active-unit screen) --
-the decoder returns E[q | pose], unusable where the IK fibre is disconnected branches. The screw
-dataset rebuild was bit-identical (`n6r` = `n6`). Long form `docs/notes-chart.md`; ops
-`cluster/CVAE_RUNBOOK.md`.
+old calls), built so later families plug in. Rung: a standard cVAE decoder as the chart, learned
+and fixed decoder variance x K = flow width / redundancy, IPOPT + AL-SVGD. **Verdict: a loss.**
+Every rigid native row loses to the flow and to joint space under both solvers; screw 0 on every
+probe; paired start 0/480 everywhere; iiwa K=8 learned variance diverged (recorded, not
+benchmarked). Soft PCS ties the flow with cheaper cells only because the decoder returns a
+low-strain configuration. **Mechanism: every chart's latent is collapsed** (active-unit screen):
+the decoder returns E[q | pose], unusable where the IK fibre is disconnected branches. Long form
+`docs/notes-chart.md`; ops `cluster/CVAE_RUNBOOK.md`.
+
+**Chart rung two: LOInK (branch `chart-loink`, 2026-10-22), not an ablation**: a bi-Lipschitz
+network designed for a structured latent (`G(q) = [task; z]`, `z = 0` the cost minimiser; the chart
+is `G^{-1}`, Davis-Yin + Newton polish, IFT derivative). Question: does a latent structured for
+ONE cost help under OUR objective? Ladder cost m/x/u x relu/tanh x recipe P/A, 12 charts per
+robot. Certified gain, exact paired start, one connected fibre per task (the risk on rigid arms).
+The chart takes the program's RAW `c` (`task_input="xyzrpy"`). Paper replicated first (`docs/loink-replication.md`): Sec. V reproduces at
+`lambda = 0.01`; Table II does not. Long form `docs/notes-chart.md`; ops `cluster/LOINK_RUNBOOK.md`;
+tables `docs/loink-tables.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
 
@@ -485,8 +492,5 @@ calling shell. The laptop does not sleep on AC; session gaps are deliberate, nev
   1.12 m length scale). Never tried.
 - **Least-squares domain extension** (Thomas's unreleased IFT-IK paper): deferred, belongs here.
   Trust-region *solving* is another project's.
-- **A small optimization smoke run in checkpoint validation** (`cluster/export_and_screen_job.sh`):
-  Thomas's idea, explicitly deferred.
+- **A small optimization smoke run in checkpoint validation**: Thomas's idea, deferred.
 - **A harder problem formulation** beyond the hardened scene — his idea, his call.
-- **The Drake nightly pin expires ~2026-11-02**: move to 1.58.0 once it carries PR 25002.
-- `stage_H` in `cluster/gen_manifest.py` is a generic cross-test harness kept for the next knob.

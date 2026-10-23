@@ -271,3 +271,72 @@ in strain, so the mean stays within ~4 cm, which the c box (+-0.25 m) and the co
 The same mean is shrunk toward zero strain (|E q| <= E|q|), and cost here is strain energy, which is
 the reading of the cheaper solutions above. The fibre-geometry part is an inference from the FK
 errors, not measured on the fibres themselves.
+
+## The LOInK chart (branch `chart-loink`, started 2026-10-22)
+
+Not an ablation: the question is what happens when the chart is a network **designed to have a
+well-structured latent space**, and (Thomas's nuance) whether a latent structured for ONE cost
+helps under a DIFFERENT objective. LOInK (Somerfield, Abood, Wang, Manchester, arXiv 2609.21275;
+`docs/papers/`) learns a bi-Lipschitz `G: R^n -> R^n` (BiLipNet, Wang-Dvijotham-Manchester ICML
+2024) with `G(q) = [y_hat; z]`, `y_hat in R^6` the task and `z in R^(n-6)` the latent, trained with
+`MSE(y_hat, y) + lambda MSE(J_hat(z, y_hat), J)`, `J_hat = |z|^2_M + b(y_hat)`, `M = I/2 + P^T P`,
+so `z = 0` is the cost minimiser on each task fibre. The chart is the INVERSE: `decode(c, z) =
+G^{-1}([c; z])` by Davis-Yin splitting per monotone layer (fixed `n_dys`, the PLNet reference
+algorithm) plus a Newton polish; the derivative is the implicit-function Jacobian `J_G(q)^{-1}`,
+exact, with nothing differentiated through the iterations. `mu = 0.1` fixed, `nu = exp(lognu)`
+learned per layer under a `1e-3 log(tau)` penalty. Code `src/charts/loink.py`; the port matches
+the official JAX code (github.com/acfr/PLNet) to ~1e-15 (`tests/test_loink_reference.py`).
+
+**Three properties, pre-registered.** (1) Certified gain `|dq/d[c,z]| <= scale/mu`: the flow's
+runaway is impossible by construction. (2) Exact inverse: `decode(invert(q)) == q` to 1e-15 for
+every `q`, so the paired start is exact (`start_q_error` 0; the cVAE was 0/480). (3) The latent
+origin is a cost minimiser, so the trust region and the N(0, I) native draw have cost semantics
+(the trust region bounds `J_hat` above the per-task minimum; its binding fraction is reported).
+**The stated risk**: `G` is one diffeomorphism, so each task's fibre is one connected line; the
+rigid arms' IK fibres are disconnected branches, so `G_1 ~ FK` can only be exact on one branch per
+region -- a task-error floor the paper itself names as a limitation. The soft PCS arm (one
+connected fibre) is the favourable case.
+
+**Adaptations, stated.** The task is the program's own `c = [xyz, rpy]` (Drake `RollPitchYaw`),
+handed to the chart RAW (`task_input = "xyzrpy"`; no quaternion round trip), so `decode` is
+continuous across the rpy cut and the paired start is exact off the principal domain too; the
+training targets lie on the principal domain, so near the cut the chart extrapolates (screen (e)).
+There is no continuous 6-parameter chart of SE(3); this floor is intrinsic to a Lipschitz task
+output. `K = n - 6` is forced (Panda/iiwa/screw 1, soft12 6); trust region by the rule
+`round(sqrt(K) + 1.5, 2)`; latent box +-5. `J` is standardised by its dataset mean/std (sidecar
+`j_mean`, `j_std`) so `z = O(1)`. The cost head's `P` is `K x K` (the paper's `p x p` cannot
+multiply `z`).
+
+**The ladder (Thomas, 2026-10-22: "try both" on every axis)**: cost `m` (the program's joint
+centering about `q_nominal`; soft PCS strain energy) / `x` (LOInK's own eq. 18 log-barrier,
+`eps = 1e-3`) / `u` (lambda = 0, no head: bi-Lipschitz structure alone); activation `r` (relu, as
+published; the chart is piecewise linear) / `t` (tanh); recipe `P` (the flow's and cVAE's: AdamW
+1.5e-4, StepLR, 620k x 4096) / `A` (the paper's: Adam 1e-3, reduce-on-plateau patience 500,
+batch 500, 3 epochs = 150k steps, plus gradient clipping at 1.0 which the replication needed).
+12 charts per robot, one architecture (2 monotone layers x 4 x 256, head 2 x 128, the paper's
+manipulator example). Labels `loink<cost><act><recipe>`. Native start `z ~ N(0, I)` as every
+chart; the `z = 0` "LOInK alone" solution is a screen quantity.
+
+**Replication first (`docs/loink-replication.md`; no code is online).** Sec. V (planar 3-DoF)
+reproduces: `G^{-1}([y; 0])` within 2.7-3.7 mm of the three targets, elbow-up, in limits, the
+true cost minimised at `z = 0`; eq. 17 holds at every `mu`, larger `mu` smoother -- once `lambda
+<< 1` (`lambda = 1` underfits the task, 0.207 m v 0.021 m validation RMSE; `lambda = 0.01`
+adopted). Sec. VII (planar HSA in SoRoMoX) does NOT reproduce Table II: with `u_bar = 0` at a
+corner of the actuation box the fibre's cheapest point lies on the boundary of the data, so the
+surrogate's `z = 0` extrapolates outside it (EE error 159 mm against the paper's 0.44 mm; the
+fibre-local fit is 2.3 mm; a symmetric box and a centred cost do not recover it; their `U` is not
+printed). Carried into the campaign as an expectation: wherever a task fibre's cheapest point sits
+on a joint limit, cost `m`'s `z = 0` extrapolates; the barrier cost `x` cannot. tanh was worse than
+relu on every replication number. Inversion on TRAINED models: `tau ~ 100`, so DYS alone at 100
+iterations leaves 1e-2; the Newton polish takes it to 1e-15 (float32 2e-6) -- the exporter writes
+screen (b)'s recommended `n_dys` into the sidecar, and compile time scales with it (relu 100: ~100 s
+on CPU; tanh 100: ~570 s).
+
+**Screens** (`scripts/training/screen_loink.py`, `results/screen_loink/`): (a) task error of
+`G_1`; (b) inversion residual v `n_dys`, polished and not, both dtypes; (c) the `z = 0` solution's
+FK error and cost against the dataset's cheapest neighbour; (d) the gain bound and the
+bi-Lipschitz inequality; (e) task error by distance to the rpy cut; (f) representability and
+`start_c_error` (the paired start's `c` is the chart's own `y_hat`, not the FK pose).
+Stages LOINKSMOKE -> LOINKPROBE (60-cell native AND paired probes on the rigid arms, soft12 in
+full) -> LOINKEXT (full rows where a probe had a success); ops `cluster/LOINK_RUNBOOK.md`; tables
+`docs/loink-tables.md` (`scripts/report_loink.py --write`). Results: pending.
