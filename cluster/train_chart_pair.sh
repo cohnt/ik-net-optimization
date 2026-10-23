@@ -16,7 +16,9 @@
 #
 # Each run is cluster/train_chart.sh, unchanged, as a background process with
 # CUDA_VISIBLE_DEVICES narrowed to ONE of the job's two GPUs and its own RUN_NAME / ROBOT /
-# TRAIN_EXTRA_ARGS. Narrowing the variable in-process rather than asking srun for per-step
+# TRAIN_EXTRA_ARGS. Both runs share this job's FAMILY / BATCH / MAX_STEPS environment; a row
+# carrying its own --max_steps= / --batch_size= (the LOInK recipes) overrides them inside
+# train_chart.sh, so the two runs of a pair may train different budgets. Narrowing the variable in-process rather than asking srun for per-step
 # GPUs keeps this independent of the cluster's step-gres semantics. Each run's output goes to
 # its own $RUN_DIR/train.log-<jobid>; this job's own log (the pair's launch.log) carries the two
 # exit codes. The job exits with the larger, so a failure in either is the job's.
