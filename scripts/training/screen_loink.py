@@ -13,7 +13,11 @@ files, resolved as `screen_cvae.py` does), 5000 samples unless noted, written to
     iteration count in {10, 20, 50, 100, 200, 400}, DYS alone and with the decode's Newton
     polish (`n_newton` steps + the IFT step, i.e. exactly the decode's value), in float64 and
     float32; and the RECOMMENDED `n_dys`: the smallest count whose polished p99 residual is
-    below 1e-10 in float64 (None if no count reaches it). `export_loink.py --n_dys` writes it.
+    below 1e-10 in float64 (None if no count reaches it). The sweep polishes with the
+    sidecar's `n_newton` and `newton_damping`. Then the decode's own residual at the sidecar's
+    `(n_dys, n_newton, newton_damping)` (`invert_bilipnet` itself; the triple
+    `export_loink.py`'s ladder chose and the benchmark runs), float64 and float32, median /
+    p99 / max.
 
 (c) The z = 0 solution, LOInK's own answer on our robots (`--n_cost`, default 1000 targets):
     FK error of `decode(y, 0)` v the target pose (median / p95, mm and deg) and its program
@@ -69,7 +73,7 @@ from jrl.math_utils import geodesic_distance_between_quaternions  # noqa: E402
 from screen_cvae import LoadTestSplit  # noqa: E402
 from src.charts.loink import (  # noqa: E402
     LoadLoinkChart, Pose7ToXyzRpy, RpyCutDistance, TrainingCost, XyzRpyToPose7,
-    bilipnet_jacobian, dys_inverse, invert_bilipnet)
+    bilipnet_jacobian, damped_newton_step, dys_inverse, invert_bilipnet)
 
 LATENT_BOX = 5.0                       # IKFlowProgram.LatentBoxConstraint
 DYS_COUNTS = (10, 20, 50, 100, 200, 400)
@@ -137,21 +141,26 @@ def ScreenRpyCut(pose, pos, ang):
 
 ## ---------------------------------------------------------------------- (b)
 
-def _Newton(net, x, w, steps):
-    """`steps` Newton steps on `G(x) = w`. With `steps = n_newton + 1` from the DYS point this is
+def _Newton(net, x, w, steps, damping="none"):
+    """`steps` Newton steps on `G(x) = w`, the first `steps - 1` under the polish's step rule
+    `damping` and the last a full step. With `steps = n_newton + 1` from the DYS point this is
     exactly `invert_bilipnet`'s value (its `n_newton` polish steps and the IFT step)."""
-    for _ in range(steps):
+    for i in range(steps):
+        if damping == "backtrack" and i < steps - 1:
+            x = damped_newton_step(net, x, w)
+            continue
         J = bilipnet_jacobian(net, x)
         x = x + torch.linalg.solve(J, (w - net(x)).unsqueeze(-1)).squeeze(-1)
     return x
 
 
 def ScreenInversion(model, pose, rng, chunk):
-    n_newton = int(model.n_newton)
+    n_newton, damping = int(model.n_newton), model.newton_damping
     y = Pose7ToXyzRpy(pose)
     z = torch.from_numpy(rng.normal(size=(pose.shape[0], model.K)))
     w64 = torch.cat([y, z], dim=1)
-    out = {"n": int(pose.shape[0]), "n_newton": n_newton, "counts": list(DYS_COUNTS)}
+    out = {"n": int(pose.shape[0]), "n_newton": n_newton, "newton_damping": damping,
+           "counts": list(DYS_COUNTS)}
     for name, dtype in (("float64", torch.float64), ("float32", torch.float32)):
         m = model if dtype == torch.float64 else copy.deepcopy(model).to(dtype)
         dev = next(m.parameters()).device
@@ -161,7 +170,7 @@ def ScreenInversion(model, pose, rng, chunk):
             for n in DYS_COUNTS:
                 def run(ww, n=n):
                     x = dys_inverse(m.G, ww, n)
-                    xp = _Newton(m.G, x, ww, n_newton + 1)
+                    xp = _Newton(m.G, x, ww, n_newton + 1, damping)
                     return ((m.G(x) - ww).abs().amax(dim=1).double().cpu(),
                             (m.G(xp) - ww).abs().amax(dim=1).double().cpu())
                 plain, polished = _Chunked(run, w, chunk=chunk)
@@ -172,9 +181,21 @@ def ScreenInversion(model, pose, rng, chunk):
     dev = next(model.parameters()).device
     with torch.no_grad():
         wc = w64[:min(chunk, 200)].to(dev)
-        a = invert_bilipnet(model.G, wc, model.n_dys, n_newton)
-        b = _Newton(model.G, dys_inverse(model.G, wc, model.n_dys), wc, n_newton + 1)
+        a = invert_bilipnet(model.G, wc, model.n_dys, n_newton, damping)
+        b = _Newton(model.G, dys_inverse(model.G, wc, model.n_dys), wc, n_newton + 1, damping)
     out["polish_matches_decode"] = float((a - b).abs().max())
+    ## The decode as the benchmark runs it: the sidecar's (n_dys, n_newton, newton_damping),
+    ## all samples.
+    at = {"n_dys": int(model.n_dys), "n_newton": n_newton, "newton_damping": damping}
+    for name, dtype in (("float64", torch.float64), ("float32", torch.float32)):
+        m = model if dtype == torch.float64 else copy.deepcopy(model).to(dtype)
+        dev = next(m.parameters()).device
+        with torch.no_grad():
+            def run(ww, m=m):
+                x = invert_bilipnet(m.G, ww, m.n_dys, n_newton, damping)
+                return (m.G(x) - ww).abs().amax(dim=1).double().cpu()
+            at[name] = _Quantiles(_Chunked(run, w64.to(dtype=dtype, device=dev), chunk=chunk))
+    out["at_sidecar"] = at
     rec = [n for n in DYS_COUNTS if out["float64"][str(n)]["polished"]["p99"] < RECOMMEND_TOL]
     out["recommended_n_dys"] = rec[0] if rec else None
     out["recommend_rule"] = f"smallest count with float64 polished p99 < {RECOMMEND_TOL:g}"
@@ -385,8 +406,14 @@ def main(argv=None):
         print(f"(b) n_dys {n:>3}: float64 p99 dys {a64['dys']['p99']:.2e} polished "
               f"{a64['polished']['p99']:.2e} | float32 p99 dys {a32['dys']['p99']:.2e} polished "
               f"{a32['polished']['p99']:.2e}")
-    print(f"(b) recommended n_dys: {inv['recommended_n_dys']} (polish == decode to "
-          f"{inv['polish_matches_decode']:.1e})")
+    print(f"(b) recommended n_dys at n_newton {inv['n_newton']} ({inv['newton_damping']}): "
+          f"{inv['recommended_n_dys']} "
+          f"(polish == decode to {inv['polish_matches_decode']:.1e})")
+    at = inv["at_sidecar"]
+    print(f"(b) decode at the sidecar's n_dys {at['n_dys']}, n_newton {at['n_newton']}, "
+          f"{at['newton_damping']}: "
+          f"|G(x) - w| float64 p99 {at['float64']['p99']:.2e} max {at['float64']['max']:.2e} | "
+          f"float32 p99 {at['float32']['p99']:.2e} max {at['float32']['max']:.2e}")
     print(f"(c) z = 0: FK pos median {zl['fk_error']['pos_mm_median']:.2f} mm p95 "
           f"{zl['fk_error']['pos_mm_p95']:.2f}; ang median {zl['fk_error']['ang_deg_median']:.2f} "
           f"deg; cost ratio v cheapest of {zl['cost_m']['neighbours']} neighbours: median "

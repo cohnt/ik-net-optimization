@@ -40,8 +40,10 @@ What is here, and the equations it implements
                     convergence on the OPEN interval (0, mu/gam), so this is its edge), relaxation
                     Lambda = 1, x recovered from the LAST z^{k+1}, layers inverted last to first
                     (eq. 9).
-  * `invert_bilipnet`: the DYS result, `n_newton` Newton polish steps on the n-dim map, and
-                    one implicit-function-theorem linearisation that makes its derivative exact.
+  * `invert_bilipnet`: the DYS result, `n_newton` Newton polish steps on the n-dim map
+                    (undamped, or damped by `damped_newton_step` over `STEP_SIZES`: the
+                    chart's `newton_damping`), and one implicit-function-theorem linearisation
+                    that makes its derivative exact.
   * `LoinkModel` / `loink_loss`: LOInK eq. (9)-(11) and (14)-(16).
 
 Deliberate differences from PLNet (LOInK's convention, Sec. V.B: "We fix the bi-Lipschitz
@@ -403,25 +405,85 @@ def bilipnet_jacobian(net, x):
     return torch.func.vmap(torch.func.jacrev(lambda xi: net(xi.unsqueeze(0)).squeeze(0)))(x)
 
 
-def invert_bilipnet(net, w, n_dys, n_newton=0):
+#: The damped Newton polish's candidate step sizes, largest first (`damped_newton_step`).
+STEP_SIZES = (1.0, 1 / 2, 1 / 4, 1 / 8, 1 / 16, 1 / 32, 1 / 64)
+
+#: The polish's step rule, a per-chart setting (`newton_damping` in the sidecar):
+#: "none" = the full Newton step every time, "backtrack" = `damped_newton_step`.
+NEWTON_DAMPINGS = ("none", "backtrack")
+
+
+def damped_newton_step(net, x, w):
+    """One damped Newton step on `G(x) = w`, per sample, no autograd (call under no_grad).
+
+    Direction `d = J_G(x)^{-1} (w - G(x))`; `G` is evaluated at every candidate
+    `x + s d`, `s` in `STEP_SIZES`, in ONE batched forward ([S * B, n]); each sample takes the
+    candidate with the smallest residual `|G(x + s d) - w|_2` (`argmin` returns the FIRST
+    minimum, so ties go to the larger step), and keeps `x` itself when no candidate improves on
+    it, so the residual is per-sample non-increasing. Why damped: the undamped step
+    (`s = 1` always) is non-monotone, and on real soft PCS charts it diverges or wanders on
+    rare inputs (|x| 20-40 against ~3 at the solution, max residual 50-70 over 2048 samples at
+    an (n_dys, n_newton) that passed on 256), so no fixed step count was reliable. `G` is
+    bi-Lipschitz, so `J_G` is nonsingular everywhere and, where `G` is smooth (tanh), `d` is a
+    descent direction of `|G(x) - w|^2`: a small enough step always decreases it.
+
+    NOT for every chart: a relu `G` is piecewise linear, and from a point near a kink the
+    piece's direction can ascend for every step down to 1/64 (measured on soft12 `urP`: ~5%
+    of 2048 samples stall at residual ~10, some even with steps down to 2^-30), where the full
+    step crosses the kink and converges. Hence `newton_damping` is a per-chart setting that
+    the export ladder chooses ("none" or "backtrack").
+
+    Graph-safe: static shapes, scalar-times-tensor candidates (no host-to-device copy), and
+    selection by `argmin` / `take_along_dim` / `where` only, no python branching on tensor
+    values, so torch.compile and CUDA-graph capture see one fixed graph. Costs, in passes of
+    `G`: the Jacobian (~n + 1) plus the S candidate evaluations (one batched call)."""
+    r = w - net(x)
+    d = _solve(bilipnet_jacobian(net, x), r.unsqueeze(-1)).squeeze(-1)
+    B, n = x.shape
+    S = len(STEP_SIZES)
+    cand = torch.stack([x + s * d for s in STEP_SIZES])                 # [S, B, n]
+    res = (net(cand.reshape(S * B, n)).reshape(S, B, n) - w.unsqueeze(0)).norm(dim=-1)  # [S, B]
+    best = res.argmin(dim=0)                                            # [B], first minimum
+    x_new = torch.take_along_dim(cand, best.view(1, B, 1), dim=0).squeeze(0)
+    res_new = torch.take_along_dim(res, best.view(1, B), dim=0).squeeze(0)
+    keep = res_new >= r.norm(dim=-1)
+    return torch.where(keep.unsqueeze(-1), x, x_new)
+
+
+def invert_bilipnet(net, w, n_dys, n_newton=0, damping="none"):
     """x = G^{-1}(w): DYS, then `n_newton` ADDITIONAL Newton polish steps, then always one
     implicit-function-theorem step that carries the derivative.
+
+    The polish's step rule is `damping` (`NEWTON_DAMPINGS`, the chart's `newton_damping`):
+    "none" takes the full step `x <- x + J_G(x)^{-1} (w - G(x))`; "backtrack" takes
+    `damped_newton_step` (a per-sample choice over `STEP_SIZES`, monotone in the residual).
+    The undamped polish was measured to cycle or diverge on rare inputs of a smooth (tanh)
+    chart, and the damped one to stall at kinks of a piecewise-linear (relu) chart, so neither
+    is right for every chart. Both are graph-safe (static shapes; `damping` is a Python string,
+    fixed per chart, so the branch on it is resolved at trace time).
 
     The DYS iterations and the polish run on `w.detach()` under `torch.no_grad()`, giving x_d.
     The returned point is
         x_out = x_d + J_G(x_d)^{-1} (w - G(x_d)),   x_d and J_G(x_d) detached,
-    one more Newton step whose derivative is exactly the IFT one: d x_out / d w = J_G(x_d)^{-1},
-    and, because G(x_d) stays attached to the parameters theta, d x_out / d theta =
-    -J_G(x_d)^{-1} dG/dtheta (x_d). Nothing differentiates through an iteration, so an outer
-    `jacrev` (the program's) sees a linear function of `w` with matrix J_G(x_d)^{-1}. At
-    `n_newton = 0` the step is still taken (the DYS point is linearised once).
+    one more (FULL, undamped) Newton step whose derivative is exactly the IFT one:
+    d x_out / d w = J_G(x_d)^{-1}, and, because G(x_d) stays attached to the parameters theta,
+    d x_out / d theta = -J_G(x_d)^{-1} dG/dtheta (x_d). The damping touches only the detached
+    polish, so this step and its derivative are the same under either rule. Nothing
+    differentiates through an iteration, so an outer `jacrev` (the program's) sees a linear
+    function of `w` with matrix J_G(x_d)^{-1}. At `n_newton = 0` the step is still taken (the
+    DYS point is linearised once).
     """
+    if damping not in NEWTON_DAMPINGS:
+        raise ValueError(f"newton damping {damping!r} not in {NEWTON_DAMPINGS}")
     with torch.no_grad():
         wd = w.detach()
         x = dys_inverse(net, wd, n_dys)
         for _ in range(n_newton):
-            J = bilipnet_jacobian(net, x)
-            x = x + _solve(J, (wd - net(x)).unsqueeze(-1)).squeeze(-1)
+            if damping == "backtrack":
+                x = damped_newton_step(net, x, wd)
+            else:
+                J = bilipnet_jacobian(net, x)
+                x = x + _solve(J, (wd - net(x)).unsqueeze(-1)).squeeze(-1)
         x = x.detach()
         J = bilipnet_jacobian(net, x).detach()
     return x + _solve(J, (w - net(x)).unsqueeze(-1)).squeeze(-1)
@@ -457,8 +519,8 @@ class BiLipNet(nn.Module):
         """True (a tensor) when every monotone layer has nu > mu."""
         return torch.stack([m.check_bounds()[0] for m in self.mon]).all()
 
-    def inverse(self, w, n_dys, n_newton=0):
-        return invert_bilipnet(self, w, n_dys, n_newton)
+    def inverse(self, w, n_dys, n_newton=0, damping="none"):
+        return invert_bilipnet(self, w, n_dys, n_newton, damping)
 
 
 def load_plnet_params(net, golden, layer_tau=None):
@@ -510,14 +572,18 @@ class LoinkModel(nn.Module):
     """
 
     def __init__(self, n, p, scale, units=(256,) * 4, depth=2, mu=0.1, activation="relu",
-                 cost="m", head_hidden=128, n_dys=100, n_newton=2, lognu_init=math.log(2.0)):
+                 cost="m", head_hidden=128, n_dys=100, n_newton=2, newton_damping="none",
+                 lognu_init=math.log(2.0)):
         super().__init__()
         if not 0 < p < n:
             raise ValueError(f"need 0 < p < n (a nonempty latent); got p={p}, n={n}")
         if cost not in COSTS:
             raise ValueError(f"cost {cost!r} not in {COSTS}")
         self.n, self.p, self.K = int(n), int(p), int(n) - int(p)
+        if newton_damping not in NEWTON_DAMPINGS:
+            raise ValueError(f"newton_damping {newton_damping!r} not in {NEWTON_DAMPINGS}")
         self.cost, self.n_dys, self.n_newton = cost, int(n_dys), int(n_newton)
+        self.newton_damping = newton_damping
         scale = torch.as_tensor(scale, dtype=torch.float32).reshape(-1)
         if scale.shape != (self.n,) or not bool((scale > 0).all()):
             raise ValueError(f"scale must be ({self.n},) and positive; got {scale}")
@@ -545,7 +611,8 @@ class LoinkModel(nn.Module):
     def decode(self, y, z):
         """q = scale * G^{-1}([y, z]) (eq. 13 at z = 0), derivative exact (`invert_bilipnet`)."""
         w = torch.cat([y, z], dim=-1)
-        return invert_bilipnet(self.G, w, self.n_dys, self.n_newton) * self.scale
+        return invert_bilipnet(self.G, w, self.n_dys, self.n_newton,
+                               self.newton_damping) * self.scale
 
     def forward(self, z, y):
         return self.decode(y, z)
@@ -613,11 +680,14 @@ BARRIER_EPS = 1e-3
 #: The fields that define the chart's forward pass and its cost semantics. Everything else
 #: in a sidecar (training recipe, loss weights, provenance) is carried for the record only.
 ARCH_FIELDS = ("ndof", "task_dim", "dim_latent_space", "units", "depth", "mu", "activation",
-               "cost", "head_hidden", "j_mean", "j_std", "n_dys", "n_newton")
+               "cost", "head_hidden", "j_mean", "j_std", "n_dys", "n_newton", "newton_damping")
+
+#: ARCH_FIELDS a sidecar written before the field existed may lack, and the value it meant.
+ARCH_FIELD_DEFAULTS = {"newton_damping": "none"}
 
 #: The one architecture of the campaign (no ladder): the paper's manipulator example.
 DEFAULT_ARCH = {"units": (256, 256, 256, 256), "depth": 2, "mu": 0.1, "head_hidden": 128,
-                "n_dys": 100, "n_newton": 2}
+                "n_dys": 100, "n_newton": 2, "newton_damping": "none"}
 
 
 ## ---------------------------------------------------------------------- task representation
@@ -838,8 +908,8 @@ def ArchFromLoinkStateDict(state_dict):
     flows (`src/flow_loading.py`) and `activation` for the cVAE: `activation` (relu and tanh
     weights are identical in shape), the cost letter between "m" and "x" (the same head fits
     either target), `j_mean` / `j_std` (the head's standardisation, which only `cost_hat_raw`
-    reads), `n_dys` / `n_newton` (iteration counts of the inverse), and, on a cost-"u" chart,
-    `task_dim` / `head_hidden`.
+    reads), `n_dys` / `n_newton` / `newton_damping` (iteration counts and step rule of the
+    inverse), and, on a cost-"u" chart, `task_dim` / `head_hidden`.
     """
     unis = _Indexed(state_dict, r"G\.uni\.(\d+)\.W")
     mons = _Indexed(state_dict, r"G\.mon\.(\d+)\.Fq")
@@ -896,10 +966,11 @@ def ReadLoinkArch(checkpoint):
         raise FileNotFoundError(
             f"no architecture sidecar at {sidecar}. A LOInK chart has no legacy fallback: the "
             "activation, the cost letter, the head's standardisation and the inverse's "
-            "iteration counts cannot be recovered from the weights. Export it with "
+            "iteration counts and step rule cannot be recovered from the weights. Export it with "
             "scripts/training/export_loink.py.")
     with open(sidecar) as f:
         payload = json.load(f)
+    payload = {**ARCH_FIELD_DEFAULTS, **payload}
     if payload.get("family") != FAMILY:
         raise ValueError(f"{sidecar} declares family {payload.get('family')!r}, not {FAMILY!r}")
     missing = [k for k in ARCH_FIELDS if k not in payload]
@@ -943,6 +1014,8 @@ def VerifyLoinkArch(declared, state_dict, source):
                               f"got {d['j_mean']!r} / {d['j_std']!r}")
     if int(d["n_dys"]) < 1 or int(d["n_newton"]) < 0:
         mismatches.append(f"n_dys {d['n_dys']!r} / n_newton {d['n_newton']!r} out of range")
+    if d.get("newton_damping", "none") not in NEWTON_DAMPINGS:
+        mismatches.append(f"newton_damping: {d['newton_damping']!r} not in {NEWTON_DAMPINGS}")
     if mismatches:
         raise ValueError(
             f"architecture in {source} does not match the weights:\n  " + "\n  ".join(mismatches)
@@ -956,7 +1029,8 @@ def BuildLoinkModel(arch, scale):
                           units=tuple(int(u) for u in arch["units"]), depth=int(arch["depth"]),
                           mu=float(arch["mu"]), activation=arch["activation"],
                           cost=arch["cost"], head_hidden=int(arch["head_hidden"]),
-                          n_dys=int(arch["n_dys"]), n_newton=int(arch["n_newton"]))
+                          n_dys=int(arch["n_dys"]), n_newton=int(arch["n_newton"]),
+                          newton_damping=arch.get("newton_damping", "none"))
 
 
 def LoadLoinkChart(robot_name, checkpoint, compile_model=None):
