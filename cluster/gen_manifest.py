@@ -4318,6 +4318,388 @@ def _cvae_selftest():
     return fails
 
 
+## ------------------------------------------------------------------------------- LOINK --
+##
+## The second chart family (branch chart-loink, Thomas 2026-10-22): the record's learned rows with
+## the IKFlow chart replaced by a LOInK chart -- a bi-Lipschitz network G(q) = [y_hat; z] inverted
+## by Davis-Yin splitting (src/charts/loink.py) -- everything else in the learned formulation
+## unchanged, exactly as stage CVAE. Twelve pre-registered charts per robot (cluster/chart_runs.txt),
+## labelled `loink<cost><act><recipe>`:
+##   cost   m = matched (the program's own joint-centering cost), x = mismatched (LOInK's eq. 18
+##          log-barrier), u = unstructured (no cost head);
+##   act    r = relu, t = tanh;
+##   recipe P = the project recipe (620000 steps, batch 4096), A = the paper's (150000, batch 500).
+## The latent width is FORCED, K = DOF - 6 (Panda / iiwa / screw 1, soft PCS 6): G is square.
+##
+## Each item is the record's item for the same row with ONLY the chart swapped (the selftest holds
+## every item to its record twin), built by the record's own constructors as stage CVAE:
+##   * `--arms learned` (the record's joint-space columns pair on the same cells; the acceptance
+##     run below proves they still would after this branch's refactor);
+##   * `--checkpoint models/<dir>/<dir>__<label>__step<N>.pkl`, N = 620000 (P) / 150000 (A);
+##   * the trust region by the rule, ALWAYS: `--set latent_trust_region=<round(sqrt(K) + 1.5, 2)>`
+##     (2.5 at K = 1, 3.95 at K = 6). There is no flow-width rung here, so no item keeps `--config
+##     latent`'s robot-sized radius. `dim_latent_space` is NOT passed: it is the chart's (sidecar);
+##   * the tag `sl_<STEM>_<robot>_<label>_<solver>_<row>_<cells>_180_<start>` -- the status-quo
+##     shape with the campaign's own `sl_` prefix (report_statusquo.parse_tag asserts `sc`: a LOInK
+##     report strips the prefix or parses its own), and no `_pin4` suffix on the svgd rows.
+##
+## PROBE FIRST (the cVAE precedent, stage CVAEPROBE), but with paired probes too: the LOInK inverse
+## is exact, so a paired start is a real solve here, not an instant `unrepresentable_start`.
+##   LOINKSMOKE(_SVGD)  every logical run at CVAE_SMOKE_CELLS, one item each, stem `LOINKSMOKE`;
+##   LOINKPROBE(_SVGD)  rigid arms (Panda, iiwa, screw): every chart x task x start as ONE unsharded
+##                      60-cell item, guess 0 of every target (`--cells t:0`), tag `..._60_180_<start>`;
+##                      soft12: the full 480-cell rows, sharded as stage CVAE (8 IPOPT / 24 AL-SVGD);
+##                      LOINKPROBE also carries the joint-space ACCEPTANCE run (CVAE_ACCEPT's row,
+##                      claimed first, stem `LOINKACC`);
+##   LOINKEXT(_SVGD)    the full 480-cell rows (sharded as stage CVAE, items byte-identical to the
+##                      would-be full stage's, so the probe's 60 cells are re-solved inside them) of
+##                      every RIGID chart x row whose 60-cell probe solved >= 1 cell. Written by
+##                      cluster/make_loink_ext.py from the collected probe summaries (`--check`); the
+##                      selftest holds the committed ones to being whole rows of the full stage.
+## Probe and full rows share the stem `LOINK`; the cells token (60 / 480) tells them apart. No
+## verdict is read off a probe: it decides which rows are run in full, nothing else.
+## Two manifests per stage, because DRAKE_ENV is per submission: the `_SVGD` ones need DRAKE_ENV=crc.
+## All at PROCS=2, no MPS (paper conditions).
+
+LOINK_COSTS = ("m", "x", "u")
+LOINK_ACTS = (("r", "relu"), ("t", "tanh"))
+#: recipe -> (batch, steps): the trainer's budget, carried by each chart_runs.txt row.
+LOINK_RECIPES = {"P": (4096, 620000), "A": (500, 150000)}
+#: The twelve labels, in chart_runs.txt's order: cost-major, then activation, then recipe.
+LOINK_LABELS = tuple(f"loink{c}{a}{r}" for c in LOINK_COSTS for a, _ in LOINK_ACTS
+                     for r in LOINK_RECIPES)
+#: K = DOF - 6, the only width a square bi-Lipschitz G admits.
+LOINK_WIDTHS = {"panda": 1, "iiwa": 1, SCREW_PRIMARY: 1, "soft12": 6}
+#: (robot, the record's flow rung, the record's grid seed, label, K, checkpoint, step), in report
+#: order: the record's four contexts (SVGD_RECORD_CONTEXTS), labels as LOINK_LABELS.
+LOINK_RUNGS = tuple(
+    (robot, rung, seed, label, LOINK_WIDTHS[robot],
+     f"models/{d}/{d}__{label}__step{LOINK_RECIPES[label[-1]][1]}.pkl", LOINK_RECIPES[label[-1]][1])
+    for robot, rung, seed in SVGD_RECORD_CONTEXTS for d in [CVAE_MODEL_DIR[robot]]
+    for label in LOINK_LABELS)
+LOINK_RIGID = ("panda", "iiwa", SCREW_PRIMARY)
+LOINK_PROBE_TARGETS = 60
+LOINK_PROBE_CELLS = ",".join(f"{t}:0" for t in range(LOINK_PROBE_TARGETS))
+LOINK_ACCEPT = CVAE_ACCEPT
+LOINK_TAG_PREFIX = "sc"
+LOINK_STAGES = ("LOINKSMOKE", "LOINKSMOKE_SVGD", "LOINKPROBE", "LOINKPROBE_SVGD")
+LOINK_EXT_STAGES = ("LOINKEXT", "LOINKEXT_SVGD")
+#: The would-be full stages: never committed or submitted, the source LOINKEXT selects whole rows of.
+LOINK_FULL_STAGES = ("LOINKFULL", "LOINKFULL_SVGD")
+
+
+def loink_trust_region(robot):
+    """The `--set` every LOInK item adds: the rule radius at the chart's forced width K."""
+    return ["--set", f"latent_trust_region={round(math.sqrt(LOINK_WIDTHS[robot]) + 1.5, 2)}"]
+
+
+def _loink_swap(it, stem, robot, rung, label, ckpt, cells=None):
+    """A record row item with only the chart swapped: arms, checkpoint, trust region and tag."""
+    a = list(it["args"])
+    a[a.index("--arms") + 1] = "learned"
+    a[a.index("--checkpoint") + 1] = ckpt
+    a += loink_trust_region(robot)
+    old = _svgd_flag(a, "--tag")
+    head = f"sc_{stem}_{robot}_{rung}_"
+    assert old.startswith(head), (old, head)
+    new = f"{LOINK_TAG_PREFIX}_{stem}_{robot}_{label}_" + old[len(head):]
+    if new.endswith(f"_{CVAE_SVGD_VARIANT}"):
+        new = new[:-len(CVAE_SVGD_VARIANT) - 1]
+    if cells is not None:
+        new = new.replace("_480_", f"_{cells}_", 1)
+    a[a.index("--tag") + 1] = new
+    return dict(it, args=a, id=it["id"].replace(old, new, 1))
+
+
+def _loink_row_items(robot, rung, seed, label, ckpt, svgd, mode):
+    """One chart's four rows (task x start) under one solver. mode: `smoke` (CVAE_SMOKE_CELLS, one
+    item per run), `probe` (LOINK_PROBE_CELLS, one item per run) or `full` (sharded as stage CVAE)."""
+    if mode == "smoke":
+        stem, shards, n_cells, cells_arg = "LOINKSMOKE", 1, len(CVAE_SMOKE_CELLS.split(",")), CVAE_SMOKE_CELLS
+    elif mode == "probe":
+        stem, shards, n_cells, cells_arg = "LOINK", 1, LOINK_PROBE_TARGETS, LOINK_PROBE_CELLS
+    else:
+        stem, shards, n_cells, cells_arg = ("LOINK", CVAE_SVGD_SHARDS if svgd else CVAE_IPOPT_SHARDS,
+                                            None, None)
+    out = []
+    for it in _svgd_rows(60, 8, shards, stem, robot=robot, rung=rung, seed=seed):
+        if svgd:
+            it = _svgd_as_svgd(it, CVAE_SVGD_VARIANT, stage=CVAE_SVGD_ROUND,
+                               cells_token=None if n_cells is None else str(n_cells))
+        o = _loink_swap(it, stem, robot, rung, label, ckpt,
+                        cells=None if svgd or n_cells is None else n_cells)
+        if cells_arg is not None:
+            o["args"] += ["--cells", cells_arg]
+        out.append(dict(o, order=0 if _svgd_flag(o["args"], "--task") == "mug" else 1))
+    return out
+
+
+def _loink_acceptance():
+    """Joint space re-run on CVAE_ACCEPT's row with the record's flags, tag stem `LOINKACC`: it must
+    be bit-identical to the record after this branch's chart refactor (claimed first)."""
+    robot, rung, seed, task, start = LOINK_ACCEPT
+    items = []
+    for it in _svgd_rows(60, 8, CVAE_IPOPT_SHARDS, "LOINKACC", starts=start, robot=robot,
+                         rung=rung, seed=seed):
+        if _svgd_flag(it["args"], "--task") != task:
+            continue
+        a = list(it["args"])
+        a[a.index("--arms") + 1] = "numerical"
+        old = _svgd_flag(a, "--tag")
+        new = f"{LOINK_TAG_PREFIX}_" + old[len("sc_"):]
+        a[a.index("--tag") + 1] = new
+        items.append(dict(it, args=a, id=it["id"].replace(old, new, 1), order=-1))
+    return items
+
+
+def _loink_results_roots():
+    """Where collected summaries live, in report_statusquo.load's order (later roots win)."""
+    repo = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    return (os.path.join(repo, "results", "_cluster_staging", "*", "results"),
+            os.path.join(repo, "results"))
+
+
+def loink_probe_outcomes(roots=None):
+    """probe tag -> successes (learned `feasible` cells), for every COLLECTED rigid 60-cell probe:
+    an unsharded `sc_LOINK_*_60_180_*` summary holding all 60 learned records."""
+    import glob
+    import json
+    out = {}
+    for root in roots or _loink_results_roots():
+        for f in sorted(glob.glob(os.path.join(root, "*", "benchmark",
+                                               f"{LOINK_TAG_PREFIX}_LOINK_*_{LOINK_PROBE_TARGETS}_180_*",
+                                               "summary.json"))):
+            tag = os.path.basename(os.path.dirname(f))
+            if "_shard" in tag:
+                continue
+            with open(f) as fh:
+                recs = json.load(fh)["records"].get("learned", [])
+            if len(recs) != LOINK_PROBE_TARGETS:
+                continue
+            out[tag] = sum(1 for r in recs if r.get("feasible"))
+    return out
+
+
+def loink_probe_tag(full_tag):
+    """The 60-cell probe tag of a rigid full row's tag."""
+    assert "_480_180_" in full_tag, full_tag
+    return full_tag.replace("_480_180_", f"_{LOINK_PROBE_TARGETS}_180_", 1)
+
+
+def loink_ext_selection(svgd, outcomes=None):
+    """(qualifying full-row tags, collected {probe tag: successes}, missing probe tags) for
+    LOINKEXT (svgd False) or LOINKEXT_SVGD: a rigid row qualifies when its probe solved >= 1 cell."""
+    outcomes = loink_probe_outcomes() if outcomes is None else outcomes
+    rows = sorted({_svgd_flag(it["args"], "--tag")
+                   for it in stage_LOINK("LOINKFULL_SVGD" if svgd else "LOINKFULL")
+                   if it["robot"] in LOINK_RIGID})
+    collected = {loink_probe_tag(r): outcomes[loink_probe_tag(r)] for r in rows
+                 if loink_probe_tag(r) in outcomes}
+    missing = [loink_probe_tag(r) for r in rows if loink_probe_tag(r) not in outcomes]
+    qualifying = {r for r in rows if collected.get(loink_probe_tag(r), 0) >= 1}
+    return qualifying, collected, missing
+
+
+def stage_LOINK(which="LOINKSMOKE", outcomes=None):
+    """LOINKSMOKE(_SVGD), LOINKPROBE(_SVGD), LOINKEXT(_SVGD) (see the section header); LOINKFULL(_SVGD)
+    is every chart's full rows, the source LOINKEXT selects from (never committed)."""
+    svgd = which.endswith("_SVGD")
+    base = which[:-len("_SVGD")] if svgd else which
+    items = []
+    for robot, rung, seed, label, k, ckpt, step in LOINK_RUNGS:
+        if base == "LOINKSMOKE":
+            mode = "smoke"
+        elif base == "LOINKPROBE":
+            mode = "probe" if robot in LOINK_RIGID else "full"
+        elif base in ("LOINKFULL", "LOINKEXT"):
+            if base == "LOINKEXT" and robot not in LOINK_RIGID:
+                continue
+            mode = "full"
+        else:
+            raise ValueError(f"not a LOInK stage: {which}")
+        items += _loink_row_items(robot, rung, seed, label, ckpt, svgd, mode)
+    if base == "LOINKEXT":
+        qualifying = loink_ext_selection(svgd, outcomes)[0]
+        items = [it for it in items if _svgd_flag(it["args"], "--tag") in qualifying]
+    if which == "LOINKPROBE":
+        items += _loink_acceptance()
+    return [dict(it, seconds=_cvae_seconds(it)) for it in items]
+
+
+def _loink_selftest():
+    """Every LOInK item is its record twin with only the chart swapped (the section header)."""
+    fails = []
+
+    def strip(a):
+        out, i = [], 0
+        while i < len(a):
+            if a[i] in ("--tag", "--arms", "--checkpoint", "--cells") or \
+                    (a[i] == "--set" and a[i + 1].startswith("latent_trust_region=")):
+                i += 2
+                continue
+            out.append(a[i])
+            i += 1
+        return tuple(out)
+
+    def key(it):
+        a = it["args"]
+        return (it["robot"],) + tuple(_svgd_flag(a, f) for f in ("--task", "--start", "--solver")) \
+            + ((_svgd_flag(a, "--shard"),) if "--shard" in a else ())
+
+    ## The rule radius, by hand: a typo in LOINK_WIDTHS must not pass because it is self-consistent.
+    for robot, want_tr in (("panda", "2.5"), ("iiwa", "2.5"), (SCREW_PRIMARY, "2.5"), ("soft12", "3.95")):
+        if loink_trust_region(robot) != ["--set", f"latent_trust_region={want_tr}"]:
+            fails.append(f"{robot}: trust region {loink_trust_region(robot)}, expected {want_tr}")
+    if len(LOINK_LABELS) != 12 or len(set(LOINK_LABELS)) != 12 or len(LOINK_RUNGS) != 48:
+        fails.append(f"{len(LOINK_LABELS)} labels / {len(LOINK_RUNGS)} rungs, expected 12 / 48")
+
+    ## chart_runs.txt trains exactly these 48 charts with the recipe's own budget on the row.
+    here = os.path.dirname(os.path.realpath(__file__))
+    rows = {}
+    with open(os.path.join(here, "chart_runs.txt")) as fh:
+        for line in fh:
+            p = line.split()
+            if p and not p[0].startswith("#") and p[0] == "loink":
+                rows[p[2]] = (p[1], p[3:])
+    want_rows = {}
+    for robot, _, _, label, _, _, step in LOINK_RUNGS:
+        d = CVAE_MODEL_DIR[robot]
+        c, act, rec = label[len("loink")], dict(LOINK_ACTS)[label[-2]], label[-1]
+        want_rows[f"{d}_{label}"] = (d, [f"--cost={c}", f"--activation={act}", f"--recipe={rec}",
+                                         f"--batch_size={LOINK_RECIPES[rec][0]}", f"--max_steps={step}"])
+    if rows != want_rows:
+        fails.append(f"chart_runs.txt's loink rows differ from LOINK_RUNGS: "
+                     f"{sorted(set(rows) ^ set(want_rows)) or 'args differ'}")
+
+    ipopt_twins = {key(it): it for it in stage_SVGD("SVGD_R2") + svgd_twin_items("PAPER")}
+    svgd_twins = {key(it): it for it in stage_SVGD(CVAE_SVGD_ROUND)
+                  if _svgd_flag(it["args"], "--tag").endswith(f"_{CVAE_SVGD_VARIANT}")
+                  and _svgd_flag(it["args"], "--seed") == "1"}
+    rung_of = {(r, lab): ck for r, _, _, lab, _, ck, _ in LOINK_RUNGS}
+    tag_re = re.compile(rf"^{LOINK_TAG_PREFIX}_(LOINK|LOINKSMOKE)_(.+)_(loink[mxu][rt][PA])_(ipopt|svgd)_"
+                        r"(mugshelf|posetip)_(\d+)_180_(paired|native)$")
+    n_smoke = len(CVAE_SMOKE_CELLS.split(","))
+    n_rigid, n_soft = 12 * len(LOINK_RIGID), 12
+    want = {"LOINKSMOKE": 48 * 4, "LOINKSMOKE_SVGD": 48 * 4,
+            "LOINKPROBE": n_rigid * 4 + n_soft * 4 * CVAE_IPOPT_SHARDS + CVAE_IPOPT_SHARDS,
+            "LOINKPROBE_SVGD": n_rigid * 4 + n_soft * 4 * CVAE_SVGD_SHARDS,
+            "LOINKFULL": 48 * 4 * CVAE_IPOPT_SHARDS, "LOINKFULL_SVGD": 48 * 4 * CVAE_SVGD_SHARDS}
+    built = {w: stage_LOINK(w) for w in LOINK_STAGES + LOINK_FULL_STAGES}
+    for which, items in built.items():
+        if len(items) != want[which]:
+            fails.append(f"{which}: {len(items)} items, expected {want[which]}")
+        if len({it["id"] for it in items}) != len(items):
+            fails.append(f"{which}: duplicate item ids")
+        n_clr = sum("svgd_collision_backend=clearances" in it["args"] for it in items)
+        if n_clr != (len(items) if which.endswith("_SVGD") else 0):
+            fails.append(f"{which}: {n_clr} of {len(items)} items carry the clearance row; "
+                         "submit_bench.sh needs all (DRAKE_ENV=crc) or none")
+        twins = svgd_twins if which.endswith("_SVGD") else ipopt_twins
+        for it in items:
+            a, tag = it["args"], _svgd_flag(it["args"], "--tag")
+            if any(x.startswith("dim_latent_space=") for x in a):
+                fails.append(f"{it['id']}: names dim_latent_space (the chart's, not the item's)")
+            if tag.startswith(f"{LOINK_TAG_PREFIX}_LOINKACC_"):
+                tw = twins.get(key(it))
+                if which != "LOINKPROBE" or tw is None or strip(a) != strip(tw["args"]) \
+                        or _svgd_flag(a, "--arms") != "numerical" \
+                        or _svgd_flag(a, "--checkpoint") != _svgd_flag(tw["args"], "--checkpoint") \
+                        or any(x.startswith("latent_trust_region=") for x in a):
+                    fails.append(f"{it['id']}: the acceptance item is not its record twin with --arms numerical")
+                continue
+            m = tag_re.match(tag)
+            if not m or m.group(2) != it["robot"] or (it["robot"], m.group(3)) not in rung_of:
+                fails.append(f"{it['id']}: tag {tag} is not {LOINK_TAG_PREFIX}_<STEM>_<robot>_<label>_"
+                             "<solver>_<row>_<cells>_180_<start>")
+                continue
+            smoke = which.startswith("LOINKSMOKE")
+            probe = which.startswith("LOINKPROBE") and it["robot"] in LOINK_RIGID
+            want_stem = "LOINKSMOKE" if smoke else "LOINK"
+            want_cells = str(n_smoke) if smoke else (str(LOINK_PROBE_TARGETS) if probe else "480")
+            want_cells_arg = CVAE_SMOKE_CELLS if smoke else (LOINK_PROBE_CELLS if probe else None)
+            if m.group(1) != want_stem or m.group(6) != want_cells or m.group(4) != _svgd_flag(a, "--solver"):
+                fails.append(f"{it['id']}: stem / cells / solver token wrong for {which}")
+            if ("--cells" in a) != (want_cells_arg is not None) or \
+                    (want_cells_arg is not None and _svgd_flag(a, "--cells") != want_cells_arg):
+                fails.append(f"{it['id']}: --cells is not {want_cells_arg}")
+            if (smoke or probe) == ("--shard" in a):
+                fails.append(f"{it['id']}: a smoke / probe item is one unsharded item, a full row is sharded")
+            ## An unsharded item's twin is the record run's shard 0, --shard removed.
+            tw = next((t for kk, t in sorted(twins.items()) if kk[:4] == key(it)), None) \
+                if "--shard" not in a else twins.get(key(it))
+            if tw is None:
+                fails.append(f"{it['id']}: no record twin")
+                continue
+            tw_a = list(tw["args"])
+            if "--shard" not in a and "--shard" in tw_a:
+                i = tw_a.index("--shard")
+                del tw_a[i:i + 2]
+            if strip(a) != strip(tw_a):
+                fails.append(f"{it['id']}: differs from its record twin {tw['id']} beyond the chart")
+            ck = rung_of[(it["robot"], m.group(3))]
+            if _svgd_flag(a, "--arms") != "learned" or _svgd_flag(a, "--checkpoint") != ck:
+                fails.append(f"{it['id']}: arms / checkpoint not learned / {ck}")
+            tr = [x for x in a if x.startswith("latent_trust_region=")]
+            if tr != loink_trust_region(it["robot"])[1:]:
+                fails.append(f"{it['id']}: trust region {tr}, expected {loink_trust_region(it['robot'])[1:]}")
+
+    ## The full stages are 384 logical runs; the probe covers each exactly once (rigid: its 60-cell
+    ## probe; soft12: the full row itself, item for item).
+    full_runs = {_svgd_flag(it["args"], "--tag") for w in LOINK_FULL_STAGES for it in built[w]}
+    if len(full_runs) != 48 * 4 * 2:
+        fails.append(f"LOINKFULL(_SVGD): {len(full_runs)} logical runs, expected 384")
+    for svgd in (False, True):
+        sfx = "_SVGD" if svgd else ""
+        full, probe = built["LOINKFULL" + sfx], built["LOINKPROBE" + sfx]
+        probe_tags = {_svgd_flag(it["args"], "--tag") for it in probe}
+        want_tags = {loink_probe_tag(_svgd_flag(it["args"], "--tag")) if it["robot"] in LOINK_RIGID
+                     else _svgd_flag(it["args"], "--tag") for it in full}
+        if probe_tags - {_svgd_flag(it["args"], "--tag") for it in _loink_acceptance()} != want_tags:
+            fails.append(f"LOINKPROBE{sfx}: does not cover every LOINKFULL{sfx} run exactly once")
+        soft_full = render([it for it in full if it["robot"] not in LOINK_RIGID])
+        soft_probe = render([it for it in probe if it["robot"] not in LOINK_RIGID])
+        if soft_full != soft_probe:
+            fails.append(f"LOINKPROBE{sfx}: the soft12 rows are not LOINKFULL{sfx}'s, item for item")
+    ## The ext selection rule on a synthetic outcome: one success qualifies a row, zero does not.
+    ipopt_rows = sorted({_svgd_flag(it["args"], "--tag") for it in built["LOINKFULL"]
+                         if it["robot"] in LOINK_RIGID})
+    fake = {loink_probe_tag(ipopt_rows[0]): 1, loink_probe_tag(ipopt_rows[1]): 0}
+    ext = stage_LOINK("LOINKEXT", outcomes=fake)
+    if {_svgd_flag(it["args"], "--tag") for it in ext} != {ipopt_rows[0]} or len(ext) != CVAE_IPOPT_SHARDS:
+        fails.append("LOINKEXT: the >= 1 success rule does not select exactly the qualifying row's shards")
+    if stage_LOINK("LOINKEXT", outcomes={}) or stage_LOINK("LOINKEXT_SVGD", outcomes={}):
+        fails.append("LOINKEXT(_SVGD): items selected with no probe collected")
+
+    def disk(name):
+        path = os.path.join(here, f"manifest_stage{name}.txt")
+        if not os.path.exists(path):
+            fails.append(f"cluster/manifest_stage{name}.txt is missing")
+            return None
+        with open(path) as fh:
+            return [l.rstrip("\n") for l in fh if l.strip() and not l.startswith("#")]
+
+    for which in LOINK_STAGES:
+        on_disk = disk(which)
+        if on_disk is not None and on_disk != render(built[which]):
+            fails.append(f"cluster/manifest_stage{which}.txt is stale; regenerate it")
+    ## The committed EXT manifests depend on collected results, so they are held to their SHAPE here
+    ## (make_loink_ext.py --check holds them to the results): whole rigid rows of the full stage,
+    ## in its claim order.
+    for which, src in zip(LOINK_EXT_STAGES, LOINK_FULL_STAGES):
+        on_disk = disk(which)
+        if on_disk is None:
+            continue
+        full_lines = render([it for it in built[src] if it["robot"] in LOINK_RIGID])
+        kept = set(on_disk)
+        if on_disk != [l for l in full_lines if l in kept]:
+            fails.append(f"cluster/manifest_stage{which}.txt is not a subsequence of {src}'s rigid rows")
+        rows_in = {l.split("|", 1)[0].rsplit("_shard", 1)[0] for l in on_disk}
+        whole = [l for l in full_lines if l.split("|", 1)[0].rsplit("_shard", 1)[0] in rows_in]
+        if whole != on_disk:
+            fails.append(f"cluster/manifest_stage{which}.txt holds a row without all of its shards")
+    return fails
+
+
 ## --------------------------------------------------------------------------- SCREWREDO --
 ##
 ## The screw record's LEARNED arm re-measured on the retrained chart (Thomas, 2026-10-18). The
@@ -5163,7 +5545,11 @@ def _ladder_paths_match_export():
                 continue
             family, robot, run_name = line.split()[:3]
             label = run_name[len(robot) + 1:] if run_name.startswith(robot + "_") else run_name
-            trained[f"models/{robot}/{robot}__{label}__step620000.pkl"] = f"{family}:{run_name}"
+            ## A row carrying its own budget (the LOInK paper recipe, --max_steps=150000) is
+            ## exported at that step: train_chart.sh reads FINAL_STEP from the row.
+            m = re.search(r"--max_steps=(\d+)", line)
+            step = m.group(1) if m else "620000"
+            trained[f"models/{robot}/{robot}__{label}__step{step}.pkl"] = f"{family}:{run_name}"
 
     # Checkpoints the ladder does NOT train because they already exist: the iiwa's adopted
     # control. (The Panda's control is the downloaded chart, which is `None` in LADDER_RUNGS
@@ -5185,6 +5571,7 @@ def _ladder_paths_match_export():
                    | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}
                    | {ck for *_, ck in CVAE_RUNGS}
                    | {ck for *_, ck in CVAEF_RUNGS}
+                   | {r[5] for r in LOINK_RUNGS}
                    | {SCREWREDO_CKPT}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
@@ -7224,6 +7611,19 @@ def selftest():
               "the committed full manifests minus exactly the iiwa14 cvae8 items (232 / 672); "
               "committed manifests current")
 
+    loink_fails = _loink_selftest()
+    for msg in loink_fails[:12]:
+        print(f"FAIL stage LOINK: {msg}")
+    fails += len(loink_fails)
+    if not loink_fails:
+        print("ok   stages LOINKSMOKE / LOINKSMOKE_SVGD / LOINKPROBE / LOINKPROBE_SVGD: 192 / 192 / 536 / 1296 "
+              "items (48 charts x 4 rows each; probe = 144 rigid 60-cell native + paired items + soft12's "
+              "full rows, 384 / 1152, + the 8-item joint-space acceptance run); every item is its record "
+              "twin (PAPER / SVGD_R2 IPOPT, R29 pin4) with only arms, checkpoint, tag (sc_LOINK) and the rule "
+              "trust region changed; the probe covers each of LOINKFULL(_SVGD)'s 384 runs once; the ext "
+              "rule selects whole rows; chart_runs.txt's 48 loink rows match; committed manifests current "
+              "(LOINKEXT(_SVGD): whole rigid rows of the full stage)")
+
     sr_fails = _screwredo_selftest()
     for msg in sr_fails[:12]:
         print(f"FAIL stage SCREWREDO: {msg}")
@@ -7264,6 +7664,8 @@ def main():
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD",
                                  "CVAEF", "CVAEF_SVGD",
+                                 "LOINKSMOKE", "LOINKSMOKE_SVGD", "LOINKPROBE", "LOINKPROBE_SVGD",
+                                 "LOINKEXT", "LOINKEXT_SVGD",
                                  "SCREWREDO", "SCREWREDO_NLOPT", "SCREWREDO_SVGD",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
@@ -7429,6 +7831,9 @@ def main():
              "ANALYTIC_SVGD_SMOKE": lambda: stage_ANALYTIC_SVGD_SMOKE(),
              ## The chart ablation takes no grid arguments: it IS the record's shape.
              **{s: (lambda s=s: stage_CVAE(s)) for s in CVAE_STAGES + CVAEF_STAGES},
+             ## LOINKEXT(_SVGD) read the collected probe summaries (results/); write them with
+             ## cluster/make_loink_ext.py, which records the selection in the manifest's header.
+             **{s: (lambda s=s: stage_LOINK(s)) for s in LOINK_STAGES + LOINK_EXT_STAGES},
              **{s: (lambda s=s: stage_SCREWREDO(s)) for s in SCREWREDO_STAGES},
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
@@ -7519,7 +7924,7 @@ def main():
              }[args.stage]()
 
     if args.exclude_rung:
-        if args.stage not in CVAE_STAGES + CVAEF_STAGES:
+        if args.stage not in CVAE_STAGES + CVAEF_STAGES + LOINK_STAGES + LOINK_EXT_STAGES:
             raise SystemExit("--exclude-rung applies to the chart-ablation stages only")
         items = cvae_exclude_rungs(items, args.exclude_rung)
     if args.tag_prefix:

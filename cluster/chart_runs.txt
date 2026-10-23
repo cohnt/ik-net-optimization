@@ -28,6 +28,8 @@
 # THE SCREW DATASET MUST BE REBUILT FIRST (cluster/CVAE_RUNBOOK.md): the original was deleted
 # with ~/learned-ik-helix on 2026-10-02, and a rebuild is a NEW dataset, so the screw cVAEs are
 # trained on different samples than the screw flow chart they are compared against.
+# (Superseded 2026-10-19: the rebuild was proved bit-identical -- `screw7_p050_n6r` retrained on it
+# equals `n6` tensor for tensor -- so the rebuilt screw dataset IS the flow's data.)
 
 cvae  panda        panda_cvae7          --dim_latent_space=7
 cvae  panda        panda_cvae1          --dim_latent_space=1
@@ -53,3 +55,83 @@ cvae  screw7_p050  screw7_p050_cvaef7   --dim_latent_space=7  --decoder_variance
 cvae  screw7_p050  screw7_p050_cvaef1   --dim_latent_space=1  --decoder_variance=fixed
 cvae  soft12       soft12_cvaef12       --dim_latent_space=12 --decoder_variance=fixed
 cvae  soft12       soft12_cvaef6        --dim_latent_space=6  --decoder_variance=fixed
+
+# ---------------------------------------------------------------------------------- LOInK --
+# The LOInK chart (branch chart-loink, Thomas 2026-10-22; src/charts/loink.py): a bi-Lipschitz
+# network G(q) = [y_hat; z] (BiLipNet, mu = 0.1), inverted by Davis-Yin splitting + a Newton
+# polish, with an optional cost head J_hat(z, y_hat) = |z|^2_M + b(y_hat) that makes z = 0 the
+# cost minimiser on each IK fibre. The latent width is FORCED, K = DOF - 6 (Panda / iiwa / screw 1,
+# soft PCS 6), so no width travels here. Twelve pre-registered charts per robot, final checkpoint,
+# no selection. The run name is <robot>_loink<cost><act><recipe>:
+#   cost    m = matched: the program's own reported cost, 0.5 |q - q_nominal|^2 (soft PCS 0.5 |strain|^2);
+#           x = mismatched: LOInK's eq. 18 joint-limit log-barrier on joints normalised to [-1, 1];
+#           u = unstructured: no cost head (lambda = 0), the bi-Lipschitz chart alone;
+#   act     r = relu (as published), t = tanh (smooth);
+#   recipe  P = the project recipe: AdamW 1.5e-4, StepLR 0.9795 / 2441, 620000 steps, batch 4096
+#               (the flows' and cVAE's);
+#           A = the paper's: Adam 1e-3, reduce-on-plateau, 150000 steps (~3 epochs), batch 500.
+# Every row carries its recipe's --batch_size / --max_steps EXPLICITLY: train_chart.sh appends its
+# own --batch_size / --max_steps before the row's args (the trainer's argparse takes the last
+# occurrence) and reads MAX_STEPS / BATCH / FINAL_STEP from the row, so an A row trains 150000 steps
+# at batch 500 and exports models/<robot>/<robot>__loink<c><a>A__step150000.pkl; a P row exports
+# ...__step620000.pkl. Those are the paths stages LOINK* name (LOINK_RUNGS in gen_manifest.py).
+# Same datasets as the flow charts on every robot (the screw dataset: the bit-identical rebuild).
+#
+# ORDER, and what --pair makes of it: robot-major, then cost (m, x, u), activation (r, t), recipe
+# (P, A). Consecutive rows therefore pair a chart's P and A recipes on one node -- one robot, one
+# cost, one activation -- which is valid but leaves the A run's GPU idle for most of the P run's
+# wall. The runbook (cluster/LOINK_RUNBOOK.md) submits the recipes separately instead; consecutive
+# MATCHING rows then pair relu with tanh at one robot, cost and recipe:
+#   ONLY='_loink[mxu][rt]P$' PAIRS=1 bash cluster/submit_chart_train.sh --all <P walltime>   # 24 rows, 12 jobs
+#   ONLY='_loink[mxu][rt]A$' PAIRS=1 bash cluster/submit_chart_train.sh --all <A walltime>   # 24 rows, 12 jobs
+loink panda        panda_loinkmrP        --cost=m --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink panda        panda_loinkmrA        --cost=m --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink panda        panda_loinkmtP        --cost=m --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink panda        panda_loinkmtA        --cost=m --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+loink panda        panda_loinkxrP        --cost=x --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink panda        panda_loinkxrA        --cost=x --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink panda        panda_loinkxtP        --cost=x --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink panda        panda_loinkxtA        --cost=x --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+loink panda        panda_loinkurP        --cost=u --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink panda        panda_loinkurA        --cost=u --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink panda        panda_loinkutP        --cost=u --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink panda        panda_loinkutA        --cost=u --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+
+loink iiwa14       iiwa14_loinkmrP       --cost=m --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink iiwa14       iiwa14_loinkmrA       --cost=m --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink iiwa14       iiwa14_loinkmtP       --cost=m --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink iiwa14       iiwa14_loinkmtA       --cost=m --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+loink iiwa14       iiwa14_loinkxrP       --cost=x --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink iiwa14       iiwa14_loinkxrA       --cost=x --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink iiwa14       iiwa14_loinkxtP       --cost=x --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink iiwa14       iiwa14_loinkxtA       --cost=x --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+loink iiwa14       iiwa14_loinkurP       --cost=u --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink iiwa14       iiwa14_loinkurA       --cost=u --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink iiwa14       iiwa14_loinkutP       --cost=u --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink iiwa14       iiwa14_loinkutA       --cost=u --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+
+loink screw7_p050  screw7_p050_loinkmrP  --cost=m --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink screw7_p050  screw7_p050_loinkmrA  --cost=m --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink screw7_p050  screw7_p050_loinkmtP  --cost=m --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink screw7_p050  screw7_p050_loinkmtA  --cost=m --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+loink screw7_p050  screw7_p050_loinkxrP  --cost=x --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink screw7_p050  screw7_p050_loinkxrA  --cost=x --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink screw7_p050  screw7_p050_loinkxtP  --cost=x --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink screw7_p050  screw7_p050_loinkxtA  --cost=x --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+loink screw7_p050  screw7_p050_loinkurP  --cost=u --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink screw7_p050  screw7_p050_loinkurA  --cost=u --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink screw7_p050  screw7_p050_loinkutP  --cost=u --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink screw7_p050  screw7_p050_loinkutA  --cost=u --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+
+loink soft12       soft12_loinkmrP       --cost=m --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink soft12       soft12_loinkmrA       --cost=m --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink soft12       soft12_loinkmtP       --cost=m --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink soft12       soft12_loinkmtA       --cost=m --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+loink soft12       soft12_loinkxrP       --cost=x --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink soft12       soft12_loinkxrA       --cost=x --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink soft12       soft12_loinkxtP       --cost=x --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink soft12       soft12_loinkxtA       --cost=x --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+loink soft12       soft12_loinkurP       --cost=u --activation=relu --recipe=P --batch_size=4096 --max_steps=620000
+loink soft12       soft12_loinkurA       --cost=u --activation=relu --recipe=A --batch_size=500  --max_steps=150000
+loink soft12       soft12_loinkutP       --cost=u --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
+loink soft12       soft12_loinkutA       --cost=u --activation=tanh --recipe=A --batch_size=500  --max_steps=150000

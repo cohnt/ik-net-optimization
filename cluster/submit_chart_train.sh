@@ -1,21 +1,25 @@
 #!/bin/bash
-# Submit (or resume) a NON-FLOW chart training run -- the cVAE -- as ONE single-GPU job.
+# Submit (or resume) a NON-FLOW chart training run -- the cVAE, LOInK -- as ONE single-GPU job.
 #
 # ============================ STANDING REMINDER ============================
 # If even REMOTELY unsure about a SuperCloud action, STOP and ask Thomas.
 # ===========================================================================
 #
 # Usage:
-#   ROBOT=<robot> bash cluster/submit_chart_train.sh <run_name> [walltime] [-- extra trainer args]
+#   [FAMILY=<f>] [ROBOT=<robot>] bash cluster/submit_chart_train.sh <run_name> [walltime] [-- extra trainer args]
 #   bash cluster/submit_chart_train.sh --all [walltime]      # every row of cluster/chart_runs.txt
 #   bash cluster/submit_chart_train.sh --status              # every row's step, plus this tree's queue
-#   bash cluster/submit_chart_train.sh --smoke <robot> <K>   # 200 steps, one GPU, export+screen in RUN_DIR
+#   bash cluster/submit_chart_train.sh --smoke cvae <robot> <K>            # 200 steps, one GPU, export+screen in RUN_DIR
+#   bash cluster/submit_chart_train.sh --smoke loink <robot> --cost=<c> --activation=<a> --recipe=<R>
 #   bash cluster/submit_chart_train.sh --pair <run_a> <run_b> [walltime]   # two rows, ONE 2-GPU job
 #   PAIRS=1 bash cluster/submit_chart_train.sh --all [walltime]           # every row, two per job
 #   ONLY='<regex>' [PAIRS=1] bash cluster/submit_chart_train.sh --all [walltime]  # rows whose run name matches
-#   bash cluster/submit_chart_train.sh --smoke-pair <robot> <K_a> <K_b>     # the pair mode's smoke
+#   bash cluster/submit_chart_train.sh --smoke-pair cvae <robot> <K_a> <K_b>        # the pair mode's smoke
+#   bash cluster/submit_chart_train.sh --smoke-pair loink <robot> '<args_a>' '<args_b>'
+# (`--smoke <robot> <K>` and `--smoke-pair <robot> <K_a> <K_b>`, without a family, are the cVAE's.)
 # e.g.
 #   ROBOT=panda bash cluster/submit_chart_train.sh panda_cvae1 24:00:00 -- --dim_latent_space=1
+# A run name that is a row of chart_runs.txt takes its FAMILY and ROBOT from the row when unset.
 #
 # ONE GPU PER RUN, TWO RUNS PER NODE. Thomas's design for this family (2026-10-18): all eight
 # cVAE runs train concurrently, one per GPU. So the launcher asks for one task, 20 of a volta
@@ -202,49 +206,74 @@ cmd_status() {
     sc_run "cd ~/$SC_ROOT/results/train 2>/dev/null || exit 0
         for r in $names; do
           if [ -f \"\$r/status.json\" ]; then
-            printf '%-20s %s\n' \"\$r\" \"\$(python3 -c \"import json;d=json.load(open('\$r/status.json'));print('step %s  ' % d.get('global_step') + '  '.join('%s %.5g' % (k, v) for k, v in d.items() if k != 'global_step' and isinstance(v, (int, float))))\" 2>/dev/null || echo 'status.json unreadable')\"
-          elif [ -d \"\$r\" ]; then printf '%-20s %s\n' \"\$r\" 'submitted, no status yet'
-          else printf '%-20s %s\n' \"\$r\" '-'; fi
+            printf '%-24s %s\n' \"\$r\" \"\$(python3 -c \"import json;d=json.load(open('\$r/status.json'));print('step %s  ' % d.get('global_step') + '  '.join('%s %.5g' % (k, v) for k, v in d.items() if k != 'global_step' and isinstance(v, (int, float))))\" 2>/dev/null || echo 'status.json unreadable')\"
+          elif [ -d \"\$r\" ]; then printf '%-24s %s\n' \"\$r\" 'submitted, no status yet'
+          else printf '%-24s %s\n' \"\$r\" '-'; fi
         done
-        echo '--- exported (models/*/*__cvae*__step*.pkl) ---'
-        ls ~/$SC_ROOT/repo/models/*/*__cvae*__step*.pkl 2>/dev/null || echo '(none)'
+        echo '--- exported (models/*/*__{cvae,loink}*__step*.pkl) ---'
+        ls ~/$SC_ROOT/repo/models/*/*__cvae*__step*.pkl ~/$SC_ROOT/repo/models/*/*__loink*__step*.pkl 2>/dev/null | grep . || echo '(none)'
         echo '--- queue ---'; squeue -u \$USER -h -o '%Z|%.10i %.9T %j %N %R' 2>/dev/null | awk -F'|' -v d=\"\$HOME/$SC_ROOT/repo\" '\$1==d {print \$2; n++} END {if (!n) print \"(no jobs for this tree)\"}'"
 }
 
 ## --------------------------------------------------------------------- all --
 ## Every row of chart_runs.txt, each through the same-run guard: one job per row, or with
-## PAIRS=1 one job per two consecutive rows (the file lists each robot's two rungs together, so
-## a pair is one robot). A row whose status.json already reached MAX_STEPS is skipped
-## (resubmitting it would only resume, find the step budget spent and re-export); under PAIRS=1
-## a pair with one finished row submits the other alone. One remote call decides that.
+## PAIRS=1 one job per two consecutive rows (the file keeps each pair's rows adjacent and on one
+## robot). A row whose status.json already reached ITS step budget -- the row's own
+## `--max_steps=` if it carries one (LOInK), else MAX_STEPS -- is skipped (resubmitting it would
+## only resume, find the step budget spent and re-export). Under PAIRS=1 the UNFINISHED rows are
+## paired consecutively (a finished row shifts the pairing by one, so a pair may then span two
+## robots -- harmless, each run is its own process on its own GPU), but never across two
+## families: a row left without a partner of its family is submitted alone. One remote call reads
+## every row's step; the comparison is local.
 ## ONLY=<regex> restricts --all to the rows whose RUN NAME matches (awk ERE, on the third
 ## column): e.g. ONLY='_cvaef[0-9]+$' submits exactly the eight fixed-variance cVAE rows and
 ## never the learned-variance ones. A regex that matches no row refuses. Pairing (PAIRS=1) is
 ## over consecutive MATCHING rows, so keep each robot's two rungs adjacent in chart_runs.txt.
+## LOInK: ONLY='_loink[mxu][rt]P$' / ONLY='_loink[mxu][rt]A$' submit one recipe (24 rows) and pair
+## relu with tanh at one robot, cost and recipe (chart_runs.txt's header).
 _all_rows() {
     if [ -n "${ONLY:-}" ]; then _rows | awk -v re="$ONLY" '$3 ~ re'; else _rows; fi
 }
 
+## A row's step budget: its own last `--max_steps=N` / `--max_steps N`, else MAX_STEPS (train_chart.sh
+## reads it the same way).
+row_max_steps() {
+    local w prev="" val=""
+    for w in $1; do
+        case "$w" in --max_steps=*) val="${w#--max_steps=}" ;; esac
+        [ "$prev" = "--max_steps" ] && val="$w"
+        prev="$w"
+    done
+    echo "${val:-$MAX_STEPS}"
+}
+
 cmd_all() {
-    local WALL="$1" done_list family robot name args rc fails=0 pending=()
+    local WALL="$1" steps_list family robot name args rc fails=0 pending=() step target pfam="" prob="" pargs=""
     if [ -z "$(_all_rows)" ]; then
         echo "REFUSING: ONLY='${ONLY:-}' matches no run name in $SPEC" >&2
         return 2
     fi
     echo "--all over: $(_all_rows | awk '{print $3}' | tr '\n' ' ')"
-    done_list=$(sc_run "cd ~/$SC_ROOT/results/train 2>/dev/null || exit 0
+    steps_list=$(sc_run "cd ~/$SC_ROOT/results/train 2>/dev/null || exit 0
         for d in */status.json; do
           [ -f \"\$d\" ] || continue
           s=\$(python3 -c \"import json;print(json.load(open('\$d'))['global_step'])\" 2>/dev/null || echo 0)
-          [ \"\$s\" -ge $MAX_STEPS ] && dirname \"\$d\"
+          echo \"\$(dirname \"\$d\") \$s\"
         done" 2>/dev/null)
     while read -r family robot name args; do
-        if grep -qx "$name" <<<"$done_list"; then
-            echo "skip $name: already at $MAX_STEPS steps"
+        step=$(awk -v r="$name" '$1==r {print $2}' <<<"$steps_list")
+        target=$(row_max_steps "$args")
+        if [ -n "$step" ] && [ "$step" -ge "$target" ] 2>/dev/null; then
+            echo "skip $name: already at $target steps"
             continue
         fi
         if [ "${PAIRS:-0}" = "1" ]; then
-            pending+=("$name")
+            if [ "${#pending[@]}" -eq 1 ] && [ "$pfam" != "$family" ]; then   # no partner in its family
+                FAMILY="$pfam" ROBOT="$prob" submit_one "${pending[0]}" "$WALL" "$pargs" </dev/null \
+                    || { echo "  -> ${pending[0]} NOT submitted"; fails=$((fails + 1)); }
+                pending=()
+            fi
+            pending+=("$name"); pfam="$family"; prob="$robot"; pargs="$args"
             [ "${#pending[@]}" -lt 2 ] && continue
             submit_pair "${pending[0]}" "${pending[1]}" "$WALL" </dev/null
             rc=$?
@@ -269,25 +298,71 @@ cmd_all() {
 ## (EXPORT_TO_RUN_DIR=1 -> $RUN_DIR/pkl), never models/: the plumbing check covers the export and the screen too, and a
 ## 200-step network must never sit under a name a benchmark would load. On a real partition
 ## (cluster/README.md rule 3: anything that trains is a job, however short).
+SMOKE_EXTRA="--checkpoint_every=100 --eval_every=100 --val_set_size=20 --disable_wandb"
+
+## A LOInK smoke's run label and trainer args from `--cost=<c> --activation=<a> --recipe=<R>`
+## (all three required): prints "<label>|<args>". The args gain the recipe's batch (P 4096, A 500)
+## so the smoke trains at its recipe's batch, and NEVER a --max_steps: the smoke's 200 steps come
+## from the environment (a row's --max_steps would override them in train_chart.sh).
+loink_smoke_spec() {
+    local w c="" a="" r="" b
+    for w in "$@"; do
+        case "$w" in
+            --cost=*) c="${w#--cost=}" ;;
+            --activation=*) a="${w#--activation=}" ;;
+            --recipe=*) r="${w#--recipe=}" ;;
+            --max_steps*) echo "REFUSING: a smoke's step count is 200, not '$w'" >&2; return 2 ;;
+        esac
+    done
+    case "$c" in m|x|u) ;; *) echo "REFUSING: --cost=m|x|u required (got '$c')" >&2; return 2 ;; esac
+    case "$a" in relu|tanh) ;; *) echo "REFUSING: --activation=relu|tanh required (got '$a')" >&2; return 2 ;; esac
+    case "$r" in P) b=4096 ;; A) b=500 ;; *) echo "REFUSING: --recipe=P|A required (got '$r')" >&2; return 2 ;; esac
+    echo "loink${c}${a:0:1}${r}|$* --batch_size=$b $SMOKE_EXTRA"
+}
+
+## `--smoke cvae <robot> <K>` (or the original `--smoke <robot> <K>`) and
+## `--smoke loink <robot> --cost=<c> --activation=<a> --recipe=<R>`. Run name smoke_<robot>_<label>.
 cmd_smoke() {
-    local robot="${1:?usage: --smoke <robot> <K>}" k="${2:?usage: --smoke <robot> <K>}"
-    echo "200-step cVAE smoke for $robot at K=$k on $PARTITION (one GPU), export+screen into RUN_DIR."
-    FAMILY=cvae ROBOT="$robot" MAX_STEPS=200 FINAL_STEP=200 RUN_EXPORT=1 EXPORT_TO_RUN_DIR=1 \
-        submit_one "smoke_${robot}_cvae${k}" 00:30:00 \
-        "--dim_latent_space=$k --checkpoint_every=100 --eval_every=100 --val_set_size=20 --disable_wandb"
+    local family="cvae" robot spec label args
+    case "${1:-}" in cvae|loink) family="$1"; shift ;; esac
+    robot="${1:?usage: --smoke cvae <robot> <K> | --smoke loink <robot> --cost=.. --activation=.. --recipe=..}"
+    shift
+    if [ "$family" = "cvae" ]; then
+        local k="${1:?usage: --smoke cvae <robot> <K>}"
+        label="cvae$k"; args="--dim_latent_space=$k $SMOKE_EXTRA"
+    else
+        spec=$(loink_smoke_spec "$@") || return $?
+        label="${spec%%|*}"; args="${spec#*|}"
+    fi
+    echo "200-step $family smoke for $robot ($label) on $PARTITION (one GPU), export+screen into RUN_DIR."
+    FAMILY="$family" ROBOT="$robot" MAX_STEPS=200 FINAL_STEP=200 RUN_EXPORT=1 EXPORT_TO_RUN_DIR=1 \
+        submit_one "smoke_${robot}_${label}" 00:30:00 "$args"
 }
 
 ## The pair mode's own plumbing check: two smoke runs in one 2-GPU job, same settings as --smoke.
 ## Run it before PAIRS=1 --all, never the real run names with a small MAX_STEPS -- a real run
 ## resumes from whatever last.ckpt its RUN_DIR holds, so a 200-step smoke there would BECOME
 ## the start of the 620k-step run.
+## `--smoke-pair cvae <robot> <K_a> <K_b>` (or the original `--smoke-pair <robot> <K_a> <K_b>`) and
+## `--smoke-pair loink <robot> '<args_a>' '<args_b>'`, each quoted args string as --smoke loink takes.
 cmd_smoke_pair() {
-    local robot="${1:?usage: --smoke-pair <robot> <K_a> <K_b>}" ka="${2:?}" kb="${3:?}"
-    local extra="--checkpoint_every=100 --eval_every=100 --val_set_size=20 --disable_wandb"
-    echo "200-step cVAE PAIR smoke for $robot at K=$ka and K=$kb (one job, both GPUs)."
+    local family="cvae" robot la lb aa ab spec
+    case "${1:-}" in cvae|loink) family="$1"; shift ;; esac
+    robot="${1:?usage: --smoke-pair cvae <robot> <K_a> <K_b> | --smoke-pair loink <robot> '<args_a>' '<args_b>'}"
+    if [ "$family" = "cvae" ]; then
+        local ka="${2:?}" kb="${3:?}"
+        la="cvae$ka"; aa="--dim_latent_space=$ka $SMOKE_EXTRA"
+        lb="cvae$kb"; ab="--dim_latent_space=$kb $SMOKE_EXTRA"
+    else
+        # shellcheck disable=SC2086  # each quoted string is the args of one run, split here on purpose
+        spec=$(loink_smoke_spec ${2:?}) || return $?; la="${spec%%|*}"; aa="${spec#*|}"
+        # shellcheck disable=SC2086
+        spec=$(loink_smoke_spec ${3:?}) || return $?; lb="${spec%%|*}"; ab="${spec#*|}"
+    fi
+    echo "200-step $family PAIR smoke for $robot: $la and $lb (one job, both GPUs)."
     MAX_STEPS=200 FINAL_STEP=200 RUN_EXPORT=1 EXPORT_TO_RUN_DIR=1 \
-        submit_pair_runs cvae "smoke_${robot}_cvae${ka}" "$robot" "--dim_latent_space=$ka $extra" \
-                              "smoke_${robot}_cvae${kb}" "$robot" "--dim_latent_space=$kb $extra" 00:30:00
+        submit_pair_runs "$family" "smoke_${robot}_${la}" "$robot" "$aa" \
+                                   "smoke_${robot}_${lb}" "$robot" "$ab" 00:30:00
 }
 
 case "${1:-}" in
@@ -298,11 +373,30 @@ case "${1:-}" in
     --pair)   submit_pair "${2:?usage: --pair <run_a> <run_b> [walltime]}" \
                           "${3:?usage: --pair <run_a> <run_b> [walltime]}" "${4:-24:00:00}" ;;
     ""|-h|--help)
-        sed -n '2,19p' "$0"; exit 2 ;;
+        sed -n '2,23p' "$0"; exit 2 ;;
     *)
         RUN_NAME="$1"
         WALL="${2:-24:00:00}"
         shift $(( $# > 2 ? 2 : $# ))
         [ "${1:-}" = "--" ] && shift
-        submit_one "$RUN_NAME" "$WALL" "$*" ;;
+        ## A row of chart_runs.txt supplies FAMILY / ROBOT when they are unset (a LOInK run
+        ## resubmitted without FAMILY=loink would otherwise launch the cVAE trainer), and its own
+        ## trainer args when none are given (a LOInK row without them would train the trainer's
+        ## defaults for 620000 steps); a set FAMILY / ROBOT that contradicts the row refuses.
+        if ROW=$(spec_row "$RUN_NAME"); then
+            read -r ROW_FAMILY ROW_ROBOT ROW_ARGS <<< "$ROW"
+            if [ "$#" -eq 0 ]; then
+                set -- $ROW_ARGS
+                echo "(no trainer args given: using the row's own, '$*')"
+            fi
+            if [ -n "${FAMILY:-}" ] && [ "$FAMILY" != "$ROW_FAMILY" ]; then
+                echo "REFUSING: FAMILY=$FAMILY but $RUN_NAME is a $ROW_FAMILY row of $SPEC" >&2; exit 2
+            fi
+            if [ -n "${ROBOT:-}" ] && [ "$ROBOT" != "$ROW_ROBOT" ]; then
+                echo "REFUSING: ROBOT=$ROBOT but $RUN_NAME is a $ROW_ROBOT row of $SPEC" >&2; exit 2
+            fi
+            FAMILY="$ROW_FAMILY" ROBOT="$ROW_ROBOT" submit_one "$RUN_NAME" "$WALL" "$*"
+        else
+            submit_one "$RUN_NAME" "$WALL" "$*"
+        fi ;;
 esac
