@@ -407,12 +407,14 @@ the decoder returns E[q | pose], unusable where the IK fibre is disconnected bra
 
 **Chart rung two: LOInK (branch `chart-loink`, 2026-10-22), not an ablation**: a bi-Lipschitz
 network designed for a structured latent (`G(q) = [task; z]`, `z = 0` the cost minimiser; the chart
-is `G^{-1}`, Davis-Yin + Newton polish, IFT derivative). Question: does a latent structured for
-ONE cost help under OUR objective? Ladder cost m/x/u x relu/tanh x recipe P/A, 12 charts per
-robot. Certified gain, exact paired start, one connected fibre per task (the risk on rigid arms).
-The chart takes the program's RAW `c` (`task_input="xyzrpy"`). Paper replicated first (`docs/loink-replication.md`): Sec. V reproduces at
-`lambda = 0.01`; Table II does not. Long form `docs/notes-chart.md`; ops `cluster/LOINK_RUNBOOK.md`;
-tables `docs/loink-tables.md`.
+is `G^{-1}`, Davis-Yin + Newton polish, IFT derivative; it takes the program's RAW `c`,
+`task_input="xyzrpy"`). Question: does a latent structured for ONE cost help under OUR objective?
+Ladder cost m/x/u x relu/tanh x recipe P/A. Paper replicated first (`docs/loink-replication.md`):
+Sec. V reproduces at `lambda = 0.01`; Table II does not. **Rigid arms (2026-10-23): the chart never
+fits the task at LOInK's own `K = n - 6 = 1`** (a K ladder shows the latent width is the
+mechanism, not the rpy cut); recipe A's plateau
+schedule collapses the LR by 40k steps. Soft12 (`K = 6`) pending. A padded-latent rung is a
+method change: Thomas's call. Long form `docs/notes-chart.md`; ops `cluster/LOINK_RUNBOOK.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
 
@@ -475,7 +477,7 @@ sm_70 — use cu126 (`cluster/smoke.sh` launches a real kernel). `--shard K/N` s
 the merger re-runs `summarise`; **run `bash cluster/verify_sharding.sh` after any change to sharding,
 the merger or grid construction.** Shard sets straddling collections merge normally. **Cluster-wide
 checks on the shared account are scoped by JOB name; a guard nobody has seen refuse is untested.**
-Monthly maintenance: second Tuesday, Monday evening to Wednesday morning.
+Maintenance: second Tuesday monthly.
 
 **Local compute must never take the laptop down** (Thomas, 2026-10-09: *"If a pytest sweep crashes my
 machine, that is unacceptable"*). **No process pools in this project.** Every local test file, smoke or
@@ -492,5 +494,4 @@ calling shell. The laptop does not sleep on AC; session gaps are deliberate, nev
   1.12 m length scale). Never tried.
 - **Least-squares domain extension** (Thomas's unreleased IFT-IK paper): deferred, belongs here.
   Trust-region *solving* is another project's.
-- **A small optimization smoke run in checkpoint validation**: Thomas's idea, deferred.
 - **A harder problem formulation** beyond the hardened scene — his idea, his call.

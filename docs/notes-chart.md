@@ -339,4 +339,53 @@ bi-Lipschitz inequality; (e) task error by distance to the rpy cut; (f) represen
 `start_c_error` (the paired start's `c` is the chart's own `y_hat`, not the FK pose).
 Stages LOINKSMOKE -> LOINKPROBE (60-cell native AND paired probes on the rigid arms, soft12 in
 full) -> LOINKEXT (full rows where a probe had a success); ops `cluster/LOINK_RUNBOOK.md`; tables
-`docs/loink-tables.md` (`scripts/report_loink.py --write`). Results: pending.
+`docs/loink-tables.md` (`scripts/report_loink.py --write`). Results: below.
+
+### Training outcome (2026-10-23): the rigid-arm charts never fit the task; the mechanism is K = 1
+
+**What the cluster returned.** Every project-recipe (`P`) chart that finished (Panda m/x/u x
+relu/tanh, iiwa m x relu/tanh; 540k-620k steps) sits at the mean-predictor level on validation:
+position RMSE 640-790 mm (the iiwa's constant predictor is 698 mm), rotation 97-121 deg, with
+the distortion `tau` grown monotonically to 2e4-1.4e5 and the inverse no longer recoverable
+(round-trip residual 1e1-4e3 at `n_dys` 100 + 2 Newton; exit code 6). Train task MSE went 6.9 ->
+4.5 over 620k steps and the held-out error of the finished iiwa `m` chart is WORSE than the mean
+(0.54/0.42/0.38 m per axis against stds 0.41/0.42/0.37; rpy 1.38/0.62/1.57 rad against stds
+1.73/0.69/1.81). The paper-recipe (`A`) runs died another way: the pre-registered plateau schedule
+(patience 500 steps on the EMA train loss) halved the learning rate every 500 steps from the start,
+reaching ~1e-8 by step 40k on every robot (Panda 626-696 mm; soft12 200-290 mm / 42-87 deg); the
+same schedule worked in the planar replication only because that loss fell within 1000 steps.
+Those runs were cancelled at 60-100k steps (`last.ckpt` kept; `--ckpt_path=auto` resumes). The
+rigid-arm `P` jobs still pending (iiwa x/u, screw m/x/u) were cancelled unstarted. The soft12 `P`
+pairs (K = 6) run.
+
+**Diagnosis (local CPU, `scripts/loink_replication/rigid_arm_k_ladder.py`, iiwa14's local
+dataset: 100k train, 5000 held-out; the same `LoinkModel`/`loink_loss`; Adam 1e-3, batch 500,
+clip 1.0, cost `u`, 3000 steps; held-out RMSE per task column, position m / rpy rad wrapped):**
+
+| chart input -> task | K | x / y / z | roll / pitch / yaw |
+| --- | --- | --- | --- |
+| q -> [xyz, rpy] (the campaign's) | 1 | 0.29 / 0.27 / 0.27 | 1.65 / 0.70 / 1.79 |
+| [q, 3 dummies] -> [xyz, rpy] | 4 | 0.31 / 0.31 / 0.32 | 1.23 / 0.51 / 1.33 |
+| [q, 6 dummies] -> [xyz, rpy] | 7 | 0.18 / 0.19 / 0.15 | 1.02 / 0.34 / 1.14 |
+| q -> rpy only | 4 | - | 1.29 / 0.58 / 1.41 |
+| q -> xyz only | 4 | 0.10 / 0.10 / 0.08 | - |
+| plain MLP 3 x 256 -> [xyz, rpy] (1500 steps, train subset) | - | 0.12 / 0.13 / 0.10 | 0.89 / 0.32 / 1.01 |
+
+Ruled out first: the dataset is aligned (jrl FK v stored poses 1e-7); a wrapped angular residual
+in the loss and training only on samples away from the rpy cut (57% of the data) change nothing
+(rotation stays at 115-120 deg), so the cut is not the mechanism; `scale`, `mu` (0.01),
+`lognu_init` (log 20), tanh, a smaller net and depth 1 change nothing either.
+
+**Mechanism.** LOInK asks the IK map to be the first `p` coordinates of ONE bi-Lipschitz chart of
+`R^n`, i.e. every task fibre a straight line `{y} x R^K` of a global product. With `n = 7`, `p =
+6` that leaves `K = 1`: the 7-DoF arms' fibres are one-dimensional sets of closed curves and
+arcs (several per pose) that no line carries, and the inverse-Lipschitz bound `mu` makes the
+conflict global rather than local -- the net cannot fit position past ~0.27 m and orientation at
+all, and training drives `tau` up without bound. Giving the latent room (dummy inputs) restores
+learning, so the failure is the latent width LOInK prescribes, not the optimiser or the port
+(which matches PLNet to 1e-15 and reproduces the paper's planar example, `K = 2`). The paper's
+examples all have `K >= 2` (planar 2, HSA 3, Magneto 12). **A verdict on the rigid arms, not a
+bug**: at its own `K = n - p` LOInK cannot chart the 6-D pose task of a 7-DoF arm. Whether a
+padded-latent LOInK (`K` = the flow's width, the cVAE's "K = flow width" rung; `decode` drops the
+dummy coordinates) is a rung worth fielding is a modification of the method and Thomas's call;
+so is a usable paper recipe (their schedule is one of the questions for the authors).
