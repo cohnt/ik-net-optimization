@@ -25,7 +25,10 @@ Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'`, then `python3 - < clus
     items and 24 SVGD items instead of 204 + 580 sharded full-row items. LOINKEXT then covers
     soft12 too (a full row only where a probe solves >= 1 cell). No warm-up code change: not
     worth a code change on a stretch goal; ~12 slot-hours of compiling is the price.
- 2. When the smokes leave the queue: run the smoke check (0 flagged expected; a relu paired
+ 2. A detached laptop watcher (`probe_chain.sh` in the session scratchpad, log
+    `.../scratchpad/probe_chain.log`, pid 106071, started 19:30) does the following on its own;
+    a resuming session checks `squeue` first: PROBE jobs present means it ran. By hand otherwise.
+    When the smokes leave the queue: run the smoke check (0 flagged expected; a relu paired
     cell may be `unrepresentable_start` at the recorded 0.05-0.10% rate, report it), then
     `bash cluster/stage_code.sh` (refuses while jobs run; the staged tree is otherwise d417150's
     code plus hand-copied `test_job.sh`), then from the laptop
