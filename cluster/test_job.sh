@@ -27,6 +27,10 @@ export TQDM_DISABLE=1 PYTHONUNBUFFERED=1 MPLBACKEND=Agg MPLCONFIGDIR="$TMPDIR/mp
 export CUDA_VISIBLE_DEVICES=""
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-8}}"
 export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+## The nightly Drake pin, as run_items.sh's default (non-crc) env. HOME is $ROOT/home here, so
+## its warmed drake_models cache is already in place (compute nodes cannot download it). The
+## first run of this script (job 6025515) omitted this line and died on `import pydrake`.
+export PYTHONPATH="$ROOT/drake/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}"
 PY="$ROOT/venv/bin/python"
 
 cd "$REPO" || exit 4
