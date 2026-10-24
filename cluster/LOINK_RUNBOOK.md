@@ -10,7 +10,28 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE -- 2026-10-23 19:05 cluster time: smokes flagged, PROBE cancelled, re-ladder jobs queued.
+## STATE -- 2026-10-24 17:05 cluster time: smokes and PROBE resubmitted on the re-laddered sidecars.
+Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'`, then `python3 - < cluster/loink_smoke_check.py` over ssh.
+ 0. Re-ladder jobs 6019621-26 all rc=0 by 19:50 on 2026-10-23 (logs and before/after sidecars in
+    `~/learned-ik/results/reladder/`). Chosen: mrP (400,50,none) best effort 0.05%; xrP (200,50,none)
+    exact; mtP, xtP (25,10,backtrack) exact; utP (200,10,backtrack) exact; urP (25,50,none)
+    unchanged, best effort 0.10%. The six sidecars are committed (`models/soft12/*loink*.arch.json`).
+ 1. Old-budget smokes (48/48 published, 3 flagged, all relu pose paired) moved to
+    `~/learned-ik/results/soft12/benchmark_loink_prefix_budget/{published,rundirs}` (kept, not
+    deleted); both smoke manifests' `.done` removed and claims reclaimed.
+ 2. Submitted 17:00 from the laptop (`submit_bench.sh`, PROCS=2): smokes 6025468/69
+    (LOINKSMOKE_soft12P) and 6025470/72 (LOINKSMOKE_SVGD_soft12P, crc); PROBE queued behind them
+    with `DEPENDENCY=afterany:6025468:6025469:6025470:6025472`: 6025498-501 (LOINKPROBE_soft12P,
+    204 items) and 6025502-05 (LOINKPROBE_SVGD_soft12P, crc, 580 items).
+    **If the smoke check flags any item, `scancel 6025498 6025499 6025500 6025501 6025502 6025503
+    6025504 6025505` before they start.** Pass = 0 flagged; on the relu charts mrP/urP a paired
+    cell may still be `unrepresentable_start` at the recorded 0.05-0.10% rate (report it, do not
+    flag it). Then as before: collect, merge, `scripts/report_loink.py --write` (acceptance
+    IDENTICAL), notes, CLAUDE.md (< 40k), memory.
+ 3. Still owed: one cluster run of `tests/test_loink_chart.py` (its extended ladder test never ran).
+
+### Earlier state (2026-10-23 19:05)
+STATE -- 2026-10-23 19:05 cluster time: smokes flagged, PROBE cancelled, re-ladder jobs queued.
 Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn; ls ~/learned-ik/results/reladder/'`.
  0. What happened: the smoke check (`cluster/loink_smoke_check.py`, run as its first line says; 40 of 48 items at 18:55)
     flagged 3 items, all relu charts on the pose task with the paired start: cells scored

@@ -450,6 +450,24 @@ real but on a scale the +-5 box and the `sqrt(K) + 1.5` trust region were never 
 `N(0, I)` native draw and `z = 0` sit in a region the training data's latent never occupies.
 Standardising `J` to z = O(1) assumed the cost head would fit; it did not.
 
+**The decode budget was re-chosen on three latent draws (2026-10-24).** The smokes on the budgets
+above scored 3 of 12 relu paired cells `unrepresentable_start` (start_q_error 0.76-1.67): the
+paired start sets the variables to `G(q_init)` exactly, and the decode at the sidecar's budget did
+not come back to `q_init`, because the ladder had gated only on latents from N(0, I). The gate now
+covers the prior draw, the +-5 box (uniform; N(0, I) never reached its corners, where 0.05-0.15% of
+samples failed on two charts) and the real latent `z = G_2(q)` (commit d417150;
+`export_loink.py --reladder` re-chooses an exported chart's budget in place, run per chart by
+`cluster/reladder_loink_job.sh`). Result (2048 samples x 3 draws, float64): mtP and xtP
+(25, 10, backtrack), utP (200, 10, backtrack) and xrP (200, 50, none) are exact on all three; for
+the relu charts mrP and urP NO budget up to (400, 50) is exact on real latents (undamped Newton
+cycles on a few samples, backtracking stalls at the kinks and fails the box too), so the ladder's
+stated best-effort rule takes the cheapest budget exact on prior and box with the fewest real-draw
+failures: mrP (400, 50, none) at 0.05%, urP (25, 50, none) at 0.10%, written to the sidecar as
+`real_latent_fail_fraction`. The price is per-iteration cost: the cost model's passes per decode
+go from 155 to 1050 on mrP, 155 to 850 on xrP, 90 to 155 on mtP/xtP, 155 to 400 on utP (urP
+unchanged); the cells already ran to the clock, so expect fewer iterations per cell on the relu
+charts. The smokes and PROBE were rerun on the new sidecars (runbook).
+
 Benchmarked anyway, soft12 only (the four `_soft12P` manifests, PROCS=2): the question the
 rung asks is answered by cells, and the cVAE precedent ran its collapsed charts. Cells
 `docs/loink-tables.md`.
