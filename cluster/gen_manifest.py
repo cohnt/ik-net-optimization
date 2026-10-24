@@ -4346,14 +4346,19 @@ def _cvae_selftest():
 ## PROBE FIRST (the cVAE precedent, stage CVAEPROBE), but with paired probes too: the LOInK inverse
 ## is exact, so a paired start is a real solve here, not an instant `unrepresentable_start`.
 ##   LOINKSMOKE(_SVGD)  every logical run at CVAE_SMOKE_CELLS, one item each, stem `LOINKSMOKE`;
-##   LOINKPROBE(_SVGD)  rigid arms (Panda, iiwa, screw): every chart x task x start as ONE unsharded
-##                      60-cell item, guess 0 of every target (`--cells t:0`), tag `..._60_180_<start>`;
-##                      soft12: the full 480-cell rows, sharded as stage CVAE (8 IPOPT / 24 AL-SVGD);
-##                      LOINKPROBE also carries the joint-space ACCEPTANCE run (CVAE_ACCEPT's row,
-##                      claimed first, stem `LOINKACC`);
+##   LOINKPROBE(_SVGD)  every robot (Panda, iiwa, screw, soft12): every chart x task x start as ONE
+##                      unsharded 60-cell item, guess 0 of every target (`--cells t:0`), tag
+##                      `..._60_180_<start>`; LOINKPROBE also carries the joint-space ACCEPTANCE run
+##                      (CVAE_ACCEPT's row, claimed first, stem `LOINKACC`, still 8 shards).
+##                      Until 2026-10-24 soft12 got its full 480-cell rows here, sharded as stage CVAE
+##                      (8 IPOPT / 24 AL-SVGD). Changed 2026-10-24: the re-laddered decode budgets make
+##                      per-item warm-up 5 min to 1.9 h, and no soft12 chart fits the task (smokes 0/40,
+##                      every cell `constraint` at the clock), so 784 sharded full-row items would
+##                      spend days mostly compiling; a 60-cell probe is all a row needs, and LOINKEXT
+##                      runs a full row only where a probe solves >= 1 cell;
 ##   LOINKEXT(_SVGD)    the full 480-cell rows (sharded as stage CVAE, items byte-identical to the
 ##                      would-be full stage's, so the probe's 60 cells are re-solved inside them) of
-##                      every RIGID chart x row whose 60-cell probe solved >= 1 cell. Written by
+##                      every chart x row (any robot) whose 60-cell probe solved >= 1 cell. Written by
 ##                      cluster/make_loink_ext.py from the collected probe summaries (`--check`); the
 ##                      selftest holds the committed ones to being whole rows of the full stage.
 ## Probe and full rows share the stem `LOINK`; the cells token (60 / 480) tells them apart. No
@@ -4474,7 +4479,7 @@ def _loink_results_roots():
 
 
 def loink_probe_outcomes(roots=None):
-    """probe tag -> successes (learned `feasible` cells), for every COLLECTED rigid 60-cell probe:
+    """probe tag -> successes (learned `feasible` cells), for every COLLECTED 60-cell probe (any robot):
     an unsharded `sc_LOINK_*_60_180_*` summary holding all 60 learned records."""
     import glob
     import json
@@ -4495,18 +4500,17 @@ def loink_probe_outcomes(roots=None):
 
 
 def loink_probe_tag(full_tag):
-    """The 60-cell probe tag of a rigid full row's tag."""
+    """The 60-cell probe tag of a full row's tag (any robot)."""
     assert "_480_180_" in full_tag, full_tag
     return full_tag.replace("_480_180_", f"_{LOINK_PROBE_TARGETS}_180_", 1)
 
 
 def loink_ext_selection(svgd, outcomes=None):
     """(qualifying full-row tags, collected {probe tag: successes}, missing probe tags) for
-    LOINKEXT (svgd False) or LOINKEXT_SVGD: a rigid row qualifies when its probe solved >= 1 cell."""
+    LOINKEXT (svgd False) or LOINKEXT_SVGD: a row (any robot) qualifies when its probe solved >= 1 cell."""
     outcomes = loink_probe_outcomes() if outcomes is None else outcomes
     rows = sorted({_svgd_flag(it["args"], "--tag")
-                   for it in stage_LOINK("LOINKFULL_SVGD" if svgd else "LOINKFULL")
-                   if it["robot"] in LOINK_RIGID})
+                   for it in stage_LOINK("LOINKFULL_SVGD" if svgd else "LOINKFULL")})
     collected = {loink_probe_tag(r): outcomes[loink_probe_tag(r)] for r in rows
                  if loink_probe_tag(r) in outcomes}
     missing = [loink_probe_tag(r) for r in rows if loink_probe_tag(r) not in outcomes]
@@ -4524,10 +4528,8 @@ def stage_LOINK(which="LOINKSMOKE", outcomes=None):
         if base == "LOINKSMOKE":
             mode = "smoke"
         elif base == "LOINKPROBE":
-            mode = "probe" if robot in LOINK_RIGID else "full"
+            mode = "probe"
         elif base in ("LOINKFULL", "LOINKEXT"):
-            if base == "LOINKEXT" and robot not in LOINK_RIGID:
-                continue
             mode = "full"
         else:
             raise ValueError(f"not a LOInK stage: {which}")
@@ -4593,10 +4595,8 @@ def _loink_selftest():
     tag_re = re.compile(rf"^{LOINK_TAG_PREFIX}_(LOINK|LOINKSMOKE)_(.+)_(loink[mxu][rt][PA])_(ipopt|svgd)_"
                         r"(mugshelf|posetip)_(\d+)_180_(paired|native)$")
     n_smoke = len(CVAE_SMOKE_CELLS.split(","))
-    n_rigid, n_soft = 12 * len(LOINK_RIGID), 12
     want = {"LOINKSMOKE": 48 * 4, "LOINKSMOKE_SVGD": 48 * 4,
-            "LOINKPROBE": n_rigid * 4 + n_soft * 4 * CVAE_IPOPT_SHARDS + CVAE_IPOPT_SHARDS,
-            "LOINKPROBE_SVGD": n_rigid * 4 + n_soft * 4 * CVAE_SVGD_SHARDS,
+            "LOINKPROBE": 48 * 4 + CVAE_IPOPT_SHARDS, "LOINKPROBE_SVGD": 48 * 4,
             "LOINKFULL": 48 * 4 * CVAE_IPOPT_SHARDS, "LOINKFULL_SVGD": 48 * 4 * CVAE_SVGD_SHARDS}
     built = {w: stage_LOINK(w) for w in LOINK_STAGES + LOINK_FULL_STAGES}
     for which, items in built.items():
@@ -4627,7 +4627,7 @@ def _loink_selftest():
                              "<solver>_<row>_<cells>_180_<start>")
                 continue
             smoke = which.startswith("LOINKSMOKE")
-            probe = which.startswith("LOINKPROBE") and it["robot"] in LOINK_RIGID
+            probe = which.startswith("LOINKPROBE")
             want_stem = "LOINKSMOKE" if smoke else "LOINK"
             want_cells = str(n_smoke) if smoke else (str(LOINK_PROBE_TARGETS) if probe else "480")
             want_cells_arg = CVAE_SMOKE_CELLS if smoke else (LOINK_PROBE_CELLS if probe else None)
@@ -4657,8 +4657,8 @@ def _loink_selftest():
             if tr != loink_trust_region(it["robot"])[1:]:
                 fails.append(f"{it['id']}: trust region {tr}, expected {loink_trust_region(it['robot'])[1:]}")
 
-    ## The full stages are 384 logical runs; the probe covers each exactly once (rigid: its 60-cell
-    ## probe; soft12: the full row itself, item for item).
+    ## The full stages are 384 logical runs; the probe covers each exactly once, by its 60-cell probe
+    ## (every robot, soft12 included, since 2026-10-24).
     full_runs = {_svgd_flag(it["args"], "--tag") for w in LOINK_FULL_STAGES for it in built[w]}
     if len(full_runs) != 48 * 4 * 2:
         fails.append(f"LOINKFULL(_SVGD): {len(full_runs)} logical runs, expected 384")
@@ -4666,17 +4666,14 @@ def _loink_selftest():
         sfx = "_SVGD" if svgd else ""
         full, probe = built["LOINKFULL" + sfx], built["LOINKPROBE" + sfx]
         probe_tags = {_svgd_flag(it["args"], "--tag") for it in probe}
-        want_tags = {loink_probe_tag(_svgd_flag(it["args"], "--tag")) if it["robot"] in LOINK_RIGID
-                     else _svgd_flag(it["args"], "--tag") for it in full}
-        if probe_tags - {_svgd_flag(it["args"], "--tag") for it in _loink_acceptance()} != want_tags:
+        want_tags = {loink_probe_tag(_svgd_flag(it["args"], "--tag")) for it in full}
+        learned = [it for it in probe if not _svgd_flag(it["args"], "--tag").startswith(
+            f"{LOINK_TAG_PREFIX}_LOINKACC_")]
+        if probe_tags - {_svgd_flag(it["args"], "--tag") for it in _loink_acceptance()} != want_tags \
+                or len(learned) != len(want_tags):
             fails.append(f"LOINKPROBE{sfx}: does not cover every LOINKFULL{sfx} run exactly once")
-        soft_full = render([it for it in full if it["robot"] not in LOINK_RIGID])
-        soft_probe = render([it for it in probe if it["robot"] not in LOINK_RIGID])
-        if soft_full != soft_probe:
-            fails.append(f"LOINKPROBE{sfx}: the soft12 rows are not LOINKFULL{sfx}'s, item for item")
     ## The ext selection rule on a synthetic outcome: one success qualifies a row, zero does not.
-    ipopt_rows = sorted({_svgd_flag(it["args"], "--tag") for it in built["LOINKFULL"]
-                         if it["robot"] in LOINK_RIGID})
+    ipopt_rows = sorted({_svgd_flag(it["args"], "--tag") for it in built["LOINKFULL"]})
     fake = {loink_probe_tag(ipopt_rows[0]): 1, loink_probe_tag(ipopt_rows[1]): 0}
     ext = stage_LOINK("LOINKEXT", outcomes=fake)
     if {_svgd_flag(it["args"], "--tag") for it in ext} != {ipopt_rows[0]} or len(ext) != CVAE_IPOPT_SHARDS:
@@ -4697,16 +4694,16 @@ def _loink_selftest():
         if on_disk is not None and on_disk != render(built[which]):
             fails.append(f"cluster/manifest_stage{which}.txt is stale; regenerate it")
     ## The committed EXT manifests depend on collected results, so they are held to their SHAPE here
-    ## (make_loink_ext.py --check holds them to the results): whole rigid rows of the full stage,
-    ## in its claim order.
+    ## (make_loink_ext.py --check holds them to the results): whole rows of the full stage (any
+    ## robot), in its claim order.
     for which, src in zip(LOINK_EXT_STAGES, LOINK_FULL_STAGES):
         on_disk = disk(which)
         if on_disk is None:
             continue
-        full_lines = render([it for it in built[src] if it["robot"] in LOINK_RIGID])
+        full_lines = render(built[src])
         kept = set(on_disk)
         if on_disk != [l for l in full_lines if l in kept]:
-            fails.append(f"cluster/manifest_stage{which}.txt is not a subsequence of {src}'s rigid rows")
+            fails.append(f"cluster/manifest_stage{which}.txt is not a subsequence of {src}'s rows")
         rows_in = {l.split("|", 1)[0].rsplit("_shard", 1)[0] for l in on_disk}
         whole = [l for l in full_lines if l.split("|", 1)[0].rsplit("_shard", 1)[0] in rows_in]
         if whole != on_disk:
@@ -4731,8 +4728,7 @@ def _loink_selftest():
         items = cvae_exclude_rungs(built[src], specs)
         if on_disk != render(items):
             fails.append(f"cluster/manifest_stage{name}.txt is stale; regenerate it")
-        per_row = 1 if src.startswith("LOINKSMOKE") else \
-            (CVAE_SVGD_SHARDS if src.endswith("_SVGD") else CVAE_IPOPT_SHARDS)
+        per_row = 1                     # smoke and (since 2026-10-24) probe: one unsharded item per row
         n_acc = len(_loink_acceptance()) if src == "LOINKPROBE" else 0
         if len(items) != 6 * 4 * per_row + n_acc:
             fails.append(f"{name}: {len(items)} items, expected {6 * 4 * per_row + n_acc} "
@@ -7663,14 +7659,14 @@ def selftest():
         print(f"FAIL stage LOINK: {msg}")
     fails += len(loink_fails)
     if not loink_fails:
-        print("ok   stages LOINKSMOKE / LOINKSMOKE_SVGD / LOINKPROBE / LOINKPROBE_SVGD: 192 / 192 / 536 / 1296 "
-              "items (48 charts x 4 rows each; probe = 144 rigid 60-cell native + paired items + soft12's "
-              "full rows, 384 / 1152, + the 8-item joint-space acceptance run); every item is its record "
+        print("ok   stages LOINKSMOKE / LOINKSMOKE_SVGD / LOINKPROBE / LOINKPROBE_SVGD: 192 / 192 / 200 / 192 "
+              "items (48 charts x 4 rows each; probe = one unsharded 60-cell native or paired item per row, "
+              "every robot, + the 8-item joint-space acceptance run in LOINKPROBE); every item is its record "
               "twin (PAPER / SVGD_R2 IPOPT, R29 pin4) with only arms, checkpoint, tag (sc_LOINK) and the rule "
               "trust region changed; the probe covers each of LOINKFULL(_SVGD)'s 384 runs once; the ext "
               "rule selects whole rows; chart_runs.txt's 48 loink rows match; committed manifests current "
-              "(LOINKEXT(_SVGD): whole rigid rows of the full stage); the four _soft12P manifests (the "
-              "submitted ones) = the full ones minus exactly the 42 rigid / soft12-A rungs: 24 / 24 / 200 / 576 "
+              "(LOINKEXT(_SVGD): whole rows of the full stage); the four _soft12P manifests (the "
+              "submitted ones) = the full ones minus exactly the 42 rigid / soft12-A rungs: 24 / 24 / 32 / 24 "
               "items, soft12 P charts only (+ the acceptance run in LOINKPROBE_soft12P)")
 
     sr_fails = _screwredo_selftest()

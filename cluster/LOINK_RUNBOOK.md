@@ -10,7 +10,35 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE -- 2026-10-24 17:05 cluster time: smokes and PROBE resubmitted on the re-laddered sidecars.
+## STATE -- 2026-10-24 19:10 cluster time: smokes running; PROBE cancelled, to be resubmitted as 60-cell probes.
+Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'`, then `python3 - < cluster/loink_smoke_check.py` over ssh.
+ 0. Smokes 6025468/69 (IPOPT) and 6025470/72 (SVGD, crc) running since 17:00; 20 of 48 items in
+    at 18:50, 0 flagged, every paired start exact (start_q_error 0.0). Every cell so far is
+    `constraint` at the clock, 0/40 successes, violations 1-125 (urP IPOPT paired runs away:
+    z 42-162, violation 1e3-1e4). Per-item warm-up (`compile_seconds`, the unrolled fixed-count
+    DYS loop under dynamo + graph capture) is 5-14 min on the (25,10) charts and 30 min-1.9 h on
+    mrP/xrP/urP/utP; IPOPT gets 1.5-9 s per iteration, 20-130 iterations per cell.
+ 1. Therefore (Thomas, 2026-10-24: "do whatever you think is best, LOInK is a stretch goal") the
+    queued PROBE jobs 6025498-6025505 were held and `scancel`led before starting (no state dir,
+    no claims). Stage LOINKPROBE is regenerated so soft12 is probed like the rigid arms: one
+    unsharded 60-cell item per chart x task x start (`--cells t:0`), 24 + 8 acceptance IPOPT
+    items and 24 SVGD items instead of 204 + 580 sharded full-row items. LOINKEXT then covers
+    soft12 too (a full row only where a probe solves >= 1 cell). No warm-up code change: not
+    worth a code change on a stretch goal; ~12 slot-hours of compiling is the price.
+ 2. When the smokes leave the queue: run the smoke check (0 flagged expected; a relu paired
+    cell may be `unrepresentable_start` at the recorded 0.05-0.10% rate, report it), then
+    `bash cluster/stage_code.sh` (refuses while jobs run; the staged tree is otherwise d417150's
+    code plus hand-copied `test_job.sh`), then from the laptop
+    `PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKPROBE_soft12P.txt 4` and
+    `DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKPROBE_SVGD_soft12P.txt 4`.
+    Then collect, merge, `scripts/report_loink.py --write` (acceptance IDENTICAL), notes,
+    CLAUDE.md (< 40k), memory.
+ 3. `tests/test_loink_chart.py` ran on the cluster: job 6025996 ALL PASS (47 checks, 636 s on
+    xeon-p8; job 6025515 before it died on a missing PYTHONPATH, fixed in 38fe3cd). Log
+    `~/learned-ik/results/tests/test_loink_chart_6025996.log`.
+
+### Earlier state (2026-10-24 17:05)
+STATE -- 2026-10-24 17:05 cluster time: smokes and PROBE resubmitted on the re-laddered sidecars.
 Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'`, then `python3 - < cluster/loink_smoke_check.py` over ssh.
  0. Re-ladder jobs 6019621-26 all rc=0 by 19:50 on 2026-10-23 (logs and before/after sidecars in
     `~/learned-ik/results/reladder/`). Chosen: mrP (400,50,none) best effort 0.05%; xrP (200,50,none)
