@@ -135,3 +135,44 @@ loink soft12       soft12_loinkurP       --cost=u --activation=relu --recipe=P -
 loink soft12       soft12_loinkurA       --cost=u --activation=relu --recipe=A --batch_size=500  --max_steps=150000
 loink soft12       soft12_loinkutP       --cost=u --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000
 loink soft12       soft12_loinkutA       --cost=u --activation=tanh --recipe=A --batch_size=500  --max_steps=150000
+#
+# ---------------------------------------------------------------- LOInK, single branch (B) --
+# Phase 2 (Thomas 2026-10-24): the rigid arms' charts never fit the task at K = DOF - 6 = 1 because
+# the 7-DoF arms' IK solution sets are several disconnected branches and one bijection carries one
+# connected line per task value (docs/notes-chart.md, "Training outcome (2026-10-23)"). These rows
+# retrain the Panda and iiwa charts on ONE IK branch -- the nominal configuration's, by the analytic
+# classifiers (src/branches.py: Panda gc (1, 2, +1) = wrist B1, shoulder C2, elbow A +1; iiwa GC
+# (+1, -1, +1) = signs of q2, q4, q6) -- where the solution set is one arc parameterised by the
+# redundancy. Datasets `panda_branch` / `iiwa14_branch`: 25M + 15k rejection-sampled onto the branch
+# by scripts/training/build_branch_dataset.py (cluster/build_dataset_job.sh, DATASET_ROBOT=<x>_branch,
+# xeon-p8). The run name is <robot>_loinkB<cost><act><recipe> (B = one branch); the rows carry
+# --dataset_name and --branch=nominal, which train_chart.sh / train_loink.py read; everything else
+# as the rows above. The single-branch arm is a STATED limitation (off-branch paired starts and
+# targets reachable only on another branch are lost by construction). The screw arm has no branch
+# function (no closed form) and gets no row. Submit, as above:
+#   ONLY='_loinkB[mxu][rt]P$' PAIRS=1 bash cluster/submit_chart_train.sh --all <P walltime>   # 12 rows, 6 jobs
+#   ONLY='_loinkB[mxu][rt]A$' PAIRS=1 bash cluster/submit_chart_train.sh --all <A walltime>   # 12 rows, 6 jobs
+loink panda        panda_loinkBmrP  --cost=m --activation=relu --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkBmrA  --cost=m --activation=relu --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkBmtP  --cost=m --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkBmtA  --cost=m --activation=tanh --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkBxrP  --cost=x --activation=relu --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkBxrA  --cost=x --activation=relu --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkBxtP  --cost=x --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkBxtA  --cost=x --activation=tanh --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkBurP  --cost=u --activation=relu --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkBurA  --cost=u --activation=relu --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkButP  --cost=u --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=panda_branch --branch=nominal
+loink panda        panda_loinkButA  --cost=u --activation=tanh --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=panda_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBmrP  --cost=m --activation=relu --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBmrA  --cost=m --activation=relu --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBmtP  --cost=m --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBmtA  --cost=m --activation=tanh --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBxrP  --cost=x --activation=relu --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBxrA  --cost=x --activation=relu --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBxtP  --cost=x --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBxtA  --cost=x --activation=tanh --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBurP  --cost=u --activation=relu --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkBurA  --cost=u --activation=relu --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkButP  --cost=u --activation=tanh --recipe=P --batch_size=4096 --max_steps=620000 --dataset_name=iiwa14_branch --branch=nominal
+loink iiwa14       iiwa14_loinkButA  --cost=u --activation=tanh --recipe=A --batch_size=500  --max_steps=150000 --dataset_name=iiwa14_branch --branch=nominal
