@@ -27,7 +27,31 @@ Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'`; PROBE jobs present mea
     `stage_code.sh` -> the two `_soft12P` PROBE submissions at PROCS=2, SVGD under
     DRAKE_ENV=crc). Smokes at 22:30: IPOPT 24/24 done, SVGD 14/24 done (4 running, 6 queued),
     expected to drain 23:30-01:00. By hand if the log shows an exit code 2-5.
- 3. Next (phase 2, in order): `src/branches.py` + `tests/test_branches.py`;
+ 3. 23:00: phase-2 code is COMMITTED (1636df0 manifests/report, 18fa551 classifiers/datasets/
+    trainer plumbing; both implemented by Opus agents in worktrees, reviewed, local checks pass:
+    tests/test_branches.py ALL PASS, selftest OK, SHARDING OK, the four new test_loink_chart
+    checks pass alone). A second detached chain, `results/_watch/phase2_chain.sh` (log
+    `phase2_chain.log`), waits for "PROBE SUBMITTED" in the first chain's log (the tree is
+    staged then) and runs, unattended: the test job (`TEST=tests/test_loink_chart.py
+    cluster/test_job.sh`, xeon-p8); `DATASET_ROBOT=panda_branch` then `iiwa14_branch`
+    (`cluster/build_dataset_job.sh`, xeon-p8, one at a time, each waited for by its `.DONE`);
+    the training smoke `submit_chart_train.sh --smoke loink panda --cost=m --activation=relu
+    --recipe=P --dataset_name=panda_branch --branch=nominal` (GPU, queues behind PROBE); on its
+    sentinel `rc=0`, `ONLY='_loinkB[mxu][rt]P$' PAIRS=1 ... --all 14:00:00` then the `A$` rows
+    at 05:00:00. Exit codes 2-7 in the script header; by hand from the failed step otherwise.
+    NOT staged (stage_code refuses under PROBE): nothing yet; the reach-ceiling script
+    (scripts/loink_branch_ceiling.py, in progress) will be scp'd like test_job.sh was.
+ 4. Then by hand: poll `bash cluster/submit_chart_train.sh --status` every ~2 h; KILL any run
+    whose status.json learning_rate < 1e-6 before 1/3 of its budget (`scancel`, keep last.ckpt,
+    record "recipe A: LR collapsed" in report_loink.REASON and here). After the runs: read the
+    screens (results/screen_loink/*loinkB*.json: (a) task error, (b)/(d)/(f) gates, (g)
+    off-branch), copy the 24 sidecars to the laptop's models/, then `stage_code.sh` (once no
+    job runs) and `PROCS=2 bash cluster/submit_bench.sh manifest_stageLOINKSMOKE_branch.txt 4`
+    + `DRAKE_ENV=crc ... manifest_stageLOINKSMOKE_SVGD_branch.txt 4`; smoke check with
+    `LOINK_SMOKE_ROBOTS=panda,iiwa LOINK_SMOKE_MATCH=_loinkB LOINK_SMOKE_EXPECTED=192
+    LOINK_SMOKE_OFF_BRANCH_OK=1 python3 -`; then the `_branch` PROBE manifests, make_loink_ext,
+    EXT, collect, merge, `report_loink.py --write`, notes, CLAUDE.md, memory.
+ 5. Phase-2 plan as approved (kept for reference): `src/branches.py` + `tests/test_branches.py`;
     `scripts/training/build_branch_dataset.py` + the `*_branch` case of
     `cluster/build_dataset_job.sh` (submit panda_branch, then iiwa14_branch, xeon-p8 4 h);
     `--dataset_name` / `--branch` through train_loink / export_loink / screen_loink /
