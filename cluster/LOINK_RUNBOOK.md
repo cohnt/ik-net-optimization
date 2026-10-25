@@ -10,6 +10,31 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
+## STATE -- 2026-10-24 22:30 cluster time: PROBE cut to 20 cells; single-branch retrain approved (phase 2).
+Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'`; PROBE jobs present means the watcher ran.
+ 0. Thomas (22:00): LOInK phase 2 = retrain the Panda and iiwa charts on ONE IK branch (the nominal
+    configuration's: Panda gc (1, 2, +1), iiwa GC (+1, -1, +1)), 12 charts per robot, collapsed
+    runs killed (lr < 1e-6 before 1/3 of the budget), datasets rebuilt on the branch by rejection
+    sampling on xeon-p8 (never locally), the soft12 PROBE cut to 20 cells. Plan:
+    `~/.claude/plans/it-s-time-to-handle-sunny-rainbow.md`; labels `loinkB<cost><act><recipe>`,
+    datasets `panda_branch` / `iiwa14_branch`. Screw rows stay "chart does not fit (K = 1)".
+ 1. `LOINK_PROBE_TARGETS = 20` (gen_manifest; report_loink and make_loink_ext read it). PROBE and
+    `_soft12P` manifests regenerated (tags `..._20_180_<start>`; 200 / 192 / 32 / 24 items), EXT
+    manifests rewritten (empty), selftest OK, `make_loink_ext.py --check` rc 0, SHARDING OK.
+ 2. The 19:30 watcher DIED (the session scratchpad was wiped at 22:11 by a context compaction);
+    a new one runs from `results/_watch/probe_chain.sh` (log `results/_watch/probe_chain.log`,
+    gitignored, detached with setsid): same chain as item 2 of the 19:10 state (smoke check ->
+    `stage_code.sh` -> the two `_soft12P` PROBE submissions at PROCS=2, SVGD under
+    DRAKE_ENV=crc). Smokes at 22:30: IPOPT 24/24 done, SVGD 14/24 done (4 running, 6 queued),
+    expected to drain 23:30-01:00. By hand if the log shows an exit code 2-5.
+ 3. Next (phase 2, in order): `src/branches.py` + `tests/test_branches.py`;
+    `scripts/training/build_branch_dataset.py` + the `*_branch` case of
+    `cluster/build_dataset_job.sh` (submit panda_branch, then iiwa14_branch, xeon-p8 4 h);
+    `--dataset_name` / `--branch` through train_loink / export_loink / screen_loink /
+    train_chart.sh; 24 chart_runs rows; LOINK_BRANCH_* rungs, `_branch` manifests, report block;
+    training smoke; the 24 runs (`ONLY='_loinkB[mxu][rt]P$'` then `A$`, PAIRS=1) queued behind
+    PROBE; kill rule polled every ~2 h; screens; LOINKSMOKE_branch -> LOINKPROBE_branch -> EXT.
+
 ## STATE -- 2026-10-24 19:10 cluster time: smokes running; PROBE cancelled, to be resubmitted as 60-cell probes.
 Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'`, then `python3 - < cluster/loink_smoke_check.py` over ssh.
  0. Smokes 6025468/69 (IPOPT) and 6025470/72 (SVGD, crc) running since 17:00; 20 of 48 items in

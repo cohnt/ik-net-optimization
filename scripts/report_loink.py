@@ -8,7 +8,8 @@ swapped (square bi-Lipschitz G, K = DOF - 6, trust region round(sqrt(K) + 1.5, 2
 steps) / A (batch 500, 150000 steps). Joint space is not re-run: every LOInK cell pairs with the
 record's flow and joint-space cells on the same (target, guess), and this script REFUSES the pairing
 unless each LOInK run carries the record run's `grid_hash`, `scene_fingerprint` and 180 s cap, the
-chart named by its tag in its `checkpoint`, and covers the record row's cells (or a probe's 60).
+chart named by its tag in its `checkpoint`, and covers the record row's cells (or a probe's
+`LOINK_PROBE_TARGETS`, 20 since 2026-10-24).
 
 Rows are the 16 record rows (robot x task x start); one block per solver (IPOPT, AL-SVGD) and, inside
 it, one block per recipe (P, A) of six charts between the record's columns:
@@ -31,9 +32,9 @@ Diagnostics, per chart x row (success-of-480 cells = all cells of the run):
               budget carries no verdict, flagged VOID).
 
 A run not yet collected prints `not yet measured`, a cancelled rung (LOINK_EXCLUDED_RUNGS) its reason
-(`chart does not fit (K = 1)` on the rigid arms, `recipe A: LR collapsed` on soft12 A); the record's columns print regardless. `x/60` = the
-60-cell probe (guess 0 of every target; stage LOINKPROBE), shown where the row has no full run; every
-pairing, cost and median against it reads the other column on those 60 cells. A full run (LOINKEXT)
+(`chart does not fit (K = 1)` on the rigid arms, `recipe A: LR collapsed` on soft12 A); the record's columns print regardless. `x/20` = the
+20-cell probe (guess 0 of the first 20 targets; stage LOINKPROBE), shown where the row has no full run; every
+pairing, cost and median against it reads the other column on those 20 cells. A full run (LOINKEXT)
 replaces its probe. Tags: `sc_LOINK_<robot>_<label>_<solver>_<row>_<cells>_180_<start>`; smokes
 (`sc_LOINKSMOKE_`) are never read. The acceptance run `sc_LOINKACC_` (joint space after the chart
 refactor) is compared cell for cell with the record's joint-space arm.
@@ -60,7 +61,7 @@ from report_statusquo import (BUDGET_CELLS, CELLS, MIN_COST_CELLS, STATUS_QUO_RO
                               budget_bound, by_cell, clock_bound, load,
                               load_record, load_svgd_record, mcnemar, median, parse_tag)
 from gen_manifest import (CVAE_ACCEPT, CVAE_MODEL_DIR, LOINK_EXCLUDED_RUNGS, LOINK_LABELS,  # noqa: E402
-                          LOINK_RECIPES, SCREWREDO_RUNG)
+                          LOINK_PROBE_TARGETS, LOINK_RECIPES, SCREWREDO_RUNG)
 
 DEFAULT_OUT = "docs/loink-tables.md"
 ROBOTS = ("panda", "iiwa", "screw7_p050", "soft12")
@@ -68,7 +69,7 @@ ROBOT_NAME = {"panda": "Panda", "iiwa": "iiwa", "screw7_p050": "screw", "soft12"
 TASK_NAME = {"mugshelf": "grasp", "posetip": "pose"}
 SOLVERS = (("ipopt", "IPOPT (interior point)"), ("svgd", "AL-SVGD (V4 pin)"))
 STEM = "sc_LOINK_"
-PROBE_TARGETS = 60
+PROBE_TARGETS = LOINK_PROBE_TARGETS  # 20 since 2026-10-24 22:30 (60 before; gen_manifest header)
 PROBE_CELLS = {(t, 0) for t in range(PROBE_TARGETS)}
 RUNAWAY_Q = 1e3
 TRUST_TOL = 1e-6
@@ -340,8 +341,8 @@ def tables(data, recipes):
        "are the record row's and its checkpoint is the chart its tag names. "
        f"`{NYM}` = no merged chart run collected. `chart does not fit (K = 1)` (every Panda, iiwa and screw "
        "chart) and `recipe A: LR collapsed` (soft PCS recipe A) mark the 42 rungs cancelled after their training "
-       "wave, never to be measured; mechanism in `docs/notes-chart.md`, \"Training outcome (2026-10-23)\". `x/60` = the 60-cell PROBE (guess 0 of every target), shown where "
-       "the row has no full run; its pairings, costs and medians are over those 60 cells only. McNemar cells: "
+       f"wave, never to be measured; mechanism in `docs/notes-chart.md`, \"Training outcome (2026-10-23)\". `x/{PROBE_TARGETS}` = the {PROBE_TARGETS}-cell PROBE (guess 0 of the first {PROBE_TARGETS} targets), shown where "
+       f"the row has no full run; its pairings, costs and medians are over those {PROBE_TARGETS} cells only. McNemar cells: "
        "`chart-only / other-only, p` on the discordant cells (exact two-sided). Cost cells: `median per-cell ratio "
        f"chart / other [95% bootstrap CI over targets, {BOOT} resamples] (n shared cells)`, on cells both arms of "
        f"the pair solved, `--` under {MIN_COST_CELLS}; the reported cost, learned-only regularisers excluded. "

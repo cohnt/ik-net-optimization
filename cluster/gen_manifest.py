@@ -4347,18 +4347,21 @@ def _cvae_selftest():
 ## is exact, so a paired start is a real solve here, not an instant `unrepresentable_start`.
 ##   LOINKSMOKE(_SVGD)  every logical run at CVAE_SMOKE_CELLS, one item each, stem `LOINKSMOKE`;
 ##   LOINKPROBE(_SVGD)  every robot (Panda, iiwa, screw, soft12): every chart x task x start as ONE
-##                      unsharded 60-cell item, guess 0 of every target (`--cells t:0`), tag
-##                      `..._60_180_<start>`; LOINKPROBE also carries the joint-space ACCEPTANCE run
+##                      unsharded LOINK_PROBE_TARGETS-cell item, guess 0 of every target (`--cells
+##                      t:0`), tag `..._<cells>_180_<start>`; LOINKPROBE also carries the joint-space ACCEPTANCE run
 ##                      (CVAE_ACCEPT's row, claimed first, stem `LOINKACC`, still 8 shards).
 ##                      Until 2026-10-24 soft12 got its full 480-cell rows here, sharded as stage CVAE
 ##                      (8 IPOPT / 24 AL-SVGD). Changed 2026-10-24: the re-laddered decode budgets make
 ##                      per-item warm-up 5 min to 1.9 h, and no soft12 chart fits the task (smokes 0/40,
 ##                      every cell `constraint` at the clock), so 784 sharded full-row items would
-##                      spend days mostly compiling; a 60-cell probe is all a row needs, and LOINKEXT
-##                      runs a full row only where a probe solves >= 1 cell;
+##                      spend days mostly compiling; a probe is all a row needs, and LOINKEXT
+##                      runs a full row only where a probe solves >= 1 cell. Cut from 60 to 20
+##                      cells 2026-10-24 22:30 (Thomas): with the smokes at 0/40 a 60-cell probe is
+##                      mostly confirmation, and 20 keeps the per-target read at a third of the
+##                      node-hours, freeing the GPU nodes for the single-branch retrain;
 ##   LOINKEXT(_SVGD)    the full 480-cell rows (sharded as stage CVAE, items byte-identical to the
-##                      would-be full stage's, so the probe's 60 cells are re-solved inside them) of
-##                      every chart x row (any robot) whose 60-cell probe solved >= 1 cell. Written by
+##                      would-be full stage's, so the probe's cells are re-solved inside them) of
+##                      every chart x row (any robot) whose probe solved >= 1 cell. Written by
 ##                      cluster/make_loink_ext.py from the collected probe summaries (`--check`); the
 ##                      selftest holds the committed ones to being whole rows of the full stage.
 ## Probe and full rows share the stem `LOINK`; the cells token (60 / 480) tells them apart. No
@@ -4383,7 +4386,8 @@ LOINK_RUNGS = tuple(
     for robot, rung, seed in SVGD_RECORD_CONTEXTS for d in [CVAE_MODEL_DIR[robot]]
     for label in LOINK_LABELS)
 LOINK_RIGID = ("panda", "iiwa", SCREW_PRIMARY)
-LOINK_PROBE_TARGETS = 60
+#: Cells per probe item (guess 0 of the first N targets); 60 until 2026-10-24 22:30, 20 since (header).
+LOINK_PROBE_TARGETS = 20
 LOINK_PROBE_CELLS = ",".join(f"{t}:0" for t in range(LOINK_PROBE_TARGETS))
 LOINK_ACCEPT = CVAE_ACCEPT
 LOINK_TAG_PREFIX = "sc"
@@ -4480,7 +4484,7 @@ def _loink_results_roots():
 
 def loink_probe_outcomes(roots=None):
     """probe tag -> successes (learned `feasible` cells), for every COLLECTED 60-cell probe (any robot):
-    an unsharded `sc_LOINK_*_60_180_*` summary holding all 60 learned records."""
+    an unsharded `sc_LOINK_*_<LOINK_PROBE_TARGETS>_180_*` summary holding every learned record."""
     import glob
     import json
     out = {}
