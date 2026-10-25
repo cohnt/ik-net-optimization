@@ -50,6 +50,16 @@ sidecar keeps the checkpoint's settings).
     python scripts/training/export_loink.py <run_dir>/checkpoints/last.ckpt
     python scripts/training/export_loink.py <ckpt> --out models/panda/<name>.pkl [--n_dys 50] [--n_newton 4] [--newton_damping backtrack]
 
+Single-branch charts (LOInK phase 2, Thomas 2026-10-24; `train_loink.py --branch nominal`):
+the checkpoint's `branch` (the signs, `src/branches.py`) and `dataset_name` ride into the
+sidecar as record-only fields, the label gains a `B` (`loinkB<cost><act><recipe>`), and the
+gate's configurations are rejection-sampled ONTO the branch -- the chart is only asked to
+represent its own branch, so a real latent off it is no export failure. What the paired
+protocol will meet off the branch is measured beside the gate, never gating:
+`offbranch_latent_fail_fraction` (off-branch q whose round trip `G(decode(G(q)))` is not exact,
+the real draw's test) and `offbranch_z_median` / `offbranch_z_p95` (`|G_2(q)|_inf` there),
+per full-sample ladder row in `inverse_ladder` and for the choice at the sidecar's top level.
+
 `--untrained` writes a randomly initialised chart in the same contract instead, for local
 end-to-end plumbing (every model fit is a cluster job): `<robot>__loink<cost><act>P__untrained`
 by default, sidecar provenance `untrained: true`, `j_mean = 0`, `j_std = 1` (no data),
@@ -63,7 +73,8 @@ same ladder. It says nothing about solve quality.
 `LoadLoinkChart` does, runs the same ladder (or, given `--n_dys` / `--n_newton` /
 `--newton_damping`, one round trip at those, the rest from the sidecar), and rewrites only the
 sidecar's inverse fields (`n_dys`, `n_newton`, `newton_damping`, `n_dys_source`,
-`inverse_ladder`, `real_latent_fail_fraction`) plus a `provenance.reladder` note (commit,
+`inverse_ladder`, `real_latent_fail_fraction`, and on a single-branch chart the `offbranch_*`
+report) plus a `provenance.reladder` note (commit,
 date, the triple it `replaced`); the weights, the rest of
 the provenance and every other field are left as written. If the ladder or round trip fails,
 the sidecar is restored byte for byte and the exporter exits non-zero.
@@ -88,6 +99,7 @@ from export_ckpt_to_pkl import _provenance_commit  # noqa: E402
 from src.charts.loink import (  # noqa: E402
     ACTIVATIONS, ARCH_FIELDS, COSTS, DEFAULT_ARCH, NEWTON_DAMPINGS, STEP_SIZES, TASK_DIM,
     BuildLoinkModel, LoadLoinkChart, ReadLoinkArch, WriteLoinkArch)
+from src.branches import BranchString, OnBranch  # noqa: E402
 from src.flow_loading import SidecarPath  # noqa: E402
 
 PREFIX = "model."
@@ -160,18 +172,24 @@ def CappedLadders(n_dys_max=None, n_newton_max=None):
     return ladders
 
 
-def RungLabel(cost, activation, recipe):
-    """`loink<cost><act><recipe>`, act the activation's initial: cluster/chart_runs.txt's labels."""
-    return f"loink{cost}{activation[0]}{recipe}"
+def RungLabel(cost, activation, recipe, branch=None):
+    """`loink<cost><act><recipe>`, act the activation's initial: cluster/chart_runs.txt's labels.
+    A single-branch chart (`branch` not None, 2026-10-24) is `loinkB<cost><act><recipe>`, the
+    label `cluster/train_chart.sh` derives from its run name `<robot>_loinkB...`."""
+    return f"loink{'B' if branch is not None else ''}{cost}{activation[0]}{recipe}"
 
 
-def DefaultOutPath(robot_name, cost, activation, recipe, step):
+def DefaultOutPath(robot_name, cost, activation, recipe, step, branch=None):
     return os.path.join(REPO, "models", robot_name,
-                        f"{robot_name}__{RungLabel(cost, activation, recipe)}__step{step}.pkl")
+                        f"{robot_name}__{RungLabel(cost, activation, recipe, branch)}__step{step}.pkl")
 
 
 def ArchFromHparams(hp, n_dys=None, n_newton=None, newton_damping=None):
+    """The sidecar's fields from a checkpoint's hyperparameters. `branch` and `dataset_name`
+    are record-only (`src.charts.loink.RECORD_FIELDS`, 2026-10-24): a checkpoint that predates
+    them trained on the robot's own unrestricted dataset."""
     ndof = int(hp["ndof"])
+    branch = hp.get("branch")
     return {"ndof": ndof, "task_dim": TASK_DIM, "dim_latent_space": ndof - TASK_DIM,
             "units": [int(u) for u in hp["units"]], "depth": int(hp["depth"]),
             "mu": float(hp["mu"]), "activation": hp["activation"], "cost": hp["cost"],
@@ -182,7 +200,9 @@ def ArchFromHparams(hp, n_dys=None, n_newton=None, newton_damping=None):
             "n_newton": int(hp["n_newton"] if n_newton is None else n_newton),
             "newton_damping": (hp.get("newton_damping", "none") if newton_damping is None
                                else newton_damping),
-            "robot_name": hp["robot_name"]}
+            "robot_name": hp["robot_name"],
+            "branch": None if branch is None else [int(v) for v in branch],
+            "dataset_name": hp.get("dataset_name") or hp["robot_name"]}
 
 
 def export(ckpt_path, out_path=None, n_dys=None, n_newton=None, newton_damping=None):
@@ -191,7 +211,7 @@ def export(ckpt_path, out_path=None, n_dys=None, n_newton=None, newton_damping=N
     arch = ArchFromHparams(hp, n_dys, n_newton, newton_damping)
     step = int(ckpt.get("global_step", -1))
     out_path = out_path or DefaultOutPath(arch["robot_name"], arch["cost"], arch["activation"],
-                                          hp["recipe"], step)
+                                          hp["recipe"], step, arch["branch"])
 
     state_dict = {k[len(PREFIX):]: v.detach().cpu() for k, v in ckpt["state_dict"].items()
                   if k.startswith(PREFIX)}
@@ -214,12 +234,71 @@ def export(ckpt_path, out_path=None, n_dys=None, n_newton=None, newton_damping=N
                       and newton_damping is None else EXPLICIT_SOURCE)),
         provenance={"source_checkpoint": os.path.abspath(ckpt_path), "global_step": step,
                     **_provenance_commit()})
-    print(f"wrote {sidecar}  ({', '.join(f'{k}={arch[k]}' for k in ARCH_FIELDS)})")
+    print(f"wrote {sidecar}  ({', '.join(f'{k}={arch[k]}' for k in ARCH_FIELDS)}; branch "
+          f"{BranchString(arch['branch'])}, dataset {arch['dataset_name']})")
     return out_path, arch, hp, state_dict
 
 
+#: Rejection rounds `GateConfigurations` allows before giving up on a branch (each round draws
+#: `n` candidates; the rigid arms' nominal branches accept ~1/8 to ~1/4).
+MAX_REJECTION_ROUNDS = 1000
+
+#: The report-only off-branch measurement's keys (module docstring).
+OFFBRANCH_KEYS = ("offbranch_latent_fail_fraction", "offbranch_z_median", "offbranch_z_p95",
+                  "offbranch_samples")
+
+
+def GateConfigurations(robot_name, lo, hi, n, g, branch=None):
+    """The gate's `n` configurations, uniform in the joint box `[lo, hi]` from generator `g`;
+    with a `branch` (2026-10-24), rejection-sampled onto it: candidates are drawn `n` at a time
+    from the same generator until `n` lie on the branch (and `n` off it). Returns `(q, q_off)`,
+    `q_off` the first `n` OFF-branch candidates of those draws (None without a branch), the
+    report-only off-branch measurement's configurations."""
+    def draw():
+        return lo + (hi - lo) * torch.rand((n, lo.shape[0]), generator=g, dtype=torch.float64,
+                                           device="cpu")
+    if branch is None:
+        return draw(), None
+    on_rows, off_rows, n_on, n_off = [], [], 0, 0
+    for _ in range(MAX_REJECTION_ROUNDS):
+        cand = draw()
+        on = torch.from_numpy(OnBranch(robot_name, cand.numpy(), branch))
+        on_rows.append(cand[on])
+        off_rows.append(cand[~on])
+        n_on += int(on.sum())
+        n_off += int((~on).sum())
+        if n_on >= n and n_off >= n:
+            return torch.cat(on_rows)[:n], torch.cat(off_rows)[:n]
+    raise RuntimeError(f"{robot_name}: fewer than {n} configurations on (and off) branch "
+                       f"{BranchString(branch)} in {MAX_REJECTION_ROUNDS} x {n} uniform draws")
+
+
+def OffBranchReport(reference, q_off, real_tol=INVERSE_TOL):
+    """`OFFBRANCH_KEYS` of a single-branch chart on off-branch configurations `q_off` (float64,
+    report only, 2026-10-24): the paired start hands the decode `G(q_init)`, and off its branch
+    the chart was never trained to represent q. The failing fraction is the real draw's test
+    (`|G(decode(G(q))) - G(q)|_inf` not below `real_tol`, non-finite failing)."""
+    with torch.no_grad():
+        y, z = reference.forward_G(q_off)
+        q_dec = reference.decode(y, z)
+        res = (reference.G(q_dec / reference.scale) - torch.cat([y, z], dim=1)).abs().amax(dim=1)
+    z_inf = z.abs().amax(dim=1)
+    return {"offbranch_latent_fail_fraction": (~(res < real_tol)).double().mean().item(),
+            "offbranch_z_median": z_inf.median().item(),
+            "offbranch_z_p95": torch.quantile(z_inf, 0.95).item(),
+            "offbranch_samples": int(q_off.shape[0])}
+
+
+def _offbranch_text(report):
+    if not report:
+        return ""
+    return (f"; off branch ({report['offbranch_samples']} q, report only): failing "
+            f"{100 * report['offbranch_latent_fail_fraction']:.2f}%, |z|_inf median "
+            f"{report['offbranch_z_median']:.3g}, p95 {report['offbranch_z_p95']:.3g}")
+
+
 def roundtrip_residuals(out_path, arch, hp, state_dict, n=ROUNDTRIP_SAMPLES, seed=0,
-                        n_eval=None, real_tol=INVERSE_TOL):
+                        n_eval=None, real_tol=INVERSE_TOL, offbranch=None):
     """Reload through the programs' loader; compare its decode with the checkpoint's model and
     measure the inverse, float64, on the inputs the program hands the decode: the chart's own
     task estimate `y = G_1(q)` (the raw `c6`) at configurations `q` uniform inside the limits,
@@ -236,7 +315,14 @@ def roundtrip_residuals(out_path, arch, hp, state_dict, n=ROUNDTRIP_SAMPLES, see
     `per_draw` the inverse residual's maximum on each, `{draw: max}` in `LATENT_DRAWS` order,
     and `real_fail` the fraction of the `n_eval` real-draw samples whose residual is NOT below
     `real_tol` (a non-finite one counts as failing; `real_tol` is `roundtrip_ladder`'s test
-    hook)."""
+    hook).
+
+    A single-branch chart (its sidecar names a `branch`, read off the loaded chart; 2026-10-24):
+    the configurations are rejection-sampled onto the branch (`GateConfigurations`: the same
+    generator, still drawn before the latents, so a prefix is still a prefix). If `offbranch`
+    is a dict it is filled with the report-only `OFFBRANCH_KEYS` (`OffBranchReport`) on the
+    first `n_eval` OFF-branch candidates, decoded as their own batch so nothing above changes;
+    it is left empty for an unrestricted chart."""
     n_eval = n if n_eval is None else int(n_eval)
     assert 0 < n_eval <= n, (n_eval, n)
     chart = LoadLoinkChart(arch["robot_name"], out_path)
@@ -250,8 +336,7 @@ def roundtrip_residuals(out_path, arch, hp, state_dict, n=ROUNDTRIP_SAMPLES, see
     lo, hi = (torch.tensor(v, dtype=torch.float64, device="cpu")
               for v in zip(*chart.robot.actuated_joints_limits))
     k = arch["dim_latent_space"]
-    q = lo + (hi - lo) * torch.rand((n, arch["ndof"]), generator=g, dtype=torch.float64,
-                                    device="cpu")
+    q, q_off = GateConfigurations(arch["robot_name"], lo, hi, n, g, chart.branch)
     z_prior = torch.randn((n, k), generator=g, dtype=torch.float64, device="cpu")
     z_box = LATENT_BOX * (2 * torch.rand((n, k), generator=g, dtype=torch.float64,
                                          device="cpu") - 1)
@@ -271,6 +356,8 @@ def roundtrip_residuals(out_path, arch, hp, state_dict, n=ROUNDTRIP_SAMPLES, see
     by_draw = dict(zip(LATENT_DRAWS, inv_res.split(n_eval)))
     per_draw = {name: r.max().item() for name, r in by_draw.items()}
     real_fail = (~(by_draw["real"] < real_tol)).double().mean().item()
+    if offbranch is not None and q_off is not None:
+        offbranch.update(OffBranchReport(reference, q_off[:n_eval], real_tol))
     return finite, err, inv_res.max().item(), per_draw, real_fail
 
 
@@ -297,7 +384,9 @@ def _settings(arch):
 def roundtrip(out_path, arch, hp, state_dict, n=ROUNDTRIP_SAMPLES, seed=0):
     """`roundtrip_residuals` at the sidecar's settings on all `n` samples (each at every
     latent draw), asserting both gates. Returns the per-draw residual maxima."""
-    finite, err, res, per_draw, _ = roundtrip_residuals(out_path, arch, hp, state_dict, n, seed)
+    off = {}
+    finite, err, res, per_draw, _ = roundtrip_residuals(out_path, arch, hp, state_dict, n, seed,
+                                                        offbranch=off)
     assert finite, "non-finite decode"
     assert err <= DECODE_TOL, f"exported decode differs from the checkpoint's by {err:.3e}"
     assert res < INVERSE_TOL, (f"|G(decode(w)) - w| = {res:.3e} >= {INVERSE_TOL:g} at "
@@ -305,7 +394,7 @@ def roundtrip(out_path, arch, hp, state_dict, n=ROUNDTRIP_SAMPLES, seed=0):
                                "inverse is not exact (screen_loink.py (b) recommends an n_dys)")
     print(f"roundtrip OK through LoadLoinkChart: max |dq| = {err:.2e}, max |G(decode(w)) - w| "
           f"= {res:.2e} ({_by_draw(per_draw)}) over {n} samples x {len(LATENT_DRAWS)} latent "
-          "draws")
+          f"draws{_offbranch_text(off)}")
     return per_draw
 
 
@@ -380,17 +469,23 @@ def roundtrip_ladder(out_path, arch, hp, state_dict, n_dys_ladder=N_DYS_LADDER,
     order = LadderOrder(n_dys_ladder, n_newton_ladder, ndof, damping_ladder)
     stages = [m for m in (min(int(n_prefix), n), n) if m > 0]
     stages = sorted(set(stages))
-    tried, rows = [], []
+    ## `offs[i]` is `tried[i]`'s report-only off-branch measurement (a single-branch chart's,
+    ## on full-sample stages only; empty otherwise), kept beside `tried` so its tuple layout
+    ## stays as documented (2026-10-24).
+    tried, rows, offs = [], [], []
 
     def finish(t, source):
         n_dys, n_newton, damping, cost = t[:4]
         record = [{"n_dys": d, "n_newton": nn, "newton_damping": dm, "cost": c,
                    "samples": ns, "finite": f, "max_dq": e, "max_inverse_residual": r,
                    "max_inverse_residual_by_draw": pd, "real_fail_fraction": rf,
-                   "passes_prior_box": pb, "passes": p}
-                  for d, nn, dm, c, ns, f, e, r, pd, rf, pb, p in tried]
-        _set_sidecar_inverse(out_path, n_dys, n_newton, damping, source, inverse_ladder=record,
-                             real_latent_fail_fraction=t[9])
+                   "passes_prior_box": pb, "passes": p, **off}
+                  for (d, nn, dm, c, ns, f, e, r, pd, rf, pb, p), off in zip(tried, offs)]
+        off_chosen = next(off for row, off in zip(tried, offs) if row is t)
+        _set_sidecar_inverse(out_path, n_dys, n_newton, damping, source, drop=OFFBRANCH_KEYS,
+                             inverse_ladder=record, real_latent_fail_fraction=t[9], **off_chosen)
+        if off_chosen:
+            print(f"ladder choice{_offbranch_text(off_chosen)}", flush=True)
         best_effort = source == BEST_EFFORT_SOURCE
         print(f"ladder CHOSEN n_dys {n_dys}, n_newton {n_newton}, newton_damping {damping} "
               f"(cost {cost}; " + (
@@ -407,8 +502,10 @@ def roundtrip_ladder(out_path, arch, hp, state_dict, n_dys_ladder=N_DYS_LADDER,
         rung = dict(arch, n_dys=n_dys, n_newton=n_newton, newton_damping=damping)
         _set_sidecar_inverse(out_path, n_dys, n_newton, damping, LADDER_SOURCE)
         for m in stages:
+            off = {}
             finite, err, res, per_draw, real_fail = roundtrip_residuals(
-                out_path, rung, hp, state_dict, n, seed, n_eval=m, real_tol=real_tol)
+                out_path, rung, hp, state_dict, n, seed, n_eval=m, real_tol=real_tol,
+                offbranch=off if m == n else None)
             hard = _passes_prior_box(finite, err, per_draw)
             if not hard:
                 break
@@ -416,9 +513,11 @@ def roundtrip_ladder(out_path, arch, hp, state_dict, n_dys_ladder=N_DYS_LADDER,
         cost = InverseCost(n_dys, n_newton, ndof, damping)
         tried.append((n_dys, n_newton, damping, cost, m, finite, err, res, per_draw, real_fail,
                       hard, ok))
+        offs.append(off)
         rows.append(f"n_dys {n_dys:5d}, n_newton {n_newton:3d}, {damping:9s} (cost {cost:5d}), "
                     f"{m:4d} samples: max |dq| = {err:.2e}, max |G(decode(w)) - w| = {res:.2e}"
-                    f" ({_by_draw(per_draw)}; real failing {100 * real_fail:.2f}%)"
+                    f" ({_by_draw(per_draw)}; real failing {100 * real_fail:.2f}%"
+                    f"{_offbranch_text(off)})"
                     f"{'' if finite else ' (non-finite)'} -> "
                     f"{'PASS' if ok else 'prior+box only' if hard and m == n else 'fail'}")
         print(f"ladder {rows[-1]}", flush=True)
@@ -433,7 +532,7 @@ def roundtrip_ladder(out_path, arch, hp, state_dict, n_dys_ladder=N_DYS_LADDER,
                          "training default (no export ladder triple of n_dys "
                          f"{list(n_dys_ladder)} x n_newton {list(n_newton_ladder)} x "
                          f"newton_damping {list(damping_ladder)} passed)",
-                         drop=("inverse_ladder", "real_latent_fail_fraction"))
+                         drop=("inverse_ladder", "real_latent_fail_fraction") + OFFBRANCH_KEYS)
     raise AssertionError(
         f"no (n_dys, n_newton, newton_damping) in {list(n_dys_ladder)} x {list(n_newton_ladder)}"
         f" x {list(damping_ladder)} passes the round trip's hard gates (decode <= "
@@ -474,7 +573,7 @@ def reladder(pkl_path, n_dys=None, n_newton=None, newton_damping=None, **ladder)
                           newton_damping=old[2] if newton_damping is None else newton_damping)
             _set_sidecar_inverse(pkl_path, chosen["n_dys"], chosen["n_newton"],
                                  chosen["newton_damping"], EXPLICIT_SOURCE,
-                                 drop=("inverse_ladder", "real_latent_fail_fraction"))
+                                 drop=("inverse_ladder", "real_latent_fail_fraction") + OFFBRANCH_KEYS)
             roundtrip(pkl_path, chosen, hp, state_dict)
         else:
             chosen, _ = roundtrip_ladder(pkl_path, arch, hp, state_dict, **ladder)
@@ -497,12 +596,17 @@ def reladder(pkl_path, n_dys=None, n_newton=None, newton_damping=None, **ladder)
 
 
 def write_untrained(robot_name, cost, activation, out_path=None, seed=0, recipe="P",
-                    n_dys=None, n_newton=None, newton_damping=None):
-    """A randomly initialised chart in the export contract's own format."""
+                    n_dys=None, n_newton=None, newton_damping=None, branch=None):
+    """A randomly initialised chart in the export contract's own format. `branch` ("nominal" or
+    three signs, 2026-10-24) makes it a single-branch chart's (`loinkB...` label, the record-only
+    `branch` / `dataset_name` = `src.branches.BRANCH_DATASET[robot]`), for local plumbing."""
     from jrl.robots import get_robot
 
+    from src.branches import BRANCH_DATASET, ResolveBranch
     from src.charts.cvae import JointScale
 
+    if branch is not None:
+        branch = [int(v) for v in ResolveBranch(robot_name, branch)]
     robot = get_robot(robot_name)
     scale = JointScale(robot)
     ndof = int(robot.ndof)
@@ -516,11 +620,13 @@ def write_untrained(robot_name, cost, activation, out_path=None, seed=0, recipe=
             "newton_damping": (DEFAULT_ARCH["newton_damping"] if newton_damping is None
                                else newton_damping),
             "robot_name": robot_name}
+    if branch is not None:
+        arch.update(branch=branch, dataset_name=BRANCH_DATASET[robot_name])
     torch.manual_seed(seed)
     model = BuildLoinkModel(arch, scale)
     out_path = out_path or os.path.join(
         REPO, "models", robot_name,
-        f"{robot_name}__{RungLabel(cost, activation, recipe)}__untrained.pkl")
+        f"{robot_name}__{RungLabel(cost, activation, recipe, branch)}__untrained.pkl")
     state_dict = {name: v.detach().cpu() for name, v in model.state_dict().items()}
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "wb") as f:

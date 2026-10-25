@@ -11,6 +11,7 @@
 #   bash cluster/submit_chart_train.sh --status              # every row's step, plus this tree's queue
 #   bash cluster/submit_chart_train.sh --smoke cvae <robot> <K>            # 200 steps, one GPU, export+screen in RUN_DIR
 #   bash cluster/submit_chart_train.sh --smoke loink <robot> --cost=<c> --activation=<a> --recipe=<R>
+#       [--dataset_name=<robot>_branch --branch=nominal]                    # the single-branch rows' smoke
 #   bash cluster/submit_chart_train.sh --pair <run_a> <run_b> [walltime]   # two rows, ONE 2-GPU job
 #   PAIRS=1 bash cluster/submit_chart_train.sh --all [walltime]           # every row, two per job
 #   ONLY='<regex>' [PAIRS=1] bash cluster/submit_chart_train.sh --all [walltime]  # rows whose run name matches
@@ -304,20 +305,32 @@ SMOKE_EXTRA="--checkpoint_every=100 --eval_every=100 --val_set_size=20 --disable
 ## (all three required): prints "<label>|<args>". The args gain the recipe's batch (P 4096, A 500)
 ## so the smoke trains at its recipe's batch, and NEVER a --max_steps: the smoke's 200 steps come
 ## from the environment (a row's --max_steps would override them in train_chart.sh).
+## `--dataset_name=<d>` and `--branch=nominal` (the single-branch rows, LOInK phase 2, 2026-10-24)
+## pass through to the trainer (train_chart.sh also reads --dataset_name for its .DONE check), and
+## --branch=nominal makes the label loinkB<c><a><R>, the rows' own, so a branch smoke never resumes
+## an unrestricted smoke's last.ckpt from the same RUN_DIR. --branch=nominal needs --dataset_name.
 loink_smoke_spec() {
-    local w c="" a="" r="" b
+    local w c="" a="" r="" b br="none" ds="" B=""
     for w in "$@"; do
         case "$w" in
             --cost=*) c="${w#--cost=}" ;;
             --activation=*) a="${w#--activation=}" ;;
             --recipe=*) r="${w#--recipe=}" ;;
+            --branch=*) br="${w#--branch=}" ;;
+            --dataset_name=*) ds="${w#--dataset_name=}" ;;
             --max_steps*) echo "REFUSING: a smoke's step count is 200, not '$w'" >&2; return 2 ;;
         esac
     done
     case "$c" in m|x|u) ;; *) echo "REFUSING: --cost=m|x|u required (got '$c')" >&2; return 2 ;; esac
     case "$a" in relu|tanh) ;; *) echo "REFUSING: --activation=relu|tanh required (got '$a')" >&2; return 2 ;; esac
     case "$r" in P) b=4096 ;; A) b=500 ;; *) echo "REFUSING: --recipe=P|A required (got '$r')" >&2; return 2 ;; esac
-    echo "loink${c}${a:0:1}${r}|$* --batch_size=$b $SMOKE_EXTRA"
+    case "$br" in
+        none) ;;
+        nominal) B="B"
+            [ -n "$ds" ] || { echo "REFUSING: --branch=nominal needs --dataset_name=<robot>_branch" >&2; return 2; } ;;
+        *) echo "REFUSING: --branch=none|nominal (got '$br')" >&2; return 2 ;;
+    esac
+    echo "loink${B}${c}${a:0:1}${r}|$* --batch_size=$b $SMOKE_EXTRA"
 }
 
 ## `--smoke cvae <robot> <K>` (or the original `--smoke <robot> <K>`) and

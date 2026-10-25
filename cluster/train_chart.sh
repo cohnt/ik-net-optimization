@@ -117,17 +117,26 @@ mkdir -p "$RUN_DIR/checkpoints"
 
 ## The .DONE sentinel, NOT just the directory (train_flow.sh): build_dataset_job.sh writes it
 ## only on success, and a killed build leaves half-written tensors a -d test accepts.
-DATASET_DIR="$ROOT/home/.cache/ikflow/datasets/$ROBOT"
+## The dataset is the row's `--dataset_name` when it names one (LOInK phase 2, 2026-10-24: the
+## single-branch rows train on `<robot>_branch`, built by build_dataset_job.sh with
+## DATASET_ROBOT=<robot>_branch), else the robot's own. The trainer reads the same flag.
+DATASET_NAME="$(row_arg dataset_name)"
+DATASET_NAME="${DATASET_NAME:-$ROBOT}"
+DATASET_DIR="$ROOT/home/.cache/ikflow/datasets/$DATASET_NAME"
 if [ ! -f "$DATASET_DIR/.DONE" ]; then
     echo "FATAL: no COMPLETE dataset at $DATASET_DIR (no .DONE sentinel)." >&2
-    echo "Run cluster/build_dataset_job.sh with DATASET_ROBOT=$ROBOT; if a partial build" >&2
+    echo "Run cluster/build_dataset_job.sh with DATASET_ROBOT=$DATASET_NAME; if a partial build" >&2
     echo "is present, delete the directory first -- a partial one is worse than none." >&2
     exit 4
 fi
+## A single-branch chart's screen (g) also reads the robot's own, unrestricted test split.
+if [ "$DATASET_NAME" != "$ROBOT" ] && [ ! -f "$ROOT/home/.cache/ikflow/datasets/$ROBOT/.DONE" ]; then
+    echo "WARNING: no complete $ROBOT dataset; screen_loink.py (g) will fail (rc 7) after training." >&2
+fi
 
 BUDGET_FROM="the environment"; [ -n "$ROW_STEPS$ROW_BATCH" ] && BUDGET_FROM="the row's args"
-echo "train_chart: family=$FAMILY run=$RUN_NAME robot=$ROBOT batch=$BATCH max_steps=$MAX_STEPS" \
-     "final_step=$FINAL_STEP (budget from $BUDGET_FROM)"
+echo "train_chart: family=$FAMILY run=$RUN_NAME robot=$ROBOT dataset=$DATASET_NAME batch=$BATCH" \
+     "max_steps=$MAX_STEPS final_step=$FINAL_STEP (budget from $BUDGET_FROM)"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}  dataset: $(cat "$DATASET_DIR/.DONE")"
 nvidia-smi -L || true
 

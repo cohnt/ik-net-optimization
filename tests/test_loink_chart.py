@@ -53,6 +53,16 @@ Every model here is UNTRAINED (every model fit is a cluster job). The network co
    `BatchedProgram.init_from_q` equals `SetStartFromQ` and the float32 `BatchedFlow` takes the
    raw c; `SetNativeStart` works, one IPOPT `Solve()` with a 5 s wall runs, and
    `flow_logdet_weight > 0` is refused.
+7. Single-branch charts (LOInK phase 2, 2026-10-24; seconds each): `RungLabel` / `DefaultOutPath`
+   with a branch give `loinkB...`, matching the label `cluster/train_chart.sh` derives from every
+   `loinkB` row of `cluster/chart_runs.txt`, and `ArchFromHparams` carries `branch` /
+   `dataset_name` (a checkpoint without them: None / the robot); a sidecar naming them
+   round-trips through `LoadLoinkChart` / `LoadChart` onto `LoinkChart.branch` / `.dataset_name`
+   (an unrestricted chart: None, and its `arch` unchanged); the trainer's on-branch guard raises
+   on uniform q and passes on-branch q; the export gate's draw on an untrained Panda branch
+   chart (n = 64) is all on the branch, its off-branch candidates all off it, a prefix stays a
+   prefix, and the report-only off-branch numbers come back finite (an unrestricted chart:
+   none).
 """
 
 import copy
@@ -768,6 +778,136 @@ def test_program(tmp):
           f"{result.is_success()}, |z| {np.linalg.norm(result.GetSolution(program.z)):.2f}")
 
 
+## ---------------------------------------------------------------------- 7
+
+def test_rung_label_branch():
+    import re
+
+    from export_loink import ArchFromHparams, DefaultOutPath, RungLabel
+    assert RungLabel("m", "relu", "P") == "loinkmrP"
+    assert RungLabel("x", "tanh", "A", branch=[1, 2, 1]) == "loinkBxtA"
+    assert DefaultOutPath("panda", "m", "relu", "P", 620000, [1, 2, 1]).endswith(
+        os.path.join("models", "panda", "panda__loinkBmrP__step620000.pkl"))
+    ## The label train_chart.sh derives (LABEL=${RUN_NAME#${ROBOT}_}) for every branch row.
+    rows = 0
+    with open(os.path.join(REPO, "cluster", "chart_runs.txt")) as f:
+        for line in f:
+            w = line.split()
+            if not w or w[0] != "loink" or "--branch=nominal" not in w:
+                continue
+            args = dict(a[2:].split("=", 1) for a in w[3:] if a.startswith("--") and "=" in a)
+            label = w[2][len(w[1]) + 1:]
+            assert label == RungLabel(args["cost"], args["activation"], args["recipe"], [1]), w
+            assert re.fullmatch(r"loinkB[mxu][rt][PA]", label), label
+            assert args["dataset_name"] == f"{w[1]}_branch", w
+            rows += 1
+    assert rows == 24, rows
+    hp = {"ndof": 7, "units": [256] * 4, "depth": 2, "mu": 0.1, "activation": "relu",
+          "cost": "m", "head_hidden": 128, "j_mean": 1.0, "j_std": 2.0, "n_dys": 100,
+          "n_newton": 2, "robot_name": "panda"}
+    old = ArchFromHparams(hp)
+    assert old["branch"] is None and old["dataset_name"] == "panda", old
+    new = ArchFromHparams(dict(hp, branch=[1, 2, 1], dataset_name="panda_branch"))
+    assert new["branch"] == [1, 2, 1] and new["dataset_name"] == "panda_branch", new
+    print(f"PASS RungLabel/DefaultOutPath with a branch -> loinkB..., equal to train_chart.sh's "
+          f"label on all {rows} branch rows; ArchFromHparams carries branch/dataset_name")
+
+
+def test_branch_sidecar_roundtrip(tmp):
+    from src.charts.loading import LoadChart
+    out = write_untrained("panda", "m", "relu", out_path=os.path.join(tmp, "branch.pkl"),
+                          branch="nominal")[0]
+    with open(SidecarPath(out)) as f:
+        sidecar = json.load(f)
+    assert sidecar["branch"] == [1, 2, 1] and sidecar["dataset_name"] == "panda_branch", sidecar
+    for ch in (LoadLoinkChart("panda", out), LoadChart("panda", out)):
+        assert ch.branch == [1, 2, 1] and ch.dataset_name == "panda_branch", (ch.branch,
+                                                                               ch.dataset_name)
+        assert ch.arch["branch"] == [1, 2, 1] and ch.arch["dataset_name"] == "panda_branch"
+    plain_out = write_untrained("panda", "m", "relu", out_path=os.path.join(tmp, "plain.pkl"))[0]
+    plain = LoadLoinkChart("panda", plain_out)
+    assert plain.branch is None and plain.dataset_name is None
+    assert "branch" not in plain.arch and "dataset_name" not in plain.arch, plain.arch
+    print("PASS a sidecar's branch/dataset_name round-trip onto LoinkChart.branch/.dataset_name "
+          "(LoadLoinkChart and LoadChart); an unrestricted chart reads None, arch unchanged")
+
+
+def test_trainer_branch_guard(panda):
+    from src.branches import NominalBranch, OnBranch
+    from train_loink import CheckOnBranch
+    q = _q_in_limits(panda, 4000, _gen(21)).float().double()  # as a float32 dataset stores it
+    branch = [int(v) for v in NominalBranch("panda")]
+    _expect_raise(lambda: CheckOnBranch("panda", q.float(), branch, "panda"), ValueError,
+                  "the trainer's on-branch guard on an unrestricted dataset")
+    on = q[torch.from_numpy(OnBranch("panda", q.numpy(), branch))]
+    assert CheckOnBranch("panda", on.float(), branch, "panda_branch") == on.shape[0]
+    ## Both reach the checkpoint's hyper_parameters, and from there the exporter's sidecar.
+    from export_loink import ArchFromHparams
+    from train_loink import LoinkLitModel, RECIPE_DEFAULTS
+    d = RECIPE_DEFAULTS["P"]
+    lit = LoinkLitModel(
+        robot_name="panda", ndof=7, units=[256] * 4, depth=2, mu=0.1, activation="relu",
+        cost="m", head_hidden=128, n_dys=100, n_newton=2,
+        scale=[max(abs(a), abs(b)) for a, b in panda.actuated_joints_limits],
+        j_mean=0.6, j_std=0.3, lam=1.0, tau_penalty=1e-3, recipe="P", optimizer=d["optimizer"],
+        learning_rate=d["learning_rate"], weight_decay=d["weight_decay"],
+        scheduler=d["scheduler"], gamma=0.9795, step_lr_every=2441, plateau_factor=0.5,
+        plateau_patience=500, plateau_ema=0.99, gradient_clip=d["gradient_clip_val"],
+        log_every=1000, fk_eval_n=16, inv_eval_n=16, run_dir=tempfile.gettempdir(),
+        dataset_name="panda_branch", branch=branch)
+    arch = ArchFromHparams(dict(lit.hparams))
+    assert arch["branch"] == [1, 2, 1] and arch["dataset_name"] == "panda_branch", arch
+    print(f"PASS the trainer's on-branch guard passes {on.shape[0]} on-branch rows; branch and "
+          "dataset_name reach the hyperparameters and the exporter's arch")
+
+
+def test_branch_restricted_real_draw(tmp):
+    from export_loink import OFFBRANCH_KEYS, GateConfigurations
+    from src.branches import OnBranch
+    out, arch, hp, state_dict = write_untrained("panda", "m", "relu",
+                                                out_path=os.path.join(tmp, "gate.pkl"),
+                                                branch="nominal")
+    panda = get_robot("panda")
+    lo, hi = torch.tensor(panda.actuated_joints_limits, dtype=F64, device=CPU).T
+    q, q_off = GateConfigurations("panda", lo, hi, 64, _gen(0), [1, 2, 1])
+    assert q.shape == q_off.shape == (64, 7)
+    assert OnBranch("panda", q.numpy(), [1, 2, 1]).all()
+    assert not OnBranch("panda", q_off.numpy(), [1, 2, 1]).any()
+    assert ((q >= lo) & (q <= hi)).all() and ((q_off >= lo) & (q_off <= hi)).all()
+    q_none, off_none = GateConfigurations("panda", lo, hi, 64, _gen(0))
+    assert off_none is None and q_none.shape == (64, 7)
+
+    t = time.monotonic()
+    off = {}
+    finite, err, res, per_draw, real_fail = roundtrip_residuals(out, arch, hp, state_dict, n=64,
+                                                                offbranch=off)
+    assert finite and tuple(per_draw) == LATENT_DRAWS and res == max(per_draw.values())
+    assert set(off) == set(OFFBRANCH_KEYS) and off["offbranch_samples"] == 64, off
+    assert all(np.isfinite(off[k]) for k in OFFBRANCH_KEYS), off
+    assert 0.0 <= off["offbranch_latent_fail_fraction"] <= 1.0
+    assert 0.0 <= off["offbranch_z_median"] <= off["offbranch_z_p95"]
+    ## A smaller n_eval is still a prefix of the same (on-branch) samples: the rejection draws
+    ## `n` whatever `n_eval` is. (The residuals sit at a few ulps here, and batched rounding
+    ## depends on the batch shape, hence the 1e-12 slack.)
+    q16, off16q = GateConfigurations("panda", lo, hi, 64, _gen(0), [1, 2, 1])
+    assert torch.equal(q16, q) and torch.equal(off16q, q_off)
+    off16 = {}
+    _, _, _, per16, _ = roundtrip_residuals(out, arch, hp, state_dict, n=64, n_eval=16,
+                                            offbranch=off16)
+    assert all(per16[d] <= per_draw[d] + 1e-12 for d in LATENT_DRAWS), (per16, per_draw)
+    assert off16["offbranch_samples"] == 16
+    plain_out, parch, php, psd = write_untrained("panda", "m", "relu",
+                                                 out_path=os.path.join(tmp, "gate_plain.pkl"))
+    plain_off = {}
+    roundtrip_residuals(plain_out, parch, php, psd, n=64, offbranch=plain_off)
+    assert plain_off == {}, plain_off
+    print(f"PASS the export gate's draw on a Panda branch chart: 64 on-branch q, 64 off-branch "
+          f"candidates; real failing {100 * real_fail:.1f}%, off-branch failing "
+          f"{100 * off['offbranch_latent_fail_fraction']:.1f}%, |z|_inf median "
+          f"{off['offbranch_z_median']:.3g} p95 {off['offbranch_z_p95']:.3g} (untrained; "
+          f"{time.monotonic() - t:.1f} s); an unrestricted chart reports none")
+
+
 if __name__ == "__main__":
     t0 = time.monotonic()
     panda = get_robot("panda")
@@ -789,5 +929,9 @@ if __name__ == "__main__":
         test_same_dof_other_robot_raises(tmp)
         test_load_chart_dispatch(tmp)
         test_loss_and_trainer(panda)
+        test_rung_label_branch()
+        test_branch_sidecar_roundtrip(tmp)
+        test_trainer_branch_guard(panda)
+        test_branch_restricted_real_draw(tmp)
         test_program(tmp)
     print(f"ALL PASS ({time.monotonic() - t0:.1f} s)")

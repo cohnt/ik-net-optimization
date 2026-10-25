@@ -38,11 +38,21 @@ test split: task position / rotation RMSE of `y_hat = G_1(q)`, aux MSE, `nu`, `t
 inversion residual `|G(decode(w)) - w|` at the model's `n_dys` (DYS only and with the Newton
 polish) and the FK error of `decode(y, 0)` on `--fk_eval_n` samples.
 
+Single-branch charts (LOInK phase 2, Thomas 2026-10-24): `--dataset_name <robot>_branch
+--branch nominal` trains on a dataset rejection-sampled onto the nominal configuration's IK
+branch (`src/branches.py`, `scripts/training/build_branch_dataset.py`), because one bijection
+carries one connected solution arc per pose and the rigid arms' full solution sets are several.
+Both land in the hyperparameters (`dataset_name`, `branch` as the signs or None) and from there
+in the sidecar, record only. With `nominal` the first `J_STATS_SAMPLES` training rows are
+checked to be on the branch, a guard against pairing a run with the wrong dataset.
+
 IMPORT ORDER IS LOAD-BEARING, as in train_cvae.py: ikflow resolves DATASET_DIR from HOME at
 import, and jrl sets torch's default device to CUDA at import (reset to CPU straight after).
 
     python scripts/training/train_loink.py --robot_name panda --run_dir <dir> \
         --cost m --activation relu --recipe P --ckpt_path auto
+    python scripts/training/train_loink.py --robot_name panda --run_dir <dir> \
+        --cost m --activation relu --recipe P --dataset_name panda_branch --branch nominal
 """
 
 import argparse
@@ -73,6 +83,7 @@ from pytorch_lightning.trainer import Trainer  # noqa: E402
 from ikflow import config as ikflow_config  # noqa: E402
 from ikflow.config import DATASET_TAG_NON_SELF_COLLIDING  # noqa: E402
 
+from src.branches import BranchString, NominalBranch, OnBranch  # noqa: E402
 from src.charts.cvae import JointScale  # noqa: E402
 from src.charts.loink import (  # noqa: E402
     ACTIVATIONS, COSTS, DEFAULT_ARCH, FAMILY, TASK_DIM, LoinkModel, Pose7ToXyzRpy,
@@ -116,12 +127,26 @@ def CostStats(robot_name, cost, samples, robot):
     return float(j.mean()), float(j.std())
 
 
+def CheckOnBranch(robot_name, samples, branch, dataset_name):
+    """Raise unless the first `J_STATS_SAMPLES` training rows all lie on `branch` (2026-10-24:
+    a single-branch run paired with an unrestricted dataset would train silently on every
+    branch, which is the phase-1 chart again)."""
+    q = samples[:J_STATS_SAMPLES].to(device="cpu", dtype=torch.float64).numpy()
+    on = OnBranch(robot_name, q, branch)
+    if not on.all():
+        raise ValueError(
+            f"--branch {BranchString(branch)}: {int((~on).sum())} of the first {q.shape[0]} "
+            f"training rows of dataset {dataset_name!r} are off the branch -- is --dataset_name "
+            f"the branch dataset (src.branches.BRANCH_DATASET)?")
+    return q.shape[0]
+
+
 class LoinkLitModel(LightningModule):
     def __init__(self, robot_name, ndof, units, depth, mu, activation, cost, head_hidden,
                  n_dys, n_newton, scale, j_mean, j_std, lam, tau_penalty, recipe, optimizer,
                  learning_rate, weight_decay, scheduler, gamma, step_lr_every, plateau_factor,
                  plateau_patience, plateau_ema, gradient_clip, log_every, fk_eval_n,
-                 inv_eval_n, run_dir):
+                 inv_eval_n, run_dir, dataset_name=None, branch=None):
         super().__init__()
         ## Everything the exporter needs is a constructor argument, so `save_hyperparameters`
         ## puts it in every checkpoint's `hyper_parameters`.
@@ -358,6 +383,13 @@ def parse_args(argv=None):
     p.add_argument("--fk_eval_n", type=int, default=500)
     p.add_argument("--inv_eval_n", type=int, default=500)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--dataset_name", default=None,
+                   help="ikflow dataset directory name (default: --robot_name); the single-branch "
+                        "charts train on <robot>_branch (2026-10-24)")
+    p.add_argument("--branch", default="none", choices=("none", "nominal"),
+                   help="'nominal': the dataset must be the nominal configuration's IK branch "
+                        "(src/branches.py), checked on the first 1M rows and recorded in the "
+                        "hyperparameters; 'none': unrestricted")
     p.add_argument("--ckpt_path", default="auto",
                    help="'auto' resumes from <run_dir>/checkpoints/last.ckpt when present; "
                         "'none' forces a fresh start; otherwise an explicit .ckpt")
@@ -365,7 +397,10 @@ def parse_args(argv=None):
     p.add_argument("--wandb_entity", default=os.environ.get("WANDB_ENTITY"))
     p.add_argument("--disable_wandb", action="store_true")
     p.add_argument("--run_description", default=None)
-    return ResolveRecipe(p.parse_args(argv))
+    args = ResolveRecipe(p.parse_args(argv))
+    if args.dataset_name is None:
+        args.dataset_name = args.robot_name
+    return args
 
 
 def ResolveRecipe(args):
@@ -395,10 +430,16 @@ def main():
         raise ValueError(f"{args.robot_name} has ndof {robot.ndof}: LOInK needs a redundant "
                          f"robot (ndof > {TASK_DIM})")
     scale = JointScale(robot)
-    data_module = CVAEDataset(robot.name, args.batch_size, args.val_set_size,
+    data_module = CVAEDataset(args.dataset_name, args.batch_size, args.val_set_size,
                               [DATASET_TAG_NON_SELF_COLLIDING])
     assert data_module._samples_tr.shape[1] == robot.ndof, "dataset is not this robot's"
     assert data_module._endpoints_tr.shape[1] == 7, "dataset poses are not [xyz, wxyz]"
+    branch = None
+    if args.branch == "nominal":
+        branch = [int(v) for v in NominalBranch(robot.name)]
+        n_checked = CheckOnBranch(robot.name, data_module._samples_tr, branch, args.dataset_name)
+        print(f"[train_loink] branch {BranchString(branch)} (nominal): the first {n_checked} "
+              f"training rows of {args.dataset_name!r} are all on it")
     j_mean, j_std = CostStats(args.robot_name, args.cost, data_module._samples_tr, robot)
     print(f"[train_loink] cost {args.cost}: j_mean {j_mean}, j_std {j_std} "
           f"(first {min(J_STATS_SAMPLES, data_module._samples_tr.shape[0])} training samples)")
@@ -413,7 +454,8 @@ def main():
         step_lr_every=args.step_lr_every, plateau_factor=args.plateau_factor,
         plateau_patience=args.plateau_patience, plateau_ema=args.plateau_ema,
         gradient_clip=args.gradient_clip_val, log_every=args.log_every,
-        fk_eval_n=args.fk_eval_n, inv_eval_n=args.inv_eval_n, run_dir=args.run_dir)
+        fk_eval_n=args.fk_eval_n, inv_eval_n=args.inv_eval_n, run_dir=args.run_dir,
+        dataset_name=args.dataset_name, branch=branch)
     n_params = sum(p.numel() for p in model.model.parameters())
     print(f"[train_loink] {args.robot_name}: ndof {robot.ndof}, K {robot.ndof - TASK_DIM}, "
           f"depth {args.depth} x units {args.units} {args.activation}, mu {args.mu}, cost "
