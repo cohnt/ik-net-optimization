@@ -4368,6 +4368,23 @@ def _cvae_selftest():
 ## verdict is read off a probe: it decides which rows are run in full, nothing else.
 ## Two manifests per stage, because DRAKE_ENV is per submission: the `_SVGD` ones need DRAKE_ENV=crc.
 ## All at PROCS=2, no MPS (paper conditions).
+##
+## PHASE 2, SINGLE BRANCH (2026-10-24, Thomas): the rigid arms' charts never fit the task at K = 1
+## (one bijection carries one connected curve per task value; a 7-DoF arm's IK set is several
+## disconnected branches), so the Panda and iiwa charts are retrained on ONE IK branch, the nominal
+## configuration's (src/branches.py; datasets `<dir>_branch`, chart_runs.txt rows `--dataset_name=
+## <dir>_branch --branch=nominal`). Labels `loinkB<cost><act><recipe>` (LOINK_BRANCH_LABELS), 24 rungs
+## (LOINK_BRANCH_RUNGS: Panda + iiwa x the twelve labels; the screw arm has no branch function, soft12
+## is already K = 6 and is not retrained), K = 1 and the rule radius 2.5 as before. They are APPENDED
+## to LOINK_RUNGS, so the four full stages grow 192 / 192 / 200 / 192 -> 288 / 288 / 296 / 288 items
+## and every phase-1 item keeps its id and line. Two filtered families, both of the full manifests:
+##   `{stage}_soft12P` = full minus the 42 cancelled phase-1 rungs AND the 24 branch rungs: item lines
+##                       byte-identical to before phase 2 (only the header's exclusion list grew);
+##   `{stage}_branch`  = full minus all 48 phase-1 rungs: the 24 branch charts (96 / 96 / 104 / 96
+##                       items; LOINKPROBE_branch keeps the 8-item acceptance run, which names no chart).
+## The single-branch arm returns configurations on that branch only: a paired start off the branch
+## may be scored `unrepresentable_start`, and a target reachable only on another branch is lost by
+## construction -- a stated limitation, reported (scripts/report_loink.py, "single branch (B)").
 
 LOINK_COSTS = ("m", "x", "u")
 LOINK_ACTS = (("r", "relu"), ("t", "tanh"))
@@ -4378,13 +4395,28 @@ LOINK_LABELS = tuple(f"loink{c}{a}{r}" for c in LOINK_COSTS for a, _ in LOINK_AC
                      for r in LOINK_RECIPES)
 #: K = DOF - 6, the only width a square bi-Lipschitz G admits.
 LOINK_WIDTHS = {"panda": 1, "iiwa": 1, SCREW_PRIMARY: 1, "soft12": 6}
+#: Phase 2 (header): the robots with an analytic branch function, and the single-branch labels
+#: `loinkB<cost><act><recipe>` in LOINK_LABELS' order. Cost / activation / recipe are read from the
+#: END of a label (label[-3], label[-2], label[-1]), which both families share.
+LOINK_BRANCH_ROBOTS = ("panda", "iiwa")
+LOINK_BRANCH_LABELS = tuple("loinkB" + l[len("loink"):] for l in LOINK_LABELS)
+
+
+def _loink_rung(robot, rung, seed, label):
+    d = CVAE_MODEL_DIR[robot]
+    step = LOINK_RECIPES[label[-1]][1]
+    return (robot, rung, seed, label, LOINK_WIDTHS[robot], f"models/{d}/{d}__{label}__step{step}.pkl", step)
+
+
 #: (robot, the record's flow rung, the record's grid seed, label, K, checkpoint, step), in report
-#: order: the record's four contexts (SVGD_RECORD_CONTEXTS), labels as LOINK_LABELS.
-LOINK_RUNGS = tuple(
-    (robot, rung, seed, label, LOINK_WIDTHS[robot],
-     f"models/{d}/{d}__{label}__step{LOINK_RECIPES[label[-1]][1]}.pkl", LOINK_RECIPES[label[-1]][1])
-    for robot, rung, seed in SVGD_RECORD_CONTEXTS for d in [CVAE_MODEL_DIR[robot]]
-    for label in LOINK_LABELS)
+#: order: the record's four contexts (SVGD_RECORD_CONTEXTS), labels as LOINK_LABELS (phase 1), then
+#: the branch robots' contexts x LOINK_BRANCH_LABELS (phase 2). Phase 1 first, so no phase-1 item moves.
+LOINK_PHASE1_RUNGS = tuple(_loink_rung(robot, rung, seed, label)
+                           for robot, rung, seed in SVGD_RECORD_CONTEXTS for label in LOINK_LABELS)
+LOINK_BRANCH_RUNGS = tuple(_loink_rung(robot, rung, seed, label)
+                           for robot, rung, seed in SVGD_RECORD_CONTEXTS if robot in LOINK_BRANCH_ROBOTS
+                           for label in LOINK_BRANCH_LABELS)
+LOINK_RUNGS = LOINK_PHASE1_RUNGS + LOINK_BRANCH_RUNGS
 LOINK_RIGID = ("panda", "iiwa", SCREW_PRIMARY)
 #: Cells per probe item (guess 0 of the first N targets); 60 until 2026-10-24 22:30, 20 since (header).
 LOINK_PROBE_TARGETS = 20
@@ -4408,7 +4440,15 @@ LOINK_EXCLUDED_RUNGS = tuple(
     f"{CVAE_MODEL_DIR[robot]}:{label}"
     for robot, _, _ in SVGD_RECORD_CONTEXTS for label in LOINK_LABELS
     if robot in LOINK_RIGID or not label.endswith("P"))
-LOINK_FILTERED_MANIFESTS = {f"{src}_soft12P": (src, LOINK_EXCLUDED_RUNGS) for src in LOINK_STAGES}
+#: `--exclude-rung` specs of the two phases' rungs (header, "PHASE 2").
+LOINK_BRANCH_SPECS = tuple(f"{CVAE_MODEL_DIR[r[0]]}:{r[3]}" for r in LOINK_BRANCH_RUNGS)
+LOINK_PHASE1_SPECS = tuple(f"{CVAE_MODEL_DIR[r[0]]}:{r[3]}" for r in LOINK_PHASE1_RUNGS)
+#: `_soft12P` also drops the 24 branch rungs, so its item lines are exactly the pre-phase-2 ones;
+#: `_branch` keeps only the branch rungs (+ LOINKPROBE's acceptance run, which names no chart).
+LOINK_FILTERED_MANIFESTS = {
+    **{f"{src}_soft12P": (src, LOINK_EXCLUDED_RUNGS + LOINK_BRANCH_SPECS) for src in LOINK_STAGES},
+    **{f"{src}_branch": (src, LOINK_PHASE1_SPECS) for src in LOINK_STAGES},
+}
 
 
 def loink_trust_region(robot):
@@ -4483,7 +4523,7 @@ def _loink_results_roots():
 
 
 def loink_probe_outcomes(roots=None):
-    """probe tag -> successes (learned `feasible` cells), for every COLLECTED 60-cell probe (any robot):
+    """probe tag -> successes (learned `feasible` cells), for every COLLECTED probe (any robot):
     an unsharded `sc_LOINK_*_<LOINK_PROBE_TARGETS>_180_*` summary holding every learned record."""
     import glob
     import json
@@ -4504,7 +4544,7 @@ def loink_probe_outcomes(roots=None):
 
 
 def loink_probe_tag(full_tag):
-    """The 60-cell probe tag of a full row's tag (any robot)."""
+    """The LOINK_PROBE_TARGETS-cell probe tag of a full row's tag (any robot)."""
     assert "_480_180_" in full_tag, full_tag
     return full_tag.replace("_480_180_", f"_{LOINK_PROBE_TARGETS}_180_", 1)
 
@@ -4570,10 +4610,18 @@ def _loink_selftest():
     for robot, want_tr in (("panda", "2.5"), ("iiwa", "2.5"), (SCREW_PRIMARY, "2.5"), ("soft12", "3.95")):
         if loink_trust_region(robot) != ["--set", f"latent_trust_region={want_tr}"]:
             fails.append(f"{robot}: trust region {loink_trust_region(robot)}, expected {want_tr}")
-    if len(LOINK_LABELS) != 12 or len(set(LOINK_LABELS)) != 12 or len(LOINK_RUNGS) != 48:
-        fails.append(f"{len(LOINK_LABELS)} labels / {len(LOINK_RUNGS)} rungs, expected 12 / 48")
+    all_labels = LOINK_LABELS + LOINK_BRANCH_LABELS
+    if len(all_labels) != 24 or len(set(all_labels)) != 24 or len(LOINK_RUNGS) != 72 \
+            or len(LOINK_PHASE1_RUNGS) != 48 or len(LOINK_BRANCH_RUNGS) != 24 \
+            or LOINK_RUNGS[:48] != LOINK_PHASE1_RUNGS \
+            or {r[0] for r in LOINK_BRANCH_RUNGS} != set(LOINK_BRANCH_ROBOTS) \
+            or any(not re.fullmatch(r"loinkB[mxu][rt][PA]", l) for l in LOINK_BRANCH_LABELS) \
+            or any(r[4] != 1 for r in LOINK_BRANCH_RUNGS):
+        fails.append(f"{len(all_labels)} labels / {len(LOINK_RUNGS)} rungs, expected 24 / 72 "
+                     "(48 phase-1 first, then Panda + iiwa x the twelve loinkB labels at K = 1)")
 
-    ## chart_runs.txt trains exactly these 48 charts with the recipe's own budget on the row.
+    ## chart_runs.txt trains exactly these 72 charts with the recipe's own budget on the row; the
+    ## branch rows also name their dataset and branch.
     here = os.path.dirname(os.path.realpath(__file__))
     rows = {}
     with open(os.path.join(here, "chart_runs.txt")) as fh:
@@ -4584,9 +4632,11 @@ def _loink_selftest():
     want_rows = {}
     for robot, _, _, label, _, _, step in LOINK_RUNGS:
         d = CVAE_MODEL_DIR[robot]
-        c, act, rec = label[len("loink")], dict(LOINK_ACTS)[label[-2]], label[-1]
+        c, act, rec = label[-3], dict(LOINK_ACTS)[label[-2]], label[-1]
         want_rows[f"{d}_{label}"] = (d, [f"--cost={c}", f"--activation={act}", f"--recipe={rec}",
-                                         f"--batch_size={LOINK_RECIPES[rec][0]}", f"--max_steps={step}"])
+                                         f"--batch_size={LOINK_RECIPES[rec][0]}", f"--max_steps={step}"]
+                                     + ([f"--dataset_name={d}_branch", "--branch=nominal"]
+                                        if label in LOINK_BRANCH_LABELS else []))
     if rows != want_rows:
         fails.append(f"chart_runs.txt's loink rows differ from LOINK_RUNGS: "
                      f"{sorted(set(rows) ^ set(want_rows)) or 'args differ'}")
@@ -4596,12 +4646,12 @@ def _loink_selftest():
                   if _svgd_flag(it["args"], "--tag").endswith(f"_{CVAE_SVGD_VARIANT}")
                   and _svgd_flag(it["args"], "--seed") == "1"}
     rung_of = {(r, lab): ck for r, _, _, lab, _, ck, _ in LOINK_RUNGS}
-    tag_re = re.compile(rf"^{LOINK_TAG_PREFIX}_(LOINK|LOINKSMOKE)_(.+)_(loink[mxu][rt][PA])_(ipopt|svgd)_"
+    tag_re = re.compile(rf"^{LOINK_TAG_PREFIX}_(LOINK|LOINKSMOKE)_(.+)_(loinkB?[mxu][rt][PA])_(ipopt|svgd)_"
                         r"(mugshelf|posetip)_(\d+)_180_(paired|native)$")
     n_smoke = len(CVAE_SMOKE_CELLS.split(","))
-    want = {"LOINKSMOKE": 48 * 4, "LOINKSMOKE_SVGD": 48 * 4,
-            "LOINKPROBE": 48 * 4 + CVAE_IPOPT_SHARDS, "LOINKPROBE_SVGD": 48 * 4,
-            "LOINKFULL": 48 * 4 * CVAE_IPOPT_SHARDS, "LOINKFULL_SVGD": 48 * 4 * CVAE_SVGD_SHARDS}
+    want = {"LOINKSMOKE": 72 * 4, "LOINKSMOKE_SVGD": 72 * 4,
+            "LOINKPROBE": 72 * 4 + CVAE_IPOPT_SHARDS, "LOINKPROBE_SVGD": 72 * 4,
+            "LOINKFULL": 72 * 4 * CVAE_IPOPT_SHARDS, "LOINKFULL_SVGD": 72 * 4 * CVAE_SVGD_SHARDS}
     built = {w: stage_LOINK(w) for w in LOINK_STAGES + LOINK_FULL_STAGES}
     for which, items in built.items():
         if len(items) != want[which]:
@@ -4661,11 +4711,11 @@ def _loink_selftest():
             if tr != loink_trust_region(it["robot"])[1:]:
                 fails.append(f"{it['id']}: trust region {tr}, expected {loink_trust_region(it['robot'])[1:]}")
 
-    ## The full stages are 384 logical runs; the probe covers each exactly once, by its 60-cell probe
-    ## (every robot, soft12 included, since 2026-10-24).
+    ## The full stages are 576 logical runs; the probe covers each exactly once, by its
+    ## LOINK_PROBE_TARGETS-cell probe (every robot, soft12 included, since 2026-10-24).
     full_runs = {_svgd_flag(it["args"], "--tag") for w in LOINK_FULL_STAGES for it in built[w]}
-    if len(full_runs) != 48 * 4 * 2:
-        fails.append(f"LOINKFULL(_SVGD): {len(full_runs)} logical runs, expected 384")
+    if len(full_runs) != 72 * 4 * 2:
+        fails.append(f"LOINKFULL(_SVGD): {len(full_runs)} logical runs, expected 576")
     for svgd in (False, True):
         sfx = "_SVGD" if svgd else ""
         full, probe = built["LOINKFULL" + sfx], built["LOINKPROBE" + sfx]
@@ -4712,15 +4762,28 @@ def _loink_selftest():
         whole = [l for l in full_lines if l.split("|", 1)[0].rsplit("_shard", 1)[0] in rows_in]
         if whole != on_disk:
             fails.append(f"cluster/manifest_stage{which}.txt holds a row without all of its shards")
-    ## The filtered (submitted) manifests: soft12's six P charts and, in the IPOPT probe, the
-    ## acceptance run -- the committed full manifest minus exactly the excluded rungs' items.
+    ## The filtered (submitted) manifests, two families (header, "PHASE 2"): `_soft12P` = soft12's six
+    ## P charts and `_branch` = the 24 single-branch charts, each + (in the IPOPT probe) the acceptance
+    ## run -- the committed full manifest minus exactly the excluded rungs' items.
     kept_labels = sorted(l for l in LOINK_LABELS if l.endswith("P"))
     if len(LOINK_EXCLUDED_RUNGS) != 42 or len(set(LOINK_EXCLUDED_RUNGS)) != 42 or \
             sorted(sp.split(":")[1] for sp in LOINK_EXCLUDED_RUNGS if sp.startswith("soft12:")) != \
             sorted(l for l in LOINK_LABELS if l.endswith("A")) or len(kept_labels) != 6:
         fails.append("LOINK_EXCLUDED_RUNGS is not the 36 rigid rungs + soft12's six A rungs")
-    soft_ck = re.compile(r"^models/soft12/soft12__loink[mxu][rt]P__step620000\.pkl$")
+    every = {f"{CVAE_MODEL_DIR[r[0]]}:{r[3]}" for r in LOINK_RUNGS}
+    if len(set(LOINK_BRANCH_SPECS)) != 24 or len(set(LOINK_PHASE1_SPECS)) != 48 \
+            or set(LOINK_BRANCH_SPECS) | set(LOINK_PHASE1_SPECS) != every \
+            or set(LOINK_BRANCH_SPECS) & set(LOINK_PHASE1_SPECS) \
+            or not set(LOINK_EXCLUDED_RUNGS) <= set(LOINK_PHASE1_SPECS):
+        fails.append("LOINK_BRANCH_SPECS / LOINK_PHASE1_SPECS do not partition the 72 rungs")
+    keep = {"_soft12P": (6, re.compile(r"^models/soft12/soft12__loink[mxu][rt]P__step620000\.pkl$")),
+            "_branch": (24, re.compile(r"^models/(panda|iiwa14)/\1__loinkB[mxu][rt]"
+                                       r"(P__step620000|A__step150000)\.pkl$"))}
+    if sorted(LOINK_FILTERED_MANIFESTS) != sorted(f"{src}{sfx}" for src in LOINK_STAGES for sfx in keep):
+        fails.append(f"LOINK_FILTERED_MANIFESTS names {sorted(LOINK_FILTERED_MANIFESTS)}")
     for name, (src, specs) in LOINK_FILTERED_MANIFESTS.items():
+        sfx = name[len(src):]
+        n_charts, ck_re = keep[sfx]
         on_disk, full = disk(name), disk(src)
         if on_disk is None or full is None:
             continue
@@ -4734,16 +4797,16 @@ def _loink_selftest():
             fails.append(f"cluster/manifest_stage{name}.txt is stale; regenerate it")
         per_row = 1                     # smoke and (since 2026-10-24) probe: one unsharded item per row
         n_acc = len(_loink_acceptance()) if src == "LOINKPROBE" else 0
-        if len(items) != 6 * 4 * per_row + n_acc:
-            fails.append(f"{name}: {len(items)} items, expected {6 * 4 * per_row + n_acc} "
-                         f"(6 charts x 4 rows x {per_row}{f' + {n_acc} acceptance' if n_acc else ''})")
+        if len(items) != n_charts * 4 * per_row + n_acc:
+            fails.append(f"{name}: {len(items)} items, expected {n_charts * 4 * per_row + n_acc} "
+                         f"({n_charts} charts x 4 rows x {per_row}{f' + {n_acc} acceptance' if n_acc else ''})")
         acc = [it for it in items if _svgd_flag(it["args"], "--tag").startswith(f"{LOINK_TAG_PREFIX}_LOINKACC_")]
         if len(acc) != n_acc:
             fails.append(f"{name}: {len(acc)} acceptance items, expected {n_acc}")
         bad = [it["id"] for it in items if it not in acc
-               and (it["robot"] != "soft12" or not soft_ck.match(_svgd_flag(it["args"], "--checkpoint")))]
+               and not ck_re.match(_svgd_flag(it["args"], "--checkpoint"))]
         if bad:
-            fails.append(f"{name}: {len(bad)} items not on a soft12 P chart, e.g. {bad[0]}")
+            fails.append(f"{name}: {len(bad)} items not on a kept chart ({ck_re.pattern}), e.g. {bad[0]}")
     return fails
 
 
@@ -7663,15 +7726,17 @@ def selftest():
         print(f"FAIL stage LOINK: {msg}")
     fails += len(loink_fails)
     if not loink_fails:
-        print("ok   stages LOINKSMOKE / LOINKSMOKE_SVGD / LOINKPROBE / LOINKPROBE_SVGD: 192 / 192 / 200 / 192 "
-              "items (48 charts x 4 rows each; probe = one unsharded 60-cell native or paired item per row, "
-              "every robot, + the 8-item joint-space acceptance run in LOINKPROBE); every item is its record "
+        print("ok   stages LOINKSMOKE / LOINKSMOKE_SVGD / LOINKPROBE / LOINKPROBE_SVGD: 288 / 288 / 296 / 288 "
+              "items (72 charts x 4 rows each: 48 phase-1 + 24 single-branch loinkB Panda / iiwa; probe = one "
+              f"unsharded {LOINK_PROBE_TARGETS}-cell native or paired item per row, every robot, + the 8-item "
+              "joint-space acceptance run in LOINKPROBE); every item is its record "
               "twin (PAPER / SVGD_R2 IPOPT, R29 pin4) with only arms, checkpoint, tag (sc_LOINK) and the rule "
-              "trust region changed; the probe covers each of LOINKFULL(_SVGD)'s 384 runs once; the ext "
-              "rule selects whole rows; chart_runs.txt's 48 loink rows match; committed manifests current "
-              "(LOINKEXT(_SVGD): whole rows of the full stage); the four _soft12P manifests (the "
-              "submitted ones) = the full ones minus exactly the 42 rigid / soft12-A rungs: 24 / 24 / 32 / 24 "
-              "items, soft12 P charts only (+ the acceptance run in LOINKPROBE_soft12P)")
+              "trust region changed; the probe covers each of LOINKFULL(_SVGD)'s 576 runs once; the ext "
+              "rule selects whole rows; chart_runs.txt's 72 loink rows match; committed manifests current "
+              "(LOINKEXT(_SVGD): whole rows of the full stage); the four _soft12P manifests = the full ones "
+              "minus exactly the 42 rigid / soft12-A rungs and the 24 branch rungs: 24 / 24 / 32 / 24 items, "
+              "soft12 P charts only; the four _branch manifests = the full ones minus the 48 phase-1 rungs: "
+              "96 / 96 / 104 / 96 items, loinkB charts only (+ the acceptance run in each LOINKPROBE filter)")
 
     sr_fails = _screwredo_selftest()
     for msg in sr_fails[:12]:

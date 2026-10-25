@@ -11,8 +11,13 @@ unless each LOInK run carries the record run's `grid_hash`, `scene_fingerprint` 
 chart named by its tag in its `checkpoint`, and covers the record row's cells (or a probe's
 `LOINK_PROBE_TARGETS`, 20 since 2026-10-24).
 
+Phase 2 (2026-10-24): twelve more charts, `loinkB<cost><act><recipe>`, the Panda and iiwa charts retrained
+on ONE IK branch (the nominal configuration's; src/branches.py), K = 1, trust region 2.5 as before; the screw
+arm has no branch function and soft PCS is not retrained (K = 6), so those rows print the reason.
+
 Rows are the 16 record rows (robot x task x start); one block per solver (IPOPT, AL-SVGD) and, inside
-it, one block per recipe (P, A) of six charts between the record's columns:
+it, one block per recipe (P, A) of six charts between the record's columns, then the same again for the
+single-branch charts ("single branch (B)", with the branch and the paired-protocol caveat stated):
   flow -- the record's learned arm (same loaders as scripts/report_chart_ablation.py: IPOPT stage PAPER,
           AL-SVGD stage SVGD_R29 `pin4`; on the screw rows SCREWREDO's `n6r` where it exists);
   JS   -- the record's joint-space arm (IPOPT: the same runs; AL-SVGD: SVGD_R30 `pin4kq`).
@@ -32,10 +37,11 @@ Diagnostics, per chart x row (success-of-480 cells = all cells of the run):
               budget carries no verdict, flagged VOID).
 
 A run not yet collected prints `not yet measured`, a cancelled rung (LOINK_EXCLUDED_RUNGS) its reason
-(`chart does not fit (K = 1)` on the rigid arms, `recipe A: LR collapsed` on soft12 A); the record's columns print regardless. `x/20` = the
+(`chart does not fit (K = 1)` on the rigid arms, `recipe A: LR collapsed` on soft12 A), a single-branch label on a
+robot without one `no branch function` (screw) / `n/a (K = 6, all branches)` (soft PCS); the record's columns print regardless. `x/20` = the
 20-cell probe (guess 0 of the first 20 targets; stage LOINKPROBE), shown where the row has no full run; every
 pairing, cost and median against it reads the other column on those 20 cells. A full run (LOINKEXT)
-replaces its probe. Tags: `sc_LOINK_<robot>_<label>_<solver>_<row>_<cells>_180_<start>`; smokes
+replaces its probe. Tags: `sc_LOINK_<robot>_<label>_<solver>_<row>_<cells>_180_<start>` (label `loink...` or `loinkB...`); smokes
 (`sc_LOINKSMOKE_`) are never read. The acceptance run `sc_LOINKACC_` (joint space after the chart
 refactor) is compared cell for cell with the record's joint-space arm.
 
@@ -60,7 +66,8 @@ sys.path.insert(0, os.path.join(REPO, "cluster"))
 from report_statusquo import (BUDGET_CELLS, CELLS, MIN_COST_CELLS, STATUS_QUO_ROWS,  # noqa: E402
                               budget_bound, by_cell, clock_bound, load,
                               load_record, load_svgd_record, mcnemar, median, parse_tag)
-from gen_manifest import (CVAE_ACCEPT, CVAE_MODEL_DIR, LOINK_EXCLUDED_RUNGS, LOINK_LABELS,  # noqa: E402
+from gen_manifest import (CVAE_ACCEPT, CVAE_MODEL_DIR, LOINK_BRANCH_LABELS,  # noqa: E402
+                          LOINK_BRANCH_ROBOTS, LOINK_EXCLUDED_RUNGS, LOINK_LABELS,
                           LOINK_PROBE_TARGETS, LOINK_RECIPES, SCREWREDO_RUNG)
 
 DEFAULT_OUT = "docs/loink-tables.md"
@@ -84,13 +91,30 @@ for _e in LOINK_EXCLUDED_RUNGS:
     _dir, _label = _e.split(":")
     REASON[(_DIR_ROBOT[_dir], _label)] = ("recipe A: LR collapsed" if _dir == "soft12"
                                           else "chart does not fit (K = 1)")
+#: Phase 2: single-branch charts exist for LOINK_BRANCH_ROBOTS only (gen_manifest.LOINK_BRANCH_RUNGS).
+BRANCH_NA = {"screw7_p050": "no branch function", "soft12": "n/a (K = 6, all branches)"}
+for _robot in ("panda", "iiwa", "screw7_p050", "soft12"):
+    if _robot not in LOINK_BRANCH_ROBOTS:
+        for _label in LOINK_BRANCH_LABELS:
+            REASON[(_robot, _label)] = BRANCH_NA[_robot]
+ALL_LABELS = LOINK_LABELS + LOINK_BRANCH_LABELS
+#: The block families of each solver: (heading suffix, labels).
+FAMILIES = (("", LOINK_LABELS), (", single branch (B)", LOINK_BRANCH_LABELS))
 
 
 def nym(robot, label):
     """What a missing run prints: the cancellation reason if the rung was excluded, else NYM."""
     return REASON.get((robot, label), NYM)
 RECIPES = tuple(LOINK_RECIPES)                      # ("P", "A")
-LABELS = {r: tuple(l for l in LOINK_LABELS if l[-1] == r) for r in RECIPES}
+BRANCH_PREAMBLE = (
+    "**Single branch (B)** (phase 2, 2026-10-24): the Panda and iiwa charts retrained on ONE IK branch, the "
+    "nominal configuration's, by the analytic classifiers of `src/branches.py` -- Panda wrist B1 / shoulder C2 / "
+    "elbow A +1 (`gc` (1, 2, +1)); iiwa signs (+1, -1, +1) of q2 / q4 / q6 -- labels `loinkB<cost><act><recipe>`, "
+    "K = 1, trust region 2.5. The arm can only return configurations on that branch: a target reachable only on "
+    "another branch is lost by construction, and a paired-protocol cell whose start lies off the branch may be "
+    "scored `unrepresentable_start` (the `unrep` diagnostic column counts them). The screw arm has no branch "
+    "function (`no branch function`) and the soft PCS charts are K = 6 and not retrained "
+    "(`n/a (K = 6, all branches)`).\n")
 ROWS = [(robot, row, start) for robot in ROBOTS for row in STATUS_QUO_ROWS for start in ("native", "paired")]
 
 
@@ -158,7 +182,7 @@ def load_columns(extra_roots=()):
                     refused.append(f"{tag}: {bad or 'cells'} do not match the record run of its row")
                 else:
                     cols["flow"] = s["records"]["learned"]
-            for label in LOINK_LABELS:
+            for label in ALL_LABELS:
                 cols[label] = None
                 hit = chart.get((solver, robot, label, row, start))
                 if hit is None:
@@ -263,7 +287,7 @@ def cost_cell(x, y, miss=NYM):
 def tally(data, solver):
     """Per chart: rows where it beats / ties / loses to JS and to flow (McNemar p < 0.05)."""
     out = []
-    for label in LOINK_LABELS:
+    for label in ALL_LABELS:
         cells = []
         n_full = n_probe = 0
         for other in ("JS", "flow"):
@@ -341,7 +365,8 @@ def tables(data, recipes):
        "are the record row's and its checkpoint is the chart its tag names. "
        f"`{NYM}` = no merged chart run collected. `chart does not fit (K = 1)` (every Panda, iiwa and screw "
        "chart) and `recipe A: LR collapsed` (soft PCS recipe A) mark the 42 rungs cancelled after their training "
-       f"wave, never to be measured; mechanism in `docs/notes-chart.md`, \"Training outcome (2026-10-23)\". `x/{PROBE_TARGETS}` = the {PROBE_TARGETS}-cell PROBE (guess 0 of the first {PROBE_TARGETS} targets), shown where "
+       f"wave, never to be measured; mechanism in `docs/notes-chart.md`, \"Training outcome (2026-10-23)\". The "
+       "single-branch charts `loinkB...` (phase 2) have their own blocks per solver, the branch stated there. `x/{PROBE_TARGETS}` = the {PROBE_TARGETS}-cell PROBE (guess 0 of the first {PROBE_TARGETS} targets), shown where "
        f"the row has no full run; its pairings, costs and medians are over those {PROBE_TARGETS} cells only. McNemar cells: "
        "`chart-only / other-only, p` on the discordant cells (exact two-sided). Cost cells: `median per-cell ratio "
        f"chart / other [95% bootstrap CI over targets, {BOOT} resamples] (n shared cells)`, on cells both arms of "
@@ -353,32 +378,36 @@ def tables(data, recipes):
         pr("### Tally: rows won / tied / lost by each chart (exact McNemar, p < 0.05)\n")
         table(pr, ["chart", "v JS (chart / tie / JS)", "v flow (chart / tie / flow)", "rows measured"],
               tally(data, solver))
-        for rcp in recipes:
-            labels = LABELS[rcp]
-            cols = ("flow",) + labels + ("JS",)
-            pr(f"### {title.split(' (')[0]}, recipe {rcp} (batch {LOINK_RECIPES[rcp][0]}, "
-               f"{LOINK_RECIPES[rcp][1]} steps)\n")
-            rows = [(r, data[(solver,) + r]) for r in ROWS]
+        for fam, fam_labels in FAMILIES:
+            if fam_labels is LOINK_BRANCH_LABELS:
+                pr(f"### {title.split(' (')[0]}, single branch (B)\n")
+                pr(BRANCH_PREAMBLE)
+            for rcp in recipes:
+                labels = tuple(l for l in fam_labels if l[-1] == rcp)
+                cols = ("flow",) + labels + ("JS",)
+                pr(f"### {title.split(' (')[0]}{fam}, recipe {rcp} (batch {LOINK_RECIPES[rcp][0]}, "
+                   f"{LOINK_RECIPES[rcp][1]} steps)\n")
+                rows = [(r, data[(solver,) + r]) for r in ROWS]
 
-            def cells(key, prec=0):
-                return [[name(*r)] + [cell_str(recs_of(c[x]), key, prec, nym(r[0], x)) for x in cols] for r, c in rows]
-            pr("#### Success (of 480)\n")
-            table(pr, ["row"] + list(cols), cells("succ"))
-            for other in ("flow", "JS"):
-                pr(f"#### Success: McNemar of each chart against {other}\n")
-                table(pr, ["row"] + [f"{l} v {other}" for l in labels],
-                      [[name(*r)] + [mc_cell(recs_of(c[l]), c[other], nym(r[0], l)) for l in labels] for r, c in rows])
-            pr("#### Iterations (median over successes)\n")
-            if solver == "svgd":
-                pr("N/A by construction: AL-SVGD counts outer steps (K = 10 inner steps each), not majors.\n")
-            else:
-                table(pr, ["row"] + list(cols), cells("iters"))
-            pr("#### Wall clock, s (median over successes)\n")
-            table(pr, ["row"] + list(cols), cells("wall", 2))
-            for other in ("flow", "JS"):
-                pr(f"#### Cost on shared cells: chart / {other}\n")
-                table(pr, ["row"] + [f"{l} / {other}" for l in labels],
-                      [[name(*r)] + [cost_cell(recs_of(c[l]), c[other], nym(r[0], l)) for l in labels] for r, c in rows])
+                def cells(key, prec=0):
+                    return [[name(*r)] + [cell_str(recs_of(c[x]), key, prec, nym(r[0], x)) for x in cols] for r, c in rows]
+                pr("#### Success (of 480)\n")
+                table(pr, ["row"] + list(cols), cells("succ"))
+                for other in ("flow", "JS"):
+                    pr(f"#### Success: McNemar of each chart against {other}\n")
+                    table(pr, ["row"] + [f"{l} v {other}" for l in labels],
+                          [[name(*r)] + [mc_cell(recs_of(c[l]), c[other], nym(r[0], l)) for l in labels] for r, c in rows])
+                pr("#### Iterations (median over successes)\n")
+                if solver == "svgd":
+                    pr("N/A by construction: AL-SVGD counts outer steps (K = 10 inner steps each), not majors.\n")
+                else:
+                    table(pr, ["row"] + list(cols), cells("iters"))
+                pr("#### Wall clock, s (median over successes)\n")
+                table(pr, ["row"] + list(cols), cells("wall", 2))
+                for other in ("flow", "JS"):
+                    pr(f"#### Cost on shared cells: chart / {other}\n")
+                    table(pr, ["row"] + [f"{l} / {other}" for l in labels],
+                          [[name(*r)] + [cost_cell(recs_of(c[l]), c[other], nym(r[0], l)) for l in labels] for r, c in rows])
         pr(f"### LOInK diagnostics, {title.split(' (')[0]}\n")
         pr(f"`unrep` = cells scored `unrepresentable_start`; `q err` = median `start_q_error`; `c err` = median / "
            f"max `start_c_error`; `runaway` = failures returning |q|_inf > {RUNAWAY_Q:g}; `trust` = fraction of "
@@ -386,7 +415,7 @@ def tables(data, recipes):
         rows = []
         for r in ROWS:
             c = data[(solver,) + r]
-            for label in ("flow",) + LOINK_LABELS:
+            for label in ("flow",) + ALL_LABELS:
                 d = diag_row(label, c[label], nym(r[0], label))
                 rows.append([name(*r), label] + d)
         table(pr, ["row", "chart", "unrep", "q err", "c err med", "c err max", "runaway", "trust", "clock",

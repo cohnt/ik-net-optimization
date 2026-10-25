@@ -10,6 +10,9 @@ rule, fixed before any probe was run (extended to soft12's rows 2026-10-24):
     every chart x row (solver, task, start) whose probe solved >= 1 cell
     gets its full 480-cell row.
 
+The phase-2 single-branch rungs (`loinkB<cost><act><recipe>`, Panda + iiwa, 2026-10-24;
+gen_manifest.LOINK_BRANCH_RUNGS) are part of LOINK_RUNGS and fall under the same rule, unchanged.
+
 A full row's items are the would-be full stage's own (gen_manifest.stage_LOINK("LOINKFULL") /
 ("LOINKFULL_SVGD"), sharded 8 / 24 as stage CVAE), byte for byte, so the probe's cells are
 re-solved inside the row and the row pairs with the record like any other. No verdict is read
