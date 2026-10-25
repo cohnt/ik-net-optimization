@@ -10,6 +10,36 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
+## STATE -- 2026-10-25 14:50 cluster time: soft12 PROBE done (0/20 everywhere); the 24 branch runs training; downstream stages NOT started.
+Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'` (12 `lik_trainc_*loinkB*` pair jobs, 4 running);
+`bash cluster/submit_chart_train.sh --status | grep loinkB`.
+ 0. Both chains ran to completion overnight (logs `results/_watch/probe_chain.log`, `phase2_chain.log`,
+    `ceiling_chain.log`): PROBE submitted 00:06; test job rc 0 (663 s, ALL PASS); datasets
+    `panda_branch` (drawn 112.9M, on-branch 0.2359, kept 25.015M, 01:48) and `iiwa14_branch`
+    (drawn 200.8M, on-branch 0.1250, kept 25.015M, 02:04) on xeon-p8; training smoke
+    `smoke_panda_loinkBmrP` rc 0 at 11:14 (ladder (25, 5, none), three draws + off-branch pass);
+    the 12 pair jobs 6031766-6031777 submitted 11:17 (P at 14:00:00, A at 05:00:00, PAIRS=1).
+    Reach ceiling (4 CPU jobs, grid hashes match the record): Panda pose 16/20 on the nominal
+    branch (A = -1 branches reach 0), Panda grasp 20/20, iiwa pose and grasp 20/20 on every branch;
+    JSON in `results/loink_branch_ceiling/`.
+ 1. soft12 PROBE: 56 items done (IPOPT 32 incl. the 8 acceptance shards, SVGD 24), every learned
+    cell `constraint` at the 180 s clock, 0/20 on all 24 rows; IPOPT 20-30 it/cell relu, 60-150
+    tanh; AL-SVGD 7-23 steps in 180 s. Collected (`collect_results.sh`, staging 20261025-143705),
+    promoted to `results/soft12/benchmark/`, screens to `results/screen_loink/`,
+    `report_loink.py --write` (acceptance IDENTICAL 479 + 1), `make_loink_ext.py --summary`
+    (0 rows qualify; EXT manifests empty, header now 24 of 288 collected), selftest OK.
+ 2. Training at 14:30 (steps 180k-300k of 620k, lr 1.2e-5 - 3.3e-5, nothing near the kill
+    rule): val pos RMSE Panda 680-778 mm, iiwa 659 mm; rot RMSE 78-115 deg. The constant
+    predictor on the SAME branch test split is Panda 581 mm / 136 deg, iiwa 700 mm / 130 deg:
+    position is at or below the constant predictor, exactly the phase-1 plateau (Panda 767 mm v
+    610 mm on the full split, flat from step 20k). Restricting to one branch did not move the
+    fit; topology was not the binding constraint. The runs finish anyway (poor fit is a result).
+    Expected: P wave 1 ~18:30, P wave 2 (iiwa x, u) ~01:30, A pairs after.
+ 3. NOT started, awaiting Thomas: `LOINKSMOKE_branch` (+ `_SVGD`) and `LOINKPROBE_branch`
+    (192 + 192 GPU items, ~1 h each) on charts that so far cannot fit. Reported to him 14:45 with
+    the recommendation to decide once the screens are in. Still to do regardless: screens of the
+    24 exports ((a), (g), gates), sidecars to the laptop's `models/`, notes, tables, CLAUDE.md.
+
 ## STATE -- 2026-10-24 22:30 cluster time: PROBE cut to 20 cells; single-branch retrain approved (phase 2).
 Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'`; PROBE jobs present means the watcher ran.
  0. Thomas (22:00): LOInK phase 2 = retrain the Panda and iiwa charts on ONE IK branch (the nominal
