@@ -11,6 +11,12 @@
 # Submit (from ~/learned-ik/repo on the login node) -- CPU partition, one node:
 #   DATASET_ROBOT=panda LLsub ./cluster/build_dataset_job.sh -s 48 -q xeon-p8 -T 02:00:00 -J lik_dataset
 #
+# A single-branch dataset (LOInK phase 2, 2026-10-24; scripts/training/build_branch_dataset.py,
+# DATASET_ROBOT=<robot>_branch, the robot's 25M rows rejection-sampled onto its nominal branch).
+# ONE robot at a time: submit iiwa14_branch only after panda_branch has its .DONE.
+#   DATASET_ROBOT=panda_branch LLsub ./cluster/build_dataset_job.sh -s 48 -q xeon-p8 -T 04:00:00 -J lik_dataset_branch
+#   DATASET_ROBOT=iiwa14_branch LLsub ./cluster/build_dataset_job.sh -s 48 -q xeon-p8 -T 04:00:00 -J lik_dataset_branch
+#
 # Offline-safe (jrl URDFs ship in the wheel; no downloads). Single-threaded Klampt
 # sampling, measured ~14us/config on the laptop -- 25M is minutes-to-an-hour here.
 # Output: 4 float32 tensors (~1.4 GB total) + info.txt in
@@ -65,6 +71,15 @@ case "$ROBOT" in
         echo "per-worker result timeout ${DATASET_WORKER_TIMEOUT} s"
         "$PY" -u "$REPO/scripts/gvs_arm/build_dataset_parallel.py" \
             --robot_name="$ROBOT" --training_set_size="$SIZE" --only_non_self_colliding --seed="$SEED"
+        RC=$? ;;
+    *_branch)
+        ## LOInK phase 2 (Thomas 2026-10-24): the base robot's dataset rejection-sampled onto the
+        ## nominal configuration's IK branch (src/branches.py), for the single-branch charts.
+        ## Same sampler, self-collision filter and file layout as the default case; 15k test
+        ## rows as the fork's TEST_SET_SIZE. iiwa14_branch -> iiwa14, panda_branch -> panda.
+        "$PY" -u "$REPO/scripts/training/build_branch_dataset.py" \
+            --robot_name "${ROBOT%_branch}" --dataset_name "$ROBOT" \
+            --training_set_size "$SIZE" --test_set_size 15000 --seed "$SEED"
         RC=$? ;;
     *)
         "$PY" -u "$REPO/scripts/training/ikflow_entry.py" build_dataset \

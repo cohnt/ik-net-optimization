@@ -45,6 +45,16 @@ files, resolved as `screen_cvae.py` does), 5000 samples unless noted, written to
     `start_c_error` -- in metres (xyz) and radians (rpy, unwrapped as the program's `c`
     variables are), and its 6-norm.
 
+(g) Off-branch, single-branch charts only (LOInK phase 2, 2026-10-24; the sidecar names a
+    `branch`, `src/branches.py`): on the robot's FULL, unrestricted test split (`--robot`'s own
+    dataset, not the branch dataset (a)-(f) read), the rows OFF the chart's branch -- what the
+    paired start and the targets reachable only on another branch will hand the chart. Task
+    error of `G_1` there (pos mm, ang deg, median / p95), `|z|_inf` of `G_2(q)` (median / p95),
+    and the fraction with `|z|_inf <= 5`, inside the programs' latent box. Report only.
+
+(a)-(f) read `--dataset_name` (default the sidecar's `dataset_name`, else the robot), so a
+single-branch chart is screened on its own branch's test split and training pool.
+
     python scripts/training/screen_loink.py --robot panda \
         --checkpoint models/panda/panda__loinkmrP__step620000.pkl
 """
@@ -71,6 +81,7 @@ from ikflow.utils import get_dataset_directory, get_dataset_filepaths  # noqa: E
 from jrl.math_utils import geodesic_distance_between_quaternions  # noqa: E402
 
 from screen_cvae import LoadTestSplit  # noqa: E402
+from src.branches import BranchString, OnBranch  # noqa: E402
 from src.charts.loink import (  # noqa: E402
     LoadLoinkChart, Pose7ToXyzRpy, RpyCutDistance, TrainingCost, XyzRpyToPose7,
     _solve, bilipnet_jacobian, damped_newton_step, dys_inverse, invert_bilipnet)
@@ -233,7 +244,8 @@ def _NearestCheapest(pose_q, pool_pose, pool_cost, k, dev, chunk=16):
     return torch.cat(best), torch.cat(kth)
 
 
-def ScreenZeroLatent(chart, model, robot_name, q, pose, n_cost, n_pool, seed, chunk):
+def ScreenZeroLatent(chart, model, robot_name, q, pose, n_cost, n_pool, seed, chunk,
+                     dataset_name=None):
     dev = next(model.parameters()).device
     m_cost = TrainingCost(robot_name, "m", robot=chart.robot)
     pose_c = pose[:n_cost]
@@ -244,7 +256,7 @@ def ScreenZeroLatent(chart, model, robot_name, q, pose, n_cost, n_pool, seed, ch
     realised = chart.robot.forward_kinematics(q0, out_device="cpu").double()
     pos, ang = _PoseErrors(realised, pose_c)
     cost0 = m_cost(q0)
-    pool_q, pool_pose = LoadTrainPool(robot_name, n_pool, seed)
+    pool_q, pool_pose = LoadTrainPool(dataset_name or robot_name, n_pool, seed)
     pool_cost = torch.cat([m_cost(pool_q[i:i + 100000].double())
                            for i in range(0, pool_q.shape[0], 100000)])
     k = min(N_NEIGHBOURS, pool_q.shape[0])
@@ -344,11 +356,39 @@ def ScreenRepresentability(chart, model, q, pose, chunk):
             "start_c_error": _Quantiles(d_all)}
 
 
+## ---------------------------------------------------------------------- (g)
+
+def ScreenOffBranch(chart, model, robot_name, n, seed, chunk):
+    """(g): a single-branch chart on the OFF-branch rows of the robot's full test split
+    (module docstring; 2026-10-24). None for an unrestricted chart."""
+    if chart.branch is None:
+        return None
+    q_all, pose_all, directory = LoadTestSplit(robot_name, n, seed)
+    off = torch.from_numpy(~OnBranch(robot_name, q_all.numpy(), chart.branch))
+    q, pose = q_all[off], pose_all[off]
+    out = {"branch": list(chart.branch), "dataset_dir": directory, "n_drawn": int(q_all.shape[0]),
+           "n": int(q.shape[0]), "frac_off_branch": float(off.double().mean()),
+           "z_box": LATENT_BOX}
+    if q.shape[0] == 0:
+        return out
+    dev = next(model.parameters()).device
+    with torch.no_grad():
+        y_hat, z = _Chunked(lambda qq: model.forward_G(qq.to(dev)), q, chunk=chunk)
+    pos, ang = _PoseErrors(XyzRpyToPose7(y_hat.cpu()), pose)
+    z_inf = z.abs().amax(dim=1).double().cpu().numpy()
+    out.update(**_Stats(pos, "pos_mm", 1e3), **_Stats(np.degrees(ang), "ang_deg"),
+               **_Stats(z_inf, "z_inf"), frac_z_in_box=float((z_inf <= LATENT_BOX).mean()))
+    return out
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--robot", required=True)
     p.add_argument("--checkpoint", required=True)
+    p.add_argument("--dataset_name", default=None,
+                   help="dataset (a)-(f) read (default: the sidecar's dataset_name, else --robot); "
+                        "(g) always reads --robot's own, unrestricted one")
     p.add_argument("--n", type=int, default=5000, help="test rows for (a), (b), (e) and J_hat")
     p.add_argument("--n_cost", type=int, default=1000, help="targets for (c)'s z = 0 solution")
     p.add_argument("--n_pool", type=int, default=5_000_000,
@@ -365,24 +405,27 @@ def main(argv=None):
     t0 = time.monotonic()
     chart = LoadLoinkChart(args.robot, args.checkpoint)
     model = chart.nn_model.double().eval()
-    q, pose, directory = LoadTestSplit(args.robot, args.n, args.seed)
+    dataset_name = args.dataset_name or chart.dataset_name or args.robot
+    q, pose, directory = LoadTestSplit(dataset_name, args.n, args.seed)
     rng = np.random.default_rng(args.seed)
 
     task, pos, ang = ScreenTaskError(model, q, pose, args.chunk)
     timings = {}
     result = {"robot": args.robot, "checkpoint": os.path.abspath(args.checkpoint),
-              "arch": chart.arch, "dataset_dir": directory, "seed": args.seed,
-              "task_error": task}
+              "arch": chart.arch, "dataset_name": dataset_name, "dataset_dir": directory,
+              "seed": args.seed, "task_error": task}
     for key, fn in (
             ("inversion", lambda: ScreenInversion(model, pose, rng, args.chunk)),
             ("zero_latent", lambda: ScreenZeroLatent(chart, model, args.robot, q, pose,
                                                      args.n_cost, args.n_pool, args.seed,
-                                                     args.chunk)),
+                                                     args.chunk, dataset_name)),
             ("gain", lambda: ScreenGain(chart, model, q, pose, rng, args.n_jacobian,
                                         args.n_pairs, args.chunk)),
             ("rpy_cut", lambda: ScreenRpyCut(pose, pos, ang)),
             ("representability", lambda: ScreenRepresentability(
-                chart, model, q[:args.n_repr], pose[:args.n_repr], args.chunk))):
+                chart, model, q[:args.n_repr], pose[:args.n_repr], args.chunk)),
+            ("offbranch", lambda: ScreenOffBranch(chart, model, args.robot, args.n, args.seed,
+                                                  args.chunk))):
         t = time.monotonic()
         result[key] = fn()
         timings[key] = time.monotonic() - t
@@ -429,6 +472,17 @@ def main(argv=None):
     print(f"(f) decode(invert(q)) - q: max {rep['roundtrip_max_abs']['max']:.2e}; y_hat off the "
           f"rpy domain {rep['frac_y_hat_off_rpy_domain']:.4f}; start_c_error median "
           f"{rep['start_c_error']['median']:.3g} max {rep['start_c_error']['max']:.3g}")
+    ob = result["offbranch"]
+    if ob is None:
+        print("(g) off-branch: n/a (the chart names no branch)")
+    elif ob["n"] == 0:
+        print(f"(g) off-branch {BranchString(ob['branch'])}: no off-branch rows in {ob['n_drawn']}")
+    else:
+        print(f"(g) off branch {BranchString(ob['branch'])} ({ob['n']} of {ob['n_drawn']} full "
+              f"test rows, report only): G_1 pos median {ob['pos_mm_median']:.2f} mm p95 "
+              f"{ob['pos_mm_p95']:.2f}; ang median {ob['ang_deg_median']:.2f} deg p95 "
+              f"{ob['ang_deg_p95']:.2f}; |z|_inf median {ob['z_inf_median']:.3g} p95 "
+              f"{ob['z_inf_p95']:.3g}; in the +-{ob['z_box']:g} box {ob['frac_z_in_box']:.4f}")
     print(f"wrote {out} ({result['elapsed_s']:.1f} s; {', '.join(f'{k} {v:.0f}s' for k, v in timings.items())})")
     return result
 

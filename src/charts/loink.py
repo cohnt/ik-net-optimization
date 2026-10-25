@@ -692,6 +692,12 @@ ARCH_FIELDS = ("ndof", "task_dim", "dim_latent_space", "units", "depth", "mu", "
 #: ARCH_FIELDS a sidecar written before the field existed may lack, and the value it meant.
 ARCH_FIELD_DEFAULTS = {"newton_damping": "none"}
 
+#: Sidecar fields that are a RECORD, not architecture (LOInK phase 2, 2026-10-24): the IK branch
+#: a single-branch chart trained on (`src/branches.py`, a list of three ints) and its dataset's
+#: name. No weight depends on them, so nothing cross-checks them; `LoadLoinkChart` copies them
+#: onto the chart (`LoinkChart.branch` / `.dataset_name`) when the sidecar names them.
+RECORD_FIELDS = ("branch", "dataset_name")
+
 #: The one architecture of the campaign (no ladder): the paper's manipulator example.
 DEFAULT_ARCH = {"units": (256, 256, 256, 256), "depth": 2, "mu": 0.1, "head_hidden": 128,
                 "n_dys": 100, "n_newton": 2, "newton_damping": "none"}
@@ -870,6 +876,13 @@ class LoinkChart(Chart):
         self.robot = robot
         self.arch = dict(arch)
         self.arch_source = arch_source
+        ## Record only (LOInK phase 2, 2026-10-24): the IK branch a single-branch chart was
+        ## trained on (`src/branches.py`; the signs, None for an unrestricted chart) and the
+        ## dataset it trained on (None when the sidecar predates the field). Nothing in the
+        ## program reads them; they reach `metadata.chart_arch` through `arch`, and the
+        ## exporter's gate and the screens restrict their draws by `branch`.
+        self.branch = arch.get("branch")
+        self.dataset_name = arch.get("dataset_name")
         self.network_width = int(arch["dim_latent_space"])
         self.ndof = int(robot.ndof)
         self.decode = LoinkDecode
@@ -1059,6 +1072,9 @@ def LoadLoinkChart(robot_name, checkpoint, compile_model=None):
         raise ValueError(f"{source} was trained for {payload['robot_name']!r}, "
                          f"not {robot_name!r}")
     arch = {k: payload[k] for k in ARCH_FIELDS}
+    ## Record-only sidecar fields carried onto the chart when present (2026-10-24), so an
+    ## unrestricted chart's `arch` (and the metadata built from it) is unchanged.
+    record = {k: payload[k] for k in RECORD_FIELDS if payload.get(k) is not None}
 
     with open(checkpoint, "rb") as f:
         state_dict = pickle.load(f)
@@ -1078,5 +1094,5 @@ def LoadLoinkChart(robot_name, checkpoint, compile_model=None):
     model.load_state_dict(state_dict, strict=True)
     model = model.to(DEVICE).eval()
     nn_model = torch.compile(model, **compile_model) if compile_model is not None else model
-    return LoinkChart(nn_model, robot, dict(arch, family=FAMILY, robot_name=robot_name),
+    return LoinkChart(nn_model, robot, dict(arch, family=FAMILY, robot_name=robot_name, **record),
                       arch_source=source)
