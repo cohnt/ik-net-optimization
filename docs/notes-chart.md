@@ -271,3 +271,301 @@ in strain, so the mean stays within ~4 cm, which the c box (+-0.25 m) and the co
 The same mean is shrunk toward zero strain (|E q| <= E|q|), and cost here is strain energy, which is
 the reading of the cheaper solutions above. The fibre-geometry part is an inference from the FK
 errors, not measured on the fibres themselves.
+
+## The LOInK chart (branch `chart-loink`, started 2026-10-22)
+
+Not an ablation: the question is what happens when the chart is a network **designed to have a
+well-structured latent space**, and (Thomas's nuance) whether a latent structured for ONE cost
+helps under a DIFFERENT objective. LOInK (Somerfield, Abood, Wang, Manchester, arXiv 2609.21275;
+`docs/papers/`) learns a bi-Lipschitz `G: R^n -> R^n` (BiLipNet, Wang-Dvijotham-Manchester ICML
+2024) with `G(q) = [y_hat; z]`, `y_hat in R^6` the task and `z in R^(n-6)` the latent, trained with
+`MSE(y_hat, y) + lambda MSE(J_hat(z, y_hat), J)`, `J_hat = |z|^2_M + b(y_hat)`, `M = I/2 + P^T P`,
+so `z = 0` is the cost minimiser on each task fibre. The chart is the INVERSE: `decode(c, z) =
+G^{-1}([c; z])` by Davis-Yin splitting per monotone layer (fixed `n_dys`, the PLNet reference
+algorithm) plus a Newton polish; the derivative is the implicit-function Jacobian `J_G(q)^{-1}`,
+exact, with nothing differentiated through the iterations. `mu = 0.1` fixed, `nu = exp(lognu)`
+learned per layer under a `1e-3 log(tau)` penalty. Code `src/charts/loink.py`; the port matches
+the official JAX code (github.com/acfr/PLNet) to ~1e-15 (`tests/test_loink_reference.py`).
+
+**Three properties, pre-registered.** (1) Certified gain `|dq/d[c,z]| <= scale/mu`: the flow's
+runaway is impossible by construction. (2) Exact inverse: `decode(invert(q)) == q` to 1e-15 for
+every `q`, so the paired start is exact (`start_q_error` 0; the cVAE was 0/480). (3) The latent
+origin is a cost minimiser, so the trust region and the N(0, I) native draw have cost semantics
+(the trust region bounds `J_hat` above the per-task minimum; its binding fraction is reported).
+**The stated risk**: `G` is one diffeomorphism, so each task's fibre is one connected line; the
+rigid arms' IK fibres are disconnected branches, so `G_1 ~ FK` can only be exact on one branch per
+region -- a task-error floor the paper itself names as a limitation. The soft PCS arm (one
+connected fibre) is the favourable case.
+
+**Adaptations, stated.** The task is the program's own `c = [xyz, rpy]` (Drake `RollPitchYaw`),
+handed to the chart RAW (`task_input = "xyzrpy"`; no quaternion round trip), so `decode` is
+continuous across the rpy cut and the paired start is exact off the principal domain too; the
+training targets lie on the principal domain, so near the cut the chart extrapolates (screen (e)).
+There is no continuous 6-parameter chart of SE(3); this floor is intrinsic to a Lipschitz task
+output. `K = n - 6` is forced (Panda/iiwa/screw 1, soft12 6); trust region by the rule
+`round(sqrt(K) + 1.5, 2)`; latent box +-5. `J` is standardised by its dataset mean/std (sidecar
+`j_mean`, `j_std`) so `z = O(1)`. The cost head's `P` is `K x K` (the paper's `p x p` cannot
+multiply `z`).
+
+**The ladder (Thomas, 2026-10-22: "try both" on every axis)**: cost `m` (the program's joint
+centering about `q_nominal`; soft PCS strain energy) / `x` (LOInK's own eq. 18 log-barrier,
+`eps = 1e-3`) / `u` (lambda = 0, no head: bi-Lipschitz structure alone); activation `r` (relu, as
+published; the chart is piecewise linear) / `t` (tanh); recipe `P` (the flow's and cVAE's: AdamW
+1.5e-4, StepLR, 620k x 4096) / `A` (the paper's: Adam 1e-3, reduce-on-plateau patience 500,
+batch 500, 3 epochs = 150k steps, plus gradient clipping at 1.0 which the replication needed).
+12 charts per robot, one architecture (2 monotone layers x 4 x 256, head 2 x 128, the paper's
+manipulator example). Labels `loink<cost><act><recipe>`. Native start `z ~ N(0, I)` as every
+chart; the `z = 0` "LOInK alone" solution is a screen quantity.
+
+**Replication first (`docs/loink-replication.md`; no code is online).** Sec. V (planar 3-DoF)
+reproduces: `G^{-1}([y; 0])` within 2.7-3.7 mm of the three targets, elbow-up, in limits, the
+true cost minimised at `z = 0`; eq. 17 holds at every `mu`, larger `mu` smoother -- once `lambda
+<< 1` (`lambda = 1` underfits the task, 0.207 m v 0.021 m validation RMSE; `lambda = 0.01`
+adopted). Sec. VII (planar HSA in SoRoMoX) does NOT reproduce Table II: with `u_bar = 0` at a
+corner of the actuation box the fibre's cheapest point lies on the boundary of the data, so the
+surrogate's `z = 0` extrapolates outside it (EE error 159 mm against the paper's 0.44 mm; the
+fibre-local fit is 2.3 mm; a symmetric box and a centred cost do not recover it; their `U` is not
+printed). Carried into the campaign as an expectation: wherever a task fibre's cheapest point sits
+on a joint limit, cost `m`'s `z = 0` extrapolates; the barrier cost `x` cannot. tanh was worse than
+relu on every replication number. Inversion on TRAINED models: `tau ~ 100`, so DYS alone at 100
+iterations leaves 1e-2; the Newton polish takes it to 1e-15 (float32 2e-6) -- the exporter writes
+screen (b)'s recommended `n_dys` into the sidecar, and compile time scales with it (relu 100: ~100 s
+on CPU; tanh 100: ~570 s).
+
+**Screens** (`scripts/training/screen_loink.py`, `results/screen_loink/`): (a) task error of
+`G_1`; (b) inversion residual v `n_dys`, polished and not, both dtypes; (c) the `z = 0` solution's
+FK error and cost against the dataset's cheapest neighbour; (d) the gain bound and the
+bi-Lipschitz inequality; (e) task error by distance to the rpy cut; (f) representability and
+`start_c_error` (the paired start's `c` is the chart's own `y_hat`, not the FK pose).
+Stages LOINKSMOKE -> LOINKPROBE (60-cell native AND paired probes on the rigid arms, soft12 in
+full) -> LOINKEXT (full rows where a probe had a success); ops `cluster/LOINK_RUNBOOK.md`; tables
+`docs/loink-tables.md` (`scripts/report_loink.py --write`). Results: below.
+
+### Training outcome (2026-10-23): the rigid-arm charts never fit the task; the mechanism is K = 1
+
+**What the cluster returned.** Every project-recipe (`P`) chart that finished (Panda m/x/u x
+relu/tanh, iiwa m x relu/tanh; 540k-620k steps) sits at the mean-predictor level on validation:
+position RMSE 640-790 mm (the iiwa's constant predictor is 698 mm), rotation 97-121 deg, with
+the distortion `tau` grown monotonically to 2e4-1.4e5 and the inverse no longer recoverable
+(round-trip residual 1e1-4e3 at `n_dys` 100 + 2 Newton; exit code 6). Train task MSE went 6.9 ->
+4.5 over 620k steps and the held-out error of the finished iiwa `m` chart is WORSE than the mean
+(0.54/0.42/0.38 m per axis against stds 0.41/0.42/0.37; rpy 1.38/0.62/1.57 rad against stds
+1.73/0.69/1.81). The paper-recipe (`A`) runs died another way: the pre-registered plateau schedule
+(patience 500 steps on the EMA train loss) halved the learning rate every 500 steps from the start,
+reaching ~1e-8 by step 40k on every robot (Panda 626-696 mm; soft12 200-290 mm / 42-87 deg); the
+same schedule worked in the planar replication only because that loss fell within 1000 steps.
+Those runs were cancelled at 60-100k steps (`last.ckpt` kept; `--ckpt_path=auto` resumes). The
+rigid-arm `P` jobs still pending (iiwa x/u, screw m/x/u) were cancelled unstarted. The soft12 `P`
+pairs (K = 6) run.
+
+**Diagnosis (local CPU, `scripts/loink_replication/rigid_arm_k_ladder.py`, iiwa14's local
+dataset: 100k train, 5000 held-out; the same `LoinkModel`/`loink_loss`; Adam 1e-3, batch 500,
+clip 1.0, cost `u`, 3000 steps; held-out RMSE per task column, position m / rpy rad wrapped):**
+
+| chart input -> task | K | x / y / z | roll / pitch / yaw |
+| --- | --- | --- | --- |
+| q -> [xyz, rpy] (the campaign's) | 1 | 0.29 / 0.27 / 0.27 | 1.65 / 0.70 / 1.79 |
+| [q, 3 dummies] -> [xyz, rpy] | 4 | 0.31 / 0.31 / 0.32 | 1.23 / 0.51 / 1.33 |
+| [q, 6 dummies] -> [xyz, rpy] | 7 | 0.18 / 0.19 / 0.15 | 1.02 / 0.34 / 1.14 |
+| q -> rpy only | 4 | - | 1.29 / 0.58 / 1.41 |
+| q -> xyz only | 4 | 0.10 / 0.10 / 0.08 | - |
+| plain MLP 3 x 256 -> [xyz, rpy] (1500 steps, train subset) | - | 0.12 / 0.13 / 0.10 | 0.89 / 0.32 / 1.01 |
+
+Ruled out first: the dataset is aligned (jrl FK v stored poses 1e-7); a wrapped angular residual
+in the loss and training only on samples away from the rpy cut (57% of the data) change nothing
+(rotation stays at 115-120 deg), so the cut is not the mechanism; `scale`, `mu` (0.01),
+`lognu_init` (log 20), tanh, a smaller net and depth 1 change nothing either.
+
+**Mechanism.** LOInK asks the IK map to be the first `p` coordinates of ONE bi-Lipschitz chart of
+`R^n`, i.e. every task fibre a straight line `{y} x R^K` of a global product. With `n = 7`, `p =
+6` that leaves `K = 1`: the 7-DoF arms' fibres are one-dimensional sets of closed curves and
+arcs (several per pose) that no line carries, and the inverse-Lipschitz bound `mu` makes the
+conflict global rather than local -- the net cannot fit position past ~0.27 m and orientation at
+all, and training drives `tau` up without bound. Giving the latent room (dummy inputs) restores
+learning, so the failure is the latent width LOInK prescribes, not the optimiser or the port
+(which matches PLNet to 1e-15 and reproduces the paper's planar example, `K = 2`). The paper's
+examples all have `K >= 2` (planar 2, HSA 3, Magneto 12). **A verdict on the rigid arms, not a
+bug**: at its own `K = n - p` LOInK cannot chart the 6-D pose task of a 7-DoF arm. Whether a
+padded-latent LOInK (`K` = the flow's width, the cVAE's "K = flow width" rung; `decode` drops the
+dummy coordinates) is a rung worth fielding is a modification of the method and Thomas's call;
+so is a usable paper recipe (their schedule is one of the questions for the authors).
+
+### The soft PCS charts (2026-10-23): K = 6 learns, but no chart fits, and the latent is not where the box is
+
+The six project-recipe charts (`m/x/u` x `relu/tanh`, 620k steps, jobs 6012963-65) do learn,
+unlike the rigid arms, and plateau far from usable by 340k steps. Validation at 620k (constant
+predictor 504 mm) and the screens (`results/screen_loink/soft12__loink*__step620000.json`, test
+split, float64):
+
+| chart | val pos / rot RMSE | tau | task error median pos / ang (p95) | z = 0 solution: FK error, cost ratio v cheapest neighbour | J_hat R^2 | inverse (n_dys, n_newton, damping) |
+| --- | --- | --- | --- | --- | --- | --- |
+| mrP | 291 mm / 41 deg | 2.1e4 | 241 mm / 17 deg (500 / 106) | 1236 mm, 96x | -5.9 | 25, 10, none |
+| mtP | 332 / 58 | 1.1e4 | 294 / 28 (543 / 143) | 967 mm, 41x | -9.8 | 25, 5, backtrack |
+| xrP | 293 / 41 | 2.0e4 | 243 / 16 (503 / 106) | 1097 mm, 86x | -5.6 | 25, 10, none |
+| xtP | 331 / 56 | 1.2e4 | 291 / 27 (548 / 138) | 1015 mm, 29x | -9.6 | 50, 5, backtrack |
+| urP | 205 / 29 | 4.6e4 | 177 / 11 (343 / 53) | 679 mm, 8x | - | 25, 50, none |
+| utP | 224 / 45 | 4.5e4 | 188 / 20 (386 / 117) | 513 mm, 49x | - | 25, 10, backtrack |
+
+98-100% of test poses have more than 50 mm of task error; the unstructured charts (`u`, no cost
+head) fit best, so the cost head costs task accuracy here too. The z = 0 point, LOInK's own
+solution, is 0.5-1.2 m off the target with 8-96x the cheapest neighbouring sample's cost, and the
+cost head's `J_hat` has negative R^2 against the true cost: the latent structure the method is
+built for did not form. tau grew throughout training to 1e4-4.6e4 (nu = 1e3-4.6e3 at mu = 0.1),
+i.e. the net spent its inverse-Lipschitz room as distortion, not as fit. Gates (d) (gain
+0.16-0.92 of the certified bound `scale/mu`, bi-Lipschitz inequality violated on 0 of 10k pairs)
+and (b) (decode residual at the sidecar's setting: float64 p99 1e-13 to 8e-13; float32 plateau
+3e-5 to 3e-4) pass on all six; urP keeps one unconverged decode in ~5000 (residual ~5) that no
+fixed budget removes.
+
+**Inverting the charts: the polish, not the splitting, does the work** (`src/charts/loink.py`,
+`scripts/training/export_loink.py`, commit 18a2bd2). Davis-Yin alone leaves a residual of 5-20
+on the relu charts at any count (the per-layer step `alpha = mu/gamma` shrinks as nu grows), and
+the old exporter ladder (n_dys up to 3200, n_newton = 2) passed only mtP, at 3200. Measured on the
+440k/480k checkpoints: the undamped Newton polish cycles on rare inputs of the smooth tanh charts
+(a pair passing a 256-sample round trip fails on 2048 at residual ~60), and a greedy backtracking
+(per-sample best of steps 1 .. 1/64 on the residual norm, static and graph-safe) stalls at the
+kinks of the piecewise-linear relu charts (every pair up to 50 steps fails at ~1e2) while the
+full step crosses them. So the step rule is a per-chart sidecar field, `newton_damping`
+(`none` | `backtrack`), and the exporter walks `n_dys x n_newton x damping` in order of decode
+cost (`n_dys + (ndof + 1 + candidates) * n_newton` network passes), gating each triple on the
+first 256 of 2048 fixed samples and then on all 2048. Result: every chart inverts at 25-50 DYS
+iterations (tanh with 5-10 damped steps, relu with 10-50 undamped ones). The attached IFT step
+and the derivative are unchanged by the damping.
+
+**Gate (f), representability, fails on the four cost-head charts (48-51% relu, 14-22% tanh) and
+is an artefact of where the latent lives, not of the conversion.** The true latent `z = G_2(q)` of
+EVERY real configuration lies outside the benchmark's +-5 box: |z|_inf median 13-16 (max 25) on
+the `m`/`x` charts and 100-1100 on the `u` charts (2000 uniform q per chart, scratch diagnosis).
+Out there the sidecar's polish budget, chosen on in-box draws, is unfinished (DYS residual 5-20,
+polish not converged; 2x the Newton steps repairs 96-100% of the failures, 2x the DYS count
+17-68%); y_hat off the principal rpy domain is 0.2-3% of samples and no more frequent among the
+failures. Inside the box (z uniform in [-5, 5]^6, y either the chart's own y_hat or the true FK
+pose) the decode converges on all six charts: float64 median 1e-13, max 1e-12 to 4e-5 with at
+most 3 of 2000 above 1e-6 (urP's one outlier at ~1); float32 1e-5 to 1e-4. **What this means for
+the cells**: every solve stays in the box, so the chart is exact where the solver visits; the
+paired start inverts `q_init` to a latent 2-5x outside the box and is clipped on every cell
+(recorded `clip_distance`, `start_q_error`), so the paired protocol starts from a projected
+point as the cVAE's did, for a different reason (the cVAE's latent was collapsed; LOInK's is
+real but on a scale the +-5 box and the `sqrt(K) + 1.5` trust region were never set for). The
+`N(0, I)` native draw and `z = 0` sit in a region the training data's latent never occupies.
+Standardising `J` to z = O(1) assumed the cost head would fit; it did not.
+
+**The decode budget was re-chosen on three latent draws (2026-10-24).** The smokes on the budgets
+above scored 3 of 12 relu paired cells `unrepresentable_start` (start_q_error 0.76-1.67): the
+paired start sets the variables to `G(q_init)` exactly, and the decode at the sidecar's budget did
+not come back to `q_init`, because the ladder had gated only on latents from N(0, I). The gate now
+covers the prior draw, the +-5 box (uniform; N(0, I) never reached its corners, where 0.05-0.15% of
+samples failed on two charts) and the real latent `z = G_2(q)` (commit d417150;
+`export_loink.py --reladder` re-chooses an exported chart's budget in place, run per chart by
+`cluster/reladder_loink_job.sh`). Result (2048 samples x 3 draws, float64): mtP and xtP
+(25, 10, backtrack), utP (200, 10, backtrack) and xrP (200, 50, none) are exact on all three; for
+the relu charts mrP and urP NO budget up to (400, 50) is exact on real latents (undamped Newton
+cycles on a few samples, backtracking stalls at the kinks and fails the box too), so the ladder's
+stated best-effort rule takes the cheapest budget exact on prior and box with the fewest real-draw
+failures: mrP (400, 50, none) at 0.05%, urP (25, 50, none) at 0.10%, written to the sidecar as
+`real_latent_fail_fraction`. The price is per-iteration cost: the cost model's passes per decode
+go from 155 to 1050 on mrP, 155 to 850 on xrP, 90 to 155 on mtP/xtP, 155 to 400 on utP (urP
+unchanged); the cells already ran to the clock, so expect fewer iterations per cell on the relu
+charts. The smokes and PROBE were rerun on the new sidecars (runbook).
+
+Benchmarked anyway, soft12 only (the four `_soft12P` manifests, PROCS=2): the question the
+rung asks is answered by cells, and the cVAE precedent ran its collapsed charts. Cells
+`docs/loink-tables.md`.
+
+### Phase 2 (2026-10-25): single-branch charts on the rigid arms -- the fit does not move
+
+**Why.** The K = 1 diagnosis above says a bijection of `R^7` cannot carry the several disconnected
+arcs of a 7-DoF arm's pose fibre on one line. Thomas's call (2026-10-24): train the Panda and
+iiwa charts on ONE IK branch, where the fibre is a single arc parameterised by the redundancy,
+and accept the single-branch nature as a stated limitation of the arm. Branch = the nominal
+configuration's (`src/branches.py`, analytic classifiers, never hard-coded): Panda `gc(q, 3) =
+(1, 2, +1)`, iiwa `GC = (+1, -1, +1)`. Datasets `panda_branch` / `iiwa14_branch` (25M + 15k,
+seed 0, rejection sampling on xeon-p8; on-branch acceptance 0.236 / 0.125). Labels
+`loinkB<cost><act><recipe>`, 12 per robot, the same `K = 1`, trust region 2.5, 180 s. Reach
+ceiling of a single-branch arm on the 20 probe targets (`scripts/loink_branch_ceiling.py`,
+analytic IK on the nominal branch over a psi grid, verified by the program): Panda pose 16/20
+(the `A = -1` branches reach none), Panda grasp 20/20, iiwa pose and grasp 20/20.
+
+**Result: the branch charts sit at the constant predictor, like the full-fibre ones.** Validation
+on the BRANCH test split at the end of training (constant predictor Panda 581 mm / 136 deg, iiwa
+700 mm / 130 deg); exports via the 96-triple ladder (`n_dys x n_newton x damping`, three latent
+draws: prior, +-5 box, real on-branch `q`); screen (a) = task error of `G^{-1}([y; 0])` on the
+branch test split; (g) = the same on the FULL test split's off-branch rows (what a paired start
+or an off-branch target meets), with the fraction of their true latents inside the +-5 box:
+
+| chart | val pos / rot RMSE | tau | export (n_dys, n_newton, damping), cost | (a) median pos / ang | (g) off-branch pos, in box |
+| --- | --- | --- | --- | --- | --- |
+| Panda BmrP | 743 mm / 83 deg | 1.3e5 | rc 6, no triple passes | - | - |
+| Panda BmtP | 683 / 114 | 3.9e4 | (100, 10, backtrack) 250 | 615 mm / 105 deg | 886 mm, 0.72 |
+| Panda BxrP | 743 / 83 | 1.2e5 | rc 6 | - | - |
+| Panda BxtP | 692 / 114 | 4.1e4 | (25, 20, backtrack) 325 | 625 / 105 | 905, 0.68 |
+| Panda BurP | 769 / 79 | 1.5e5 | rc 6 | - | - |
+| Panda ButP | 791 / 109 | 1.4e5 | (800, 50, backtrack) 1550 | 713 / 98 | 981, 0.02 (z median 86) |
+| Panda BmrA | 678 / 93 | 5.1e3 | (1600, 20, none) 1760 | 585 / 74 | 1257 (p95 23 m), 0.81 |
+| Panda BmtA | 648 / 119 | 1.0e3 | (25, 10, backtrack) 175 | 579 / 113 | 792, 0.74 |
+| Panda BxrA | 680 / 93 | 6.0e3 | (1600, 30, none) 1840 | 577 / 73 | 1193 (p95 21 m), 0.80 |
+| Panda BxtA | 629 / 120 | 7.0e2 | (25, 10, backtrack) 175 | 573 / 115 | 765, 0.70 |
+| Panda BurA | 702 / 91 | 6.3e3 | (1600, 30, none) 1840 | 602 / 71 | 1186 (p95 14 m), 0.25 |
+| Panda ButA | 679 / 117 | 1.1e3 | (100, 10, backtrack) 250 | 629 / 110 | 857, 0.32 |
+| iiwa BmrP | 662 / 77 | 7.6e4 | rc 6 | - | - |
+| iiwa BmtP | 664 / 104 | 2.9e4 | (25, 20, backtrack) 325 | 545 / 89 | 1183, 0.72 |
+| iiwa BxrP | 666 / 77 | 7.9e4 | rc 6 | - | - |
+| iiwa BxtP | 678 / 103 | 2.8e4 | (25, 10, backtrack) 175 | 551 / 89 | 1195, 0.71 |
+| iiwa BurP | 618 / 74 | 1.1e5 | rc 6 | - | - |
+| iiwa ButP | 725 / 99 | 1.1e5 | (800, 50, backtrack) 1550 | 593 / 83 | 1448, 0.03 (z median 69) |
+| iiwa BmrA | 635 / 85 | 3.5e3 | (1600, 5, none) 1640 | 511 / 62 | 1966, 0.75 |
+| iiwa BmtA | 622 / 113 | 9.6e2 | (25, 10, backtrack) 175 | 526 / 103 | 1051, 0.70 |
+| iiwa BxrA | 638 / 85 at 40k | 3.5e3 | killed (LR rule), `last.ckpt` | - | - |
+| iiwa BxtA | 470 / 118 at 30k | 8.5e2 | killed, `last.ckpt` | - | - |
+| iiwa BurA | 589 / 82 at 20k | 4.1e3 | killed, `last.ckpt` | - | - |
+| iiwa ButA | 656 / 108 at 20k | 1.1e3 | killed, `last.ckpt` | - | - |
+
+Every exported chart puts more than 50 mm of task error on 99.9% of its own branch's test poses;
+the best of the ladder (iiwa BmrA) is 511 mm at the median with a p95 above a metre. Recipe P
+reproduces phase 1 step for step: the Panda `m` relu curve is flat from step 20k (721 -> 743 mm),
+`tau` grows to 3e4-1.5e5, and every relu chart ends NON-INVERTIBLE (no triple of the ladder
+passes the round trip on any draw; the tanh charts pass at 175-325 passes per decode, ButP at
+1550). Recipe A collapses as in phase 1 (the plateau schedule halves the LR every 500 steps;
+`lr < 1e-6` at step 12-20k on every run): the Panda pairs and the iiwa `m` pair started before
+the 15-min watcher cadence and ran out (frozen at 1.5e-8, so the final chart is the step-20k
+chart); the iiwa `x` and `u` pairs were `scancel`led under Thomas's rule at steps 30k / 20k with
+`checkpoints/last.ckpt` kept (exportable by hand with `export_loink.py`). Two things the A runs
+show: their relu charts DO invert, because `tau` stayed at 3e3-6e3, at 5-10x the tanh decode cost
+(1640-1840 passes: 1600 Davis-Yin iterations, the polish cannot be damped at the kinks); and on
+the iiwa they sit BELOW the constant predictor (470-656 mm v 700) where the P charts and every
+Panda chart sit at or above it -- a fit, but half a metre from usable. Off the branch (g), where
+a paired start or a target reachable only elsewhere lands, the error roughly doubles (0.8-2 m
+medians, the relu A charts' p95 at 14-23 m) and 20-30% of the true latents leave the +-5 box
+(ButP and BurA: 70-98%), so the paired protocol would clip as it does on soft12.
+
+**Conclusion.** Restricting the fibre to one arc did not move the fit; the disconnected topology
+was not the binding constraint. The gap is between what a `K = 1` bi-Lipschitz chart of `R^7` can
+represent for a 6-D pose task and what training finds (the diagnosis table above: padding the
+latent is what restores learning), so the open questions for the authors stand: the training
+recipe for a 7-DoF arm, why `tau` runs away, and whether a padded latent is in the method's
+spirit. **Cells on the branch charts** (`LOINKSMOKE_branch`, `LOINKPROBE_branch`, 192 + 192 GPU
+items) are NOT run by default on charts that put the end effector half a metre off: Thomas's call
+(the report prints `not yet measured` on those rows until it is made). Sidecars of the 14 exported
+charts (and the six rc-6 ones, carrying the training default and the reason) are in
+`models/panda/`, `models/iiwa14/`.
+
+### Closed: dismissed on per-iteration cost (Thomas, 2026-10-26)
+
+LOInK is dismissed as a chart for this framework, and the campaign branch is archived as tag
+`archive/chart-loink` (never merged; the code under `src/charts/loink.py`, `src/branches.py`,
+`scripts/training/*loink*`, the 96-triple exporter ladder, the tables `docs/loink-tables.md`, the
+runbook `cluster/LOINK_RUNBOOK.md` and the manifests are all there). The deciding number is not
+the fit but the cost of a call: the chart is an inverse, so one decode is `n_dys` Davis-Yin
+iterations plus Newton polish steps, 155-1840 network passes at the budgets the exporter had to
+choose, against ONE forward pass (plus one `jacrev`) for the flow, whose trial point is ~3 ms on a
+V100 with CUDA graphs (`docs/notes-architecture.md`). In the soft12 probe cells that was 20-30
+IPOPT iterations in 180 s on the relu charts and 60-150 on tanh, 1-9 s per iteration, ~100x the
+flow's 15-26 ms; even a chart that fitted would not fit inside the clock. The branch-chart cells
+were never run. The questions that remain are the authors' (training recipe for a 7-DoF arm, why
+`tau` runs away under the project recipe, whether a padded latent is in the method's spirit);
+Thomas takes them to the authors himself. Artefacts left on the cluster, untouched (no backups
+there): `~/learned-ik/results/train/*loink*` (~10 GB of checkpoints), `repo/models/*/*loink*`
+(121 MB), the branch datasets, 96 `sc_LOINK*` result dirs under `results/soft12/benchmark/`,
+`results/screen_loink/`, and the four `state/manifest_stageLOINK*` claim dirs. Local: 20 branch
+sidecars in `models/{panda,iiwa14}/` on the tag only; the laptop's `results/screen_loink/` and
+`results/soft12/benchmark/sc_LOINK*` copies stay (gitignored).

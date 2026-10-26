@@ -127,6 +127,15 @@ The old "~3x ceiling" is superseded.
     host-to-device copy.
   - `mode="reduce-overhead"` exceeds the cudagraph-trees re-record limit and falls back to ungraphed.
   - Probe: `scripts/profiling/probe_cuda_graphs.py`.
+  - **TRAP: a linear solve inside the network (2026-10-23, the LOInK chart).** The jacrev graph is
+    captured under `enable_grad`, and in that mode torch's backward of `linalg_solve` /
+    `solve_ex` recomputes its gradient through a plain `at::linalg_solve`, whose info check
+    (`_linalg_check_errors`) is a host sync: "CUDA error: operation not permitted when stream is
+    capturing", at `WarmUpJacobian`, on every item (torch 2.14 on the cluster). The forward
+    pass's `check_errors=False` is not enough. Use `lu_factor_ex(check_errors=False)` +
+    `lu_solve` (`src/charts/loink.py` `_solve`), whose derivatives are graph-safe both ways, and
+    before graphing any new network trace its GRAD-ENABLED compiled graph (a recording
+    `aot_autograd` backend) for `_linalg_check_errors`; a CPU run proves nothing about capture.
 - **Why the forward pass too.**
   - Under IPOPT, Drake evaluates constraint values in double and costs in AutoDiffXd. So each trial
     point is one `jacrev` plus one plain forward pass.
