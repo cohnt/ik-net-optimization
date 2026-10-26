@@ -960,7 +960,7 @@ cd ~/.cache/learned-ik-svgd-polish/stage-svgd && DRAKE_ENV=crc PROCS=2 bash clus
 # read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin4,pol   and   --variants pin4kq,polkq
 ```
 
-**Submitted 2026-10-26 ~11:55 EDT: jobs 6037006 / 6037008 / 6037009 / 6037010, four nodes, `DRAKE_ENV=crc
+**Submitted 2026-10-26 11:27 EDT: jobs 6037006 / 6037008 / 6037009 / 6037010, four nodes, `DRAKE_ENV=crc
 PROCS=2`, staged c92817b (checked: `.staged-commit`, `polish_active_ineq_held` in the staged solver, manifest md5
 `4efe670d`, the four checkpoints present).**
 
