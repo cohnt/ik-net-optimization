@@ -403,16 +403,14 @@ the decoder returns E[q | pose], unusable where the IK fibre is disconnected bra
 `docs/notes-chart.md`; ops `cluster/CVAE_RUNBOOK.md`.
 
 **Chart rung two: LOInK (branch `chart-loink`, 2026-10-22), not an ablation**: a bi-Lipschitz
-network designed for a structured latent (`G(q) = [task; z]`, `z = 0` the cost minimiser, the chart `G^{-1}`): does a latent structured for ONE cost help under OUR objective? **Rigid arms: no
-chart fits at LOInK's own `K = n - 6 = 1`** (the latent width is the mechanism), **and retraining
+network designed for a structured latent (`G(q) = [task; z]`, the chart `G^{-1}`): does a latent structured for ONE cost help under OUR objective? **Rigid arms: no
+chart fits at LOInK's own `K = n - 6 = 1`** (the latent width is why), **and retraining
 on ONE IK branch (phase 2, 24 `loinkB*` charts, 2026-10-25) changed nothing**: 0.5-0.7 m median
 task error on the branch itself, so topology was not the binding constraint. **Soft12 (`K = 6`)
 learns but no chart fits** (0.18-0.29 m, `z = 0` a metre off, cost head R^2 < 0; cells 0/20 under
-IPOPT and AL-SVGD); real latents lie OUTSIDE the +-5 box (paired starts clip). Recipe-P relu charts end non-invertible (`tau` > 7e4); recipe A's LR collapses by step 20k
-on every robot (the paper's schedule). **DISMISSED (Thomas, 2026-10-26)**: a decode is 155-1840
-network passes (Davis-Yin + polish) against the flow's one, i.e. 1-9 s per IPOPT iteration, ~100x
-the flow; no padded-latent rung. The branch is tag `archive/chart-loink` (code, tables, runbook).
-Long form `docs/notes-chart.md`; replication `docs/loink-replication.md` (Sec. V yes, Table II no).
+IPOPT and AL-SVGD); real latents lie OUTSIDE the +-5 box (paired starts clip). Recipe-P relu charts end non-invertible (`tau` > 7e4); recipe A's LR collapses by step 20k (the paper's schedule). **DISMISSED (Thomas, 2026-10-26)**: a decode is 155-1840
+network passes (Davis-Yin + polish) against the flow's one, i.e. 1-9 s per IPOPT iteration, ~100x the flow. The branch is tag `archive/chart-loink` (code, tables, runbook, manifests).
+Long form `docs/notes-chart.md`; replication `docs/loink-replication.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
 
