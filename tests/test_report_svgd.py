@@ -351,7 +351,8 @@ def test_stage_tag_parsing_every_variant():
             assert variants[v]["arms"] == want, (v, variants[v]["arms"])
             assert want == (("numerical",) if (r, v) in (("SVGD_R20", "pin2kq"),
                                                           ("SVGD_R22", "clipoffjs"),
-                                                          ("SVGD_R30", "pin4kq"))
+                                                          ("SVGD_R30", "pin4kq"),
+                                                          ("SVGD_R31", "polkq"))
                             else tuple(GM.SVGD_ROUND_ARMS.split(","))), (r, v, want)
     ## Not stage tags: the smoke's, the cluster smoke's, the record's, a twin with a variant token.
     for bad in (M.make_tag("panda", "mugshelf", "paired", "al64", 10, 20),
@@ -647,10 +648,11 @@ def test_stage_seed2_pairs_its_own_twin_only():
         assert STAGE_ROW + ("kq@seed2",) not in rep.blocks and rep.status == 2
 
 ## The tuning push's rounds after R23 (R24 / R26 / R27 / R28), in catalogue order, on every record robot.
-LATER_ROUNDS = ['N16', 'N32', 'rho1e6', 'pat2', 'pat3', 'alpha0p1', 'alpha10', 'alpha0', 'floor1em3', 'floor0p2', 'kz3', 'lp0p1', 'lp1', 'lp10', 'lp1notr', 'ld1', 'fd0p1', 'fd1', 'qc0', 'qc1', 'qc100', 'pin4', 'so', 'lp0p1so', 'lp1so', 'pin4kq', 'pin4s2@seed2']
+LATER_ROUNDS = ['N16', 'N32', 'rho1e6', 'pat2', 'pat3', 'alpha0p1', 'alpha10', 'alpha0', 'floor1em3', 'floor0p2', 'kz3', 'lp0p1', 'lp1', 'lp10', 'lp1notr', 'ld1', 'fd0p1', 'fd1', 'qc0', 'qc1', 'qc100', 'pin4', 'so', 'lp0p1so', 'lp1so', 'pin4kq', 'pin4s2@seed2', 'pol', 'polkq']
 LATER_ROUND_OF = {**{v: "SVGD_R24" for v in LATER_ROUNDS[:11]}, **{v: "SVGD_R26" for v in LATER_ROUNDS[11:15]},
                   **{v: "SVGD_R27" for v in LATER_ROUNDS[15:18]}, **{v: "SVGD_R28" for v in LATER_ROUNDS[18:21]},
-                  **{v: "SVGD_R29" for v in LATER_ROUNDS[21:25]}, **{v: "SVGD_R30" for v in LATER_ROUNDS[25:]}}
+                  **{v: "SVGD_R29" for v in LATER_ROUNDS[21:25]}, **{v: "SVGD_R30" for v in LATER_ROUNDS[25:27]},
+                  **{v: "SVGD_R31" for v in LATER_ROUNDS[27:]}}
 
 
 ## ------------------------------------------- R13 / R14 and the screw / soft PCS arms --
@@ -712,7 +714,7 @@ def test_stage_screw_and_soft_blocks():
         assert list(cols) == [R.STAGE_TWIN, "kq"] + list(OTHER_ROBOT_ROUNDS[robot]), (robot, list(cols))
         assert cols[R.STAGE_TWIN]["manifest"] == "PAPER" and cols["kq"]["manifest"] == stage
         for v, st in OTHER_ROBOT_ROUNDS[robot].items():
-            arms = ("numerical",) if v in ("pin2kq", "pin4kq") else ("learned",)    # R21 / R30: the joint-space ablation
+            arms = ("numerical",) if v in ("pin2kq", "pin4kq", "polkq") else ("learned",)    # R21 / R30 / R31: the joint-space ablation
             assert cols[v]["manifest"] == st and cols[v]["arms"] == arms, (robot, v)
         assert cols["kq"]["arms"] == ("learned",) and cols[R.STAGE_TWIN]["arms"] == R.ARMS
         assert cols["kq"]["sets"] == {**panda["kq"]["sets"], **CLR}, robot
