@@ -2934,6 +2934,10 @@ network-architecture ablations, in another session.
 
 ## The float64 polish (branch `svgd-polish`, from 2026-10-26)
 
+**Ruling (Thomas, 2026-10-26): not fielded; `svgd_polish` stays `none`.** *"It's not a super high impact
+factor (1e-5 tolerance is already much finer than the resolution of robot control). I think it's worth
+keeping in mind, but maybe not essential to the story."* The option stays in the tree for that; no V5 pin.
+
 ### Stage SVGD_R31: a float64 Newton polish of the returned particle (pre-registered 2026-10-26, before the manifest)
 
 **Why.** The pin returns a particle that passes the 1e-4 gate, and the gate is all it is held to: the
