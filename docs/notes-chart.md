@@ -563,9 +563,15 @@ IPOPT iterations in 180 s on the relu charts and 60-150 on tanh, 1-9 s per itera
 flow's 15-26 ms; even a chart that fitted would not fit inside the clock. The branch-chart cells
 were never run. The questions that remain are the authors' (training recipe for a 7-DoF arm, why
 `tau` runs away under the project recipe, whether a padded latent is in the method's spirit);
-Thomas takes them to the authors himself. Artefacts left on the cluster, untouched (no backups
-there): `~/learned-ik/results/train/*loink*` (~10 GB of checkpoints), `repo/models/*/*loink*`
-(121 MB), the branch datasets, 96 `sc_LOINK*` result dirs under `results/soft12/benchmark/`,
-`results/screen_loink/`, and the four `state/manifest_stageLOINK*` claim dirs. Local: 20 branch
-sidecars in `models/{panda,iiwa14}/` on the tag only; the laptop's `results/screen_loink/` and
-`results/soft12/benchmark/sc_LOINK*` copies stay (gitignored).
+Thomas takes them to the authors himself. **Dismissed because inverting the network is too slow
+for our purposes; what was needed is answered and the campaign is fully closed** (Thomas,
+2026-10-26). The cluster artefacts were deleted on his instruction (12 GB: `results/train/*loink*`,
+`repo/models/*/*loink*`, the 104 `sc_LOINK*` result dirs, `results/screen_loink/`, the four
+`state/manifest_stageLOINK*` claim dirs, and the branch datasets `panda_branch` / `iiwa14_branch`),
+after every result and screen had been copied to the laptop (`results/soft12/benchmark/sc_LOINK*`,
+`results/panda/benchmark/sc_LOINKACC*`, `results/screen_loink/`, gitignored). **To replicate**
+(approximate replication is the recipe, not bit-exactness): check out tag `archive/chart-loink`,
+rebuild a branch dataset with `cluster/build_dataset_job.sh` (`DATASET_ROBOT=panda_branch`, seed 0,
+xeon-p8, ~2 h), train a row of `cluster/chart_runs.txt` with `cluster/submit_chart_train.sh` (P:
+~14 h on one V100; A: ~2 h), and run the `manifest_stageLOINK*` stages per `cluster/LOINK_RUNBOOK.md`.
+The 20 branch sidecars are committed on the tag under `models/{panda,iiwa14}/`.
