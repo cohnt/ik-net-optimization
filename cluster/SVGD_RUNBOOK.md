@@ -984,6 +984,9 @@ jobs 6038026 / 6038028 / 6038029 / 6038030, `DRAKE_ENV=crc PROCS=2`. REPRO's ite
 the `_shard0of24` dirs directly (the merger leaves an incomplete shard set alone).
 NOTE: `stage_code.sh` and `collect_results.sh` each take ~25 min of cluster-side I/O; never wrap them in a
 short `timeout` (two runs of this session were killed that way).
+REPRO_SVGD read 17:20 (deterministic Inductor refuted; docs "Diagnostic REPRO_SVGD"). **REPRO_SVGD2
+submitted 17:40 EDT**: job 6038673 (16 items, 1 node, manifest md5 `10d49418`, same staged tree 656238d; A/C
+with `PYTHONHASHSEED=0`). Submit from the laptop (`submit_bench.sh` copies the local manifest), not on the cluster.
 
 ## R29 / R30 (branch `svgd-tune`, 2026-10-16): the regulariser's three roles, and the V4 pin's record re-measure
 
