@@ -93,8 +93,8 @@ the name the benchmark manifest expects — so the two halves meet there and now
 
 The record runs on ONE Drake, the tarball pin, and that does not change. The svgd solver's
 batched clearance collision row (`--set svgd_collision_backend=clearances`) needs
-`CollisionChecker.CalcRobotClearances`, which only Thomas's Drake branch `calc-robot-clearances`
-carries, and Thomas ruled on 2026-10-11 that the svgd rounds use it from R11 on. So there is a
+`CollisionChecker.CalcRobotClearances`, which the pinned nightly predates (it is in master since #25073, 2026-10-12;
+the wheel is Thomas's branch `calc-robot-clearances`), and Thomas ruled on 2026-10-11 that the svgd rounds use it from R11 on. So there is a
 second environment, selected per STAGE (never per item) by `DRAKE_ENV`:
 
 | | unset (every stage of record, the IPOPT twins, svgd R1-R10) | `DRAKE_ENV=crc` |
@@ -198,8 +198,9 @@ items unclaimed for the next job, and the item runs under `timeout -k 60` so a s
 TERM is actually killed. That is why raising the two numbers is not by itself the fix:
 without the guard a worker will still claim a multi-hour item minutes before its job ends.
 
-Sizing shards is therefore about **throughput, not data integrity**. A killed item loses its
-compute and leaves a stale claim needing `--reclaim`, but it cannot corrupt a result: partial
+Sizing shards is therefore about **throughput, not data integrity**. A killed item loses only
+its in-flight cell (the rest are in its `summary.json.cells.jsonl`, and the resubmission resumes)
+and leaves a stale claim needing `--reclaim`, but it cannot corrupt a result: partial
 writes go to `summary.json.partial`, `run_items.sh` publishes to the collection point only on
 exit 0, and `merge_shard_summaries.py` refuses both on a missing shard index and on any
 unsolved cell of the full grid. Pick shards so the longest item sits comfortably inside
@@ -424,6 +425,64 @@ query returned 1 for a live run name and 0 for an invented one, each sibling run
 only itself rather than all five, and the per-tree counts came back disjoint (6 `screw`,
 9 `lik`). The calibration and smoke exemptions were checked against the pattern directly,
 since no such job happened to be queued at the time.
+
+## The overrun watcher: SNOPT cells that ignore the clock (2026-10-21)
+
+SNOPT does not check its time limit on a major iteration with zero minors, so a cycling cell runs
+on to the major limit: 0.4-2.2 h at 1e5 majors against a 180 s clock (~3 callbacks per major;
+ITCAP's (32,7) made 301,618 over 1e5 majors). Nothing inside the solve may stop it (the iterate must
+survive; `SolveTimeout`/`CheckDeadline`/`hard_time_factor` stay deleted), so `run_items.sh` stops it
+from outside:
+
+- Every item runs with `LEARNED_IK_WATCH_DIR=$TMPDIR/watch.<worker>.<id>` (node-local),
+  `LEARNED_IK_RESUME=1` and `LEARNED_IK_OVERRUN_FACTOR` (`OVERRUN_FACTOR`, default 1.5).
+  `run_grid` appends every finished (cell, arm) to `<result dir>/summary.json.cells.jsonl`
+  (Lustre), writes a heartbeat `pid ti gi arm phase deadline`, a start marker, and streams the
+  newest iterate to `iterate.bin` (one `pwrite` per evaluation, crc-checked).
+- `Watch` polls the heartbeat every `WATCH_POLL` (5) s. A solve past `OVERRUN_FACTOR x
+  max_wall_time` (270 s at 180 s) gets the `killed` marker, a line in the worker log and in
+  `$STATE_DIR/kills.log`, then `SIGKILL`. Every `collect_results.sh` run (or `--kills` alone)
+  fetches the kill logs whole into `results/_cluster_kills/<SC_ROOT>/<manifest>/kills.log`;
+  stage OVR's four log 204 kills, 0 withdrawn, one per resume event in the records.
+- The item is relaunched (each launch gets what is left of `ITEM_TIMEOUT`, at most `MAX_OVERRUNS`
+  (16) relaunches). It resumes after the last recorded cell and records the killed one from its
+  last iterate: `fail_reason="killed_overrun"`, `timed_out=True` (ruled 2026-10-21),
+  `hit_iteration_cap=False`, `recovered_*` from the iterate, `wall_time` up to the kill. A relaunch
+  costs the startup (~1 min, plus the svgd warm-up). `metadata["resume"]` lists every relaunch.
+- **A resume is refused** when the JSONL's header (grid hash, arms, solver, start, clock, overrides,
+  shard, cells, **commit**) differs from the run's: a restaged tree never splices onto old
+  records. Move the JSONL aside to start the item afresh.
+- A death without a marker (segfault, OOM, item timeout, Slurm) leaves the in-flight cell
+  unrecorded; the item fails as before, and after `--reclaim` the resubmission resumes from the
+  JSONL (on any node) and re-runs that cell.
+- Why 1.5x: across every local SNOPT shard the overrun past the clock is a continuous tail, ~50
+  cells 10-90 s over, then ~280 more than 300 s over; every cell past 45 s over is infeasible
+  except the analytic arm's iiwa pose native (59,0), which converged 643-1443 s late in stages
+  ANALYTIC/C/T. Under the watcher it is `killed_overrun` (accepted, Thomas 2026-10-21). At a clock
+  much below 180 s, 1.5x is tighter than a legitimate overrun (up to ~90 s): raise `OVERRUN_FACTOR`.
+- Validation, stage `WATCHCHK` (2026-10-22, job 5999354, PROCS=2, 50 min): PAPER's iiwa pose
+  paired shard 1 and Panda grasp native shard 2 re-run verbatim. `scripts/check_mergechk.py
+  --prefix WATCHCHK --overrun-factor 1.5` PASSED: every converged cell identical; the five cells
+  the originals ran 569-1055 s came back `killed_overrun` at 271-276 s, infeasible as before
+  (recovered_feasible False on all five); 8 clock-bound cells differ (allowed).
+- Stage `OVR` (2026-10-22): every record SNOPT shard with a cell past 1.5x the clock re-run whole
+  under the watcher (`scripts/find_overrun_shards.py`, 128 shards: REMEASURE 39 incl. 5 GVS at
+  PROCS=8 MPS=1, PAPER 34 at PROCS=2, ANALYTIC 37 and ANALYTIC_CPP 18 on xeon-p8 at PROCS=2), folded
+  into its runs by `scripts/apply_overrun_rerun.py` (originals moved to
+  `results/archive_preoverrun/`). Jobs 5999929-37, 2026-10-22 01:40-04:40, 128/128 items, 0 failed;
+  collected 20261022-051302, folded into 38 runs. 204 cells killed at 271-277 s, each matched by a
+  resume event; 201 of the originals' 203 overruns came back killed, 2 ended under the threshold
+  (SNOPT reached a major with minors at the clock on a node of different speed), and 3 cells the
+  originals stopped at 208-263 s were killed (the converse). `check_mergechk --prefix OVR
+  --overrun-factor 1.5`: every converged cell identical; its 8 BAD KILLs are exactly those 5 plus
+  analytic (59,0) on the three ladders. **No success count or verdict moved in any table**
+  (status quo, PAPER, time-matched, svgd 2x2, analytic, three-way); time-matched moves <= 0.3
+  points; SQP budget stops per row: learned 0-10 -> 0, joint space 0-3 -> 0-2; analytic 0.
+- Stage `GVSO2` (2026-10-22): the GVS arm's `o2` rung at record conditions, REMEASURE's items with
+  the rung swapped (64 items, staged a090cb9). Jobs 6001801-04, 4 volta nodes, PROCS=2, no MPS,
+  07:54-15:02 (7.1 h), 64/64 items, 0 failed; collected 20261022-150431, promoted to
+  `results/gvs_pushrod9_o2/`. 8 watcher kills = 8 `killed_overrun` records (272-274 s), 0 withdrawn.
+  Tables `docs/gvs-arm-tables.md`.
 
 ## How work is claimed, and how to recover
 

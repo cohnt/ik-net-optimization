@@ -10,6 +10,13 @@
 #   cluster/collect_results.sh                     tar + rsync + extract + merge shards,
 #                                                  INCREMENTAL since the last success
 #   cluster/collect_results.sh --full              the same, but the whole results tree
+#   cluster/collect_results.sh --kills             only the overrun watcher's kill logs
+#
+# Every collection also fetches the overrun watcher's kill logs (run_items.sh writes
+# state/<manifest>/kills.log) into results/_cluster_kills/<SC_ROOT>/<manifest>/, whole:
+# they are append-only and tiny, and the incremental tar would skip one last written
+# before the watermark. --status lists any collect_*.tar this script left behind (a
+# collection killed between building its archive and removing it).
 #
 # --status counts done markers with `find -name '*.done'` inside ONE state
 # subdirectory per manifest. It never walks the results tree: filesystem-scan
@@ -25,6 +32,23 @@
 set -uo pipefail
 source "$(dirname "$0")/ssh_common.sh"
 REPO_ROOT="$(_sc_repo_root)"
+
+## A literal last component, so the remote shell lists `state/` and stats one path per
+## manifest -- never a readdir of a manifest's thousands of claim and done entries (an
+## rsync include filter does exactly that readdir and took >10 min on 2026-10-22).
+fetch_kills() {
+    local dest="$REPO_ROOT/results/_cluster_kills/$SC_ROOT"
+    mkdir -p "$dest"
+    sc_run "cd ~/$SC_ROOT && ls state/*/kills.log 2>/dev/null | tar cf - -T -" \
+        | tar xf - -C "$dest" --strip-components=1
+    echo "kill logs: $(find "$dest" -name kills.log | wc -l) manifest(s), \
+$(cat "$dest"/*/kills.log 2>/dev/null | grep -vc WITHDRAWN) kill(s) in $dest"
+}
+
+if [ "${1:-}" = "--kills" ]; then
+    fetch_kills
+    exit 0
+fi
 
 if [ "${1:-}" = "--status" ]; then
     sc_run "cd ~/$SC_ROOT 2>/dev/null || { echo 'no ~/$SC_ROOT yet'; exit 0; }
@@ -42,6 +66,8 @@ done
 echo '--- worker sentinels (most recent 20) ---'
 find state -maxdepth 2 -name '*.SENTINEL' -printf '%T@ %p ' -exec head -1 {} \; \\
     | sort -n | tail -20 | cut -d' ' -f2-
+echo '--- leftover collect_*.tar (scratch archives of this script) ---'
+ls -lh collect_*.tar 2>/dev/null || echo none
 echo '--- queue ---'
 squeue -u \$USER -h -o '%.10i %.2t %.10M %j  %R' 2>/dev/null | head -20"
     exit 0
@@ -213,5 +239,6 @@ echo "merging: searching $STAGING plus $(( ${#ALSO[@]} / 2 )) prior staging dire
 # Only now is it safe to advance the incremental watermark: everything above has to
 # have succeeded, or the next run must re-fetch what this one failed to bring back.
 sc_run "echo $COLLECT_WATERMARK > ~/$SC_ROOT/.last_collect"
+fetch_kills
 echo
 echo "review, then promote with:  cp -r $STAGING/results/<robot>/benchmark/<tag> results/<robot>/benchmark/"

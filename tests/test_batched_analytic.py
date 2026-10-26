@@ -69,6 +69,8 @@ class _Fake(AnalyticProgramMixin):
         self.gc = np.asarray(gc)
         self.pose_offset = pose_offset
         self.options = SimpleNamespace(analytic_clip_stepback=CLIP_STEPBACK)
+        ## `_InitAnalytic`'s Python-reference backend: the oracle is the reference, never the C++.
+        self._analytic_cpp = None
 
     def _AnalyticSolve(self, R, p, psi, gc, clip_stepback):
         ## The two robots' `_AnalyticSolve`, verbatim (src/panda_program.py, src/iiwa_program.py).

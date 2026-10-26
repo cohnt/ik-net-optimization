@@ -1,4 +1,5 @@
-"""A batched, differentiable torch wrapper around the IKFlow network.
+"""A batched, differentiable torch wrapper around the program's chart (IKFlow, or any
+`src/charts` family).
 
 The program's own flow evaluation (`MakeFlowInference` in `src/generic_program.py`) is
 written for one iterate at a time: a lumped vector `[c7 | z | q_c]` with the conditioning
@@ -9,7 +10,9 @@ more: it reproduces, column for column, what `VarsToQ` computes on the plain flo
 
     q = flow(c, z)[:, :ndof] + q_c,
 
-and its inverse (`rev=False`), which is what the paired start relies on.
+and its inverse (`rev=False`), which is what the paired start relies on. Both go through
+the chart's `decode` / `encode` (`src/charts/base.py`) on this wrapper's own copy of the
+module, so the flow's network call is written in one place (`src/charts/flow.py`).
 
 Two things it deliberately does NOT do.
 
@@ -93,13 +96,16 @@ class BatchedFlow:
     Layout of a lumped particle `X[i]` is the program's `lumped_vars`: `[c6 (6) | z (width)
     | q_c (ndof)]`, with `c6 = [xyz, roll, pitch, yaw]`. Anything after that (the `lift_q`
     block, where present) is ignored, as `VarsToQ`'s explicit end index ignores it.
+
+    `chart` is the program's `ik_solver` (a `src.charts` Chart). The `ndof <= width` check
+    that lived here is the flow's own assumption and now lives in `FlowChart`.
     """
 
-    def __init__(self, nn_model, width, ndof, dtype, device, chart_error_scale=0.0):
-        self.width = int(width)
+    def __init__(self, chart, ndof, dtype, device, chart_error_scale=0.0):
+        self.chart = chart
+        nn_model = chart.nn_model
+        self.width = int(chart.network_width)
         self.ndof = int(ndof)
-        if self.ndof > self.width:
-            raise ValueError(f"ndof {self.ndof} exceeds the network width {self.width}")
         self.dtype = dtype
         self.device = torch.device(device)
         self.chart_error_scale = float(chart_error_scale)
@@ -133,38 +139,44 @@ class BatchedFlow:
     def from_program(program, dtype=None, device=None):
         """A wrapper around the network `program` holds, at the program's dtype by default.
 
-        Reads `program.ik_solver.nn_model`, `ik_solver.network_width`, `num_arm_dof`,
-        `options.chart_error_scale` and `torch_dtype`. The device defaults to wherever the
-        network already is.
+        Reads `program.ik_solver` (the chart: its `nn_model`, `network_width`, `decode`,
+        `encode`), `num_arm_dof`, `options.chart_error_scale` and `torch_dtype`. The device
+        defaults to wherever the network already is.
         """
-        nn_model = program.ik_solver.nn_model
+        chart = program.ik_solver
         if dtype is None:
             dtype = program.torch_dtype
         if device is None:
-            device = next(nn_model.parameters()).device
-        return BatchedFlow(nn_model, program.ik_solver.network_width, program.num_arm_dof,
-                           dtype, device, getattr(program.options, "chart_error_scale", 0.0))
+            device = next(chart.nn_model.parameters()).device
+        return BatchedFlow(chart, program.num_arm_dof, dtype, device,
+                           getattr(program.options, "chart_error_scale", 0.0))
 
-    def conditioning(self, c6: Tensor) -> Tensor:
-        """`[xyz, rpy]` [B, 6] -> the network's conditioning row `[xyz, wxyz, 0]` [B, 8].
-
-        The trailing zero is ikflow's softflow noise-scale column, the padding the flow was
-        trained with; `MakeFlowInference` appends the same zero.
-        """
+    def pose7(self, c6: Tensor) -> Tensor:
+        """`[xyz, rpy]` [B, 6] -> the chart's conditioning pose `[xyz, wxyz]` [B, 7]."""
         if c6.dim() != 2 or c6.shape[1] != 6:
             raise ValueError(f"c6 must be [B, 6], got {tuple(c6.shape)}")
+        return torch.cat([c6[:, :3], quat_from_rpy_batched(c6[:, 3:6])], dim=1)
+
+    def conditioning(self, c6: Tensor) -> Tensor:
+        """`[xyz, rpy]` [B, 6] -> a FLOW's conditioning row `[xyz, wxyz, 0]` [B, 8].
+
+        The trailing zero is ikflow's softflow noise-scale column, the padding the flow was
+        trained with; `FlowDecode` appends the same zero. Not used on the evaluation path
+        (that goes through the chart's `decode`), kept for the tests that pin the row.
+        """
+        pose7 = self.pose7(c6)
         pad = torch.zeros((c6.shape[0], 1), dtype=c6.dtype, device=c6.device)
-        return torch.cat([c6[:, :3], quat_from_rpy_batched(c6[:, 3:6]), pad], dim=1)
+        return torch.cat([pose7, pad], dim=1)
 
     def q(self, c6: Tensor, z: Tensor, qc: Tensor) -> Tensor:
-        """`flow(c, z)[:, :ndof] + q_c`, [B, ndof]. Differentiable in all three arguments."""
-        cond = self.conditioning(c6)
-        output, _ = self.model(z, c=cond, rev=True)
+        """`chart(c, z)[:, :ndof] + q_c`, [B, ndof]. Differentiable in all three arguments."""
+        pose7 = self.pose7(c6)
+        output, _ = self.chart.decode(self.model, z, pose7)
         q = output[:, :self.ndof] + qc
         if self.chart_error_scale:
             # A function of the conditioning pose and latent only, exactly as on the
             # program's side, so the correction's identity block is untouched.
-            inputs = torch.cat([cond[:, :7], z], dim=1).to(self._W.dtype)
+            inputs = torch.cat([pose7, z], dim=1).to(self._W.dtype)
             q = q + self.chart_error_scale * torch.sin(inputs @ self._W + self._b).to(q.dtype)
         return q
 
@@ -172,11 +184,13 @@ class BatchedFlow:
         """`(q [B, ndof], log|det dx/dz| [B])` from ONE network call: the log-det is the
         FrEIA forward pass's second return, which `q` discards. `q` is `self.q`'s
         expression; the program's `flow_logdet_weight` term is refused with
-        `chart_error_scale`, so the perturbation is not carried here."""
+        `chart_error_scale`, so the perturbation is not carried here. A chart without a
+        density (`has_density`) has no log-det, and the program refuses the term for it."""
         if self.chart_error_scale:
             raise NotImplementedError("the flow log-det is not defined under chart_error_scale")
-        cond = self.conditioning(c6)
-        output, logdet = self.model(z, c=cond, rev=True)
+        if not self.chart.has_density:
+            raise NotImplementedError(f"the {self.chart.family!r} chart has no log-det")
+        output, logdet = self.chart.decode(self.model, z, self.pose7(c6))
         q = output[:, :self.ndof] + qc
         return q, logdet.reshape(-1).to(q.dtype)
 
@@ -188,17 +202,14 @@ class BatchedFlow:
         return self.q(X[:, :6], X[:, 6:6 + w], X[:, 6 + w:6 + w + n])
 
     def invert(self, q: Tensor, c6: Tensor) -> Tensor:
-        """The latent that reproduces `q` under conditioning `c6`: the flow run forwards.
+        """The latent that reproduces `q` under conditioning `c6`: the chart's `encode`.
 
-        Batched `InvertFlow`: `x = [q, 0...]` padded to the network width, `rev=False`.
-        Exact (the flow is a bijection), evaluated under `no_grad` -- it initialises
+        Batched `InvertFlow`. For a flow, `x = [q, 0...]` padded to the network width and
+        run `rev=False`, exact (a bijection); evaluated under `no_grad` -- it initialises
         particles and is never differentiated through.
         """
         if q.dim() != 2 or q.shape[1] != self.ndof:
             raise ValueError(f"q must be [B, {self.ndof}], got {tuple(q.shape)}")
         with torch.no_grad():
-            pad = torch.zeros((q.shape[0], self.width - self.ndof), dtype=q.dtype,
-                              device=q.device)
-            x = torch.cat([q, pad], dim=1)
-            z, _ = self.model(x, c=self.conditioning(c6), rev=False)
+            z = self.chart.encode(self.model, q, self.pose7(c6))
         return z

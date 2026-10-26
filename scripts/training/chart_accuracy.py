@@ -78,10 +78,11 @@ def main():
     qs = []
     with torch.no_grad():
         for i in range(0, args.n, args.chunk):
-            c = np.zeros((min(args.chunk, args.n - i), 8))
-            c[:, :7] = pose[i:i + args.chunk]
-            out = model(torch.tensor(z[i:i + args.chunk], dtype=torch.float64, device=dev),
-                        c=torch.tensor(c, dtype=torch.float64, device=dev), rev=True)[0]
+            # Through the chart's `decode` (src/charts), as the programs evaluate it; for a
+            # flow that is the 8-wide conditioning row with a zero softflow column.
+            out = solver.decode(
+                model, torch.tensor(z[i:i + args.chunk], dtype=torch.float64, device=dev),
+                torch.tensor(pose[i:i + args.chunk], dtype=torch.float64, device=dev))[0]
             qs.append(out[:, :ndof].cpu().numpy())
     q_out = np.concatenate(qs)
 
@@ -92,10 +93,12 @@ def main():
 
     res = {"checkpoint": os.path.basename(ckpt) if ckpt else "downloaded",
            "robot": args.robot,
-           "nb_nodes": solver.arch["nb_nodes"],
-           "coeff_fn_internal_size": solver.arch["coeff_fn_internal_size"],
-           "rnvp_clamp": solver.arch["rnvp_clamp"],
-           "dim_latent_space": solver.arch["dim_latent_space"],
+           "family": solver.family,
+           # Flow-only keys read with .get: another family's sidecar has none of them.
+           "nb_nodes": solver.arch.get("nb_nodes"),
+           "coeff_fn_internal_size": solver.arch.get("coeff_fn_internal_size"),
+           "rnvp_clamp": solver.arch.get("rnvp_clamp"),
+           "dim_latent_space": solver.arch.get("dim_latent_space"),
            "n": args.n, "seed": args.seed,
            "usable_fraction": float(usable.mean()), "n_usable": int(usable.sum()),
            "pos_err_mm/median": float(np.median(err_mm)),

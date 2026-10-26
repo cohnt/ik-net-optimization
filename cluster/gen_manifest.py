@@ -28,6 +28,7 @@ Usage:
     python cluster/gen_manifest.py --selftest
 """
 import argparse
+import math
 import re
 import os
 import sys
@@ -2632,17 +2633,37 @@ def stage_REMEASURE(variant="REMEASURE"):
         if not want:
             continue
         for it in _REMEASURE_BUILDERS[builder](only=only, solvers=",".join(want), tag=tag):
-            args = list(it["args"])
-            solver = args[args.index("--solver") + 1]
-            task = args[args.index("--task") + 1]
-            ## The builders hard-code `--config latent`; the trust-region A/B is the same
-            ## stage under `latent_rule`, which differs from `latent` in exactly one flag.
-            args[args.index("--config") + 1] = config
-            budget = _itcap_extra(solver)[1] if solver in ("ipopt", "snopt") else []
-            args += REMEASURE_GRAPH + budget + list(extra_set)
-            items.append(dict(it, args=args, order=_remeasure_order(solver, task, wsg),
-                              seconds=_remeasure_seconds(robot, task, solver, args)))
+            items.append(_remeasure_item(it, robot, wsg, config, extra_set))
     return items
+
+
+def _remeasure_item(it, robot, wsg, config="latent", extra_set=(), seconds_robot=None):
+    """A builder's item at REMEASURE's conditions: graphs, lifted budgets, its claim order."""
+    args = list(it["args"])
+    solver = args[args.index("--solver") + 1]
+    task = args[args.index("--task") + 1]
+    ## The builders hard-code `--config latent`; the trust-region A/B is the same
+    ## stage under `latent_rule`, which differs from `latent` in exactly one flag.
+    args[args.index("--config") + 1] = config
+    budget = _itcap_extra(solver)[1] if solver in ("ipopt", "snopt") else []
+    args += REMEASURE_GRAPH + budget + list(extra_set)
+    return dict(it, args=args, order=_remeasure_order(solver, task, wsg),
+                seconds=_remeasure_seconds(seconds_robot or robot, task, solver, args))
+
+
+#: Stage GVSO2 (Thomas, 2026-10-22: the o2 rung "at record conditions"). Stage GVS measured both
+#: trained GVS rungs before the scene fix and the unified settings; REMEASURE re-measured only
+#: o1 (`REMEASURE_ROBOTS`). This is stage GVS's o2 rung through REMEASURE's own transform --
+#: the o1 items with the rung and its checkpoint swapped, nothing else -- under its own tag,
+#: run under the overrun watcher at PROCS=2. Outside the record, like every GVS row. The
+#: allotment estimate borrows o1's record walls (o2 has none at these conditions).
+GVSO2_RUNG = "gvs_pushrod9_o2"
+
+
+def stage_GVSO2():
+    return [_remeasure_item(it, GVSO2_RUNG, True, seconds_robot=GVS_PRIMARY)
+            for it in _REMEASURE_BUILDERS["GVS"](only=GVSO2_RUNG, solvers=GVS_SOLVERS,
+                                                 tag="GVSO2")]
 
 
 #: Table 3 of docs/status-quo-tables.md (mean wall over ALL cells, each clamped at the 180 s
@@ -3970,6 +3991,474 @@ def paper_allotment():
     print("  (REMEASURE ran these exact shards inside ITEM_TIMEOUT).")
 
 
+## -------------------------------------------------------------------------------- CVAE --
+##
+## The chart ablation (branch chart-cvae, Thomas 2026-10-18): the record's learned rows with the
+## IKFlow chart replaced by a standard conditional VAE's DECODER, everything else in the learned
+## formulation unchanged -- eq. (6), the correction and its penalty, the c box, the latent box and
+## trust region, frame calibration -- so the only thing ablated is the network. Two pre-registered
+## latent rungs per robot (cluster/chart_runs.txt): K = the flow's width, so the decision-variable
+## count is the record's, and K = the redundancy (DOF - 6).
+##
+## Each item is the record's item for the same row with ONLY the chart swapped: same seed, grid,
+## scene, cap, --compile, CUDA graphs, lifted budgets, shard count. So `grid_hash` and
+## `scene_fingerprint` match the record's run and scripts/report_chart_ablation.py pairs every cVAE
+## cell against the record's flow (learned) and joint-space arms on the same cell. Built by the
+## record's own constructors: `_svgd_rows` (the IPOPT rows exactly as stage PAPER / SVGD_R2 ran
+## them) and `_svgd_as_svgd(..., "pin4", stage="SVGD_R29")` (the V4 pin exactly as R29's `pin4`).
+## What changes, and nothing else (the selftest holds every item to it):
+##   * `--arms learned`: joint space is not re-run. The record's joint-space columns pair on the
+##     same cells, and one ACCEPTANCE item (below) proves they still would after the refactor;
+##   * `--checkpoint models/<robot>/<robot>__cvae<K>__step620000.pkl`;
+##   * the tag: `sc_CVAE_<robot>_cvae<K>_<solver>_<row>_480_180_<start>` -- the status-quo shape
+##     scripts/report_statusquo.parse_tag reads, rung token without underscores, and NO `_pin4`
+##     suffix on the svgd rows (the stage has one svgd setting, so the token would only break the
+##     parse);
+##   * the trust region on the K = redundancy rung (below).
+##
+## TRUST REGION, a setting of the rung. The record's items carry no radius of their own: `--config
+## latent` sets each robot's fielded constant (Panda 4.0, iiwa 4.3) or computes the rule
+## round(sqrt(ndof) + 1.5, 2) from the ROBOT's ndof (screw 4.15, soft PCS 4.96). The K = flow-width
+## rung keeps exactly that -- `--config latent`, nothing added -- so its program is the record's but
+## for the chart. The K = redundancy rung has a narrower latent, and the fielded constants are the
+## rule at the flow's width, so it takes the rule at ITS width, named explicitly as
+## `--set latent_trust_region=<round(sqrt(K) + 1.5, 2)>` (2.5 at K = 1, 3.95 at K = 6). Explicit
+## rather than `latent_trust_region_rule=True` because no record item expresses its radius that way,
+## and because the screw and soft PCS configs size the radius from the robot, not the chart.
+##
+## TWO MANIFESTS PER STAGE, because the Drake environment is per submission (submit_bench.sh refuses
+## a mix): `CVAE` = the IPOPT rows + the acceptance item on the tarball pin; `CVAE_SVGD` = the AL-SVGD
+## rows on the clearance row, DRAKE_ENV=crc. Both at PROCS=2, no MPS (paper conditions, as the record).
+## `CVAESMOKE` / `CVAESMOKE_SVGD`: every item family at CVAE_SMOKE_CELLS of the same grid (`--cells`,
+## so the cells are the record's), one item per logical run, tag `sc_CVAESMOKE_..._<n>_180_...`.
+##   64 logical runs: 4 robots x {grasp, pose} x {paired, native} x {IPOPT, AL-SVGD} x 2 rungs.
+
+#: Model directory (= the jrl robot name the cVAE trains on) per benchmark robot.
+CVAE_MODEL_DIR = {"panda": "panda", "iiwa": "iiwa14", SCREW_PRIMARY: SCREW_PRIMARY,
+                  "soft12": "soft12"}
+#: Each robot's two pre-registered latent widths: (the flow's width, the redundancy DOF - 6).
+CVAE_WIDTHS = {"panda": (7, 1), "iiwa": (8, 1), SCREW_PRIMARY: (7, 1), "soft12": (12, 6)}
+#: (robot, the record's flow rung, the record's grid seed, cVAE rung label, K, checkpoint), in
+#: report order: the record's four contexts (SVGD_RECORD_CONTEXTS), flow-width rung first.
+CVAE_RUNGS = tuple(
+    (robot, rung, seed, f"cvae{k}", k,
+     f"models/{CVAE_MODEL_DIR[robot]}/{CVAE_MODEL_DIR[robot]}__cvae{k}__step620000.pkl")
+    for robot, rung, seed in SVGD_RECORD_CONTEXTS for k in CVAE_WIDTHS[robot])
+CVAE_IPOPT_SHARDS = SVGD_R2_SHARDS               # 8, as stage PAPER / SVGD_R2 ran each run
+CVAE_SVGD_SHARDS = SVGD_ROUNDS["SVGD_R29"]["pin4"][1]   # 24, as R29's `pin4`
+CVAE_SVGD_ROUND, CVAE_SVGD_VARIANT = "SVGD_R29", "pin4"
+CVAE_PROCS = 2                                   # one solve per V100, no MPS
+#: The acceptance row: joint space re-run on one record row with identical flags, to show it is
+#: bit-identical to the record after the chart refactor (the Panda's pose paired IPOPT row, whose
+#: record run is stage SVGD_R2's).
+CVAE_ACCEPT = ("panda", "n6", 1, "pose", "paired")
+#: The smoke's cells of the 60 x 8 grid: two targets, far apart in the target-major order.
+CVAE_SMOKE_CELLS = "0:0,31:5"
+#: AL-SVGD's allotment base per learned cell: R29's assumption (SVGD_ROUND_CELL_S); the V4
+#: record's learned rows measured 0.70-2.00 s mean, so this is pessimistic.
+CVAE_SVGD_CELL_S = SVGD_ROUND_CELL_S[0]
+CVAE_STAGES = ("CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD")
+
+## ------------------------------------------------------------------------- CVAEF --
+##
+## The cVAE chart's SECOND variant (Thomas, 2026-10-19): the textbook objective with a FIXED
+## decoder variance (`decoder_variance="fixed"` in src/charts/cvae.py: squared reconstruction
+## error in normalised units + KL, beta = 1), because the learned-variance rung modelled the
+## Panda's joints 1-3 as noise and collapsed the screw arm. Same architecture, data, recipe and K
+## values; both variants are kept and benchmarked. Stages `CVAEF` (IPOPT) and `CVAEF_SVGD`
+## (AL-SVGD) are `CVAE` / `CVAE_SVGD` item for item with ONLY the chart swapped: checkpoint
+## `models/<robot>/<robot>__cvaef<K>__step620000.pkl`, rung label `cvaef<K>`, tag stem
+## `sc_CVAEF_`. The joint-space acceptance item is NOT repeated (stage CVAE's answers it once).
+CVAEF_RUNGS = tuple(
+    (robot, rung, seed, f"cvaef{k}", k,
+     f"models/{CVAE_MODEL_DIR[robot]}/{CVAE_MODEL_DIR[robot]}__cvaef{k}__step620000.pkl")
+    for robot, rung, seed in SVGD_RECORD_CONTEXTS for k in CVAE_WIDTHS[robot])
+CVAEF_STAGES = ("CVAEF", "CVAEF_SVGD")
+#: Filtered copies of stage CVAE's two manifests, committed, minus every item of one rung
+#: (`--exclude-rung <model dir>:<label>`): the iiwa14 K = 8 learned-variance chart was still
+#: training when the rest of the stage was ready. Item ids are the full manifest's, but
+#: run_items.sh keys its .claim/.done state by the MANIFEST'S BASENAME, so the full manifest
+#: does NOT see these as done -- see cluster/CVAE_RUNBOOK.md before submitting it afterwards.
+CVAE_FILTERED_MANIFESTS = {
+    "CVAE_noiiwa8": ("CVAE", ("iiwa14:cvae8",)),
+    "CVAE_SVGD_noiiwa8": ("CVAE_SVGD", ("iiwa14:cvae8",)),
+}
+
+
+def cvae_exclude_rungs(items, specs):
+    """`items` minus every item whose --checkpoint is `models/<dir>/<dir>__<label>__*` for a
+    spec `<dir>:<label>`. A spec that matches nothing raises (a typo must not pass silently)."""
+    out = list(items)
+    for spec in specs:
+        d, label = spec.split(":")
+        prefix = f"models/{d}/{d}__{label}__"
+        kept = [it for it in out if not ("--checkpoint" in it["args"]
+                                         and _svgd_flag(it["args"], "--checkpoint").startswith(prefix))]
+        if len(kept) == len(out):
+            raise ValueError(f"--exclude-rung {spec}: no item's checkpoint starts with {prefix}")
+        out = kept
+    return out
+
+
+def cvae_trust_region(robot, k):
+    """The `--set` a rung adds for its trust region: nothing on the flow-width rung (the record's
+    `--config latent` radius), the rule at K on the redundancy rung (see the section header)."""
+    if k == CVAE_WIDTHS[robot][0]:
+        return []
+    return ["--set", f"latent_trust_region={round(math.sqrt(k) + 1.5, 2)}"]
+
+
+def _cvae_swap(it, stem, robot, rung, label, k, ckpt, arms="learned", cells=None):
+    """A record row item with only the chart swapped: arms, checkpoint, trust region and tag."""
+    a = list(it["args"])
+    a[a.index("--arms") + 1] = arms
+    a[a.index("--checkpoint") + 1] = ckpt
+    a += cvae_trust_region(robot, k)
+    old = _svgd_flag(a, "--tag")
+    head = f"sc_{stem}_{robot}_{rung}_"
+    assert old.startswith(head), (old, head)
+    new = f"sc_{stem}_{robot}_{label}_" + old[len(head):]
+    if new.endswith(f"_{CVAE_SVGD_VARIANT}"):
+        new = new[:-len(CVAE_SVGD_VARIANT) - 1]
+    if cells is not None:
+        new = new.replace("_480_", f"_{cells}_", 1)
+    a[a.index("--tag") + 1] = new
+    return dict(it, args=a, id=it["id"].replace(old, new, 1))
+
+
+def _cvae_seconds(it):
+    a = it["args"]
+    task, start, solver = (_svgd_flag(a, k) for k in ("--task", "--start", "--solver"))
+    if "--cells" in a:
+        cells = len(_svgd_flag(a, "--cells").split(","))
+    else:
+        shards = int(_svgd_flag(a, "--shard").split("/")[1]) if "--shard" in a else 1
+        cells = 480 / shards
+    if solver == "svgd":
+        per_cell = CVAE_SVGD_CELL_S
+    else:
+        L, J = _paper_mean_wall(it["robot"], task, start, "ipopt")
+        per_cell = J if _svgd_flag(a, "--arms") == "numerical" else L
+    return cells * per_cell + REMEASURE_ITEM_OVERHEAD_S
+
+
+def stage_CVAE(which="CVAE"):
+    """CVAE (IPOPT + acceptance), CVAE_SVGD (AL-SVGD), CVAESMOKE / CVAESMOKE_SVGD (see the header);
+    CVAEF / CVAEF_SVGD, the fixed-variance variant (no acceptance item)."""
+    smoke = which.startswith("CVAESMOKE")
+    svgd = which.endswith("_SVGD")
+    fixed = which.startswith("CVAEF")
+    stem = "CVAESMOKE" if smoke else ("CVAEF" if fixed else "CVAE")
+    n_cells = len(CVAE_SMOKE_CELLS.split(","))
+    items = []
+    for robot, rung, seed, label, k, ckpt in (CVAEF_RUNGS if fixed else CVAE_RUNGS):
+        shards = 1 if smoke else (CVAE_SVGD_SHARDS if svgd else CVAE_IPOPT_SHARDS)
+        for it in _svgd_rows(60, 8, shards, stem, robot=robot, rung=rung, seed=seed):
+            if svgd:
+                it = _svgd_as_svgd(it, CVAE_SVGD_VARIANT, stage=CVAE_SVGD_ROUND,
+                                   cells_token=str(n_cells) if smoke else None)
+            o = _cvae_swap(it, stem, robot, rung, label, k, ckpt,
+                           cells=None if svgd or not smoke else n_cells)
+            if smoke:
+                o["args"] += ["--cells", CVAE_SMOKE_CELLS]
+            items.append(dict(o, order=0 if _svgd_flag(o["args"], "--task") == "mug" else 1))
+    if which == "CVAE":
+        ## The acceptance item first: four minutes of joint space that says whether the refactor
+        ## left the record's joint-space columns pairable, before 256 learned items spend the nodes.
+        robot, rung, seed, task, start = CVAE_ACCEPT
+        for it in _svgd_rows(60, 8, CVAE_IPOPT_SHARDS, "CVAEACC", starts=start, robot=robot,
+                             rung=rung, seed=seed):
+            if _svgd_flag(it["args"], "--task") != task:
+                continue
+            a = list(it["args"])
+            a[a.index("--arms") + 1] = "numerical"
+            items.append(dict(it, args=a, order=-1))
+    return [dict(it, seconds=_cvae_seconds(it)) for it in items]
+
+
+def _cvae_selftest():
+    """Every CVAE item is its record twin with only the chart swapped (the section header)."""
+    fails = []
+
+    def strip(a):
+        out, i = [], 0
+        while i < len(a):
+            if a[i] in ("--tag", "--arms", "--checkpoint", "--cells") or \
+                    (a[i] == "--set" and a[i + 1].startswith("latent_trust_region=")):
+                i += 2
+                continue
+            out.append(a[i])
+            i += 1
+        return tuple(out)
+
+    def key(it):
+        a = it["args"]
+        return (it["robot"],) + tuple(_svgd_flag(a, f) for f in ("--task", "--start", "--solver")) \
+            + ((_svgd_flag(a, "--shard"),) if "--shard" in a else ())
+
+    ipopt_twins = {key(it): it for it in stage_SVGD("SVGD_R2") + svgd_twin_items("PAPER")}
+    svgd_twins = {key(it): it for it in stage_SVGD(CVAE_SVGD_ROUND)
+                  if _svgd_flag(it["args"], "--tag").endswith(f"_{CVAE_SVGD_VARIANT}")
+                  and _svgd_flag(it["args"], "--seed") == "1"}
+    rung_of = {(r, f"cvae{k}"): (k, ck) for r, _, _, _, k, ck in CVAE_RUNGS}
+    tag_re = re.compile(r"^sc_CVAE_(.+)_(cvae\d+)_(ipopt|svgd)_(mugshelf|posetip)_480_180_(paired|native)$")
+    want = {"CVAE": 32 * CVAE_IPOPT_SHARDS + CVAE_IPOPT_SHARDS, "CVAE_SVGD": 32 * CVAE_SVGD_SHARDS,
+            "CVAESMOKE": 32, "CVAESMOKE_SVGD": 32}
+    for which in CVAE_STAGES:
+        items = stage_CVAE(which)
+        if len(items) != want[which]:
+            fails.append(f"{which}: {len(items)} items, expected {want[which]}")
+        if len({it["id"] for it in items}) != len(items):
+            fails.append(f"{which}: duplicate item ids")
+        n_clr = sum("svgd_collision_backend=clearances" in it["args"] for it in items)
+        if n_clr != (len(items) if which.endswith("_SVGD") else 0):
+            fails.append(f"{which}: {n_clr} of {len(items)} items carry the clearance row; "
+                         "submit_bench.sh needs all (DRAKE_ENV=crc) or none")
+        twins = svgd_twins if which.endswith("_SVGD") else ipopt_twins
+        for it in items:
+            a, tag = it["args"], _svgd_flag(it["args"], "--tag")
+            smoke = which.startswith("CVAESMOKE")
+            if tag.startswith("sc_CVAEACC_"):
+                tw = twins.get(key(it))
+                if tw is None or strip(a) != strip(tw["args"]) or _svgd_flag(a, "--arms") != "numerical" \
+                        or _svgd_flag(a, "--checkpoint") != _svgd_flag(tw["args"], "--checkpoint"):
+                    fails.append(f"{it['id']}: the acceptance item is not its record twin with --arms numerical")
+                continue
+            n_smoke = len(CVAE_SMOKE_CELLS.split(","))
+            m = tag_re.match(tag.replace("sc_CVAESMOKE_", "sc_CVAE_")
+                             .replace(f"_{n_smoke}_180_", "_480_180_"))
+            if not m or m.group(1) != it["robot"] or (it["robot"], m.group(2)) not in rung_of:
+                fails.append(f"{it['id']}: tag {tag} is not sc_CVAE_<robot>_cvae<K>_<solver>_<row>_480_180_<start>")
+                continue
+            k, ck = rung_of[(it["robot"], m.group(2))]
+            ## A smoke item is unsharded: its twin is the record run's shard 0, --shard removed.
+            tw = next((t for kk, t in sorted(twins.items()) if kk[:4] == key(it)), None) \
+                if smoke else twins.get(key(it))
+            if tw is None:
+                fails.append(f"{it['id']}: no record twin")
+                continue
+            tw_a = list(tw["args"])
+            if smoke and "--shard" in tw_a:
+                i = tw_a.index("--shard")
+                del tw_a[i:i + 2]
+            if strip(a) != strip(tw_a):
+                fails.append(f"{it['id']}: differs from its record twin {tw['id']} beyond the chart")
+            if _svgd_flag(a, "--arms") != "learned" or _svgd_flag(a, "--checkpoint") != ck:
+                fails.append(f"{it['id']}: arms / checkpoint not learned / {ck}")
+            tr = [x for x in a if x.startswith("latent_trust_region=")]
+            if tr != cvae_trust_region(it["robot"], k)[1:]:
+                fails.append(f"{it['id']}: trust region {tr}, expected {cvae_trust_region(it['robot'], k)[1:]}")
+            if smoke and _svgd_flag(a, "--cells") != CVAE_SMOKE_CELLS:
+                fails.append(f"{it['id']}: smoke without --cells {CVAE_SMOKE_CELLS}")
+    runs = {_svgd_flag(it["args"], "--tag") for w in ("CVAE", "CVAE_SVGD") for it in stage_CVAE(w)}
+    if len([r for r in runs if r.startswith("sc_CVAE_")]) != 64:
+        fails.append(f"CVAE + CVAE_SVGD: {len(runs)} logical runs, expected 64 + the acceptance run")
+
+    ## CVAEF / CVAEF_SVGD: stage CVAE / CVAE_SVGD minus the acceptance item, with exactly the
+    ## chart's label, checkpoint and tag stem substituted -- item for item, in claim order.
+    def to_fixed(it):
+        a = list(it["args"])
+        old_tag, old_ck = _svgd_flag(a, "--tag"), _svgd_flag(a, "--checkpoint")
+        m = re.fullmatch(r"(models/[^/]+/[^/]+__)cvae(\d+)(__step620000\.pkl)", old_ck)
+        new_ck = f"{m.group(1)}cvaef{m.group(2)}{m.group(3)}"
+        new_tag = old_tag.replace("sc_CVAE_", "sc_CVAEF_", 1).replace(
+            f"_cvae{m.group(2)}_", f"_cvaef{m.group(2)}_", 1)
+        a[a.index("--tag") + 1] = new_tag
+        a[a.index("--checkpoint") + 1] = new_ck
+        return dict(it, args=a, id=it["id"].replace(old_tag, new_tag, 1))
+
+    for which, src in (("CVAEF", "CVAE"), ("CVAEF_SVGD", "CVAE_SVGD")):
+        items = stage_CVAE(which)
+        want_n = 32 * (CVAE_SVGD_SHARDS if which.endswith("_SVGD") else CVAE_IPOPT_SHARDS)
+        if len(items) != want_n:
+            fails.append(f"{which}: {len(items)} items, expected {want_n}")
+        expected = [to_fixed(it) for it in stage_CVAE(src)
+                    if not _svgd_flag(it["args"], "--tag").startswith("sc_CVAEACC_")]
+        if render(items) != render(expected):
+            fails.append(f"{which}: not stage {src} (minus acceptance) with only the chart swapped "
+                         "to cvaef<K>")
+        if any("__cvaef" not in _svgd_flag(it["args"], "--checkpoint")
+               or not _svgd_flag(it["args"], "--tag").startswith("sc_CVAEF_") for it in items):
+            fails.append(f"{which}: an item without a cvaef checkpoint or the sc_CVAEF_ stem")
+    fixed_runs = {_svgd_flag(it["args"], "--tag") for w in CVAEF_STAGES for it in stage_CVAE(w)}
+    if len(fixed_runs) != 64:
+        fails.append(f"CVAEF + CVAEF_SVGD: {len(fixed_runs)} logical runs, expected 64")
+
+    ## Committed manifests are what this file generates now, and each filtered manifest is its
+    ## full manifest's committed lines minus exactly the excluded rung's (same ids, same order).
+    here = os.path.dirname(os.path.realpath(__file__))
+
+    def disk(name):
+        path = os.path.join(here, f"manifest_stage{name}.txt")
+        if not os.path.exists(path):
+            fails.append(f"cluster/manifest_stage{name}.txt is missing")
+            return None
+        with open(path) as fh:
+            return [l.rstrip("\n") for l in fh if l.strip() and not l.startswith("#")]
+
+    for which in CVAE_STAGES + CVAEF_STAGES:
+        on_disk = disk(which)
+        if on_disk is not None and on_disk != render(stage_CVAE(which)):
+            fails.append(f"cluster/manifest_stage{which}.txt is stale; regenerate it")
+    for name, (src, specs) in CVAE_FILTERED_MANIFESTS.items():
+        on_disk, full = disk(name), disk(src)
+        if on_disk is None or full is None:
+            continue
+        prefixes = [f"--checkpoint models/{d}/{d}__{l}__" for d, l in (sp.split(":") for sp in specs)]
+        minus = [l for l in full if not any(p in l for p in prefixes)]
+        n_cut = len(full) - len(minus)
+        want_cut = 4 * (CVAE_SVGD_SHARDS if src.endswith("_SVGD") else CVAE_IPOPT_SHARDS) * len(specs)
+        if on_disk != minus:
+            fails.append(f"cluster/manifest_stage{name}.txt is not manifest_stage{src}.txt minus "
+                         f"exactly the {specs} items")
+        if n_cut != want_cut:
+            fails.append(f"{name}: {n_cut} items excluded, expected {want_cut} (4 logical runs per rung)")
+        if on_disk != render(cvae_exclude_rungs(stage_CVAE(src), specs)):
+            fails.append(f"cluster/manifest_stage{name}.txt is stale; regenerate it")
+    return fails
+
+
+## --------------------------------------------------------------------------- SCREWREDO --
+##
+## The screw record's LEARNED arm re-measured on the retrained chart (Thomas, 2026-10-18). The
+## screw7 datasets were deleted and rebuilt (same generator and seed, not provably the same file);
+## the fielded rung `screw7_p050_n6` is retrained on the rebuilt dataset as `screw7_p050_n6r`
+## (cluster/ladder_runs.txt, identical args) so the flow and the cVAE charts see the same data, and
+## the screw record's learned rows are redone with it. No sweep: the record's rows only.
+##
+## Each item is its RECORD TWIN with only the chart swapped, built by the record's own
+## constructors: stage PAPER (IPOPT, SNOPT at paper conditions), stage REMEASURE_NLOPT (NLopt) and
+## stage SVGD_R29 `pin4` (AL-SVGD, seed 1). What changes, and nothing else (the selftest holds it):
+##   * `--arms learned` (the record's joint-space columns pair on the same cells);
+##   * `--checkpoint models/screw7_p050/screw7_p050__n6r__step620000.pkl`;
+##   * the tag `sc_SCREWREDO_screw7_p050_n6r_<solver>_<row>_480_180_<start>`: rung token `n6r`, no
+##     `_pin4` suffix on the svgd rows (parse_tag's six-token tail, as stage CVAE).
+## Same sharding as the twins (8 / 24 / 24 per run).
+##
+## THREE MANIFESTS, because PROCS / MPS / DRAKE_ENV are per submission and the twins ran under three:
+##   SCREWREDO        IPOPT + SNOPT, 8 runs x 8 shards, PROCS=2 no MPS (stage PAPER's condition);
+##   SCREWREDO_NLOPT  NLopt, 4 runs x 24 shards, PROCS=8 MPS=1 (stage REMEASURE_NLOPT's condition;
+##                    NLopt is clock-bound, so its learned wall must be measured where the record's was);
+##   SCREWREDO_SVGD   AL-SVGD, 4 runs x 24 shards, DRAKE_ENV=crc PROCS=2 (R29's condition).
+
+SCREWREDO_RUNG = "n6r"
+SCREWREDO_CKPT = f"models/{SCREW_PRIMARY}/{SCREW_PRIMARY}__{SCREWREDO_RUNG}__step620000.pkl"
+SCREWREDO_STAGES = ("SCREWREDO", "SCREWREDO_NLOPT", "SCREWREDO_SVGD")
+
+
+def _screwredo_twins(which):
+    """The screw record's items for one SCREWREDO manifest, verbatim from the record's stages."""
+    if which == "SCREWREDO":
+        src = stage_PAPER()
+    elif which == "SCREWREDO_NLOPT":
+        src = stage_REMEASURE("REMEASURE_NLOPT")
+    else:
+        src = [it for it in stage_SVGD(CVAE_SVGD_ROUND)
+               if _svgd_flag(it["args"], "--tag").endswith(f"_{CVAE_SVGD_VARIANT}")
+               and _svgd_flag(it["args"], "--seed") == "1"]
+    return [it for it in src if it["robot"] == SCREW_PRIMARY]
+
+
+def _screwredo_seconds(it):
+    """Learned arm only: the twin's per-cell learned wall at the twin's condition."""
+    a = it["args"]
+    task, start, solver = (_svgd_flag(a, k) for k in ("--task", "--start", "--solver"))
+    shards = int(_svgd_flag(a, "--shard").split("/")[1]) if "--shard" in a else 1
+    if solver == "svgd":
+        per_cell = CVAE_SVGD_CELL_S
+    elif solver == "nlopt":
+        per_cell = _remeasure_mean_wall(it["robot"], task, start, solver)[0]
+    else:
+        per_cell = _paper_mean_wall(it["robot"], task, start, solver)[0]
+    return 480 * per_cell / shards + REMEASURE_ITEM_OVERHEAD_S
+
+
+def stage_SCREWREDO(which="SCREWREDO"):
+    """SCREWREDO (IPOPT + SNOPT), SCREWREDO_NLOPT, SCREWREDO_SVGD (see the section header)."""
+    items = []
+    for it in _screwredo_twins(which):
+        a = list(it["args"])
+        a[a.index("--arms") + 1] = "learned"
+        a[a.index("--checkpoint") + 1] = SCREWREDO_CKPT
+        old = _svgd_flag(a, "--tag")
+        m = re.match(rf"^sc_[A-Z0-9_]+?_{SCREW_PRIMARY}_n6_(.+)$", old)
+        assert m, old
+        new = f"sc_SCREWREDO_{SCREW_PRIMARY}_{SCREWREDO_RUNG}_{m.group(1)}"
+        if new.endswith(f"_{CVAE_SVGD_VARIANT}"):
+            new = new[:-len(CVAE_SVGD_VARIANT) - 1]
+        a[a.index("--tag") + 1] = new
+        o = dict(it, args=a, id=it["id"].replace(old, new, 1))
+        o["seconds"] = _screwredo_seconds(o)
+        items.append(o)
+    return items
+
+
+def _screwredo_selftest():
+    """Every SCREWREDO item is its screw record twin with only arms, checkpoint and tag changed."""
+    fails = []
+
+    def strip(a):
+        out, i = [], 0
+        while i < len(a):
+            if a[i] in ("--tag", "--arms", "--checkpoint"):
+                i += 2
+                continue
+            out.append(a[i])
+            i += 1
+        return tuple(out)
+
+    def key(it):
+        a = it["args"]
+        return tuple(_svgd_flag(a, f) for f in ("--task", "--start", "--solver", "--shard"))
+
+    tag_re = re.compile(rf"^sc_SCREWREDO_{SCREW_PRIMARY}_{SCREWREDO_RUNG}_(ipopt|snopt|nlopt|svgd)_"
+                        r"(mugshelf|posetip)_480_180_(paired|native)$")
+    want = {"SCREWREDO": (8, 64, {"ipopt", "snopt"}), "SCREWREDO_NLOPT": (4, 96, {"nlopt"}),
+            "SCREWREDO_SVGD": (4, 96, {"svgd"})}
+    here = os.path.dirname(os.path.abspath(__file__))
+    for which in SCREWREDO_STAGES:
+        items = stage_SCREWREDO(which)
+        twins = {key(t): t for t in _screwredo_twins(which)}
+        runs, n_items, solvers = want[which]
+        tags = {_svgd_flag(it["args"], "--tag") for it in items}
+        if len(items) != n_items or len(tags) != runs:
+            fails.append(f"{which}: {len(items)} items / {len(tags)} runs, expected {n_items} / {runs}")
+        if len({it["id"] for it in items}) != len(items):
+            fails.append(f"{which}: duplicate item ids")
+        n_clr = sum("svgd_collision_backend=clearances" in it["args"] for it in items)
+        if n_clr != (len(items) if which == "SCREWREDO_SVGD" else 0):
+            fails.append(f"{which}: {n_clr} of {len(items)} items carry the clearance row; "
+                         "submit_bench.sh needs all (DRAKE_ENV=crc) or none")
+        for it in items:
+            a, tag = it["args"], _svgd_flag(it["args"], "--tag")
+            m = tag_re.match(tag)
+            if not m or m.group(1) not in solvers or it["robot"] != SCREW_PRIMARY:
+                fails.append(f"{it['id']}: tag {tag} is not sc_SCREWREDO_{SCREW_PRIMARY}_"
+                             f"{SCREWREDO_RUNG}_<solver>_<row>_480_180_<start>")
+                continue
+            tw = twins.get(key(it))
+            if tw is None:
+                fails.append(f"{it['id']}: no record twin")
+                continue
+            if strip(a) != strip(tw["args"]) or it["script"] != tw["script"] \
+                    or it.get("order") != tw.get("order"):
+                fails.append(f"{it['id']}: differs from its record twin {tw['id']} beyond the chart")
+            if _svgd_flag(a, "--arms") != "learned" or _svgd_flag(a, "--checkpoint") != SCREWREDO_CKPT:
+                fails.append(f"{it['id']}: arms / checkpoint not learned / {SCREWREDO_CKPT}")
+            if _svgd_flag(tw["args"], "--checkpoint") != \
+                    f"models/{SCREW_PRIMARY}/{SCREW_PRIMARY}__n6__step620000.pkl":
+                fails.append(f"{it['id']}: the twin {tw['id']} is not the record's n6 chart")
+        path = os.path.join(here, f"manifest_stage{which}.txt")
+        if os.path.exists(path):
+            with open(path) as fh:
+                disk = [l.rstrip("\n") for l in fh if l.strip() and not l.startswith("#")]
+            if disk != render(items):
+                fails.append(f"{which}: cluster/manifest_stage{which}.txt is stale; regenerate it")
+        else:
+            fails.append(f"{which}: cluster/manifest_stage{which}.txt is missing")
+    return fails
+
+
 ## ---------------------------------------------------------------------------- ANALYTIC --
 ##
 ## The analytic + optimization arm on the two robots with a closed form (Thomas, 2026-10-12):
@@ -4529,6 +5018,70 @@ def stage_SEGVFIX(cell_copies=30, full_copies=2, dump_every=5):
         out.append(it)
     return out
 
+## Two items of stage PAPER that hold SNOPT cells cycling past the clock (one solve per V100, as the
+## record ran): four learned cells of the iiwa pose paired row, (9,5) (25,7) (49,1) (57,2) at
+## 803-1055 s -- the same four in REMEASURE -- and the Panda grasp native row's joint-space (50,5)
+## at 569 s.
+WATCHCHK_ITEMS = ("sc_PAPER_iiwa_n4_snopt_posetip_480_180_paired_shard1of8",
+                  "sc_PAPER_panda_n6_snopt_mugshelf_480_180_native_shard2of8")
+
+
+def stage_WATCHCHK():
+    """Validate the external overrun watcher (cluster/run_items.sh, src/benchmark.py's persistence
+    section) against the record: WATCHCHK_ITEMS re-run VERBATIM under the tag sc_WATCHCHK_...,
+    at PROCS=2 as stage PAPER ran. `scripts/check_mergechk.py --prefix WATCHCHK` then requires every
+    converged cell to reproduce exactly and every cell the original ran past the kill threshold to
+    come back `killed_overrun`, infeasible, at ~1.5x the clock.
+    """
+    base = [it for it in stage_PAPER() if it["id"] in WATCHCHK_ITEMS]
+    assert sorted(it["id"] for it in base) == sorted(WATCHCHK_ITEMS), base
+    return retag(base, "WATCHCHK")
+
+
+#: Stage OVR's sub-stages: (committed manifest, partition, PROCS, MPS) -- each the condition its
+#: original stage ran under, so a re-run shard is measured exactly as the shard it replaces.
+OVR_STAGES = {"OVR_REMEASURE": ("REMEASURE", "xeon-g6-volta", 8, 1),
+              "OVR_PAPER": ("PAPER", "xeon-g6-volta", 2, 0),
+              "OVR_ANALYTIC": ("ANALYTIC", "xeon-p8", 2, 0),
+              "OVR_ANALYTIC_CPP": ("ANALYTIC_CPP", "xeon-p8", 2, 0)}
+
+
+def _committed_items(manifest, ids=None):
+    """Items of a COMMITTED manifest, verbatim, in its claim order (`order` = line index)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = []
+    with open(os.path.join(here, f"manifest_stage{manifest}.txt")) as fh:
+        for line in fh:
+            if not line.strip() or line.startswith("#"):
+                continue
+            ident, env, script, args = line.rstrip("\n").split("|", 3)
+            if ids is None or ident in ids:
+                out.append(dict(id=ident, env=env, script=script, args=args.split(),
+                                order=len(out), seconds=0))
+    return out
+
+
+def stage_OVR(which):
+    """Re-run the record's SNOPT shards that hold a cell past the overrun watcher's threshold.
+
+    The record was measured before the watcher (2026-10-21), so a cycling SNOPT cell ran on to the
+    major limit, 0.4-2.2 h. Thomas (2026-10-21): re-run every affected SHARD whole and verbatim
+    under the watcher -- REMEASURE (the record's rows and the GVS arm), PAPER (the record's
+    seconds), and the analytic arm's ANALYTIC/ANALYTICT/ANALYTICC SNOPT rows -- and update the
+    numbers. The shards are listed in `cluster/overrun_rerun_items.txt` (written by
+    scripts/find_overrun_shards.py) and taken VERBATIM from the committed manifest each came from,
+    re-tagged sc_OVR_...; submit each sub-stage under OVR_STAGES' conditions.
+    """
+    manifest = OVR_STAGES[which][0]
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "overrun_rerun_items.txt")) as fh:
+        ids = {line.strip().split("|", 1)[1] for line in fh
+               if line.strip() and not line.startswith("#") and line.split("|", 1)[0] == manifest}
+    items = _committed_items(manifest, ids)
+    assert {it["id"] for it in items} == ids, sorted(ids - {it["id"] for it in items})
+    return retag(items, "OVR")
+
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -4601,6 +5154,16 @@ def _ladder_paths_match_export():
             robot, run_name = line.split()[:2]
             label = run_name[len(robot) + 1:] if run_name.startswith(robot + "_") else run_name
             trained[f"models/{robot}/{robot}__{label}__step620000.pkl"] = run_name
+    ## The non-flow chart families (cluster/chart_runs.txt: <family> <robot> <run_name> ...),
+    ## exported by cluster/train_chart.sh under the same <robot>__<label>__step620000 rule.
+    with open(os.path.join(os.path.dirname(manifest), "chart_runs.txt")) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            family, robot, run_name = line.split()[:3]
+            label = run_name[len(robot) + 1:] if run_name.startswith(robot + "_") else run_name
+            trained[f"models/{robot}/{robot}__{label}__step620000.pkl"] = f"{family}:{run_name}"
 
     # Checkpoints the ladder does NOT train because they already exist: the iiwa's adopted
     # control. (The Panda's control is the downloaded chart, which is `None` in LADDER_RUNGS
@@ -4619,10 +5182,13 @@ def _ladder_paths_match_export():
                    | {c for _, _, c in SCREW_PITCH_RUNGS}
                    | {c for _, c in SOFT_ADOPTED.values()}
                    | {c for _, _, c in SOFT_CHART_RUNGS}
-                   | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}) - PRE_EXISTING
+                   | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}
+                   | {ck for *_, ck in CVAE_RUNGS}
+                   | {ck for *_, ck in CVAEF_RUNGS}
+                   | {SCREWREDO_CKPT}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
-        fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt row would export it")
+        fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt / chart_runs.txt row would export it")
     for ckpt in sorted(set(trained) - benchmarked):
         fails.append(f"rung '{trained[ckpt]}' trains but nothing in LADDER_RUNGS benchmarks it")
     return fails
@@ -5739,6 +6305,40 @@ def selftest():
             args = " ".join(it["args"]).replace("sc_MERGECHK_", "sc_", 1)
             if on_disk.get(orig) != (it["env"], it["script"], args):
                 mc_fails.append(f"{it['id']} is not its committed original {orig} re-tagged")
+    with open(os.path.join(here, "manifest_stagePAPER.txt")) as fh:
+        for line in fh:
+            if line.strip() and not line.startswith("#"):
+                ident, env, script, args = line.rstrip("\n").split("|", 3)
+                on_disk[ident] = (env, script, args)
+    wc = stage_WATCHCHK()
+    if len(wc) != len(WATCHCHK_ITEMS):
+        mc_fails.append(f"WATCHCHK has {len(wc)} items, expected {len(WATCHCHK_ITEMS)}")
+    for it in wc:
+        orig = it["id"].replace("sc_WATCHCHK_", "sc_", 1)
+        args = " ".join(it["args"]).replace("sc_WATCHCHK_", "sc_", 1)
+        if orig not in WATCHCHK_ITEMS or on_disk.get(orig) != (it["env"], it["script"], args):
+            mc_fails.append(f"{it['id']} is not its committed original {orig} re-tagged")
+    for name in OVR_STAGES:
+        manifest = OVR_STAGES[name][0]
+        theirs = {it["id"]: it for it in _committed_items(manifest)}
+        for it in stage_OVR(name):
+            orig = it["id"].replace("sc_OVR_", "sc_", 1)
+            o = theirs.get(orig)
+            if (o is None or " ".join(it["args"]).replace("sc_OVR_", "sc_", 1) != " ".join(o["args"])
+                    or (it["env"], it["script"]) != (o["env"], o["script"])
+                    or "_snopt_" not in it["id"]):
+                mc_fails.append(f"{it['id']} is not a SNOPT item of {manifest} re-tagged")
+    ## GVSO2 is REMEASURE's committed o1 items with the rung swapped and nothing else.
+    theirs = {it["id"]: it for it in _committed_items("REMEASURE")}
+    o2 = stage_GVSO2()
+    if len(o2) != 64:
+        mc_fails.append(f"GVSO2 has {len(o2)} items, expected 64 (REMEASURE's o1 count)")
+    for it in o2:
+        back = lambda s: s.replace("sc_GVSO2_", "sc_REMEASURE_", 1).replace(GVSO2_RUNG, GVS_PRIMARY)
+        o = theirs.get(back(it["id"]))
+        if (o is None or back(" ".join(it["args"])) != " ".join(o["args"])
+                or (it["env"], it["script"]) != (o["env"], o["script"])):
+            mc_fails.append(f"{it['id']} is not REMEASURE's {GVS_PRIMARY} item with the rung swapped")
     seg = stage_SEGVREP()
     if len(seg) != 32 or len({it["id"] for it in seg}) != 32:
         mc_fails.append("SEGVREP must be 32 distinctly tagged copies")
@@ -6610,6 +7210,29 @@ def selftest():
               "arms, tag, kernel and clip ladder changed (and, on the CPU-node stages, the "
               "learned-only GPU switches dropped)")
 
+    cvae_fails = _cvae_selftest()
+    for msg in cvae_fails[:12]:
+        print(f"FAIL stage CVAE: {msg}")
+    fails += len(cvae_fails)
+    if not cvae_fails:
+        print("ok   stages CVAE / CVAE_SVGD / CVAESMOKE / CVAESMOKE_SVGD: 64 logical runs (264 / 768 items) "
+              "+ the joint-space acceptance run, 32 / 32 smoke items; every item is its record twin "
+              "(PAPER / SVGD_R2 IPOPT, R29 pin4) with only arms, checkpoint, tag and the redundancy "
+              "rung's trust region changed")
+        print("ok   stages CVAEF / CVAEF_SVGD: 64 logical runs (256 / 768 items), stage CVAE / CVAE_SVGD "
+              "minus the acceptance item with only the chart swapped to cvaef<K>; CVAE(_SVGD)_noiiwa8 = "
+              "the committed full manifests minus exactly the iiwa14 cvae8 items (232 / 672); "
+              "committed manifests current")
+
+    sr_fails = _screwredo_selftest()
+    for msg in sr_fails[:12]:
+        print(f"FAIL stage SCREWREDO: {msg}")
+    fails += len(sr_fails)
+    if not sr_fails:
+        print("ok   stages SCREWREDO / SCREWREDO_NLOPT / SCREWREDO_SVGD: 8 / 4 / 4 runs (64 / 96 / 96 "
+              "items); every item is its screw record twin (PAPER, REMEASURE_NLOPT, R29 pin4) with "
+              "only arms, checkpoint (n6r) and tag changed; committed manifests current")
+
     ladder_fails = _ladder_paths_match_export()
     for msg in ladder_fails:
         print(f"FAIL ladder paths: {msg}")
@@ -6627,7 +7250,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "WATCHCHK", "OVR_REMEASURE", "OVR_PAPER", "OVR_ANALYTIC", "OVR_ANALYTIC_CPP", "GVSO2", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
                                  "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
                                  "SVGD_R3", "SVGD_R4", "SVGD_R5", "SVGD_R6", "SVGD_R8",
                                  "SVGD_R9", "SVGD_R10", "SVGD_R11", "SVGD_R12", "SVGD_R7",
@@ -6639,6 +7262,9 @@ def main():
                                  "SVGD_R29", "SVGD_R30",
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
+                                 "CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD",
+                                 "CVAEF", "CVAEF_SVGD",
+                                 "SCREWREDO", "SCREWREDO_NLOPT", "SCREWREDO_SVGD",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
     p.add_argument("--settings", default=None,
@@ -6693,6 +7319,10 @@ def main():
     p.add_argument("-o", "--out", default=None)
     p.add_argument("--summary", action="store_true")
     p.add_argument("--selftest", action="store_true")
+    p.add_argument("--exclude-rung", action="append", default=[], metavar="DIR:LABEL",
+                   help="chart-ablation stages only: drop every item whose checkpoint is "
+                        "models/<DIR>/<DIR>__<LABEL>__* (e.g. iiwa14:cvae8); repeatable. Item ids "
+                        "are unchanged (CVAE_FILTERED_MANIFESTS)")
     p.add_argument("--allotment", action="store_true",
                    help="REMEASURE stages: print the node-hour arithmetic (cells x arms x "
                         "expected mean wall from the record's Table 3, learned arm / 2.5 under "
@@ -6774,6 +7404,9 @@ def main():
              "MERGECHKSCREW": lambda: stage_MERGECHK("SCREW"),
              "SEGVREP": lambda: stage_SEGVREP(),
              "SEGVFIX": lambda: stage_SEGVFIX(),
+             "WATCHCHK": lambda: stage_WATCHCHK(),
+             "GVSO2": lambda: stage_GVSO2(),
+             **{name: (lambda name=name: stage_OVR(name)) for name in OVR_STAGES},
              "ITCAP": lambda: stage_ITCAP(),
              "CUDAGRAPH": lambda: stage_CUDAGRAPH(),
              "CUDAGRAPHP2": lambda: stage_CUDAGRAPH("P2"),
@@ -6794,6 +7427,9 @@ def main():
              "ANALYTIC_SMOKE": lambda: stage_ANALYTIC_SMOKE(),
              "ANALYTIC_SVGD": lambda: stage_ANALYTIC_SVGD(),
              "ANALYTIC_SVGD_SMOKE": lambda: stage_ANALYTIC_SVGD_SMOKE(),
+             ## The chart ablation takes no grid arguments: it IS the record's shape.
+             **{s: (lambda s=s: stage_CVAE(s)) for s in CVAE_STAGES + CVAEF_STAGES},
+             **{s: (lambda s=s: stage_SCREWREDO(s)) for s in SCREWREDO_STAGES},
              "GVSJS": lambda: stage_GVSJS(args.wall_time, args.targets,
                                           args.guesses, args.shards,
                                           only=args.rungs, **sv),
@@ -6882,10 +7518,16 @@ def main():
                                         args.shards, only=args.rungs),
              }[args.stage]()
 
+    if args.exclude_rung:
+        if args.stage not in CVAE_STAGES + CVAEF_STAGES:
+            raise SystemExit("--exclude-rung applies to the chart-ablation stages only")
+        items = cvae_exclude_rungs(items, args.exclude_rung)
     if args.tag_prefix:
         items = retag(items, args.tag_prefix)
     lines = render(items)
-    header = [f"# learned-ik stage {args.stage} manifest",
+    header = [f"# learned-ik stage {args.stage} manifest"
+              + (f", minus rung(s) {' '.join(args.exclude_rung)} (same item ids as the full manifest)"
+                 if args.exclude_rung else ""),
               f"# generated by cluster/gen_manifest.py (edit the spec there, not here)",
               f"# format: <id>|<env assignments or ->|<script>|<args>",
               f"# {len(lines)} items, ordered longest-estimate-first (LPT)"

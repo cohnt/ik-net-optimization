@@ -102,15 +102,18 @@ SoftRungNames = NormalizedRobotNames
 
 
 def load_solver(robot: str, checkpoint: str, nb_nodes: int = None, dim_latent_space: int = None):
-    """Build a solver for `checkpoint`, taking its architecture from the `.arch.json`
-    sidecar and cross-checking it against the weights (src/flow_loading.py).
+    """Build the chart (`src/charts`) for `checkpoint`, taking its architecture from the
+    `.arch.json` sidecar and cross-checking it against the weights (src/flow_loading.py,
+    or the family's own loader). Returns `(chart, width, ndof)`; evaluate it through
+    `chart.decode`, which is what the programs do.
 
     `nb_nodes` / `dim_latent_space` remain only as the fallback for a checkpoint with no
     sidecar; where a sidecar exists it wins. Passing `checkpoint=None` for the Panda uses
     ikflow's downloaded pretrained chart, whose architecture comes from
     model_descriptions.yaml.
     """
-    from src.flow_loading import LEGACY_ARCH_BY_ROBOT, LEGACY_IIWA_ARCH, LoadFlowSolver
+    from src.charts.loading import LoadChart, WrapChart
+    from src.flow_loading import LEGACY_ARCH_BY_ROBOT, LEGACY_IIWA_ARCH
 
     if robot == "panda" and checkpoint is None:
         from ikflow.model_loading import get_ik_solver
@@ -118,7 +121,8 @@ def load_solver(robot: str, checkpoint: str, nb_nodes: int = None, dim_latent_sp
         solver, _ = get_ik_solver("panda__full__lp191_5.25m")
         solver.arch = dict(LEGACY_ARCH_BY_ROBOT["panda"], robot_name="panda")
         solver.arch_source = "ikflow model_descriptions.yaml"
-        return solver, solver.network_width, solver.robot.ndof
+        chart = WrapChart(solver)
+        return chart, chart.network_width, chart.robot.ndof
 
     fallback = dict(LEGACY_ARCH_BY_ROBOT.get(robot, LEGACY_IIWA_ARCH))
     if nb_nodes is not None:
@@ -126,28 +130,33 @@ def load_solver(robot: str, checkpoint: str, nb_nodes: int = None, dim_latent_sp
     if dim_latent_space is not None:
         fallback["dim_latent_space"] = dim_latent_space
 
-    solver = LoadFlowSolver(robot, checkpoint, fallback_arch=fallback)
-    return solver, solver.network_width, solver.robot.ndof
+    chart = LoadChart(robot, checkpoint, fallback_arch=fallback)
+    return chart, chart.network_width, chart.robot.ndof
 
 
-def crosscheck(nn_model, width: int, ndof: int, n: int = 100, seed: int = 0) -> float:
+def crosscheck(nn_model, width: int, ndof: int, n: int = 100, seed: int = 0,
+               decode=None) -> float:
     """Max |rel diff| between the batched evaluation and the batch-1 MakeFlowInference
-    reference (src/generic_program.py), on identical samples."""
+    reference (src/generic_program.py), on identical samples, both through the chart's
+    `decode` (the flow's by default)."""
+    from src.charts.flow import FlowDecode
     from src.generic_program import MakeFlowInference
 
+    if decode is None:
+        decode = __import__("functools").partial(FlowDecode, num_dof=ndof)
     model = __import__("copy").deepcopy(nn_model).double().eval()
     dev = next(model.parameters()).device
     c_np, z_np = sample_conditioning_and_latents(n, width, seed=seed)
 
     with torch.no_grad():
-        out_batched, _ = model(
+        out_batched, _ = decode(
+            model,
             torch.tensor(z_np, dtype=torch.float64, device=dev),
-            c=torch.tensor(c_np, dtype=torch.float64, device=dev),
-            rev=True,
+            torch.tensor(c_np[:, :7], dtype=torch.float64, device=dev),
         )
     q_batched = out_batched[:, :ndof].cpu().numpy()
 
-    flow = MakeFlowInference(model, width, ndof, dev)
+    flow = MakeFlowInference(model, width, ndof, dev, decode=decode)
     worst = 0.0
     for i in range(n):
         v = torch.tensor(
@@ -207,8 +216,25 @@ if __name__ == "__main__":
 
     solver, width, ndof = load_solver(args.robot, checkpoint, args.nb_nodes, args.dim_latent_space)
 
+    ## The box-domain metric is the vendored fork's `pole_metrics`, which calls a FrEIA flow
+    ## (`model(z, c=..., rev=True)`) directly. Another chart family has no such call, so the
+    ## screen declines the way it does for the normalized robots above: exit 0 with the
+    ## reason. pole_at_task_poses.py evaluates through `chart.decode` and does run.
+    if solver.family != "ikflow":
+        payload = {"robot": args.robot, "skipped": True, "family": solver.family,
+                   "reason": (f"box-domain pole screen is not available for chart family "
+                              f"{solver.family!r} (the fork's pole_metrics calls a flow); "
+                              "use pole_at_task_poses.py")}
+        print(json.dumps(payload, indent=2))
+        if args.json_out:
+            os.makedirs(os.path.dirname(os.path.abspath(args.json_out)), exist_ok=True)
+            with open(args.json_out, "w") as handle:
+                json.dump(payload, handle, indent=2)
+        raise SystemExit(0)
+
     if args.crosscheck:
-        worst = crosscheck(solver.nn_model, width, ndof, n=100, seed=args.seed)
+        worst = crosscheck(solver.nn_model, width, ndof, n=100, seed=args.seed,
+                           decode=solver.decode)
         print(f"crosscheck: max rel diff batched vs batch-1 reference = {worst:.3e}")
         assert worst < 1e-9, "batched path disagrees with the batch-1 reference"
         print("PASS")

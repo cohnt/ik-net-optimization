@@ -136,12 +136,14 @@ class StepConfig:
 ## ------------------------------------------------------------------------------------ ##
 
 ## Attributes never walked: the program and its options (read outside the stages), the
-## collision evaluator (called by the driver), the networks (shared by identity: recorded as an id), and
+## collision evaluator (called by the driver), the networks (shared by identity: recorded as an id),
+## the chart wrapping the network (`BatchedFlow.chart`: shared like the network, its `decode` /
+## `encode` fixed by the family that the network's id already pins), and
 ## values that are program-specific but never read by a stage (the native conditioning
 ## pose, the decision-variable objects, the calibrated flow-frame transform, RowSpec bounds
 ## -- the bounds the stages read are the `_eq` / `_lo` / `_hi` TENSORS, which are copied).
 _SKIP_ATTRS = {"program", "options", "collision", "model", "shared_model", "_native_c",
-               "lumped_vars", "X_ee_flow", "profile"}
+               "lumped_vars", "X_ee_flow", "profile", "chart"}
 _SKIP_CLASS_ATTRS = {("RowSpec", "lb"), ("RowSpec", "ub")}
 
 

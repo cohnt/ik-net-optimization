@@ -32,6 +32,8 @@ compared by target-level success rate with a bootstrap CI over targets, never by
 Usage:
     python scripts/report_gvs.py precheck  [--root <checkout holding results/>]
     python scripts/report_gvs.py stage     [--root ...] [--prefix sc_GVS_]
+    python scripts/report_gvs.py stage --prefix sc_REMEASURE_gvs_pushrod9_o1_,sc_GVSO2_
+                                           (the rungs at record conditions, 2026-10-22)
 """
 import argparse
 import glob
@@ -51,10 +53,12 @@ ORDER = {"ipopt": 0, "snopt": 1, "nlopt": 2}
 
 
 def load_any(prefix):
-    """tag -> summary for every MERGED run with the prefix, whatever arms it carries."""
+    """tag -> summary for every MERGED run with the prefix (or any of a comma-separated list),
+    whatever arms it carries."""
     out = {}
     for root in ("results/_cluster_staging/*/results", "results"):
-        for f in sorted(glob.glob(f"{root}/*/benchmark/{prefix}*/summary.json")):
+        for f in sorted(f for pre in prefix.split(",")
+                        for f in glob.glob(f"{root}/*/benchmark/{pre}*/summary.json")):
             tag = os.path.basename(os.path.dirname(f))
             if "_shard" in tag:
                 continue
@@ -199,7 +203,7 @@ def stage(prefix):
         return 1
     rng = np.random.default_rng(0)
     tally = {}
-    print(f"=== STAGE GVS -- {CELLS} cells, 180 s, seed 1, exact forward model")
+    print(f"=== {'STAGE GVS' if prefix == 'sc_GVS_' else prefix} -- {CELLS} cells, 180 s, seed 1, exact forward model")
     print("Verdicts by exact McNemar; cost on cells both arms solved (reported_cost); "
           "'TM' = time-matched joint space (pre-registered).")
     hdr = (f"{'row':<36}{'L':>5}{'JS':>5}{'p':>9}{'verdict':>12}{'L it':>6}{'JS it':>6}"
