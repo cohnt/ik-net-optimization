@@ -661,6 +661,56 @@ def test_polish():
                   pol is None and not any(k.startswith("polish") for k in rec), f"{pol} {sorted(rec)}")
 
 
+def test_polish_holds_satisfied_active_rows():
+    """`svgd_polish = newton`'s targeting, at unit level (seconds, no network): the solver's own
+    `_polish_newton` / `_drake_rows` / `_drake_max_violation` on a three-variable Drake program
+    with a nonlinear equality (residual 3e-5), an inequality SATISFIED within the gate of its
+    bound (slack 5e-5: held at its value, not spent) and one VIOLATED within the gate (by 2e-5:
+    driven to its bound). Every variable is lumped; there are no variable bounds."""
+    print("\n--- polish: a satisfied active inequality is held, a violated one driven (unit) ---")
+    from types import SimpleNamespace
+    from pydrake.solvers import MathematicalProgram
+    tol = 1e-4
+    x1 = 0.2
+    x_start = np.array([x1 + 5e-5, x1, 0.5 + 2e-5 - x1])
+    prog = MathematicalProgram()
+    x = prog.NewContinuousVariables(3, "x")
+    c = x_start[0] + x_start[1] + x_start[2] + 0.1 * x_start[1] ** 2 - 3e-5
+    prog.AddConstraint(x[0] + x[1] + x[2] + 0.1 * x[1] ** 2 - c == 0)          # equality
+    held_b = prog.AddLinearConstraint(x[0] - x[1] >= 0)                       # satisfied, slack 5e-5
+    driven_b = prog.AddLinearConstraint(x[1] + x[2] <= 0.5)                  # violated by 2e-5
+    ident = lambda v: np.array(v, dtype=float).copy()
+    s = SimpleNamespace(program=SimpleNamespace(prog=prog), tol=tol,
+                        options=SimpleNamespace(svgd_polish_steps=3),
+                        _tg=SimpleNamespace(bp=SimpleNamespace(to_drake_x=ident, from_drake_x=ident,
+                                                               _lumped_idx=np.arange(3))))
+    s._drake_rows = lambda xf, with_gradient=False: SvgdSolver._drake_rows(s, xf, with_gradient)
+    s._drake_max_violation = lambda xf: SvgdSolver._drake_max_violation(s, xf)
+    viol0 = s._drake_max_violation(x_start)
+    x_out, viol, pol = SvgdSolver._polish_newton(s, x_start, viol0)
+    ## Slack to the nearer finite bound, read from the binding (Drake may store a row negated).
+    def slack(b, xf):
+        v = float(np.asarray(prog.EvalBinding(b, xf)).reshape(-1)[0])
+        lb, ub = float(b.evaluator().lower_bound()[0]), float(b.evaluator().upper_bound()[0])
+        return min(v - lb, ub - v)
+    held0, held1 = slack(held_b, x_start), slack(held_b, x_out)
+    driven0, driven1 = slack(driven_b, x_start), slack(driven_b, x_out)
+    print(f"    viol {viol0:.3e} -> {viol:.3e}; held slack {held0:.6e} -> {held1:.6e}; "
+          f"driven slack {driven0:+.3e} -> {driven1:+.3e}; stats {pol}")
+    check("polish unit: the starting point is within the gate with a violated row", 0 < viol0 <= tol, f"{viol0}")
+    check("polish unit: at least one step was accepted", pol["polish_steps"] >= 1, str(pol))
+    check("polish unit: the active-inequality counts are 2 = 1 held + 1 driven",
+          (pol["polish_active_ineq"], pol["polish_active_ineq_held"], pol["polish_active_ineq_driven"])
+          == (2, 1, 1), str(pol))
+    check("polish unit: the held row did not move toward its bound (beyond 1e-9)",
+          held1 >= held0 - 1e-9, f"{held0} -> {held1}")
+    check("polish unit: the driven row now satisfies its bound (to 1e-12)",
+          driven0 < 0 and driven1 >= -1e-12, f"{driven0} -> {driven1}")
+    check("polish unit: the worst violation fell and is the returned one",
+          viol <= viol0 and viol == pol["polish_viol_after"]
+          and viol == s._drake_max_violation(x_out), f"{viol0} -> {viol} {pol}")
+
+
 def test_step_with_kernel_off_is_pgd_on_the_programs_L():
     """On the real pose programs (float64 swarm, collision row included), one step with
     `svgd_kernel = none` and `svgd_metric = identity` is projected gradient descent on the
@@ -877,10 +927,11 @@ def main():
         tests += [test_closed_form_derivatives_match_autograd, test_scaled_rows_map_back_to_drake_rows,
                   test_grasp_cells, test_determinism, test_wall_clock_stop, test_nan_injection,
                   test_cem_warmup_toggle, test_stop_reasons_and_log, test_stop_select_objective,
-                  test_polish, test_step_with_kernel_off_is_pgd_on_the_programs_L, test_graph_replay_is_bitwise,
+                  test_polish, test_polish_holds_satisfied_active_rows,
+                  test_step_with_kernel_off_is_pgd_on_the_programs_L, test_graph_replay_is_bitwise,
                   test_benchmark_subprocess]
     if "polish" in which:
-        tests.append(test_polish)
+        tests += [test_polish_holds_satisfied_active_rows, test_polish]
     if "sweep" in which:
         tests.append(sweep)
     if "profile" in which:

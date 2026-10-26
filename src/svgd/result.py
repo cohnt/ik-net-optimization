@@ -234,7 +234,8 @@ def write_log(path, details):
         if pol:
             f.write(f"SVGD polish: {pol['polish_steps']} steps, {pol['polish_rejected']} rejected, "
                     f"worst violation {pol['polish_viol_before']:.3e} -> {pol['polish_viol_after']:.3e}, "
-                    f"|dx| {pol['polish_dx']:.3e}, active inequality rows {pol['polish_active_ineq']}, "
+                    f"|dx| {pol['polish_dx']:.3e}, active inequality rows {pol['polish_active_ineq']} "
+                    f"({pol.get('polish_active_ineq_held')} held, {pol.get('polish_active_ineq_driven')} driven), "
                     f"{pol['polish_seconds']:.3f} s\n")
         ## The per-check trace, one line per column (`_Target.TRACE_COLUMNS`): violation,
         ## feasibility, the multiplier magnitudes, clips, resampling.
