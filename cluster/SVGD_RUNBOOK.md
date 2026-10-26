@@ -970,6 +970,12 @@ on one core, Drake-feasible); 0 error cells; polish on both arms, worst violatio
 to 9e-16 in 2-3 steps; one `worse` rejection at round-off; one grasp cell drove a slightly violated
 active row (0 held). Not a result.
 
+**Collected 2026-10-26** (`collect_20261026-145339`; the first collection was killed by a local
+`timeout` right after the cluster spent ~25 min building its tar, and its orphan tar was removed). 768 /
+768 items, 3.0 h, 0 crashed, 0 overrun kills; 32 runs promoted. Read: `docs/svgd-solver.md` "R31
+results" (`scripts/report_svgd_polish.py`, `--same-swarm`). Fix after the read: 457d070 (the polish's
+first AutoDiffXd pass in `warm_up`; NOT on the cluster yet -- a re-measure needs a restage).
+
 ## R29 / R30 (branch `svgd-tune`, 2026-10-16): the regulariser's three roles, and the V4 pin's record re-measure
 
 **Pre-registered 2026-10-16 (`docs/svgd-solver.md`, "Stage SVGD_R29" / "Stage SVGD_R30") on Thomas's

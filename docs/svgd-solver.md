@@ -2996,3 +2996,106 @@ If only clause 4 fails, it is a TRADE (residual for wall) put to Thomas, not an 
 four nodes: 5 s per learned cell, R21's joint-space measure), R30's measured pace on the same shape
 (768 items in 2.8 h) gives ~3 h on four nodes, ~11 node-h; worst case 403 node-h (every cell at the clock). The cluster tree needs a
 RESTAGE (new solver code), from `svgd-polish`.
+
+### R31 results (collected 2026-10-26, `collect_20261026-145339`, 32 runs promoted)
+
+**Run.** Jobs 6037006-10, staged c92817b, 11:27-14:27 EDT (3.0 h on four nodes, ~12 node-h); 768 / 768
+items, 0 crashed, 0 overrun kills. Cap check: every row 0 cells at a budget except joint-space screw
+grasp (twin 17 / 16, `polkq` 18 / 20 timed out of 480: under the 24-cell line, as in R30). Read with
+`scripts/report_svgd_polish.py` (all cells) and `--same-swarm`.
+
+**A finding the rule did not anticipate: the swarm is not reproducible run to run.** The prediction
+("success identical by construction") assumed each cell reaches the polish at the twin's particle.
+It does on every cell of the rows whose maps are Drake's alone (Panda both arms, iiwa joint space:
+same iterations, same selected particle, `polish_viol_before` == the twin's `max_violation`, 480 /
+480). On every other row about half the cells diverge BEFORE the polish (iiwa learned 112-272 of 480
+identical; screw 222-332; soft12 24-288), and the unit is the PROCESS: a whole shard (targets
+`i mod 24`) reproduces bit for bit or diverges from its first cell, independent of the node (the same
+host pair gives both). Those rows are exactly the ones whose map runs compiled float32 torch (the
+flow; the screw and soft PCS FK in joint space too); the likeliest cause, NOT verified, is
+`torch.compile` choosing kernels per process (different float32 rounding). Torch and Drake are the
+same build in both runs. So on the divergent cells the all-cell pairing is a same-config replicate
+plus the polish, and it says nothing about the polish alone: the polish cannot change success (it runs
+after the re-check passes), yet the all-cell joint-space screw rows move 3/2, 6/2 and 0/1 discordant,
+every one on a divergent cell. The same-swarm cells are the clean A/B.
+
+**The rule as registered (all 480 cells): FAILS** on clause 1 (joint-space screw grasp native, grasp
+paired, pose paired: the divergence above) and clause 4 (learned iiwa grasp native 1.074, iiwa pose
+paired 1.070, soft12 x4 1.21-1.68; joint space screw grasp paired 1.197, soft12 x4 1.10-1.15).
+Clauses 2 and 3 pass on every row of both arms.
+
+**On the same-swarm cells**: clauses 1, 2, 3 pass on all 32 rows (success identical; median residual
+1e-6..3e-5 -> 9e-17..2e-15; cost ratio 1.0000-1.0001). Clause 4 fails on the eight soft12 rows
+(1.09-1.32) and joint-space screw grasp paired (1.064). Attribution, both measured:
+- **soft12: a first-call cost in the timed cell, now fixed in code (457d070, unmeasured at scale).**
+  The first cell of every shard pays 6.7-6.9 s of `polish_seconds` (once 76 s) -- the soft PCS arm's
+  first float64 AutoDiffXd pass, which nothing warmed under svgd -- after which the polish costs 15-28
+  ms. Leaving each shard's first cell out, the same-swarm wall ratio is 0.96-1.04 on all eight soft12
+  rows. `warm_up` now pays that pass under `svgd_polish=newton` (smoke: soft12 pose native joint
+  space on CPU, 2 / 2, residual 2e-16, cell-0 polish 27 ms; the 7 s first call does not occur on CPU,
+  so the smoke cannot show the saving).
+- **joint-space screw grasp paired: not the polish.** Its polish costs 6 ms per cell (0.5% of the
+  row's wall), and the same-swarm cells take identical iterations; the median cell is +0.07 s
+  slower, a run / node difference.
+
+
+**learned** (`pol` v `pin4`)
+
+| row | same-swarm cells | success twin / pol, all (b/c) | success, same | median resid twin -> pol | cost ratio, same | wall ratio all / same / same but first cell |
+| --- | --- | --- | --- | --- | --- | --- |
+| panda grasp native | 480 | 480 / 480 (0/0) | 480 / 480 | 5.7e-06 -> 1.7e-16 | 1.0000 | 1.017 / 1.017 / 1.019 |
+| panda grasp paired | 480 | 480 / 480 (0/0) | 480 / 480 | 4.7e-06 -> 1.7e-16 | 1.0001 | 1.015 / 1.015 / 1.015 |
+| panda pose native | 480 | 480 / 480 (0/0) | 480 / 480 | 1.5e-05 -> 8.9e-16 | 1.0000 | 1.018 / 1.018 / 1.019 |
+| panda pose paired | 480 | 480 / 480 (0/0) | 480 / 480 | 1.6e-05 -> 8.6e-16 | 1.0000 | 1.014 / 1.014 / 1.014 |
+| iiwa grasp native | 240 | 480 / 480 (0/0) | 240 / 240 | 9.9e-06 -> 2.2e-16 | 1.0000 | 1.074 / 1.047 / 1.025 |
+| iiwa grasp paired | 272 | 480 / 480 (0/0) | 272 / 272 | 7.7e-06 -> 2.2e-16 | 1.0000 | 1.023 / 0.993 / 0.993 |
+| iiwa pose native | 192 | 480 / 480 (0/0) | 192 / 192 | 2.7e-05 -> 8.9e-16 | 1.0001 | 1.006 / 1.003 / 1.001 |
+| iiwa pose paired | 112 | 480 / 480 (0/0) | 112 / 112 | 2.3e-05 -> 1.3e-15 | 1.0000 | 1.070 / 1.025 / 1.026 |
+| screw grasp native | 248 | 480 / 480 (0/0) | 248 / 248 | 2.1e-05 -> 6.2e-16 | 1.0000 | 1.044 / 1.001 / 1.001 |
+| screw grasp paired | 248 | 480 / 480 (0/0) | 248 / 248 | 2.2e-05 -> 6.4e-16 | 1.0000 | 0.927 / 1.023 / 1.024 |
+| screw pose native | 240 | 480 / 480 (0/0) | 240 / 240 | 3.0e-05 -> 2.0e-15 | 1.0000 | 1.009 / 1.039 / 1.038 |
+| screw pose paired | 232 | 480 / 480 (0/0) | 232 / 232 | 2.6e-05 -> 2.0e-15 | 1.0000 | 1.044 / 1.014 / 1.014 |
+| soft12 grasp native | 80 | 480 / 480 (0/0) | 80 / 80 | 3.5e-06 -> 9.7e-17 | 1.0000 | 1.675 / 1.125 / 0.997 |
+| soft12 grasp paired | 24 | 480 / 480 (0/0) | 24 / 24 | 4.8e-06 -> 1.1e-16 | 1.0000 | 1.207 / 1.218 / 1.032 |
+| soft12 pose native | 80 | 480 / 480 (0/0) | 80 / 80 | 3.8e-06 -> 4.4e-16 | 1.0000 | 1.331 / 1.272 / 0.999 |
+| soft12 pose paired | 64 | 480 / 480 (0/0) | 64 / 64 | 4.4e-06 -> 4.4e-16 | 1.0000 | 1.328 / 1.315 / 1.035 |
+
+**joint space** (`polkq` v `pin4kq`)
+
+| row | same-swarm cells | success twin / pol, all (b/c) | success, same | median resid twin -> pol | cost ratio, same | wall ratio all / same / same but first cell |
+| --- | --- | --- | --- | --- | --- | --- |
+| panda grasp native | 480 | 480 / 480 (0/0) | 480 / 480 | 1.1e-05 -> 1.1e-16 | 1.0000 | 1.003 / 1.003 / 1.004 |
+| panda grasp paired | 480 | 480 / 480 (0/0) | 480 / 480 | 1.1e-05 -> 1.1e-16 | 1.0000 | 1.002 / 1.002 / 1.003 |
+| panda pose native | 480 | 480 / 480 (0/0) | 480 / 480 | 3.5e-06 -> 2.2e-16 | 1.0000 | 0.976 / 0.976 / 0.974 |
+| panda pose paired | 480 | 480 / 480 (0/0) | 480 / 480 | 3.5e-06 -> 2.2e-16 | 1.0000 | 0.991 / 0.991 / 0.990 |
+| iiwa grasp native | 480 | 480 / 480 (0/0) | 480 / 480 | 1.1e-05 -> 1.1e-16 | 1.0000 | 1.019 / 1.019 / 1.020 |
+| iiwa grasp paired | 480 | 480 / 480 (0/0) | 480 / 480 | 1.1e-05 -> 1.1e-16 | 1.0000 | 1.018 / 1.018 / 1.020 |
+| iiwa pose native | 480 | 480 / 480 (0/0) | 480 / 480 | 1.0e-06 -> 3.3e-16 | 1.0000 | 0.996 / 0.996 / 0.997 |
+| iiwa pose paired | 480 | 480 / 480 (0/0) | 480 / 480 | 1.0e-06 -> 3.3e-16 | 1.0000 | 0.990 / 0.990 / 0.992 |
+| screw grasp native | 246 | 463 / 462 (3/2) | 246 / 246 | 1.8e-05 -> 1.1e-16 | 1.0000 | 1.044 / 0.989 / 0.990 |
+| screw grasp paired | 222 | 464 / 460 (6/2) | 222 / 222 | 1.5e-05 -> 1.1e-16 | 1.0001 | 1.197 / 1.064 / 1.067 |
+| screw pose native | 332 | 476 / 476 (0/0) | 332 / 332 | 1.2e-06 -> 2.2e-16 | 1.0000 | 1.000 / 0.987 / 0.992 |
+| screw pose paired | 296 | 476 / 477 (0/1) | 296 / 296 | 9.3e-07 -> 2.2e-16 | 1.0000 | 0.848 / 0.984 / 0.985 |
+| soft12 grasp native | 288 | 480 / 480 (0/0) | 288 / 288 | 1.1e-06 -> 9.0e-17 | 1.0000 | 1.127 / 1.112 / 0.998 |
+| soft12 grasp paired | 224 | 480 / 480 (0/0) | 224 / 224 | 1.1e-06 -> 9.7e-17 | 1.0000 | 1.103 / 1.115 / 0.999 |
+| soft12 pose native | 128 | 480 / 480 (0/0) | 128 / 128 | 3.4e-07 -> 3.1e-16 | 1.0000 | 1.125 / 1.093 / 0.962 |
+| soft12 pose paired | 144 | 480 / 480 (0/0) | 144 / 144 | 3.4e-07 -> 3.3e-16 | 1.0000 | 1.150 / 1.138 / 0.999 |
+
+**Clause 5 (clearance), same-swarm**: median `min_distance` change +0.0000 to +0.0016 mm per row; the
+worst cell per row -0.0007 to -0.116 mm; five cells lose more than 0.1 mm (Panda joint space pose cell 12 and grasp cell 113, -0.113 / -0.116 mm, the same cell under
+both protocols; screw learned grasp native cell 139, -0.100 mm). On the divergent cells the swings
+(to -21 mm) are different solutions, not the polish.
+
+**Polish counters** (all cells): 2-3 accepted steps on 92-100% of a row's cells; rejections are `worse` at round-off on
+an IK row once the equalities sit at machine precision (115-200 per row), plus `outside_gate` on
+0-5 grasp cells per row (learned iiwa / screw grasp, joint-space Panda grasp); active inequalities
+held / driven 89-229 / 94-217 per grasp row, 8-54 / 4-40 per pose row; median `polish_seconds` 12-28
+ms learned, 4-16 ms joint space.
+
+**Verdict.** By the letter of the registered rule the option stays at `none`. Every failing clause
+traces to something other than the polish: run-to-run divergence of the swarm (clause 1, and the
+all-cell wall), an unwarmed first call (soft12 wall, fixed), and a node-speed shift on one row. On the
+clean A/B the polish meets the prediction on success, residual and cost; its wall change, each
+shard's first cell aside, is -4% to +4% on every row but joint-space screw grasp paired (+6.7%, above).
+Adoption, and whether to re-measure soft12 (and screw joint space) after the warm-up fix, are
+Thomas's call.
