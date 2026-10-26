@@ -10,6 +10,7 @@ median residual <= 1e-12, cost ratio in [0.94, 1.10], wall up < 5%, every row, b
 
     .venv/bin/python scripts/report_svgd_polish.py            # Markdown to stdout; exit 2 on a refused pairing
     .venv/bin/python scripts/report_svgd_polish.py --same-swarm   # only cells whose pre-polish point is the twin's
+    .venv/bin/python scripts/report_svgd_polish.py --stage R31B   # the re-measure (soft12 both arms, screw joint space)
 
 `--same-swarm` keeps a cell only if the polish's `polish_viol_before` equals the twin's `max_violation`
 (the same particle reached the selection), so the pair differs by the polish alone. R31 found the
@@ -149,11 +150,13 @@ def verdict(r):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--same-swarm", action="store_true", help="only cells whose pre-polish point is the twin's")
+    ap.add_argument("--stage", default="R31", help="the polish stage to read (R31B ran a subset of rows; the rest print MISSING)")
     args = ap.parse_args()
     scope = "same-swarm cells only" if args.same_swarm else "all 480 cells"
-    out = [f"# Stage SVGD_R31: the float64 polish against its twins (cell-paired, {scope})", ""]
+    out = [f"# Stage SVGD_{args.stage}: the float64 polish against its twins (cell-paired, {scope})", ""]
     all_fails = Counter()
     for label, arm, twin, pol in ARMS:
+        pol = (args.stage, pol[1])
         out += [f"## {label}: `{pol[1]}` v `{twin[1]}` ({twin[0]})", "",
                 "| row | same | success twin / pol (b/c, p) | median resid twin -> pol | max resid pol (solved) "
                 "| cost ratio (n) | mean wall twin -> pol (ratio) | cap twin / pol | d min_dist med / min (mm) "
