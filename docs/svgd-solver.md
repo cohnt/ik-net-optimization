@@ -3138,6 +3138,35 @@ the other 20 rows' clause 4 taken from R31. Adoption remains Thomas's call.
 
 **Allotment**: 288 items; R31's pace on these rows gives ~1 h on four nodes (~4 node-h).
 
+### R31B results (collected 2026-10-26 18:14 with `collect_results.sh --stage SVGD_R31B`, 12 runs promoted)
+
+288 / 288 items, 0 error cells. Read: `scripts/report_svgd_polish.py --stage R31B [--same-swarm]`, against
+the R29 / R30 twins. **The prediction holds on every row**: the first timed cell's `polish_seconds` is
+0.026 s median / 0.038 s max over the 184 soft12 shards (R31: ~7 s), and the same-swarm wall ratio is
+below 1.05 on all 8 soft12 rows. Same-swarm cells (the polish alone), rule clauses 1-4 pass on all 12 rows:
+
+| row | arm | same | success twin / pol | median resid twin -> pol | max resid pol | cost ratio | wall ratio | polish ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| soft12 grasp native | learned | 80 | 80 / 80 | 4.0e-06 -> 8.3e-17 | 2.6e-12 | 1.0000 | 1.017 | 29 |
+| soft12 grasp paired | learned | 48 | 48 / 48 | 3.5e-06 -> 8.3e-17 | 1.7e-10 | 1.0000 | 1.018 | 27 |
+| soft12 pose native | learned | 112 | 112 / 112 | 4.3e-06 -> 4.4e-16 | 1.7e-15 | 1.0000 | 1.017 | 26 |
+| soft12 pose paired | learned | 104 | 104 / 104 | 4.3e-06 -> 4.4e-16 | 2.7e-15 | 1.0000 | 0.999 | 26 |
+| screw grasp native | joint space | 255 | 255 / 255 | 1.2e-05 -> 1.1e-16 | 6.2e-06 | 1.0001 | 0.994 | 6 |
+| screw grasp paired | joint space | 190 | 190 / 190 | 1.2e-05 -> 1.1e-16 | 8.2e-14 | 1.0000 | 1.038 | 6 |
+| screw pose native | joint space | 188 | 188 / 188 | 1.3e-06 -> 2.2e-16 | 8.0e-15 | 1.0000 | 0.992 | 5 |
+| screw pose paired | joint space | 224 | 224 / 224 | 1.1e-06 -> 2.2e-16 | 4.2e-15 | 1.0000 | 0.980 | 5 |
+| soft12 grasp native | joint space | 232 | 232 / 232 | 9.6e-07 -> 9.7e-17 | 8.6e-10 | 1.0000 | 1.025 | 17 |
+| soft12 grasp paired | joint space | 248 | 248 / 248 | 1.0e-06 -> 9.4e-17 | 8.6e-10 | 1.0000 | 1.025 | 16 |
+| soft12 pose native | joint space | 344 | 344 / 344 | 3.3e-07 -> 3.3e-16 | 1.9e-15 | 1.0000 | 1.015 | 15 |
+| soft12 pose paired | joint space | 280 | 280 / 280 | 3.6e-07 -> 3.3e-16 | 1.8e-15 | 1.0000 | 1.018 | 15 |
+
+No same-swarm cell loses 0.1 mm of clearance (worst -0.078 mm). R31's screw joint-space grasp paired wall
+(1.067) re-measures at 1.038: node speed, as attributed. On the full grid the divergent cells are again a
+same-config replicate (screw joint-space success discordance 3/3, 7/3, 0/1, p >= 0.34; costs inside the
+seed band). **With R31 (same-swarm) this covers all 32 rows: the polish takes a few ms per cell (median 5-29
+ms), drives the median residual from ~1e-6 to ~1e-16, and leaves success and cost unchanged.** It stays
+opt-in (`svgd_polish=newton`), default `none` (ruling above).
+
 ### Diagnostic REPRO_SVGD: why the swarm is not bit reproducible (2026-10-26; a diagnostic, not a result)
 
 **Hypothesis.** Inductor autotunes Triton reduction kernels by benchmarking candidate configs on the

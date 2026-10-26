@@ -986,7 +986,10 @@ NOTE: `stage_code.sh` and `collect_results.sh` each take ~25 min of cluster-side
 short `timeout` (two runs of this session were killed that way).
 REPRO_SVGD read 17:20 (deterministic Inductor refuted; docs "Diagnostic REPRO_SVGD"). **REPRO_SVGD2
 submitted 17:40 EDT**: job 6038673 (16 items, 1 node, manifest md5 `10d49418`, same staged tree 656238d; A/C
-with `PYTHONHASHSEED=0`). **Cancelled while pending** (Thomas does not care about statistically insignificant run-to-run variation). Submit from the laptop (`submit_bench.sh` copies the local manifest), not on the cluster.
+with `PYTHONHASHSEED=0`). **Cancelled while pending** (Thomas does not care about statistically insignificant run-to-run variation).
+**R31B collected 2026-10-26 18:14** with the new `collect_results.sh --stage SVGD_R31B` (2 min; the whole-tree
+incremental walk was cancelled at 4 min of ~25): 288 / 288 items, 0 errors, 12 runs promoted. Read in
+docs/svgd-solver.md "R31B results": the prediction holds on every row. Submit from the laptop (`submit_bench.sh` copies the local manifest), not on the cluster.
 
 ## R29 / R30 (branch `svgd-tune`, 2026-10-16): the regulariser's three roles, and the V4 pin's record re-measure
 
