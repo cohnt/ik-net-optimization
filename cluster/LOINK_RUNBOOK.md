@@ -48,7 +48,8 @@ rule, or an empty `lik_trainc` queue.
  3. 00:35 Sun: **iiwa BurA + ButA KILLED** the same way (step 20k, lr 1.5e-8): `scancel 6031777`,
     `checkpoints/last.ckpt` (step 20k) kept, "recipe A: LR collapsed". So recipe A on iiwa:
     m pair ran out (started before the 15-min cadence), x and u pairs killed. iiwa BmrA (lr <
-    1e-6 at 17k, ran out): rc 0 ladder (1600, 5, none) cost 1640, screen running at 00:35.
+    1e-6 at 17k, ran out): rc 0 ladder (1600, 5, none) cost 1640, (a) 511 mm / 62 deg (the
+    lowest of the ladder), (g) off-branch 1966 mm, in the box 0.75.
     Left: iiwa Bx P and Bu P pairs (~01:00 / ~02:00 + export). Watcher fix: the kill-rule awk
     now matches only status lines (`/^[a-z].* step /`), the `.pkl` export listing had tripped it.
  4. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
