@@ -3180,3 +3180,7 @@ summation order -- can differ per process among a few alternatives. Fits all fou
 F each show exactly one class. If refuted, the remaining per-process suspect is the CUDA caching
 allocator's addresses (alignment-dependent kernel variants in Triton / cuBLAS); that is where this
 effort stops.
+
+**Cancelled before it ran (2026-10-26).** Thomas: *"I just don't care that much about statistically
+insignificant variation run to run."* The swarm is statistically reproducible (above); the bit-level cause
+is not chased further. A/Bs are read on same-swarm cells or as replicates.
