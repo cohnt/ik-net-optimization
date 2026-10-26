@@ -1119,13 +1119,16 @@ class SvgdSolver:
     def _polish_newton(self, x_lumped, viol0):
         """`svgd_polish = newton` (a smoke, 2026-10-18): float64 minimum-norm Gauss-Newton
         steps on the ACTIVE rows of the returned particle, in Drake's full decision vector
-        (only the lumped coordinates move). Active = every equality row (`lb == ub`) plus every
-        inequality row within `tol` of a finite bound, targeted AT that bound so the step keeps
-        it there rather than pushing through. The step is clamped onto the variable bounds and
-        ACCEPTED only if the worst signed violation over ALL rows (`_drake_max_violation`) does
-        not rise and stays within `tol`; the first rejection ends the polish, so the returned
-        point is never worse than the unpolished one. Stops after `svgd_polish_steps` accepted
-        steps, or once a step improves the worst violation by less than 10x. Returns
+        (only the lumped coordinates move). Active = every equality row (`lb == ub`), targeted
+        at `lb`, plus every inequality row within `tol` of a finite bound: a VIOLATED one is
+        targeted at the bound it violates (driven), a SATISFIED one at its current value (held,
+        residual 0), so the linearised step neither spends its slack nor pushes it through the
+        bound; read from the bounds alone, never the row names. The step is clamped onto the
+        variable bounds and ACCEPTED only if the worst signed violation over ALL rows
+        (`_drake_max_violation`) does not rise and stays within `tol`; the first rejection ends
+        the polish, so the returned point is never worse than the unpolished one. Stops after
+        `svgd_polish_steps` accepted steps, or once a step improves the worst violation by less
+        than 10x. Returns
         `(x_lumped, worst_violation, stats)`."""
         t = time.perf_counter()
         bp = self._tg.bp
@@ -1148,15 +1151,22 @@ class SvgdSolver:
         eq = lb_all == ub_all
         fin_lb, fin_ub = np.isfinite(lb_all), np.isfinite(ub_all)
         steps, rejected, active_ineq, n_active, step_viols = 0, 0, None, None, []
+        held_ineq, driven_ineq = None, None
         reject_kind, reject_row = None, None
         for _ in range(max(0, int(self.options.svgd_polish_steps))):
             val, lb, ub, J = self._drake_rows(x, with_gradient=True)
             near_lb = ~eq & fin_lb & (np.abs(val - lb) <= tol)
             near_ub = ~eq & fin_ub & (np.abs(val - ub) <= tol) & ~near_lb
             active = eq | near_lb | near_ub
-            target = np.where(eq | near_lb, lb, ub)
+            ## An active inequality already inside its bounds is HELD at its current value (the
+            ## step keeps it where it is, spending none of its slack); one outside is DRIVEN to
+            ## the bound it violates: the target is the value clipped onto [lb, ub].
+            driven = (near_lb | near_ub) & ((val < lb) | (val > ub))
+            held = (near_lb | near_ub) & ~driven
+            target = np.where(eq, lb, np.clip(val, lb, ub))
             if active_ineq is None:
                 active_ineq, n_active = int((near_lb | near_ub).sum()), int(active.sum())
+                held_ineq, driven_ineq = int(held.sum()), int(driven.sum())
             r = (val - target)[active]
             Ja = J[active][:, lumped]
             if r.size == 0 or not np.all(np.isfinite(r)) or not np.all(np.isfinite(Ja)):
@@ -1202,6 +1212,7 @@ class SvgdSolver:
             polish_viol_before=float(viol0), polish_viol_after=float(v_cur),
             polish_step_viols=[float(u) for u in step_viols],
             polish_active_ineq=None if active_ineq is None else int(active_ineq),
+            polish_active_ineq_held=held_ineq, polish_active_ineq_driven=driven_ineq,
             polish_active_rows=n_active,
             polish_dx=float(np.linalg.norm(x - x0)),
             polish_inactive_slack_drop=float(np.max(s0[fin] - s1[fin], initial=0.0)),
