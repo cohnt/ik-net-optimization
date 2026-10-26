@@ -3151,3 +3151,32 @@ compiled torch); (D) C + `TORCHINDUCTOR_DETERMINISTIC=1`. 32 items. **Prediction
 least two distinct outcomes across their eight replicas (cell `max_violation` before the polish and
 `q` bitwise); B and D show exactly one each. If B / D still diverge, the hypothesis is refuted and
 the next suspects are cuBLAS / CUDA-graph replay and the crc32-of-x0 seed (`_seed`).
+
+**Result (job 6038025, one node d-10-2-1, both GPUs; `scripts/svgd/repro_check.py`): REFUTED.** The
+deterministic flag changes nothing:
+
+| condition | replica classes (of 8) | cells with > 1 outcome | cell 0's outer steps by class | identical to R31 shard 0 |
+| --- | --- | --- | --- | --- |
+| A iiwa learned, record flags | 5 / 2 / 1 | 24 / 24 | 8 / 9 / 13 | 5 / 8 |
+| B A + `TORCHINDUCTOR_DETERMINISTIC=1` | 3 / 3 / 2 | 24 / 24 | 13 / 9 / 8 | 3 / 8 |
+| C soft12 joint space, record flags | 5 / 3 | 24 / 24 | 12 / 10 | 3 / 8 |
+| D C + `TORCHINDUCTOR_DETERMINISTIC=1` | 5 / 3 | 24 / 24 | 10 / 12 | 5 / 8 |
+
+What it does establish: (1) **the outcome is a per-process choice among very few alternatives** -- a
+replica either agrees with another on all 24 cells bitwise or on none, and A and B share the same
+three (cell 0 at 8 / 9 / 13 outer steps), C and D the same two; (2) **not the GPU**: a class appears on
+both GPUs and one GPU produces two or three classes (claim owners in the state dir); (3) not the host
+(one node); (4) not autotuning; (5) every replica solves 24 / 24. Not atomics either: an atomic-order
+race would reroll per cell, not hold one class over 24 independent solves.
+
+### Diagnostic REPRO_SVGD2: the hash seed (2026-10-26; a diagnostic, not a result)
+
+**Hypothesis.** Python randomises `str` hashing per process (`PYTHONHASHSEED`), and Inductor's
+scheduler / codegen iterate sets of buffer names in places, so fusion and loop order -- hence float32
+summation order -- can differ per process among a few alternatives. Fits all four facts above.
+
+**Test.** As REPRO_SVGD A and C (record flags, caches disabled, shard 0), eight replicas each with
+`PYTHONHASHSEED=0`: (E) iiwa learned, (F) soft12 joint space. 16 items, one node. **Prediction**: E and
+F each show exactly one class. If refuted, the remaining per-process suspect is the CUDA caching
+allocator's addresses (alignment-dependent kernel variants in Triton / cuBLAS); that is where this
+effort stops.
