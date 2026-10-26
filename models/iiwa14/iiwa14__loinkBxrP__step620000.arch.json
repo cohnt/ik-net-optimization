@@ -1,0 +1,50 @@
+{
+  "activation": "relu",
+  "branch": [
+    1,
+    -1,
+    1
+  ],
+  "cost": "x",
+  "dataset_name": "iiwa14_branch",
+  "depth": 2,
+  "dim_latent_space": 1,
+  "family": "loink",
+  "head_hidden": 128,
+  "j_mean": 4.213556395688904,
+  "j_std": 2.1209442629752657,
+  "mu": 0.1,
+  "n_dys": 100,
+  "n_dys_source": "training default (no export ladder triple of n_dys [25, 50, 100, 200, 400, 800, 1600, 3200] x n_newton [2, 5, 10, 20, 30, 50] x newton_damping ['none', 'backtrack'] passed)",
+  "n_newton": 2,
+  "ndof": 7,
+  "newton_damping": "none",
+  "provenance": {
+    "global_step": 620000,
+    "source_checkpoint": "/home/gridsan/tcohn/learned-ik/results/train/iiwa14_loinkBxrP/checkpoints/loink-checkpoint-step=620000.ckpt",
+    "staged_learned_ik_commit": "f12f59446d88e287b39ccc68fb28ea39567c0fba"
+  },
+  "robot_name": "iiwa14",
+  "task_dim": 6,
+  "training": {
+    "gamma": 0.9795,
+    "gradient_clip": 1.0,
+    "lam": 0.01,
+    "learning_rate": 0.00015,
+    "optimizer": "adamw",
+    "plateau_ema": 0.99,
+    "plateau_factor": 0.5,
+    "plateau_patience": 500,
+    "recipe": "P",
+    "scheduler": "step",
+    "step_lr_every": 2441,
+    "tau_penalty": 0.001,
+    "weight_decay": 1.8e-05
+  },
+  "units": [
+    256,
+    256,
+    256,
+    256
+  ]
+}
