@@ -314,7 +314,7 @@ no iterations). Proposed = learned + AL-SVGD; ablation A = learned under the Dra
   and soft PCS. **Strong on success, robustness to the start, matched-time wall and generality; NOT a
   solution-quality result against joint space, and the paper must not claim one.**
 
-**Open**: twelve screw-arm segfaults in R22/R23 (recorded, not chased). Float64 Newton polish smoked on branch `svgd-polish`. GVS under svgd deferred. The soft PCS arm takes the split step (forward-mode row Jacobians).
+**Open**: twelve screw-arm segfaults in R22/R23 (recorded, not chased). **Float64 polish (stage R31, branch `svgd-polish`, 2026-10-26)**: on cells reaching it at the twin's particle, residual 1e-5 -> 1e-16, success and cost identical; the registered rule FAILS (all cells) on causes outside the polish, so it stays `none` pending Thomas. **TRAP: the svgd swarm is not reproducible run to run** wherever the map runs compiled torch (all learned rows but the Panda's, screw and soft PCS joint space): a whole shard reproduces or diverges; read A/Bs on identical-swarm cells (`report_svgd_polish.py --same-swarm`). GVS under svgd deferred. The soft PCS arm takes the split step (forward-mode row Jacobians).
 
 ## Results: the campaign of record (long form: `docs/notes-record.md`)
 
