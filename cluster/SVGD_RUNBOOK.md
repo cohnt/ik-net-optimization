@@ -976,6 +976,15 @@ active row (0 held). Not a result.
 results" (`scripts/report_svgd_polish.py`, `--same-swarm`). Fix after the read: 457d070 (the polish's
 first AutoDiffXd pass in `warm_up`; NOT on the cluster yet -- a re-measure needs a restage).
 
+**R31B + REPRO_SVGD submitted 2026-10-26 16:04 EDT** (docs/svgd-solver.md, "Stage SVGD_R31B" and "Diagnostic
+REPRO_SVGD"; Thomas: re-measure after the fix, and find why the swarm is not bit reproducible). Staged 656238d
+(checked: `.staged-commit`, the warm-up fix in the staged solver, manifest md5s R31B `1ec85953` / REPRO
+`68d13ae7`, the three checkpoints). REPRO_SVGD (32 items, 1 node): job 6038025; R31B (288 items, 4 nodes):
+jobs 6038026 / 6038028 / 6038029 / 6038030, `DRAKE_ENV=crc PROCS=2`. REPRO's items are shard 0 only; read
+the `_shard0of24` dirs directly (the merger leaves an incomplete shard set alone).
+NOTE: `stage_code.sh` and `collect_results.sh` each take ~25 min of cluster-side I/O; never wrap them in a
+short `timeout` (two runs of this session were killed that way).
+
 ## R29 / R30 (branch `svgd-tune`, 2026-10-16): the regulariser's three roles, and the V4 pin's record re-measure
 
 **Pre-registered 2026-10-16 (`docs/svgd-solver.md`, "Stage SVGD_R29" / "Stage SVGD_R30") on Thomas's
