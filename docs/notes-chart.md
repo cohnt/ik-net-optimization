@@ -471,3 +471,80 @@ charts. The smokes and PROBE were rerun on the new sidecars (runbook).
 Benchmarked anyway, soft12 only (the four `_soft12P` manifests, PROCS=2): the question the
 rung asks is answered by cells, and the cVAE precedent ran its collapsed charts. Cells
 `docs/loink-tables.md`.
+
+### Phase 2 (2026-10-25): single-branch charts on the rigid arms -- the fit does not move
+
+**Why.** The K = 1 diagnosis above says a bijection of `R^7` cannot carry the several disconnected
+arcs of a 7-DoF arm's pose fibre on one line. Thomas's call (2026-10-24): train the Panda and
+iiwa charts on ONE IK branch, where the fibre is a single arc parameterised by the redundancy,
+and accept the single-branch nature as a stated limitation of the arm. Branch = the nominal
+configuration's (`src/branches.py`, analytic classifiers, never hard-coded): Panda `gc(q, 3) =
+(1, 2, +1)`, iiwa `GC = (+1, -1, +1)`. Datasets `panda_branch` / `iiwa14_branch` (25M + 15k,
+seed 0, rejection sampling on xeon-p8; on-branch acceptance 0.236 / 0.125). Labels
+`loinkB<cost><act><recipe>`, 12 per robot, the same `K = 1`, trust region 2.5, 180 s. Reach
+ceiling of a single-branch arm on the 20 probe targets (`scripts/loink_branch_ceiling.py`,
+analytic IK on the nominal branch over a psi grid, verified by the program): Panda pose 16/20
+(the `A = -1` branches reach none), Panda grasp 20/20, iiwa pose and grasp 20/20.
+
+**Result: the branch charts sit at the constant predictor, like the full-fibre ones.** Validation
+on the BRANCH test split at the end of training (constant predictor Panda 581 mm / 136 deg, iiwa
+700 mm / 130 deg); exports via the 96-triple ladder (`n_dys x n_newton x damping`, three latent
+draws: prior, +-5 box, real on-branch `q`); screen (a) = task error of `G^{-1}([y; 0])` on the
+branch test split; (g) = the same on the FULL test split's off-branch rows (what a paired start
+or an off-branch target meets), with the fraction of their true latents inside the +-5 box:
+
+| chart | val pos / rot RMSE | tau | export (n_dys, n_newton, damping), cost | (a) median pos / ang | (g) off-branch pos, in box |
+| --- | --- | --- | --- | --- | --- |
+| Panda BmrP | 743 mm / 83 deg | 1.3e5 | rc 6, no triple passes | - | - |
+| Panda BmtP | 683 / 114 | 3.9e4 | (100, 10, backtrack) 250 | 615 mm / 105 deg | 886 mm, 0.72 |
+| Panda BxrP | 743 / 83 | 1.2e5 | rc 6 | - | - |
+| Panda BxtP | 692 / 114 | 4.1e4 | (25, 20, backtrack) 325 | 625 / 105 | 905, 0.68 |
+| Panda BurP | 769 / 79 | 1.5e5 | rc 6 | - | - |
+| Panda ButP | 791 / 109 | 1.4e5 | (800, 50, backtrack) 1550 | 713 / 98 | 981, 0.02 (z median 86) |
+| Panda BmrA | 678 / 93 | 5.1e3 | (1600, 20, none) 1760 | 585 / 74 | 1257 (p95 23 m), 0.81 |
+| Panda BmtA | 648 / 119 | 1.0e3 | (25, 10, backtrack) 175 | 579 / 113 | 792, 0.74 |
+| Panda BxrA | 680 / 93 | 6.0e3 | (1600, 30, none) 1840 | 577 / 73 | 1193 (p95 21 m), 0.80 |
+| Panda BxtA | 629 / 120 | 7.0e2 | (25, 10, backtrack) 175 | 573 / 115 | 765, 0.70 |
+| Panda BurA | 702 / 91 | 6.3e3 | (1600, 30, none) 1840 | 602 / 71 | 1186 (p95 14 m), 0.25 |
+| Panda ButA | 679 / 117 | 1.1e3 | (100, 10, backtrack) 250 | 629 / 110 | 857, 0.32 |
+| iiwa BmrP | 662 / 77 | 7.6e4 | rc 6 | - | - |
+| iiwa BmtP | 664 / 104 | 2.9e4 | (25, 20, backtrack) 325 | 545 / 89 | 1183, 0.72 |
+| iiwa BxrP | 666 / 77 | 7.9e4 | rc 6 | - | - |
+| iiwa BxtP | 678 / 103 | 2.8e4 | (25, 10, backtrack) 175 | 551 / 89 | 1195, 0.71 |
+| iiwa BurP | 618 / 74 | 1.1e5 | rc 6 | - | - |
+| iiwa ButP | 725 / 99 | 1.1e5 | (800, 50, backtrack) 1550 | 593 / 83 | 1448, 0.03 (z median 69) |
+| iiwa BmrA | 635 / 85 | 3.5e3 | (1600, 5, none) 1640 | 511 / 62 | 1966, 0.75 |
+| iiwa BmtA | 622 / 113 | 9.6e2 | (25, 10, backtrack) 175 | 526 / 103 | 1051, 0.70 |
+| iiwa BxrA | 638 / 85 at 40k | 3.5e3 | killed (LR rule), `last.ckpt` | - | - |
+| iiwa BxtA | 470 / 118 at 30k | 8.5e2 | killed, `last.ckpt` | - | - |
+| iiwa BurA | 589 / 82 at 20k | 4.1e3 | killed, `last.ckpt` | - | - |
+| iiwa ButA | 656 / 108 at 20k | 1.1e3 | killed, `last.ckpt` | - | - |
+
+Every exported chart puts more than 50 mm of task error on 99.9% of its own branch's test poses;
+the best of the ladder (iiwa BmrA) is 511 mm at the median with a p95 above a metre. Recipe P
+reproduces phase 1 step for step: the Panda `m` relu curve is flat from step 20k (721 -> 743 mm),
+`tau` grows to 3e4-1.5e5, and every relu chart ends NON-INVERTIBLE (no triple of the ladder
+passes the round trip on any draw; the tanh charts pass at 175-325 passes per decode, ButP at
+1550). Recipe A collapses as in phase 1 (the plateau schedule halves the LR every 500 steps;
+`lr < 1e-6` at step 12-20k on every run): the Panda pairs and the iiwa `m` pair started before
+the 15-min watcher cadence and ran out (frozen at 1.5e-8, so the final chart is the step-20k
+chart); the iiwa `x` and `u` pairs were `scancel`led under Thomas's rule at steps 30k / 20k with
+`checkpoints/last.ckpt` kept (exportable by hand with `export_loink.py`). Two things the A runs
+show: their relu charts DO invert, because `tau` stayed at 3e3-6e3, at 5-10x the tanh decode cost
+(1640-1840 passes: 1600 Davis-Yin iterations, the polish cannot be damped at the kinks); and on
+the iiwa they sit BELOW the constant predictor (470-656 mm v 700) where the P charts and every
+Panda chart sit at or above it -- a fit, but half a metre from usable. Off the branch (g), where
+a paired start or a target reachable only elsewhere lands, the error roughly doubles (0.8-2 m
+medians, the relu A charts' p95 at 14-23 m) and 20-30% of the true latents leave the +-5 box
+(ButP and BurA: 70-98%), so the paired protocol would clip as it does on soft12.
+
+**Conclusion.** Restricting the fibre to one arc did not move the fit; the disconnected topology
+was not the binding constraint. The gap is between what a `K = 1` bi-Lipschitz chart of `R^7` can
+represent for a 6-D pose task and what training finds (the diagnosis table above: padding the
+latent is what restores learning), so the open questions for the authors stand: the training
+recipe for a 7-DoF arm, why `tau` runs away, and whether a padded latent is in the method's
+spirit. **Cells on the branch charts** (`LOINKSMOKE_branch`, `LOINKPROBE_branch`, 192 + 192 GPU
+items) are NOT run by default on charts that put the end effector half a metre off: Thomas's call
+(the report prints `not yet measured` on those rows until it is made). Sidecars of the 14 exported
+charts (and the six rc-6 ones, carrying the training default and the reason) are in
+`models/panda/`, `models/iiwa14/`.

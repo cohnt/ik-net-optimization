@@ -10,6 +10,31 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
+## STATE -- 2026-10-26 03:20 cluster time: phase 2 DONE -- 24 branch runs in (14 exported, 6 rc 6, 4 killed); no chart fits; queue empty; branch cells NOT submitted.
+Resume: nothing runs. `squeue -u tcohn` is empty. Everything below is committed on `chart-loink`.
+ 0. Verdict (`docs/notes-chart.md`, "Phase 2"): on its own branch every chart puts > 50 mm of task
+    error on 99.9% of test poses; medians 511-713 mm (best iiwa BmrA 511 mm / 62 deg); off the
+    branch 0.8-2 m. Recipe P reproduces phase 1 (relu `tau` 7e4-1.5e5, NOT invertible, rc 6 on all
+    six; tanh exports at cost 175-325, the two ButP at 1550). Recipe A: lr < 1e-6 at step 12-20k on
+    every run; Panda pairs + iiwa m pair ran out (started before the 15-min cadence), iiwa x/u
+    pairs `scancel`led (6031776 at 00:19, 6031777 at 00:35; `checkpoints/last.ckpt` steps 40k /
+    20k kept). iiwa A charts sit below the constant predictor (470-656 v 700 mm), Panda above
+    (629-702 v 581). Single branch did not move the fit; topology was not the mechanism.
+ 1. Artefacts: `docs/loink-tables.md` rewritten (`report_loink.py --write`; B rows print the rc-6
+    / killed reasons, exported-but-unbenchmarked rows `not yet measured`; acceptance IDENTICAL);
+    20 branch sidecars in `models/{panda,iiwa14}/` (rc-6 ones carry the training default and
+    "no export ladder triple passed"); CLAUDE.md phase-2 line (39,986 bytes); screens collected
+    to `results/screen_loink/` (`collect_results.sh` 03:15, promoted by `cp -r`).
+ 2. By hand if Thomas wants more: export a killed run from its checkpoint
+    (on the cluster, the venv active, as `cluster/train_chart.sh` does it: `LEARNED_IK_ROOT=~/learned-ik
+    python -u scripts/training/export_loink.py ~/learned-ik/results/train/iiwa14_loinkBxtA/checkpoints/last.ckpt
+    --out ~/learned-ik/repo/models/iiwa14/iiwa14__loinkBxtA__step40000.pkl`, then `screen_loink.py
+    --robot iiwa14 --checkpoint <pkl> --json_out ~/learned-ik/results/screen_loink/<name>.json`);
+    the branch smokes/probes
+    (`manifest_stageLOINKSMOKE_branch.txt` + `_SVGD_branch`, then PROBE_branch; `stage_code.sh`
+    first; `LOINK_SMOKE_MATCH=_loinkB LOINK_SMOKE_EXPECTED=192 LOINK_SMOKE_OFF_BRANCH_OK=1`).
+    My recommendation stands: do not spend them on charts half a metre off.
+
 ## STATE -- 2026-10-26 00:40 cluster time: 16 of 24 exported, 4 killed (iiwa Bx/Bu A, LR collapsed), 4 P runs left; best chart 526 mm.
 Resume: `bash cluster/submit_chart_train.sh --status | grep loinkB`; the watcher
 `results/_watch/train_watch.sh` (laptop, background) fires on a new `node0.SENTINEL`, the kill

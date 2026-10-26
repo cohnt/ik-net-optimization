@@ -27,8 +27,7 @@ iiwa Faria S-R-S on 8; shared code `src/analytic_program.py`) is **a reference t
 the paper** (Thomas, 2026-10-13); the paper's case is robots with no closed form, so **learned v joint
 space is the comparison of record**. Measured (stages ANALYTIC*, 2026-10-14) it is **not an upper
 bound**: single start it loses success to learned on every IPOPT and most SNOPT rows, leads under
-NLopt; its failures are targets the cell's fixed branch cannot reach. Its IPOPT/SNOPT/NLopt seconds are
-from xeon-p8, not volta. Rulings `memory/analytic-baseline-rulings.md`; ops
+NLopt; its failures are targets the cell's fixed branch cannot reach. Rulings `memory/analytic-baseline-rulings.md`; ops
 `cluster/ANALYTIC_RUNBOOK.md`; tables `docs/analytic-arm-tables.md`.
 
 All formulations share `IKFlowProgram`, so a change to constraints/costs affects all of them.
@@ -315,8 +314,7 @@ no iterations). Proposed = learned + AL-SVGD; ablation A = learned under the Dra
   and soft PCS. **Strong on success, robustness to the start, matched-time wall and generality; NOT a
   solution-quality result against joint space, and the paper must not claim one.**
 
-**Open**: twelve screw-arm segfaults in R22/R23 (a race at PROCS=2 is what is left; recorded, not
-chased). Float64 Newton polish smoked on branch `svgd-polish`. GVS under svgd deferred. The soft PCS arm takes the split step (forward-mode row Jacobians).
+**Open**: twelve screw-arm segfaults in R22/R23 (recorded, not chased). Float64 Newton polish smoked on branch `svgd-polish`. GVS under svgd deferred. The soft PCS arm takes the split step (forward-mode row Jacobians).
 
 ## Results: the campaign of record (long form: `docs/notes-record.md`)
 
@@ -326,11 +324,11 @@ flow_cuda_graph=True`, lifted budgets, rungs Panda `n6` / iiwa `n4` / soft PCS `
 `screw7_p050 n6`, arms `learned,numerical`, both protocols, Drake nightly. Wall clocks at paper
 conditions (one solve per V100) from stages PAPER + SVGD_R2 (success identical within one cell). **The
 record is 64 logical runs: four robots x grasp/pose x two protocols x IPOPT / SNOPT / NLopt
-(REMEASURE_NLOPT) / AL-SVGD.** GVS is measured under identical conditions but **outside the record**.
+(REMEASURE_NLOPT) / AL-SVGD.**
 Tables, tally and flag criteria: **`docs/status-quo-tables.md`** (`scripts/report_statusquo.py`;
 `--paper`, `--legacy`); attribution `scripts/report_remeasure.py`; pairing `scripts/report_paper.py`.
 Layout: rows experiments, each solver a block, learned and joint space adjacent, better starred,
-every row printed. Earlier campaigns are superseded and deleted.
+every row printed.
 
 - **Success tally (learned / tie / joint space)**: IPOPT 15/1/0, SNOPT 10/1/5, NLopt 11/3/2, AL-SVGD
   2/14/0. Interior point loses nothing. SQP losses survive only from the paired start (plus Panda grasp
@@ -406,12 +404,15 @@ the decoder returns E[q | pose], unusable where the IK fibre is disconnected bra
 
 **Chart rung two: LOInK (branch `chart-loink`, 2026-10-22), not an ablation**: a bi-Lipschitz
 network designed for a structured latent (`G(q) = [task; z]`, `z = 0` the cost minimiser; the chart
-is `G^{-1}`, Davis-Yin + Newton polish, IFT derivative; it takes the program's RAW `c`,
-`task_input="xyzrpy"`). Question: does a latent structured for ONE cost help under OUR objective?
-Replication (`docs/loink-replication.md`): Sec. V reproduces, Table II does not. **Rigid arms: the chart never fits the task at LOInK's own `K = n - 6 = 1`** (the latent width is the mechanism). **Soft12 (`K = 6`) learns
-but no chart fits** (task error 0.18-0.29 m, `z = 0` a metre off, cost head R^2 < 0); every real
-`q`'s latent lies OUTSIDE the +-5 box, so paired starts always clip; in the box the decode is
-exact. Cells: soft12 only. A padded-latent rung: Thomas's call.
+is `G^{-1}`; it takes the program's RAW `c`). Question: does a latent structured for ONE cost help under OUR objective?
+Replication (`docs/loink-replication.md`): Sec. V reproduces, Table II does not. **Rigid arms: no
+chart fits at LOInK's own `K = n - 6 = 1`** (the latent width is the mechanism), **and retraining
+on ONE IK branch (phase 2, 24 `loinkB*` charts, 2026-10-25) changed nothing**: 0.5-0.7 m median
+task error on the branch itself, so topology was not the binding constraint. **Soft12 (`K = 6`)
+learns but no chart fits** (0.18-0.29 m, `z = 0` a metre off, cost head R^2 < 0; cells 0/20 under
+IPOPT and AL-SVGD); every real `q`'s latent lies OUTSIDE the +-5 box, so paired starts always
+clip. Recipe-P relu charts end non-invertible (`tau` > 7e4); recipe A's LR collapses by step 20k
+on every robot (the paper's schedule). Branch-chart cells and a padded-latent rung: Thomas's call.
 Long form `docs/notes-chart.md`; ops `cluster/LOINK_RUNBOOK.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
@@ -459,7 +460,7 @@ from scratch (`src/screw_arm/params.py` **is** the robot; SDF and torch FK agree
 plant without a program must repair it too. **TRAP: set `ee_frame` BEFORE `CalibrateFlowFrame`**
 (`X_ee_flow` must be identity; a test pins it). Collision filter groups need the `cfg_` prefix.
 Measured: chart ladder `n6` stands; `p025_n6` shows the gain-ceiling runaway (a property of the trained
-chart). `screw7_p050`'s dataset is rebuilt (bit-identical, proved by retraining `n6`); the other pitch rungs' are still gone. Ops and screens
+chart). `p050`'s dataset is rebuilt (bit-identical); the other rungs' are still gone. Ops and screens
 `cluster/SCREW_ARM_RUNBOOK.md`; `python scripts/report_screw.py`. The curvilinear rail is deferred.
 
 ## Running on MIT SuperCloud (long form: `docs/notes-cluster.md`; playbook `cluster/README.md`)
@@ -491,5 +492,4 @@ calling shell. The laptop does not sleep on AC; session gaps are deliberate, nev
 - **Non-dimensionalise the conditioning pose's translation against rotation** (cf. `eaik-experiment`'s
   1.12 m length scale). Never tried.
 - **Least-squares domain extension** (Thomas's unreleased IFT-IK paper): deferred, belongs here.
-  Trust-region *solving* is another project's.
 - **A harder problem formulation** beyond the hardened scene — his idea, his call.

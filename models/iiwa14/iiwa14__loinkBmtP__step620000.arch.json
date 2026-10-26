@@ -1,0 +1,583 @@
+{
+  "activation": "tanh",
+  "branch": [
+    1,
+    -1,
+    1
+  ],
+  "cost": "m",
+  "dataset_name": "iiwa14_branch",
+  "depth": 2,
+  "dim_latent_space": 1,
+  "family": "loink",
+  "head_hidden": 128,
+  "inverse_ladder": [
+    {
+      "cost": 41,
+      "finite": true,
+      "max_dq": 6.232880878087599e-11,
+      "max_inverse_residual": 16.957089722184893,
+      "max_inverse_residual_by_draw": {
+        "box": 13.714635241043485,
+        "prior": 16.957089722184893,
+        "real": 11.84326295705886
+      },
+      "n_dys": 25,
+      "n_newton": 2,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 1.0,
+      "samples": 256
+    },
+    {
+      "cost": 55,
+      "finite": true,
+      "max_dq": 1.4230838729645257e-12,
+      "max_inverse_residual": 8.127042392647224,
+      "max_inverse_residual_by_draw": {
+        "box": 8.127042392647224,
+        "prior": 4.606424436107987,
+        "real": 4.950291733966407
+      },
+      "n_dys": 25,
+      "n_newton": 2,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 1.0,
+      "samples": 256
+    },
+    {
+      "cost": 65,
+      "finite": true,
+      "max_dq": 2.0584529636380466e-09,
+      "max_inverse_residual": 26.696420364899605,
+      "max_inverse_residual_by_draw": {
+        "box": 18.7214584398415,
+        "prior": 26.696420364899605,
+        "real": 10.62602065326439
+      },
+      "n_dys": 25,
+      "n_newton": 5,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.578125,
+      "samples": 256
+    },
+    {
+      "cost": 66,
+      "finite": true,
+      "max_dq": 2.6912694295333495e-11,
+      "max_inverse_residual": 14.789294925469378,
+      "max_inverse_residual_by_draw": {
+        "box": 13.578577677073412,
+        "prior": 14.789294925469378,
+        "real": 12.401687102927015
+      },
+      "n_dys": 50,
+      "n_newton": 2,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 1.0,
+      "samples": 256
+    },
+    {
+      "cost": 80,
+      "finite": true,
+      "max_dq": 1.2434497875801753e-12,
+      "max_inverse_residual": 7.242739622729511,
+      "max_inverse_residual_by_draw": {
+        "box": 7.242739622729511,
+        "prior": 4.310735611598657,
+        "real": 6.6372968144075095
+      },
+      "n_dys": 50,
+      "n_newton": 2,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 1.0,
+      "samples": 256
+    },
+    {
+      "cost": 90,
+      "finite": true,
+      "max_dq": 1.6056436180633682e-09,
+      "max_inverse_residual": 35.20135908704564,
+      "max_inverse_residual_by_draw": {
+        "box": 35.20135908704564,
+        "prior": 15.887689017485124,
+        "real": 14.861971705535382
+      },
+      "n_dys": 50,
+      "n_newton": 5,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.61328125,
+      "samples": 256
+    },
+    {
+      "cost": 100,
+      "finite": true,
+      "max_dq": 9.338640971634504e-13,
+      "max_inverse_residual": 2.916176218020367,
+      "max_inverse_residual_by_draw": {
+        "box": 2.6886764508986163,
+        "prior": 2.916176218020367,
+        "real": 0.7675554773468551
+      },
+      "n_dys": 25,
+      "n_newton": 5,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.453125,
+      "samples": 256
+    },
+    {
+      "cost": 105,
+      "finite": true,
+      "max_dq": 2.1154667884104583e-07,
+      "max_inverse_residual": 49.70162514014993,
+      "max_inverse_residual_by_draw": {
+        "box": 49.70162514014993,
+        "prior": 48.497316601589894,
+        "real": 19.97324170889741
+      },
+      "n_dys": 25,
+      "n_newton": 10,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.125,
+      "samples": 256
+    },
+    {
+      "cost": 116,
+      "finite": true,
+      "max_dq": 3.128874936919601e-11,
+      "max_inverse_residual": 15.422933032124565,
+      "max_inverse_residual_by_draw": {
+        "box": 14.219553131585647,
+        "prior": 13.987059771165118,
+        "real": 15.422933032124565
+      },
+      "n_dys": 100,
+      "n_newton": 2,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 1.0,
+      "samples": 256
+    },
+    {
+      "cost": 125,
+      "finite": true,
+      "max_dq": 7.993605777301127e-13,
+      "max_inverse_residual": 3.2760014513436193,
+      "max_inverse_residual_by_draw": {
+        "box": 3.2760014513436193,
+        "prior": 3.0014398640738964,
+        "real": 0.6833005306163824
+      },
+      "n_dys": 50,
+      "n_newton": 5,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.48046875,
+      "samples": 256
+    },
+    {
+      "cost": 130,
+      "finite": true,
+      "max_dq": 4.073300470253116e-07,
+      "max_inverse_residual": 42.10395534339901,
+      "max_inverse_residual_by_draw": {
+        "box": 30.877391452149958,
+        "prior": 42.10395534339901,
+        "real": 21.65523226607046
+      },
+      "n_dys": 50,
+      "n_newton": 10,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.15625,
+      "samples": 256
+    },
+    {
+      "cost": 130,
+      "finite": true,
+      "max_dq": 1.269873095566254e-12,
+      "max_inverse_residual": 6.577492581148442,
+      "max_inverse_residual_by_draw": {
+        "box": 6.577492581148442,
+        "prior": 5.004983072270496,
+        "real": 2.57829040533855
+      },
+      "n_dys": 100,
+      "n_newton": 2,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 1.0,
+      "samples": 256
+    },
+    {
+      "cost": 140,
+      "finite": true,
+      "max_dq": 1.6071041164522626e-09,
+      "max_inverse_residual": 31.01449863730851,
+      "max_inverse_residual_by_draw": {
+        "box": 31.01449863730851,
+        "prior": 16.844271507279995,
+        "real": 13.810138443438262
+      },
+      "n_dys": 100,
+      "n_newton": 5,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.53125,
+      "samples": 256
+    },
+    {
+      "cost": 175,
+      "finite": true,
+      "max_dq": 8.08242361927114e-13,
+      "max_inverse_residual": 3.699133957885488,
+      "max_inverse_residual_by_draw": {
+        "box": 1.7698414015922508,
+        "prior": 3.699133957885488,
+        "real": 1.0750194683519494
+      },
+      "n_dys": 100,
+      "n_newton": 5,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.40234375,
+      "samples": 256
+    },
+    {
+      "cost": 175,
+      "finite": true,
+      "max_dq": 8.040235144335384e-13,
+      "max_inverse_residual": 0.07521085594230303,
+      "max_inverse_residual_by_draw": {
+        "box": 0.07521085594230303,
+        "prior": 0.00794533563716443,
+        "real": 2.2883360206726877e-09
+      },
+      "n_dys": 25,
+      "n_newton": 10,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.0,
+      "samples": 256
+    },
+    {
+      "cost": 180,
+      "finite": true,
+      "max_dq": 1.314528121909575e-07,
+      "max_inverse_residual": 49.15261848136029,
+      "max_inverse_residual_by_draw": {
+        "box": 46.33196407746464,
+        "prior": 49.15261848136029,
+        "real": 32.133966843867476
+      },
+      "n_dys": 100,
+      "n_newton": 10,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.09765625,
+      "samples": 256
+    },
+    {
+      "cost": 185,
+      "finite": true,
+      "max_dq": 0.0002060608313243506,
+      "max_inverse_residual": 135.89243559283477,
+      "max_inverse_residual_by_draw": {
+        "box": 135.89243559283477,
+        "prior": 132.36497836200095,
+        "real": 77.94025115504066
+      },
+      "n_dys": 25,
+      "n_newton": 20,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.0390625,
+      "samples": 256
+    },
+    {
+      "cost": 200,
+      "finite": true,
+      "max_dq": 8.029132914089132e-13,
+      "max_inverse_residual": 1.189844275510386,
+      "max_inverse_residual_by_draw": {
+        "box": 0.10207423360151191,
+        "prior": 1.189844275510386,
+        "real": 0.0003522858178328647
+      },
+      "n_dys": 50,
+      "n_newton": 10,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.00390625,
+      "samples": 256
+    },
+    {
+      "cost": 210,
+      "finite": true,
+      "max_dq": 0.01794919161787334,
+      "max_inverse_residual": 129.99168809203604,
+      "max_inverse_residual_by_draw": {
+        "box": 128.76480737401283,
+        "prior": 129.99168809203604,
+        "real": 95.10316888408063
+      },
+      "n_dys": 50,
+      "n_newton": 20,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.0625,
+      "samples": 256
+    },
+    {
+      "cost": 216,
+      "finite": true,
+      "max_dq": 8.184075639405819e-11,
+      "max_inverse_residual": 12.692198975462894,
+      "max_inverse_residual_by_draw": {
+        "box": 11.150101634335858,
+        "prior": 12.692198975462894,
+        "real": 9.137862422440538
+      },
+      "n_dys": 200,
+      "n_newton": 2,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 1.0,
+      "samples": 256
+    },
+    {
+      "cost": 230,
+      "finite": true,
+      "max_dq": 1.1251000131551336e-12,
+      "max_inverse_residual": 6.057546290923196,
+      "max_inverse_residual_by_draw": {
+        "box": 6.057546290923196,
+        "prior": 3.2414760153108317,
+        "real": 1.789517975694717
+      },
+      "n_dys": 200,
+      "n_newton": 2,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 1.0,
+      "samples": 256
+    },
+    {
+      "cost": 240,
+      "finite": true,
+      "max_dq": 8.57097504081139e-10,
+      "max_inverse_residual": 15.408553114648232,
+      "max_inverse_residual_by_draw": {
+        "box": 15.408553114648232,
+        "prior": 14.268091366942286,
+        "real": 6.674970939835474
+      },
+      "n_dys": 200,
+      "n_newton": 5,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.23046875,
+      "samples": 256
+    },
+    {
+      "cost": 250,
+      "finite": true,
+      "max_dq": 8.075762281123389e-13,
+      "max_inverse_residual": 0.20172520246299763,
+      "max_inverse_residual_by_draw": {
+        "box": 0.0002351301935278327,
+        "prior": 0.20172520246299763,
+        "real": 3.170018894227411e-05
+      },
+      "n_dys": 100,
+      "n_newton": 10,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.0078125,
+      "samples": 256
+    },
+    {
+      "cost": 260,
+      "finite": true,
+      "max_dq": 0.00014199651674218217,
+      "max_inverse_residual": 135.79115168012072,
+      "max_inverse_residual_by_draw": {
+        "box": 131.83779412786137,
+        "prior": 135.79115168012072,
+        "real": 125.10744843151664
+      },
+      "n_dys": 100,
+      "n_newton": 20,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.03515625,
+      "samples": 256
+    },
+    {
+      "cost": 265,
+      "finite": true,
+      "max_dq": 0.602632937963649,
+      "max_inverse_residual": 138.3999707582723,
+      "max_inverse_residual_by_draw": {
+        "box": 138.3999707582723,
+        "prior": 138.39484266552344,
+        "real": 137.6998280185135
+      },
+      "n_dys": 25,
+      "n_newton": 30,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.01953125,
+      "samples": 256
+    },
+    {
+      "cost": 275,
+      "finite": true,
+      "max_dq": 8.055778266680136e-13,
+      "max_inverse_residual": 2.0556352270752636,
+      "max_inverse_residual_by_draw": {
+        "box": 2.0556352270752636,
+        "prior": 0.6223514491226203,
+        "real": 1.0990942429476847
+      },
+      "n_dys": 200,
+      "n_newton": 5,
+      "newton_damping": "backtrack",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.13671875,
+      "samples": 256
+    },
+    {
+      "cost": 280,
+      "finite": true,
+      "max_dq": 1.9570443532401782e-07,
+      "max_inverse_residual": 45.2624969670363,
+      "max_inverse_residual_by_draw": {
+        "box": 45.2624969670363,
+        "prior": 24.186264473212916,
+        "real": 5.899753124670683
+      },
+      "n_dys": 200,
+      "n_newton": 10,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.01953125,
+      "samples": 256
+    },
+    {
+      "cost": 290,
+      "finite": true,
+      "max_dq": 2.155066766696166,
+      "max_inverse_residual": 138.41835174124074,
+      "max_inverse_residual_by_draw": {
+        "box": 138.26599799812013,
+        "prior": 138.41835174124074,
+        "real": 137.77237246679616
+      },
+      "n_dys": 50,
+      "n_newton": 30,
+      "newton_damping": "none",
+      "passes": false,
+      "passes_prior_box": false,
+      "real_fail_fraction": 0.05078125,
+      "samples": 256
+    },
+    {
+      "cost": 325,
+      "finite": true,
+      "max_dq": 9.269252032595432e-13,
+      "max_inverse_residual": 2.525757381022231e-14,
+      "max_inverse_residual_by_draw": {
+        "box": 1.5903944827755367e-14,
+        "prior": 2.525757381022231e-14,
+        "real": 9.409140133698202e-15
+      },
+      "n_dys": 25,
+      "n_newton": 20,
+      "newton_damping": "backtrack",
+      "offbranch_latent_fail_fraction": 0.0,
+      "offbranch_samples": 2048,
+      "offbranch_z_median": 3.597620104915443,
+      "offbranch_z_p95": 7.052620905515024,
+      "passes": true,
+      "passes_prior_box": true,
+      "real_fail_fraction": 0.0,
+      "samples": 2048
+    }
+  ],
+  "j_mean": 6.833531227319978,
+  "j_std": 2.7222957403126458,
+  "mu": 0.1,
+  "n_dys": 25,
+  "n_dys_source": "export ladder (cheapest passing of n_dys x n_newton x newton_damping, cost = n_dys + (ndof+1+extra) n_newton, extra = len(STEP_SIZES) under backtrack, 0 under none)",
+  "n_newton": 20,
+  "ndof": 7,
+  "newton_damping": "backtrack",
+  "offbranch_latent_fail_fraction": 0.0,
+  "offbranch_samples": 2048,
+  "offbranch_z_median": 3.597620104915443,
+  "offbranch_z_p95": 7.052620905515024,
+  "provenance": {
+    "global_step": 620000,
+    "source_checkpoint": "/home/gridsan/tcohn/learned-ik/results/train/iiwa14_loinkBmtP/checkpoints/loink-checkpoint-step=620000.ckpt",
+    "staged_learned_ik_commit": "f12f59446d88e287b39ccc68fb28ea39567c0fba"
+  },
+  "real_latent_fail_fraction": 0.0,
+  "robot_name": "iiwa14",
+  "task_dim": 6,
+  "training": {
+    "gamma": 0.9795,
+    "gradient_clip": 1.0,
+    "lam": 0.01,
+    "learning_rate": 0.00015,
+    "optimizer": "adamw",
+    "plateau_ema": 0.99,
+    "plateau_factor": 0.5,
+    "plateau_patience": 500,
+    "recipe": "P",
+    "scheduler": "step",
+    "step_lr_every": 2441,
+    "tau_penalty": 0.001,
+    "weight_decay": 1.8e-05
+  },
+  "units": [
+    256,
+    256,
+    256,
+    256
+  ]
+}

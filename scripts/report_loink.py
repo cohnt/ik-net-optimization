@@ -97,6 +97,14 @@ for _robot in ("panda", "iiwa", "screw7_p050", "soft12"):
     if _robot not in LOINK_BRANCH_ROBOTS:
         for _label in LOINK_BRANCH_LABELS:
             REASON[(_robot, _label)] = BRANCH_NA[_robot]
+#: Phase 2 outcomes that will never be measured (2026-10-26, `docs/notes-chart.md` "Phase 2"): recipe-A pairs
+#: scancelled under the LR rule (lr < 1e-6 before 1/3 of the budget; `checkpoints/last.ckpt` kept), and the
+#: recipe-P relu charts whose export found no decode budget passing the round trip (exit code 6).
+for _robot, _label in (("iiwa", "loinkBxrA"), ("iiwa", "loinkBxtA"), ("iiwa", "loinkBurA"), ("iiwa", "loinkButA")):
+    REASON[(_robot, _label)] = "recipe A: LR collapsed (killed)"
+for _robot, _label in (("panda", "loinkBmrP"), ("panda", "loinkBxrP"), ("panda", "loinkBurP"),
+                       ("iiwa", "loinkBmrP"), ("iiwa", "loinkBxrP"), ("iiwa", "loinkBurP")):
+    REASON[(_robot, _label)] = "not invertible at export (rc 6)"
 ALL_LABELS = LOINK_LABELS + LOINK_BRANCH_LABELS
 #: The block families of each solver: (heading suffix, labels).
 FAMILIES = (("", LOINK_LABELS), (", single branch (B)", LOINK_BRANCH_LABELS))
