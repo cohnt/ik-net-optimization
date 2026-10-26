@@ -478,7 +478,10 @@ RECORD_STAGE = "REMEASURE"
 RECORD_CONTROLS = ("sc_REMEASURE_LEGACY_", "sc_REMEASURE_RULE_")
 #: Robots stage REMEASURE measured that are NOT in the campaign of record (Thomas, 2026-10-05, on
 #: the GVS arm: "it certainly doesn't replace the other soft arm"). Their rows print beside it.
-OUTSIDE_RECORD = ("gvs_pushrod9_o1",)
+OUTSIDE_RECORD = ("gvs_pushrod9_o1", "gvs_pushrod9_o2")
+#: Stage GVSO2 (2026-10-22): the GVS arm's o2 rung, built by stage REMEASURE's own item builder
+#: (cluster/gen_manifest.py pins each item to its o1 twin), so its rows print beside o1's.
+OUTSIDE_RECORD_STAGES = (f"sc_{RECORD_STAGE}_", "sc_GVSO2_")
 
 
 def load_record(cells=CELLS, which="remeasure"):
@@ -514,8 +517,9 @@ def load_record(cells=CELLS, which="remeasure"):
 
 
 def load_beside_record(cells=CELLS):
-    """Stage REMEASURE's runs on the robots OUTSIDE the record (the GVS arm): tag -> summary."""
-    return {tag: s for tag, s in load(f"sc_{RECORD_STAGE}_", cells=cells).items()
+    """The runs on the robots OUTSIDE the record (the GVS arm), from stage REMEASURE (o1) and
+    stage GVSO2 (o2): tag -> summary."""
+    return {tag: s for stage in OUTSIDE_RECORD_STAGES for tag, s in load(stage, cells=cells).items()
             if not tag.startswith(RECORD_CONTROLS)
             and parse_tag(tag)["robot"] in OUTSIDE_RECORD}
 
@@ -756,8 +760,8 @@ def main(argv):
         print("  clearances venv. grid_hash and scene_fingerprint checked against each row's IPOPT run.")
         if svgd_missing:
             print(f"  MISSING: {len(svgd_missing)} AL-SVGD summary file(s), e.g. {svgd_missing[0]}")
-        print(f"The GVS arm ({', '.join(OUTSIDE_RECORD)}) was measured in the same stage under identical")
-        print("  conditions and is OUTSIDE the record: its rows print as a separate block at the end,")
+        print(f"The GVS arm ({', '.join(OUTSIDE_RECORD)}) was measured under identical conditions")
+        print("  (o1 in this stage, o2 in stage GVSO2) and is OUTSIDE the record: its rows print as a separate block at the end,")
         print("  with their own tally, and enter none of the record's tables, tally or flags.")
         print("Arms: learned vs joint space (numerical). The analytic reference column is "
               "scripts/report_analytic.py.")
@@ -803,7 +807,8 @@ def beside_record(want):
     beside = load_beside_record()
     label = "GVS arm, measured under identical conditions, outside the record"
     print(f"\n\n=== {label.upper()}")
-    print("Stage REMEASURE, the same conditions as the record above; IPOPT and SNOPT only (the GVS")
+    print("Stage REMEASURE (o1) and stage GVSO2 (o2, 2026-10-22, REMEASURE's items with the rung")
+    print("swapped), the same conditions as the record above; IPOPT and SNOPT only (the GVS")
     print("arm never ran NLopt, so its AL column is N/A). Thomas, 2026-10-05: \"the GVS arm doesn't")
     print("help our story ... it certainly doesn't replace the other soft arm\".")
     if not beside:

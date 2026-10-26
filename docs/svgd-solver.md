@@ -169,7 +169,7 @@ are reported as the collision row's share of the wall.
 | `svgd_time_reserve` | 0.1 | 8: fraction of the cap kept for selection and re-check |
 | `svgd_warmup`, `svgd_warmup_iters`, `svgd_warmup_elite` | `none`, 10, 0.1 | 11: the CEM phase |
 | `svgd_compile`, `svgd_cuda_graph` | False, False | execution: the split step eager / compiled / graphed |
-| `svgd_collision_backend` | `autodiff` | execution: how the exact collision row is evaluated -- `autodiff` (the program's constraint on AutoDiffXd, one configuration at a time) or `clearances` (the same functional from one batched `CalcRobotClearances` call; needs Drake branch `calc-robot-clearances`, refused elsewhere). See "Batched clearance row" |
+| `svgd_collision_backend` | `autodiff` | execution: how the exact collision row is evaluated -- `autodiff` (the program's constraint on AutoDiffXd, one configuration at a time) or `clearances` (the same functional from one batched `CalcRobotClearances` call; needs a Drake with #25073, refused elsewhere). See "Batched clearance row" |
 
 **The step size.** Under `gn` the metric carries the scale, so `svgd_lr = 1` would be the full Newton step
 on the GN model of the AL; the fielded 0.3 is a damped fraction of it (screen, option table). Under `identity`, `svgd_lr / ||H_i||_F <= svgd_lr / lambda_max(H_i)`
@@ -186,10 +186,11 @@ program's own scene. Local runs still go under `systemd-run --user --scope -p Me
 
 Thomas's `CollisionChecker::CalcRobotClearances` (Drake branch `calc-robot-clearances`, commit
 15a2c97: batched `CalcRobotClearance`, GIL released, parallel over the checker's per-thread
-contexts) is **temporarily installed at `/home/tommy/opt/rlg/drake-build-crc`** and used by
-prepending `/home/tommy/opt/rlg/drake-build-crc/lib/python3.12/site-packages` to `PYTHONPATH`.
-**Neither this repo's default pydrake nor the cluster's Drake has it, so the default stays
-`autodiff`**, and `clearances` is refused at options construction where the binding is missing.
+contexts) was **merged to Drake master as #25073 (6ad25878d5, 2026-10-12)**, so the default local
+pydrake carries it (the special local install is retired, 2026-10-20; `tests/test_collision_clearances.py`
+passes on master with the numbers below). **The record's pin (nightly 20260918) predates it, so the
+default stays `autodiff`**, the cluster runs it from the branch wheel (`DRAKE_ENV=crc`), and
+`clearances` is refused at options construction where the binding is missing.
 
 `ClearanceEvaluator` (`src/svgd/collision_backend.py`, whose docstring has the formula) is the same
 functional: one `CalcRobotClearances(Q, bound + influence_distance_offset)` on an unpadded checker
@@ -2924,7 +2925,9 @@ proposed 100%. Agreed characterisation: AL-SVGD >= ablations > baselines on succ
 matched time under interior point; on solution cost the learned formulation pays a premium on grasp
 and on the soft PCS arm under every optimizer, discussed in the paper rather than hidden.
 
-**Left open at close-out**: the soft PCS pose drive-only prior (0.50x cost at 6 s) as a per-robot stated
-setting (Thomas's call); R25's float64 polish (never built); the screw-arm segfault race at PROCS=2;
-the 168 held `alpha10` pose items on the cluster; the GVS arm under svgd (deferred). The next step is
+**Rulings at close-out (Thomas, 2026-10-18)**: the soft PCS pose drive-only prior (0.50x cost at 6 s) is
+REPORTED AS A FINDING, not fielded; R25's float64 polish is smoked on branch `svgd-polish` (his worry: it
+must be robust to the inequality rows); the screw-arm segfault race is left recorded; the 168 held
+`alpha10` pose items are removed from the cluster so `--reclaim` cannot release them; the GVS arm under
+svgd stays deferred. The next step is
 network-architecture ablations, in another session.

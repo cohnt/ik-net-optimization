@@ -109,6 +109,25 @@ PROCS="${PROCS:-1}"
 ITEM_TIMEOUT="${ITEM_TIMEOUT:-28800}"
 export TMPDIR="${TMPDIR:-/tmp}"
 
+## --- the overrun watcher -----------------------------------------------------
+## SNOPT does not check its time limit on a major iteration with zero minor iterations, so a
+## cycling cell runs on to the major limit: 0.4-2.2 h at 1e5 majors against a 180 s clock. Nothing
+## inside the solve may stop it (the iterate must survive; SolveTimeout and friends are deleted),
+## so it is stopped from here. Every item runs with LEARNED_IK_WATCH_DIR (a node-local directory of
+## its own), LEARNED_IK_RESUME=1 and LEARNED_IK_OVERRUN_FACTOR; a benchmark's run_grid then writes
+## a heartbeat `pid ti gi arm phase deadline` and appends every finished cell to its JSONL
+## (src/benchmark.py, the persistence section). `Watch` SIGKILLs the process once a solve is past
+## its deadline (OVERRUN_FACTOR x the cell's clock: 270 s at 180 s; legitimate SNOPT overruns of
+## the clock reach ~90 s, and every record-stage cell past 1.5x was infeasible), and the item is
+## relaunched: it resumes after the last recorded cell and records the killed one from its last
+## iterate as fail_reason "killed_overrun". At most MAX_OVERRUNS relaunches per item; every kill is
+## logged to the worker log and $STATE_DIR/kills.log. Scripts that are not benchmarks ignore the
+## variables and are never killed (they write no heartbeat). The watcher is bash only, so it is the
+## same under either DRAKE_ENV.
+OVERRUN_FACTOR="${OVERRUN_FACTOR:-1.5}"
+MAX_OVERRUNS="${MAX_OVERRUNS:-16}"
+WATCH_POLL="${WATCH_POLL:-5}"
+
 ## --- the Drake environment (DRAKE_ENV, see the header) ---------------------
 ## Validated ONCE, before any worker forks, so a typo or a missing venv fails the job in a
 ## second instead of turning every item into an import error.
@@ -144,6 +163,36 @@ cd "$REPO" || { echo "run_items.sh: no repo at $REPO" >&2; exit 2; }
 MANIFEST_NAME="$(basename "$MANIFEST" .txt)"
 STATE_DIR="$STATE_ROOT/$MANIFEST_NAME"
 mkdir -p "$STATE_DIR/logs"
+
+## --- the watcher of one item's process (see the header of this section) ----------
+## $1 = the item's watch directory, $2 = the worker log, $3 = the item id. Runs until killed.
+## The kill marker is written BEFORE the kill, so a relaunch can never miss it; if the process
+## had already gone, the marker is withdrawn (and kills.log says WITHDRAWN).
+Watch() {
+    local DIR=$1 WLOG=$2 WID=$3 PID TI GI ARM PHASE DEADLINE NOW MSG
+    while sleep "$WATCH_POLL"; do
+        [ -f "$DIR/heartbeat" ] || continue
+        read -r PID TI GI ARM PHASE DEADLINE < "$DIR/heartbeat" || continue
+        [ "$PHASE" = solve ] || continue
+        [ "${DEADLINE:-0}" -gt 0 ] 2>/dev/null || continue
+        NOW="$(date +%s.%N)"
+        [ "${NOW%.*}" -gt "$DEADLINE" ] || continue
+        echo "$PID $TI $GI $ARM $PHASE $DEADLINE $NOW" > "$DIR/killed.tmp" \
+            && mv "$DIR/killed.tmp" "$DIR/killed"
+        ## Logged BEFORE the kill: the worker stops this watcher the moment the process is gone.
+        MSG="$(date -Is) $WID KILLED pid $PID cell ($TI,$GI) arm $ARM:"
+        MSG="$MSG solve past ${OVERRUN_FACTOR}x its clock (deadline $DEADLINE)"
+        echo "    $MSG" >> "$WLOG"
+        echo "$(hostname) $MSG" >> "$STATE_DIR/kills.log"
+        if ! kill -KILL "$PID" 2>/dev/null; then
+            rm -f "$DIR/killed"
+            echo "    $WID: pid $PID had already exited; kill marker withdrawn" >> "$WLOG"
+            echo "$(hostname) $(date -Is) $WID WITHDRAWN pid $PID" >> "$STATE_DIR/kills.log"
+        fi
+        while kill -0 "$PID" 2>/dev/null; do sleep 1; done
+        rm -f "$DIR/heartbeat"
+    done
+}
 
 ## --- one worker ------------------------------------------------------------
 Worker() {
@@ -208,6 +257,7 @@ Worker() {
       echo "manifest $MANIFEST, state $STATE_DIR, TMPDIR=$TMPDIR"
       echo "CUDA_VISIBLE_DEVICES=[${CUDA_VISIBLE_DEVICES:-unset}] HOME=$HOME"
       echo "staged commit: $(cat "$REPO/.staged-commit" 2>/dev/null || echo UNKNOWN)"
+      echo "overrun watcher: kill a solve past ${OVERRUN_FACTOR}x its clock, at most $MAX_OVERRUNS relaunches per item"
       [ -n "$DRAKE_ENV" ] && echo "DRAKE_ENV=$DRAKE_ENV: python $PY, PYTHONPATH=[${PYTHONPATH:-unset}]," \
           "DRAKE_NUM_THREADS=${DRAKE_NUM_THREADS:-unset}"
     } >> "$LOG" 2>&1
@@ -216,6 +266,7 @@ Worker() {
     ## Comments and blanks dropped first, so every worker numbers items alike.
     mapfile -t LINES < <(grep -vE '^[[:space:]]*(#|$)' "$MANIFEST")
     local k LINE ID ENVS ITEM_ENVS SCRIPT ARGS REST MARKER CLAIM T0 STATUS LEFT PIN
+    local WDIR OVERRUNS BUDGET WPID
     for ((k = 0; k < ${#LINES[@]}; k++)); do
         LINE="${LINES[$k]}"
         ID="${LINE%%|*}";      REST="${LINE#*|}"
@@ -277,8 +328,35 @@ Worker() {
                 PIN=(taskset -c "$("$PY" "$REPO/cluster/cpu_slice.py" "$PROCS" "$LOCAL")")
                 echo "    pinned: ${PIN[*]}" >> "$LOG" 2>&1 ;;
         esac
-        env $ITEM_ENVS "${PIN[@]}" timeout -k 60 "$ITEM_TIMEOUT" "$PY" -u $SCRIPT $ARGS >> "$LOG" 2>&1
-        STATUS=$?
+        ## The overrun watcher's relaunch loop (header): a launch that ends after a watcher kill
+        ## (the marker is there) is relaunched and resumes; anything else ends the item as before.
+        ## Every launch gets what is left of ITEM_TIMEOUT, so the item as a whole stays inside the
+        ## budget the claim guard above assumed.
+        WDIR="$TMPDIR/watch.$LOCAL.$ID"
+        rm -rf "$WDIR"; mkdir -p "$WDIR"
+        OVERRUNS=0
+        while :; do
+            rm -f "$WDIR/heartbeat"
+            BUDGET=$(( ITEM_TIMEOUT - (SECONDS - T0) ))
+            if [ "$BUDGET" -lt 60 ]; then
+                echo "    item out of time after $OVERRUNS relaunch(es)" >> "$LOG" 2>&1
+                STATUS=124; break
+            fi
+            Watch "$WDIR" "$LOG" "$ID" & WPID=$!
+            env LEARNED_IK_WATCH_DIR="$WDIR" LEARNED_IK_RESUME=1 \
+                LEARNED_IK_OVERRUN_FACTOR="$OVERRUN_FACTOR" $ITEM_ENVS \
+                "${PIN[@]}" timeout -k 60 "$BUDGET" "$PY" -u $SCRIPT $ARGS >> "$LOG" 2>&1
+            STATUS=$?
+            kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+            [ -f "$WDIR/killed" ] || break
+            OVERRUNS=$((OVERRUNS + 1))
+            if [ "$OVERRUNS" -gt "$MAX_OVERRUNS" ]; then
+                echo "    giving up: more than MAX_OVERRUNS=$MAX_OVERRUNS overrun kills" >> "$LOG" 2>&1
+                break
+            fi
+            echo "    relaunch $OVERRUNS after an overrun kill, $(date -Is)" >> "$LOG" 2>&1
+        done
+        [ "$STATUS" -eq 0 ] && rm -rf "$WDIR"
         if [ $STATUS -eq 0 ]; then
             touch "$MARKER"; OK=$((OK + 1))
             ## Publish the item's output to $RESULTS_ROOT, which is what

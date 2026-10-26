@@ -1,4 +1,86 @@
-# Stage GVS: the tables
+# The GVS arm: the tables
+
+## At record conditions: o1 from stage REMEASURE, o2 from stage GVSO2 (2026-10-22)
+
+**This section supersedes stage GVS's grasp rows below, which ran on the defective wsg scene and are
+void** (`docs/notes-robots.md`). Stage GVS's pose rows predate the record's conditions; its
+pre-registered columns are the ones printed here.
+
+- **o1**: stage REMEASURE's eight rows (record conditions: fixed scene, unified robot settings, CUDA
+  graphs, lifted budgets), with stage OVR's watcher re-runs folded in. PROCS=8 under `MPS=1`.
+- **o2**: stage GVSO2 (jobs 6001801-04, staged a090cb9, 64/64 items OK, collected
+  20261022-150431): REMEASURE's item builder with the rung swapped (`gen_manifest.py` pins each item
+  to its o1 twin). PROCS=2, no MPS, under the overrun watcher.
+- **Seconds, `TM JS`, `L-TM`, `starv` and `ms/ev` are not comparable across the two rungs** (two
+  conditions). Success, iterations and cost are.
+
+Acceptance (o2): 16 runs merge to 480 cells per arm, 0 `error` cells; `grid_hash` equals stage GVS's
+o2 hashes (`3bc41879586c-mug`, `0f8c95b12130-pose`); joint space native v paired differs only on
+timed-out cells (IPOPT grasp 7, SNOPT grasp 25, pose 0); 8 watcher kills, 8 `killed_overrun` records
+at 272-274 s (learned SNOPT grasp 6, joint space SNOPT pose 2), no other cell past the clock + 30 s.
+
+`python scripts/report_gvs.py stage --prefix sc_REMEASURE_gvs_pushrod9_o1_,sc_GVSO2_` owns this table:
+
+```
+=== sc_REMEASURE_gvs_pushrod9_o1_,sc_GVSO2_ -- 480 cells, 180 s, seed 1, exact forward model
+Verdicts by exact McNemar; cost on cells both arms solved (reported_cost); 'TM' = time-matched joint space (pre-registered).
+row                                     L   JS        p     verdict  L it JS it it L/JS  L cost JS cost    L s   JS s   rescue     L %  TM JS  L-TM starv  any8 ms/ev L    JS     x L to/ic JS to/ic
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+o1 ipopt grasp native                 480  467  0.00024     learned    36    51    0.76    0.68    0.26    2.8    2.0    13/13  100.0%  98.1%  +1.9    0%  100%    33.0  28.6  1.15     0/0      1/0
+o1 ipopt grasp paired                 470  467     0.65         tie    88    51    1.72    0.60    0.26    7.4    1.9    11/13   97.9%  98.8%  -0.9    0%  100%    31.2  27.2  1.15     9/0      1/0
+o1 ipopt pose native                  480  311  2.7e-51     learned    18    29    0.59    1.06    0.71    0.8    0.9  169/169  100.0%  69.3% +30.7    0%  100%    30.4  26.5  1.15     0/0      0/0
+o1 ipopt pose paired                  383  311    4e-08     learned    56    29    1.80    0.84    0.73    3.8    0.9  122/169   79.8%  91.0% -11.2    0%  100%    28.4  25.2  1.13    31/0      0/0
+o2 ipopt grasp native                 479  461    4e-05     learned    41    50    0.73    0.67    0.26    3.5    2.3    19/19   99.8%  96.7%  +3.1    0%   98%    35.7  32.5  1.10     1/0      7/0
+o2 ipopt grasp paired                 465  461     0.61         tie    93    50    1.96    0.63    0.26    8.7    2.3    19/19   96.9%  97.5%  -0.6    0%   98%    35.5  32.4  1.10    16/0      7/0
+o2 ipopt pose native                  480  315  4.3e-50     learned    19    29    0.63    1.06    0.73    1.0    1.2  165/165  100.0%  70.8% +29.2    0%  100%    36.4  32.8  1.11     0/0      0/0
+o2 ipopt pose paired                  389  315  8.4e-09     learned    59    29    1.74    0.84    0.73    5.2    1.2  120/165   81.0%  90.9%  -9.8    0%  100%    35.4  32.7  1.08    30/0      0/0
+o1 snopt grasp native                 476  366  4.8e-29     learned   237   102    2.42    0.26    0.26    8.9    3.0  114/114   99.2%  86.6% +12.6    0%  100%    24.5  21.2  1.16     1/0     49/0
+o1 snopt grasp paired                 343  366    0.094         tie   613   102    5.78    0.31    0.26   39.1    3.2   75/114   71.5%  91.4% -20.0    0%  100%    26.3  22.3  1.18    73/0     49/0
+o1 snopt pose native                  480  252  4.6e-69     learned    67    26    2.85    0.71    0.72    1.8    0.5  228/228  100.0%  84.1% +15.9    1%   97%    24.3  21.1  1.15     0/0      4/0
+o1 snopt pose paired                  275  252     0.11         tie   644    26   20.26    0.73    0.68   47.9    0.5  109/228   57.3%  93.8% -36.5    3%   97%    22.9  20.0  1.15   130/0      4/0
+o2 snopt grasp native                 468  346  2.6e-28     learned   244   100    2.26    0.28    0.26   10.6    3.6  132/134   97.5%  82.5% +15.0    0%  100%    30.0  27.3  1.10     3/0     73/0
+o2 snopt grasp paired                 321  346    0.085         tie   688   100    7.22    0.39    0.26   51.1    3.5   85/134   66.9%  88.6% -21.7    0%  100%    30.3  27.2  1.12    93/0     73/0
+o2 snopt pose native                  479  275    4e-60     learned    68    24    3.04    0.71    0.73    2.1    0.6  205/205   99.8%  88.1% +11.7    0%  100%    29.7  27.2  1.09     0/0      7/0
+o2 snopt pose paired                  276  275        1         tie   596    24   21.54    0.73    0.71   54.0    0.6   93/205   57.5%  97.1% -39.6    0%  100%    29.5  27.1  1.09   124/0      7/0
+
+Tally, ipopt: learned 6, tie 2
+
+Tally, snopt: learned 4, tie 4
+'L-TM' = learned success rate minus time-matched joint space, in points: the pre-registered prediction is that it is positive wherever single-start joint space leaves room. Read it with 'starv', the share of cells where the true multi-start figure is higher.
+
+Cap check: 'to/ic' = timed_out / hit_iteration_cap. A loss or tie where the losing arm has a budget-bound population that could close the gap carries NO verdict.
+
+=== o1 against o2: target-level success rate, bootstrap CI over targets (unpaired grids)
+  ipopt grasp native learned    o1 - o2 = +0.2 pts [+0.0, +0.6]
+  ipopt grasp native numerical  o1 - o2 = +1.2 pts [-1.9, +5.6]
+  ipopt grasp paired learned    o1 - o2 = +1.0 pts [-1.9, +4.6]
+  ipopt grasp paired numerical  o1 - o2 = +1.2 pts [-1.9, +5.6]
+  ipopt pose native learned    o1 - o2 = +0.0 pts [+0.0, +0.0]
+  ipopt pose native numerical  o1 - o2 = -0.8 pts [-7.3, +5.6]
+  ipopt pose paired learned    o1 - o2 = -1.2 pts [-8.1, +5.6]
+  ipopt pose paired numerical  o1 - o2 = -0.8 pts [-7.3, +5.6]
+  snopt grasp native learned    o1 - o2 = +1.7 pts [+0.0, +3.5]
+  snopt grasp native numerical  o1 - o2 = +4.2 pts [-1.9, +10.0]
+  snopt grasp paired learned    o1 - o2 = +4.6 pts [-1.7, +11.3]
+  snopt grasp paired numerical  o1 - o2 = +4.2 pts [-1.9, +10.0]
+  snopt pose native learned    o1 - o2 = +0.2 pts [+0.0, +0.6]
+  snopt pose native numerical  o1 - o2 = -4.8 pts [-12.7, +3.1]
+  snopt pose paired learned    o1 - o2 = -0.2 pts [-8.5, +7.9]
+  snopt pose paired numerical  o1 - o2 = -4.8 pts [-12.7, +3.1]
+```
+
+- **Success: learned 10, tie 6, loses 0.** IPOPT 6 / 2, SNOPT 4 / 4; o2 matches o1 row for row
+  (grasp native and both pose native rows learned wins on both solvers, IPOPT pose paired learned
+  wins, grasp paired and SNOPT pose paired ties).
+- **Cap check: no row is budget-bound**: `hit_iteration_cap` 0 on every arm and row. Clock stops:
+  learned 93 / 124 on o2 SNOPT grasp / pose paired, joint space 73 on o2 SNOPT grasp.
+- **Time-matched joint space**: L-TM positive on grasp native and pose native (both solvers, both
+  rungs), level on IPOPT grasp paired (-0.6 / -0.9), negative on SNOPT grasp paired (-20.0 / -21.7)
+  and on every pose paired row (-9.8 to -39.6).
+- **o1 against o2: no rung separates**; every interval includes zero (three learned intervals,
+  IPOPT grasp native and SNOPT grasp / pose native, have their lower end at +0.0).
+
+# Stage GVS (2026-10-05)
 
 Measured 2026-10-04/05 (jobs 5826941-44, 128 items, 4 nodes on `xeon-g6-volta`, **PROCS=2**, staged
 commit `9e98604`), collected and merged 2026-10-05. `docs/gvs-arm.md` carries the robot, the
