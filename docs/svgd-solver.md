@@ -2931,3 +2931,67 @@ must be robust to the inequality rows); the screw-arm segfault race is left reco
 `alpha10` pose items are removed from the cluster so `--reclaim` cannot release them; the GVS arm under
 svgd stays deferred. The next step is
 network-architecture ablations, in another session.
+
+## The float64 polish (branch `svgd-polish`, from 2026-10-26)
+
+### Stage SVGD_R31: a float64 Newton polish of the returned particle (pre-registered 2026-10-26, before the manifest)
+
+**Why.** The pin returns a particle that passes the 1e-4 gate, and the gate is all it is held to: the
+record's residual (`max_violation`) sits at 1e-6 to 1e-5 on every row, where IPOPT's sits at its own
+`tol`. R25 (skipped in the push, it needed code) asked whether a polish of the returned point closes
+that gap without moving anything else. The smoke (3d97474, Panda n6, 12 cells x grasp / pose, 60 s, V4
+pin, identical swarms) took the worst violation from 1e-5 to 1e-15 on 21 of 24 cells at cost within
+0.05%, 24 / 24 feasible both ways. It also showed the one way the polish could cost something: driven
+onto its bound, a nearly active collision row spent its clearance (1.05 / 1.00 mm -> exactly 1.00 mm on
+two grasp cells) and overshot the bound through the row's curvature, so the check rejected the step.
+Thomas, 2026-10-26: hold such rows where they are, and measure the joint-space ablation too.
+
+**The mechanism (`svgd_polish=newton`; `none` is the pin, bit-identical).** At the selection, after the
+float64 Drake re-check has passed, up to `svgd_polish_steps = 3` minimum-norm Gauss-Newton steps in
+float64 on the ACTIVE rows of `prog.GetAllConstraints()`, the Jacobian from one AutoDiffXd evaluation
+of the program per step (one network Jacobian on the learned arm). Active = every equality row, plus
+every inequality row within the gate `tol` of a finite bound. **Targets**: an equality row its value
+`lb == ub`; an active inequality row that VIOLATES its bound that bound; an active inequality row that
+is SATISFIED its current value (residual zero, so the linearised step holds it and no clearance is
+spent). The step is clamped onto the variable bounds and ACCEPTED only if the float64 worst signed
+violation over ALL rows does not rise and stays within `tol`; the first rejection ends the polish, as
+does a step that improves the worst violation by less than 10x. The returned point is therefore never
+worse than the unpolished one, on any row; the problem, the gate and `verify()` are untouched. The
+logic reads bounds, never names (no formulation-specific information in the solver).
+
+**Variants** (stage `SVGD_R31`, the record's shape: the four record contexts, 480 cells, 180 s, seed 1,
+graphed, the lifted step cap, the clearance row under `DRAKE_ENV=crc`, 24 shards, PROCS=2, the V4 pin):
+
+| token | override | arm | read against (cell-paired, same grid) |
+| --- | --- | --- | --- |
+| `pol` | `svgd_polish=newton` | learned, all 16 rows | R29 `pin4` |
+| `polkq` | `svgd_kernel=q` + `svgd_polish=newton` (declared two-factor: the ablation's kernel and the polish) | joint space (`--arms numerical`), all 16 rows | R30 `pin4kq` |
+
+**Prediction.** Success identical on every row (the polish runs only after the re-check passes and
+returns a point at least as good: it cannot lose a cell; a gain is possible only through no path, so
+any change is a bug). Median `max_violation` ~1e-15 on every row, both arms. Cost within 0.1% (the step
+is minimum-norm and tiny). Mean wall +1-7%: the smoke's 16-51 ms per cell against the pin's 0.70-2.00 s
+rows, so the fast pose rows are the ones at risk on the wall criterion; the soft PCS arm's AutoDiffXd
+pass is untried at scale. `polish_rejected` ~0 apart from `worse` rejections at round-off once the
+equalities sit at machine precision; the held-row rule should remove the smoke's two `outside_gate`
+rejections on the collision row.
+
+**Decision rule** (per arm, all 16 rows; adopt `svgd_polish=newton` into the pin as `SVGD_PINNED_V5`
+only if every clause holds, and only on Thomas's word):
+1. success identical to the twin on every row (confirmed, not assumed);
+2. median `max_violation` <= 1e-12 on every row;
+3. median cost ratio inside the seed-to-seed band [0.94, 1.10] on every row (predicted within 0.1%);
+4. mean wall up by < 5% on every row;
+5. clearance: no cell below the collision gate (implied by 1), and the per-cell change in `min_distance`
+   against the twin reported as a distribution, any cell losing > 0.1 mm named.
+If only clause 4 fails, it is a TRADE (residual for wall) put to Thomas, not an adoption. If 1, 2, 3 or
+5 fails, the option stays in the tree at `none` and the failure is reported with the rows it names.
+
+**Reported with it**: `polish_steps`, `polish_rejected` by kind (`worse` at round-off against
+`outside_gate`, with the row `polish_reject_row` names), the held / driven active-inequality counts,
+`polish_inactive_slack_drop` (how far a row outside the active set moved toward its bound), and
+`polish_seconds`.
+
+**Allotment**: 32 runs, 768 items; at R29 / R30's pace (2.8-5.6 h on four nodes for 768-1536 items)
+about 3 h on four nodes, ~6 node-h by the tool's count when the manifest exists. The cluster tree needs a
+RESTAGE (new solver code), from `svgd-polish`.
