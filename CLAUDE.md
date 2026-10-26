@@ -276,8 +276,7 @@ One stated exception: the svgd rounds' clearance wheel (`DRAKE_ENV=crc`, `~/lear
 ## AL-SVGD, the fourth method class (long form: `docs/notes-svgd.md`; evidence `docs/svgd-solver.md`)
 
 A batch-parallel particle method (`--solver svgd`) on exactly the existing programs; branch
-`svgd-tune` merged (0efb579), **the push is CLOSED (2026-10-18); next is network-architecture
-ablations, in another session.** Ops `cluster/SVGD_RUNBOOK.md`; tables `docs/svgd-2x2-tables.md`
+`svgd-tune` merged (0efb579), **the push is CLOSED (2026-10-18).** Ops `cluster/SVGD_RUNBOOK.md`; tables `docs/svgd-2x2-tables.md`
 (`scripts/report_svgd_2x2.py --write`).
 
 **Rulings**: SVGD-style only; exact Drake collision, no proxy; no formulation-specific information in
@@ -314,7 +313,7 @@ no iterations). Proposed = learned + AL-SVGD; ablation A = learned under the Dra
   and soft PCS. **Strong on success, robustness to the start, matched-time wall and generality; NOT a
   solution-quality result against joint space, and the paper must not claim one.**
 
-**Open**: twelve screw-arm segfaults in R22/R23 (recorded, not chased). Float64 polish: stage R31 (`svgd-polish`), stays `none` pending Thomas. **TRAP: the svgd swarm is not run-to-run reproducible** where the map runs compiled torch (a whole shard diverges); read A/Bs with `report_svgd_polish.py --same-swarm`. GVS under svgd deferred. The soft PCS arm takes the split step (forward-mode row Jacobians).
+**Open**: twelve screw-arm segfaults in R22/R23 (recorded, not chased). Float64 polish: stage R31 (`svgd-polish`), stays `none` pending Thomas. **TRAP: the svgd swarm is not run-to-run reproducible** under compiled torch (whole shards diverge); read A/Bs with `report_svgd_polish.py --same-swarm`. GVS under svgd deferred. The soft PCS arm takes the split step (forward-mode row Jacobians).
 
 ## Results: the campaign of record (long form: `docs/notes-record.md`)
 
