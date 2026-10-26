@@ -618,6 +618,99 @@ def test_stop_select_objective():
               f"selected {sel.selected} argmin {amin} candidates {sel.cands}")
 
 
+def test_polish():
+    """`svgd_polish` (a smoke, 2026-10-18): the float64 minimum-norm Gauss-Newton polish of
+    the returned particle. On the Panda pose learned cell under 'newton': the solve converges,
+    a polish ran, the worst signed Drake violation did not rise and stays within the gate, and
+    `verify` (the harness's own re-measurement) agrees the point is feasible. Under 'none' no
+    polish ran and the per-cell svgd record carries no polish_* key. An unknown value is
+    refused at options construction."""
+    print("\n--- polish: 'newton' vs 'none' (Panda pose, learned) ---")
+    try:
+        ProgramOptions(svgd_polish="bogus")
+        refused = False
+    except ValueError:
+        refused = True
+    check("polish: an unknown value raises at ProgramOptions construction", refused)
+    p = pose_program("learned")
+    tol = 1e-4
+    for mode in ("newton", "none"):
+        v, d, result = run_cell(p, "pose", f"polish={mode}",
+                                dict(svgd_n=32, svgd_kernel="q", svgd_outer_iters=300,
+                                     svgd_polish=mode, svgd_polish_steps=3), wall=30.0, quiet=True)
+        rec = bm.solver_diagnostics(result, "svgd").get("svgd", {})
+        pol = d.polish
+        tag = f"polish={mode}"
+        print(f"    [{mode}] stop {d.stop_reason}, drake {d.drake_feasible}, verify max_violation "
+              f"{v.detail.get('max_violation'):.3e}, drake_max_violation "
+              f"{d.extras.get('drake_max_violation'):.3e}; polish {pol}")
+        check(f"{tag}: the solve converges and is Drake-feasible",
+              d.stop_reason == "converged" and d.drake_feasible and v.feasible,
+              f"{d.stop_reason} {d.drake_feasible} {v.feasible}")
+        if mode == "newton":
+            check(f"{tag}: a polish ran and is recorded per cell",
+                  pol is not None and all(k in rec for k in pol), f"{pol} {sorted(rec)}")
+            if pol is not None:
+                check(f"{tag}: polish_viol_after <= polish_viol_before",
+                      pol["polish_viol_after"] <= pol["polish_viol_before"], str(pol))
+                check(f"{tag}: polish_viol_after <= tol", pol["polish_viol_after"] <= tol, str(pol))
+                check(f"{tag}: drake_max_violation is the polished one",
+                      d.extras.get("drake_max_violation") == pol["polish_viol_after"])
+        else:
+            check(f"{tag}: no polish ran and no polish_* key is recorded",
+                  pol is None and not any(k.startswith("polish") for k in rec), f"{pol} {sorted(rec)}")
+
+
+def test_polish_holds_satisfied_active_rows():
+    """`svgd_polish = newton`'s targeting, at unit level (seconds, no network): the solver's own
+    `_polish_newton` / `_drake_rows` / `_drake_max_violation` on a three-variable Drake program
+    with a nonlinear equality (residual 3e-5), an inequality SATISFIED within the gate of its
+    bound (slack 5e-5: held at its value, not spent) and one VIOLATED within the gate (by 2e-5:
+    driven to its bound). Every variable is lumped; there are no variable bounds."""
+    print("\n--- polish: a satisfied active inequality is held, a violated one driven (unit) ---")
+    from types import SimpleNamespace
+    from pydrake.solvers import MathematicalProgram
+    tol = 1e-4
+    x1 = 0.2
+    x_start = np.array([x1 + 5e-5, x1, 0.5 + 2e-5 - x1])
+    prog = MathematicalProgram()
+    x = prog.NewContinuousVariables(3, "x")
+    c = x_start[0] + x_start[1] + x_start[2] + 0.1 * x_start[1] ** 2 - 3e-5
+    prog.AddConstraint(x[0] + x[1] + x[2] + 0.1 * x[1] ** 2 - c == 0)          # equality
+    held_b = prog.AddLinearConstraint(x[0] - x[1] >= 0)                       # satisfied, slack 5e-5
+    driven_b = prog.AddLinearConstraint(x[1] + x[2] <= 0.5)                  # violated by 2e-5
+    ident = lambda v: np.array(v, dtype=float).copy()
+    s = SimpleNamespace(program=SimpleNamespace(prog=prog), tol=tol,
+                        options=SimpleNamespace(svgd_polish_steps=3),
+                        _tg=SimpleNamespace(bp=SimpleNamespace(to_drake_x=ident, from_drake_x=ident,
+                                                               _lumped_idx=np.arange(3))))
+    s._drake_rows = lambda xf, with_gradient=False: SvgdSolver._drake_rows(s, xf, with_gradient)
+    s._drake_max_violation = lambda xf: SvgdSolver._drake_max_violation(s, xf)
+    viol0 = s._drake_max_violation(x_start)
+    x_out, viol, pol = SvgdSolver._polish_newton(s, x_start, viol0)
+    ## Slack to the nearer finite bound, read from the binding (Drake may store a row negated).
+    def slack(b, xf):
+        v = float(np.asarray(prog.EvalBinding(b, xf)).reshape(-1)[0])
+        lb, ub = float(b.evaluator().lower_bound()[0]), float(b.evaluator().upper_bound()[0])
+        return min(v - lb, ub - v)
+    held0, held1 = slack(held_b, x_start), slack(held_b, x_out)
+    driven0, driven1 = slack(driven_b, x_start), slack(driven_b, x_out)
+    print(f"    viol {viol0:.3e} -> {viol:.3e}; held slack {held0:.6e} -> {held1:.6e}; "
+          f"driven slack {driven0:+.3e} -> {driven1:+.3e}; stats {pol}")
+    check("polish unit: the starting point is within the gate with a violated row", 0 < viol0 <= tol, f"{viol0}")
+    check("polish unit: at least one step was accepted", pol["polish_steps"] >= 1, str(pol))
+    check("polish unit: the active-inequality counts are 2 = 1 held + 1 driven",
+          (pol["polish_active_ineq"], pol["polish_active_ineq_held"], pol["polish_active_ineq_driven"])
+          == (2, 1, 1), str(pol))
+    check("polish unit: the held row did not move toward its bound (beyond 1e-9)",
+          held1 >= held0 - 1e-9, f"{held0} -> {held1}")
+    check("polish unit: the driven row now satisfies its bound (to 1e-12)",
+          driven0 < 0 and driven1 >= -1e-12, f"{driven0} -> {driven1}")
+    check("polish unit: the worst violation fell and is the returned one",
+          viol <= viol0 and viol == pol["polish_viol_after"]
+          and viol == s._drake_max_violation(x_out), f"{viol0} -> {viol} {pol}")
+
+
 def test_step_with_kernel_off_is_pgd_on_the_programs_L():
     """On the real pose programs (float64 swarm, collision row included), one step with
     `svgd_kernel = none` and `svgd_metric = identity` is projected gradient descent on the
@@ -834,8 +927,11 @@ def main():
         tests += [test_closed_form_derivatives_match_autograd, test_scaled_rows_map_back_to_drake_rows,
                   test_grasp_cells, test_determinism, test_wall_clock_stop, test_nan_injection,
                   test_cem_warmup_toggle, test_stop_reasons_and_log, test_stop_select_objective,
+                  test_polish, test_polish_holds_satisfied_active_rows,
                   test_step_with_kernel_off_is_pgd_on_the_programs_L, test_graph_replay_is_bitwise,
                   test_benchmark_subprocess]
+    if "polish" in which:
+        tests += [test_polish_holds_satisfied_active_rows, test_polish]
     if "sweep" in which:
         tests.append(sweep)
     if "profile" in which:

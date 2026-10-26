@@ -249,6 +249,10 @@ def solver_diagnostics(result, solver):
             out["hit_iteration_cap_status"] = bool(getattr(details, "hit_iteration_cap", False))
         out["svgd"] = {k: getattr(details, k, None) for k in _SVGD_DETAIL_KEYS}
         out["svgd"]["phase_times"] = dict(out["svgd"].get("phase_times") or {})
+        ## `svgd_polish`: the polish's stats, flattened in only when one ran, so a pin run's
+        ## record is unchanged.
+        if getattr(details, "polish", None):
+            out["svgd"].update(details.polish)
         ## How the step ran (eager / compiled / graphed split step, or the autograd path of a
         ## robot without closed-form row Jacobians) -- recorded since 2026-10-11, when the screw
         ## and soft PCS arms made the two paths coexist in one campaign.

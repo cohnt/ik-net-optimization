@@ -10,6 +10,8 @@
 #   cluster/collect_results.sh                     tar + rsync + extract + merge shards,
 #                                                  INCREMENTAL since the last success
 #   cluster/collect_results.sh --full              the same, but the whole results tree
+#   cluster/collect_results.sh --stage SVGD_R31B   the same, but ONLY that stage's run dirs
+#                                                  (minutes, not ~25 min; the default way)
 #   cluster/collect_results.sh --kills             only the overrun watcher's kill logs
 #
 # Every collection also fetches the overrun watcher's kill logs (run_items.sh writes
@@ -117,6 +119,17 @@ fi
 
 FULL=0
 [ "${1:-}" = "--full" ] && FULL=1
+## --stage NAME collects only results/<robot>/benchmark/*_NAME_* (the stage token of the manifest,
+## e.g. SVGD_R31B for manifest_stageSVGD_R31B.txt). The incremental default still makes tar visit
+## and stat EVERY file under results/ to compare mtimes -- ~32k run dirs by 2026-10-26, ~25 min on
+## the Lustre mount -- while a stage glob is one readdir per benchmark dir. It ships the stage's
+## dirs whole (no --newer-mtime: a re-fetch is idempotent) and leaves the watermark alone, because
+## it says nothing about what OTHER stages wrote since the last full-tree collection.
+STAGE=""
+if [ "${1:-}" = "--stage" ]; then
+    STAGE="${2:?usage: --stage <stage token, e.g. SVGD_R31B>}"
+    [[ "$STAGE" =~ ^[A-Za-z0-9_]+$ ]] || { echo "bad stage token: $STAGE" >&2; exit 2; }
+fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 ARCHIVE="$SC_ROOT/collect_$STAMP.tar"
@@ -138,7 +151,9 @@ mkdir -p "$STAGING"
 # load-bearing for resume ON THE CLUSTER and are never read locally, and they are
 # several thousand near-empty inodes.
 NEWER=""
-if [ "$FULL" = "0" ]; then
+if [ -n "$STAGE" ]; then
+    echo "stage collection: results/*/benchmark/*_${STAGE}_* only (watermark untouched)"
+elif [ "$FULL" = "0" ]; then
     LAST="$(sc_run "cat ~/$SC_ROOT/.last_collect 2>/dev/null" || true)"
     if [ -n "$LAST" ]; then
         NEWER="--newer-mtime=@$LAST"
@@ -178,7 +193,15 @@ COLLECT_WATERMARK="$(sc_run "date +%s")"
 # they glob against the directory we just cd'd into, expand to the real subdirectory list,
 # and the --exclude silently covers only the first of them.
 TRAIN_EXCLUDES="--exclude='results/train/*/checkpoints' --exclude='results/train/*/pkl'"
-sc_run "cd ~/$SC_ROOT && tar cf 'collect_$STAMP.tar' $TRAIN_EXCLUDES $NEWER results calib 2>/dev/null; ls -lh 'collect_$STAMP.tar'"
+if [ -n "$STAGE" ]; then
+    ## The glob is expanded by the REMOTE shell (the local one leaves `*` alone inside double quotes).
+    ## A stage with no runs refuses rather than archiving nothing.
+    sc_run "cd ~/$SC_ROOT && set -- results/*/benchmark/*_${STAGE}_* && [ -e \"\$1\" ] || { echo 'no run dirs match *_${STAGE}_*'; exit 3; }
+echo \"\$# run dir(s)\"; tar cf 'collect_$STAMP.tar' \"\$@\" 2>/dev/null; ls -lh 'collect_$STAMP.tar'" \
+        || { rmdir "$STAGING" 2>/dev/null; exit 3; }
+else
+    sc_run "cd ~/$SC_ROOT && tar cf 'collect_$STAMP.tar' $TRAIN_EXCLUDES $NEWER results calib 2>/dev/null; ls -lh 'collect_$STAMP.tar'"
+fi
 sc_rsync -a --info=progress2 "$SC_DEST:$ARCHIVE" "$STAGING/"
 # The local archive is redundant the moment it is extracted: `tar xf` unpacks it directly
 # beside itself, so keeping it stores every collection's payload twice. That went unnoticed
@@ -238,7 +261,7 @@ echo "merging: searching $STAGING plus $(( ${#ALSO[@]} / 2 )) prior staging dire
 
 # Only now is it safe to advance the incremental watermark: everything above has to
 # have succeeded, or the next run must re-fetch what this one failed to bring back.
-sc_run "echo $COLLECT_WATERMARK > ~/$SC_ROOT/.last_collect"
+[ -n "$STAGE" ] || sc_run "echo $COLLECT_WATERMARK > ~/$SC_ROOT/.last_collect"
 fetch_kills
 echo
 echo "review, then promote with:  cp -r $STAGING/results/<robot>/benchmark/<tag> results/<robot>/benchmark/"

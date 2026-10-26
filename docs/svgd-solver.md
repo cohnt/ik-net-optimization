@@ -2931,3 +2931,289 @@ must be robust to the inequality rows); the screw-arm segfault race is left reco
 `alpha10` pose items are removed from the cluster so `--reclaim` cannot release them; the GVS arm under
 svgd stays deferred. The next step is
 network-architecture ablations, in another session.
+
+## The float64 polish (branch `svgd-polish`, from 2026-10-26)
+
+**Ruling (Thomas, 2026-10-26): not fielded; `svgd_polish` stays `none`.** *"It's not a super high impact
+factor (1e-5 tolerance is already much finer than the resolution of robot control). I think it's worth
+keeping in mind, but maybe not essential to the story."* The option stays in the tree for that; no V5 pin.
+
+### Stage SVGD_R31: a float64 Newton polish of the returned particle (pre-registered 2026-10-26, before the manifest)
+
+**Why.** The pin returns a particle that passes the 1e-4 gate, and the gate is all it is held to: the
+record's residual (`max_violation`) sits at 1e-6 to 1e-5 on every row, where IPOPT's sits at its own
+`tol`. R25 (skipped in the push, it needed code) asked whether a polish of the returned point closes
+that gap without moving anything else. The smoke (3d97474, Panda n6, 12 cells x grasp / pose, 60 s, V4
+pin, identical swarms) took the worst violation from 1e-5 to 1e-15 on 21 of 24 cells at cost within
+0.05%, 24 / 24 feasible both ways. It also showed the one way the polish could cost something: driven
+onto its bound, a nearly active collision row spent its clearance (1.05 / 1.00 mm -> exactly 1.00 mm on
+two grasp cells) and overshot the bound through the row's curvature, so the check rejected the step.
+Thomas, 2026-10-26: hold such rows where they are, and measure the joint-space ablation too.
+
+**The mechanism (`svgd_polish=newton`; `none` is the pin, bit-identical).** At the selection, after the
+float64 Drake re-check has passed, up to `svgd_polish_steps = 3` minimum-norm Gauss-Newton steps in
+float64 on the ACTIVE rows of `prog.GetAllConstraints()`, the Jacobian from one AutoDiffXd evaluation
+of the program per step (one network Jacobian on the learned arm). Active = every equality row, plus
+every inequality row within the gate `tol` of a finite bound. **Targets**: an equality row its value
+`lb == ub`; an active inequality row that VIOLATES its bound that bound; an active inequality row that
+is SATISFIED its current value (residual zero, so the linearised step holds it and no clearance is
+spent). The step is clamped onto the variable bounds and ACCEPTED only if the float64 worst signed
+violation over ALL rows does not rise and stays within `tol`; the first rejection ends the polish, as
+does a step that improves the worst violation by less than 10x. The returned point is therefore never
+worse than the unpolished one, on any row; the problem, the gate and `verify()` are untouched. The
+logic reads bounds, never names (no formulation-specific information in the solver).
+
+**Variants** (stage `SVGD_R31`, the record's shape: the four record contexts, 480 cells, 180 s, seed 1,
+graphed, the lifted step cap, the clearance row under `DRAKE_ENV=crc`, 24 shards, PROCS=2, the V4 pin):
+
+| token | override | arm | read against (cell-paired, same grid) |
+| --- | --- | --- | --- |
+| `pol` | `svgd_polish=newton` | learned, all 16 rows | R29 `pin4` |
+| `polkq` | `svgd_kernel=q` + `svgd_polish=newton` (declared two-factor: the ablation's kernel and the polish) | joint space (`--arms numerical`), all 16 rows | R30 `pin4kq` |
+
+**Prediction.** Success identical on every row (the polish runs only after the re-check passes and
+returns a point at least as good: it cannot lose a cell; a gain is possible only through no path, so
+any change is a bug). Median `max_violation` ~1e-15 on every row, both arms. Cost within 0.1% (the step
+is minimum-norm and tiny). Mean wall +1-7%: the smoke's 16-51 ms per cell against the pin's 0.70-2.00 s
+rows, so the fast pose rows are the ones at risk on the wall criterion; the soft PCS arm's AutoDiffXd
+pass is untried at scale. `polish_rejected` ~0 apart from `worse` rejections at round-off once the
+equalities sit at machine precision; the held-row rule should remove the smoke's two `outside_gate`
+rejections on the collision row.
+
+**Decision rule** (per arm, all 16 rows; adopt `svgd_polish=newton` into the pin as `SVGD_PINNED_V5`
+only if every clause holds, and only on Thomas's word):
+1. success identical to the twin on every row (confirmed, not assumed);
+2. median `max_violation` <= 1e-12 on every row;
+3. median cost ratio inside the seed-to-seed band [0.94, 1.10] on every row (predicted within 0.1%);
+4. mean wall up by < 5% on every row;
+5. clearance: no cell below the collision gate (implied by 1), and the per-cell change in `min_distance`
+   against the twin reported as a distribution, any cell losing > 0.1 mm named.
+If only clause 4 fails, it is a TRADE (residual for wall) put to Thomas, not an adoption. If 1, 2, 3 or
+5 fails, the option stays in the tree at `none` and the failure is reported with the rows it names.
+
+**Reported with it**: `polish_steps`, `polish_rejected` by kind (`worse` at round-off against
+`outside_gate`, with the row `polish_reject_row` names), the held / driven active-inequality counts,
+`polish_inactive_slack_drop` (how far a row outside the active set moved toward its bound), and
+`polish_seconds`.
+
+**Allotment**: 32 runs, 768 items (manifest md5 `4efe670d`); the tool charges 25.8 node-h (6.5 h on
+four nodes: 5 s per learned cell, R21's joint-space measure), R30's measured pace on the same shape
+(768 items in 2.8 h) gives ~3 h on four nodes, ~11 node-h; worst case 403 node-h (every cell at the clock). The cluster tree needs a
+RESTAGE (new solver code), from `svgd-polish`.
+
+### R31 results (collected 2026-10-26, `collect_20261026-145339`, 32 runs promoted)
+
+**Run.** Jobs 6037006-10, staged c92817b, 11:27-14:27 EDT (3.0 h on four nodes, ~12 node-h); 768 / 768
+items, 0 crashed, 0 overrun kills. Cap check: every row 0 cells at a budget except joint-space screw
+grasp (twin 17 / 16, `polkq` 18 / 20 timed out of 480: under the 24-cell line, as in R30). Read with
+`scripts/report_svgd_polish.py` (all cells) and `--same-swarm`.
+
+**A finding the rule did not anticipate: the swarm is not reproducible run to run.** The prediction
+("success identical by construction") assumed each cell reaches the polish at the twin's particle.
+It does on every cell of the rows whose maps are Drake's alone (Panda both arms, iiwa joint space:
+same iterations, same selected particle, `polish_viol_before` == the twin's `max_violation`, 480 /
+480). On every other row about half the cells diverge BEFORE the polish (iiwa learned 112-272 of 480
+identical; screw 222-332; soft12 24-288), and the unit is the PROCESS: a whole shard (targets
+`i mod 24`) reproduces bit for bit or diverges from its first cell, independent of the node (the same
+host pair gives both). Those rows are exactly the ones whose map runs compiled float32 torch (the
+flow; the screw and soft PCS FK in joint space too); the likeliest cause, NOT verified, is
+`torch.compile` choosing kernels per process (different float32 rounding). Torch and Drake are the
+same build in both runs. So on the divergent cells the all-cell pairing is a same-config replicate
+plus the polish, and it says nothing about the polish alone: the polish cannot change success (it runs
+after the re-check passes), yet the all-cell joint-space screw rows move 3/2, 6/2 and 0/1 discordant,
+every one on a divergent cell. The same-swarm cells are the clean A/B.
+
+**The rule as registered (all 480 cells): FAILS** on clause 1 (joint-space screw grasp native, grasp
+paired, pose paired: the divergence above) and clause 4 (learned iiwa grasp native 1.074, iiwa pose
+paired 1.070, soft12 x4 1.21-1.68; joint space screw grasp paired 1.197, soft12 x4 1.10-1.15).
+Clauses 2 and 3 pass on every row of both arms.
+
+**On the same-swarm cells**: clauses 1, 2, 3 pass on all 32 rows (success identical; median residual
+1e-6..3e-5 -> 9e-17..2e-15; cost ratio 1.0000-1.0001). Clause 4 fails on the eight soft12 rows
+(1.09-1.32) and joint-space screw grasp paired (1.064). Attribution, both measured:
+- **soft12: a first-call cost in the timed cell, now fixed in code (457d070, unmeasured at scale).**
+  The first cell of every shard pays 6.7-6.9 s of `polish_seconds` (once 76 s) -- the soft PCS arm's
+  first float64 AutoDiffXd pass, which nothing warmed under svgd -- after which the polish costs 15-28
+  ms. Leaving each shard's first cell out, the same-swarm wall ratio is 0.96-1.04 on all eight soft12
+  rows. `warm_up` now pays that pass under `svgd_polish=newton` (smoke: soft12 pose native joint
+  space on CPU, 2 / 2, residual 2e-16, cell-0 polish 27 ms; the 7 s first call does not occur on CPU,
+  so the smoke cannot show the saving).
+- **joint-space screw grasp paired: not the polish.** Its polish costs 6 ms per cell (0.5% of the
+  row's wall), and the same-swarm cells take identical iterations; the median cell is +0.07 s
+  slower, a run / node difference.
+
+
+**learned** (`pol` v `pin4`)
+
+| row | same-swarm cells | success twin / pol, all (b/c) | success, same | median resid twin -> pol | cost ratio, same | wall ratio all / same / same but first cell |
+| --- | --- | --- | --- | --- | --- | --- |
+| panda grasp native | 480 | 480 / 480 (0/0) | 480 / 480 | 5.7e-06 -> 1.7e-16 | 1.0000 | 1.017 / 1.017 / 1.019 |
+| panda grasp paired | 480 | 480 / 480 (0/0) | 480 / 480 | 4.7e-06 -> 1.7e-16 | 1.0001 | 1.015 / 1.015 / 1.015 |
+| panda pose native | 480 | 480 / 480 (0/0) | 480 / 480 | 1.5e-05 -> 8.9e-16 | 1.0000 | 1.018 / 1.018 / 1.019 |
+| panda pose paired | 480 | 480 / 480 (0/0) | 480 / 480 | 1.6e-05 -> 8.6e-16 | 1.0000 | 1.014 / 1.014 / 1.014 |
+| iiwa grasp native | 240 | 480 / 480 (0/0) | 240 / 240 | 9.9e-06 -> 2.2e-16 | 1.0000 | 1.074 / 1.047 / 1.025 |
+| iiwa grasp paired | 272 | 480 / 480 (0/0) | 272 / 272 | 7.7e-06 -> 2.2e-16 | 1.0000 | 1.023 / 0.993 / 0.993 |
+| iiwa pose native | 192 | 480 / 480 (0/0) | 192 / 192 | 2.7e-05 -> 8.9e-16 | 1.0001 | 1.006 / 1.003 / 1.001 |
+| iiwa pose paired | 112 | 480 / 480 (0/0) | 112 / 112 | 2.3e-05 -> 1.3e-15 | 1.0000 | 1.070 / 1.025 / 1.026 |
+| screw grasp native | 248 | 480 / 480 (0/0) | 248 / 248 | 2.1e-05 -> 6.2e-16 | 1.0000 | 1.044 / 1.001 / 1.001 |
+| screw grasp paired | 248 | 480 / 480 (0/0) | 248 / 248 | 2.2e-05 -> 6.4e-16 | 1.0000 | 0.927 / 1.023 / 1.024 |
+| screw pose native | 240 | 480 / 480 (0/0) | 240 / 240 | 3.0e-05 -> 2.0e-15 | 1.0000 | 1.009 / 1.039 / 1.038 |
+| screw pose paired | 232 | 480 / 480 (0/0) | 232 / 232 | 2.6e-05 -> 2.0e-15 | 1.0000 | 1.044 / 1.014 / 1.014 |
+| soft12 grasp native | 80 | 480 / 480 (0/0) | 80 / 80 | 3.5e-06 -> 9.7e-17 | 1.0000 | 1.675 / 1.125 / 0.997 |
+| soft12 grasp paired | 24 | 480 / 480 (0/0) | 24 / 24 | 4.8e-06 -> 1.1e-16 | 1.0000 | 1.207 / 1.218 / 1.032 |
+| soft12 pose native | 80 | 480 / 480 (0/0) | 80 / 80 | 3.8e-06 -> 4.4e-16 | 1.0000 | 1.331 / 1.272 / 0.999 |
+| soft12 pose paired | 64 | 480 / 480 (0/0) | 64 / 64 | 4.4e-06 -> 4.4e-16 | 1.0000 | 1.328 / 1.315 / 1.035 |
+
+**joint space** (`polkq` v `pin4kq`)
+
+| row | same-swarm cells | success twin / pol, all (b/c) | success, same | median resid twin -> pol | cost ratio, same | wall ratio all / same / same but first cell |
+| --- | --- | --- | --- | --- | --- | --- |
+| panda grasp native | 480 | 480 / 480 (0/0) | 480 / 480 | 1.1e-05 -> 1.1e-16 | 1.0000 | 1.003 / 1.003 / 1.004 |
+| panda grasp paired | 480 | 480 / 480 (0/0) | 480 / 480 | 1.1e-05 -> 1.1e-16 | 1.0000 | 1.002 / 1.002 / 1.003 |
+| panda pose native | 480 | 480 / 480 (0/0) | 480 / 480 | 3.5e-06 -> 2.2e-16 | 1.0000 | 0.976 / 0.976 / 0.974 |
+| panda pose paired | 480 | 480 / 480 (0/0) | 480 / 480 | 3.5e-06 -> 2.2e-16 | 1.0000 | 0.991 / 0.991 / 0.990 |
+| iiwa grasp native | 480 | 480 / 480 (0/0) | 480 / 480 | 1.1e-05 -> 1.1e-16 | 1.0000 | 1.019 / 1.019 / 1.020 |
+| iiwa grasp paired | 480 | 480 / 480 (0/0) | 480 / 480 | 1.1e-05 -> 1.1e-16 | 1.0000 | 1.018 / 1.018 / 1.020 |
+| iiwa pose native | 480 | 480 / 480 (0/0) | 480 / 480 | 1.0e-06 -> 3.3e-16 | 1.0000 | 0.996 / 0.996 / 0.997 |
+| iiwa pose paired | 480 | 480 / 480 (0/0) | 480 / 480 | 1.0e-06 -> 3.3e-16 | 1.0000 | 0.990 / 0.990 / 0.992 |
+| screw grasp native | 246 | 463 / 462 (3/2) | 246 / 246 | 1.8e-05 -> 1.1e-16 | 1.0000 | 1.044 / 0.989 / 0.990 |
+| screw grasp paired | 222 | 464 / 460 (6/2) | 222 / 222 | 1.5e-05 -> 1.1e-16 | 1.0001 | 1.197 / 1.064 / 1.067 |
+| screw pose native | 332 | 476 / 476 (0/0) | 332 / 332 | 1.2e-06 -> 2.2e-16 | 1.0000 | 1.000 / 0.987 / 0.992 |
+| screw pose paired | 296 | 476 / 477 (0/1) | 296 / 296 | 9.3e-07 -> 2.2e-16 | 1.0000 | 0.848 / 0.984 / 0.985 |
+| soft12 grasp native | 288 | 480 / 480 (0/0) | 288 / 288 | 1.1e-06 -> 9.0e-17 | 1.0000 | 1.127 / 1.112 / 0.998 |
+| soft12 grasp paired | 224 | 480 / 480 (0/0) | 224 / 224 | 1.1e-06 -> 9.7e-17 | 1.0000 | 1.103 / 1.115 / 0.999 |
+| soft12 pose native | 128 | 480 / 480 (0/0) | 128 / 128 | 3.4e-07 -> 3.1e-16 | 1.0000 | 1.125 / 1.093 / 0.962 |
+| soft12 pose paired | 144 | 480 / 480 (0/0) | 144 / 144 | 3.4e-07 -> 3.3e-16 | 1.0000 | 1.150 / 1.138 / 0.999 |
+
+**Clause 5 (clearance), same-swarm**: median `min_distance` change +0.0000 to +0.0016 mm per row; the
+worst cell per row -0.0007 to -0.116 mm; five cells lose more than 0.1 mm (Panda joint space pose cell 12 and grasp cell 113, -0.113 / -0.116 mm, the same cell under
+both protocols; screw learned grasp native cell 139, -0.100 mm). On the divergent cells the swings
+(to -21 mm) are different solutions, not the polish.
+
+**Polish counters** (all cells): 2-3 accepted steps on 92-100% of a row's cells; rejections are `worse` at round-off on
+an IK row once the equalities sit at machine precision (115-200 per row), plus `outside_gate` on
+0-5 grasp cells per row (learned iiwa / screw grasp, joint-space Panda grasp); active inequalities
+held / driven 89-229 / 94-217 per grasp row, 8-54 / 4-40 per pose row; median `polish_seconds` 12-28
+ms learned, 4-16 ms joint space.
+
+**Verdict.** By the letter of the registered rule the option stays at `none`. Every failing clause
+traces to something other than the polish: run-to-run divergence of the swarm (clause 1, and the
+all-cell wall), an unwarmed first call (soft12 wall, fixed), and a node-speed shift on one row. On the
+clean A/B the polish meets the prediction on success, residual and cost; its wall change, each
+shard's first cell aside, is -4% to +4% on every row but joint-space screw grasp paired (+6.7%, above).
+Adoption, and whether to re-measure soft12 (and screw joint space) after the warm-up fix, are
+Thomas's call.
+
+**Statistical reproducibility (Thomas, 2026-10-26: "is it statistically reproducible?")**, read on the
+DIVERGED cells (the swarm differs before the polish, so each pair is a same-config replicate plus a
+polish whose own cost effect is 1.0000): YES on success and cost. Learned: success identical on all 12
+rows with diverged cells; median cost ratio 0.958-1.030, every 95% CI over targets containing 1.
+Joint space: screw grasp / pose 3/2, 6/2, 0/1 discordant (McNemar p >= 0.29); median cost ratio
+0.972-1.029, CIs containing 1 (screw grasp wide, 0.83-1.20). Every row inside the seed-to-seed band
+[0.94, 1.10]. Single cells do move: median per-cell |log cost ratio| 0.000-0.077 learned, up to 0.33 on
+screw joint-space grasp (p90 1.37: different local solutions). Wall is the least reproducible
+quantity (diverged-cell mean ratio 0.80-1.21, soft12's first-cell cost aside).
+
+### Stage SVGD_R31B: the polish re-measured after the warm-up fix (pre-registered 2026-10-26, before the manifest)
+
+**Why.** R31's clause-4 failures on soft12 were a ~7 s first AutoDiffXd pass inside each shard's first
+timed cell, now paid in `warm_up` (457d070); joint-space screw grasp paired's +6.7% was not the polish
+(6 ms per cell). Thomas, 2026-10-26: re-measure after the fix.
+
+**Variants** (R31's tokens and overrides exactly, R31's shape; code = c92817b + 457d070, a restage):
+`pol` on soft12 (4 rows, learned) and `polkq` on soft12 and screw (8 rows, joint space): 12 runs,
+288 items.
+
+**Read** with `scripts/report_svgd_polish.py` against the twins (R29 `pin4` / R30 `pin4kq`), all cells
+and `--same-swarm`, and against R31 (same config but the fix: a same-code replicate).
+
+**Prediction.** soft12 first-cell `polish_seconds` < 0.1 s on every shard (R31: 6.7-6.9 s); same-swarm
+mean wall ratio against the twin < 1.05 on all eight soft12 rows (R31 with each first cell dropped:
+0.96-1.04); joint-space screw grasp paired within 5% only if R31's shift was node noise (no
+prediction). Clauses 1-3 as R31 on same-swarm cells; the swarm will again diverge from the twin on
+some shards (the compiled-torch rows).
+
+**Decision rule**: R31's, applied to these 12 rows on same-swarm cells, with clause 4 read here and
+the other 20 rows' clause 4 taken from R31. Adoption remains Thomas's call.
+
+**Allotment**: 288 items; R31's pace on these rows gives ~1 h on four nodes (~4 node-h).
+
+### R31B results (collected 2026-10-26 18:14 with `collect_results.sh --stage SVGD_R31B`, 12 runs promoted)
+
+288 / 288 items, 0 error cells. Read: `scripts/report_svgd_polish.py --stage R31B [--same-swarm]`, against
+the R29 / R30 twins. **The prediction holds on every row**: the first timed cell's `polish_seconds` is
+0.026 s median / 0.038 s max over the 184 soft12 shards (R31: ~7 s), and the same-swarm wall ratio is
+below 1.05 on all 8 soft12 rows. Same-swarm cells (the polish alone), rule clauses 1-4 pass on all 12 rows:
+
+| row | arm | same | success twin / pol | median resid twin -> pol | max resid pol | cost ratio | wall ratio | polish ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| soft12 grasp native | learned | 80 | 80 / 80 | 4.0e-06 -> 8.3e-17 | 2.6e-12 | 1.0000 | 1.017 | 29 |
+| soft12 grasp paired | learned | 48 | 48 / 48 | 3.5e-06 -> 8.3e-17 | 1.7e-10 | 1.0000 | 1.018 | 27 |
+| soft12 pose native | learned | 112 | 112 / 112 | 4.3e-06 -> 4.4e-16 | 1.7e-15 | 1.0000 | 1.017 | 26 |
+| soft12 pose paired | learned | 104 | 104 / 104 | 4.3e-06 -> 4.4e-16 | 2.7e-15 | 1.0000 | 0.999 | 26 |
+| screw grasp native | joint space | 255 | 255 / 255 | 1.2e-05 -> 1.1e-16 | 6.2e-06 | 1.0001 | 0.994 | 6 |
+| screw grasp paired | joint space | 190 | 190 / 190 | 1.2e-05 -> 1.1e-16 | 8.2e-14 | 1.0000 | 1.038 | 6 |
+| screw pose native | joint space | 188 | 188 / 188 | 1.3e-06 -> 2.2e-16 | 8.0e-15 | 1.0000 | 0.992 | 5 |
+| screw pose paired | joint space | 224 | 224 / 224 | 1.1e-06 -> 2.2e-16 | 4.2e-15 | 1.0000 | 0.980 | 5 |
+| soft12 grasp native | joint space | 232 | 232 / 232 | 9.6e-07 -> 9.7e-17 | 8.6e-10 | 1.0000 | 1.025 | 17 |
+| soft12 grasp paired | joint space | 248 | 248 / 248 | 1.0e-06 -> 9.4e-17 | 8.6e-10 | 1.0000 | 1.025 | 16 |
+| soft12 pose native | joint space | 344 | 344 / 344 | 3.3e-07 -> 3.3e-16 | 1.9e-15 | 1.0000 | 1.015 | 15 |
+| soft12 pose paired | joint space | 280 | 280 / 280 | 3.6e-07 -> 3.3e-16 | 1.8e-15 | 1.0000 | 1.018 | 15 |
+
+No same-swarm cell loses 0.1 mm of clearance (worst -0.078 mm). R31's screw joint-space grasp paired wall
+(1.067) re-measures at 1.038: node speed, as attributed. On the full grid the divergent cells are again a
+same-config replicate (screw joint-space success discordance 3/3, 7/3, 0/1, p >= 0.34; costs inside the
+seed band). **With R31 (same-swarm) this covers all 32 rows: the polish takes a few ms per cell (median 5-29
+ms), drives the median residual from ~1e-6 to ~1e-16, and leaves success and cost unchanged.** It stays
+opt-in (`svgd_polish=newton`), default `none` (ruling above).
+
+### Diagnostic REPRO_SVGD: why the swarm is not bit reproducible (2026-10-26; a diagnostic, not a result)
+
+**Hypothesis.** Inductor autotunes Triton reduction kernels by benchmarking candidate configs on the
+device at first call, and the candidates differ in summation order (`torch._inductor.config.deterministic`
+"skips any on device benchmarking in Inductor if we know they affect numerics"). The choice is
+timing-dependent, so per process -- exactly the shard-level all-or-nothing pattern, independent of the
+host. Each run_items worker keeps its own inductor cache in the job's TMPDIR, so the choice is made
+afresh per worker per job.
+
+**Test.** One record shard (shard 0 of 24: 3 targets x 8 guesses, the record's cells), eight
+independent processes per condition, each with `TORCHINDUCTOR_FORCE_DISABLE_CACHES=1` (every process
+autotunes afresh): (A) iiwa learned pose native at R31 `pol`'s flags; (B) A +
+`TORCHINDUCTOR_DETERMINISTIC=1`; (C) soft12 joint-space pose native at R31 `polkq`'s flags (the FK's
+compiled torch); (D) C + `TORCHINDUCTOR_DETERMINISTIC=1`. 32 items. **Prediction**: A and C show at
+least two distinct outcomes across their eight replicas (cell `max_violation` before the polish and
+`q` bitwise); B and D show exactly one each. If B / D still diverge, the hypothesis is refuted and
+the next suspects are cuBLAS / CUDA-graph replay and the crc32-of-x0 seed (`_seed`).
+
+**Result (job 6038025, one node d-10-2-1, both GPUs; `scripts/svgd/repro_check.py`): REFUTED.** The
+deterministic flag changes nothing:
+
+| condition | replica classes (of 8) | cells with > 1 outcome | cell 0's outer steps by class | identical to R31 shard 0 |
+| --- | --- | --- | --- | --- |
+| A iiwa learned, record flags | 5 / 2 / 1 | 24 / 24 | 8 / 9 / 13 | 5 / 8 |
+| B A + `TORCHINDUCTOR_DETERMINISTIC=1` | 3 / 3 / 2 | 24 / 24 | 13 / 9 / 8 | 3 / 8 |
+| C soft12 joint space, record flags | 5 / 3 | 24 / 24 | 12 / 10 | 3 / 8 |
+| D C + `TORCHINDUCTOR_DETERMINISTIC=1` | 5 / 3 | 24 / 24 | 10 / 12 | 5 / 8 |
+
+What it does establish: (1) **the outcome is a per-process choice among very few alternatives** -- a
+replica either agrees with another on all 24 cells bitwise or on none, and A and B share the same
+three (cell 0 at 8 / 9 / 13 outer steps), C and D the same two; (2) **not the GPU**: a class appears on
+both GPUs and one GPU produces two or three classes (claim owners in the state dir); (3) not the host
+(one node); (4) not autotuning; (5) every replica solves 24 / 24. Not atomics either: an atomic-order
+race would reroll per cell, not hold one class over 24 independent solves.
+
+### Diagnostic REPRO_SVGD2: the hash seed (2026-10-26; a diagnostic, not a result)
+
+**Hypothesis.** Python randomises `str` hashing per process (`PYTHONHASHSEED`), and Inductor's
+scheduler / codegen iterate sets of buffer names in places, so fusion and loop order -- hence float32
+summation order -- can differ per process among a few alternatives. Fits all four facts above.
+
+**Test.** As REPRO_SVGD A and C (record flags, caches disabled, shard 0), eight replicas each with
+`PYTHONHASHSEED=0`: (E) iiwa learned, (F) soft12 joint space. 16 items, one node. **Prediction**: E and
+F each show exactly one class. If refuted, the remaining per-process suspect is the CUDA caching
+allocator's addresses (alignment-dependent kernel variants in Triton / cuBLAS); that is where this
+effort stops.
+
+**Cancelled before it ran (2026-10-26).** Thomas: *"I just don't care that much about statistically
+insignificant variation run to run."* The swarm is statistically reproducible (above); the bit-level cause
+is not chased further. A/Bs are read on same-swarm cells or as replicates.
