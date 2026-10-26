@@ -10,6 +10,27 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
+## STATE -- 2026-10-25 20:30 cluster time: 8 of the 24 branch runs exported; relu rc 6 again; tanh charts 545-713 mm.
+Resume: `bash cluster/submit_chart_train.sh --status | grep loinkB`; the watcher
+`results/_watch/train_watch.sh` (laptop, background) fires on a new `node0.SENTINEL`, the kill
+rule, or an empty `lik_trainc` queue.
+ 0. Done at 620k (val on the BRANCH test split; constant predictor Panda 581 mm / 136 deg, iiwa
+    700 mm / 130 deg): Panda BmrP 743 mm / 83 deg rc 6; BxrP 743 / 83 rc 6; BurP 769 / 79 rc 6
+    (relu: no triple of the 96-triple ladder passes the round trip, as every phase-1 relu chart);
+    Panda BmtP 683 / 114 rc 0 ladder (100, 10, backtrack) cost 250, (a) pos median 615 mm;
+    BxtP 692 / 114 rc 0 (25, 20, backtrack) cost 325, (a) 625 mm; ButP 791 / 109 rc 0
+    (800, 50, backtrack) cost 1550, (a) 713 mm, off-branch |z|_inf median 85.6, in the box 0.02;
+    iiwa BmrP 662 / 77 rc 6; BmtP 664 / 104 rc 0 (25, 20, backtrack) cost 325, (a) 545 mm p95
+    1174, > 50 mm 0.9996, (g) off-branch pos median 1183 mm, in the box 0.72.
+    Exports in `~/learned-ik/repo/models/<robot>/<robot>__loinkB*P__step620000.pkl` (5 tanh).
+ 1. Running: iiwa Bx P pair (step 220k) and Bu P pair (140k), ~01:30; Panda Bm A and Bx A pairs
+    (steps 100k-140k of 150k, lr 1.5e-8 already -- past the kill window, finishing in minutes);
+    pending Panda Bu A, iiwa Bm/Bx/Bu A pairs. A runs so far: Panda mtA 648 mm / 119 deg, xtA
+    629 / 120, mrA 678 / 93, xrA 680 / 93 -- a little lower than P, still above the constant
+    predictor's 581 mm. Check each A run's `metrics.csv` for the step where lr fell below 1e-6
+    and record "recipe A: LR collapsed" where it was before 50k.
+ 2. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
+
 ## STATE -- 2026-10-25 14:50 cluster time: soft12 PROBE done (0/20 everywhere); the 24 branch runs training; downstream stages NOT started.
 Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'` (12 `lik_trainc_*loinkB*` pair jobs, 4 running);
 `bash cluster/submit_chart_train.sh --status | grep loinkB`.
