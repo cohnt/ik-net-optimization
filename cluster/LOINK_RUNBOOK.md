@@ -10,7 +10,7 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE -- 2026-10-25 22:20 cluster time: 12 of the 24 branch runs exported; P relu rc 6; tanh 545-713 mm; Panda A collapsed at 12-20k, ran out.
+## STATE -- 2026-10-26 00:20 cluster time: 15 of 24 exported, 2 killed (iiwa Bx A, LR collapsed); P relu rc 6; best chart 526 mm.
 Resume: `bash cluster/submit_chart_train.sh --status | grep loinkB`; the watcher
 `results/_watch/train_watch.sh` (laptop, background) fires on a new `node0.SENTINEL`, the kill
 rule, or an empty `lik_trainc` queue.
@@ -35,7 +35,17 @@ rule, or an empty `lik_trainc` queue.
     the ladder, still at the constant predictor (581 mm). Watcher now polls every 15 min so the
     rule can fire on the remaining A pairs (Panda Bu A, iiwa Bm/Bx/Bu A).
     Running: iiwa Bx P pair (220k at 20:30) and Bu P pair (140k), ~01:30.
- 2. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
+ 2. 00:19 Sun: more recipe A. Panda BurA (lr < 1e-6 at 19k, ran out): rc 0 (1600, 30, none)
+    cost 1840, (a) 602 mm / 71 deg, off-branch in the box 0.25. Panda ButA (14k, ran out): rc 0
+    (100, 10, backtrack) cost 250, (a) 629 mm / 110 deg, in the box 0.32. iiwa BmtA (14k, ran
+    out): rc 0 (25, 10, backtrack) cost 175, (a) 526 mm / 103 deg -- the best fit of the ladder,
+    still half a metre. **iiwa BxrA + BxtA: KILLED under the rule** (watcher caught them at step
+    30k, lr 1.5e-8 < 1e-6 before 50k): `scancel 6031776` at 00:19 with
+    `checkpoints/last.ckpt` (step 40k) kept in both run dirs; no export, no screen; reason
+    "recipe A: LR collapsed". `results/_watch/killed.txt` lists them for the watcher. The iiwa
+    Bu A pair (6031777) started 00:19 and will meet the rule the same way; iiwa BmrA (relu A,
+    6031775) is exporting; the iiwa Bx/Bu P pairs are at hours 5.7 / 4.6 of ~7.
+ 3. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
 
 ## STATE -- 2026-10-25 14:50 cluster time: soft12 PROBE done (0/20 everywhere); the 24 branch runs training; downstream stages NOT started.
 Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'` (12 `lik_trainc_*loinkB*` pair jobs, 4 running);
