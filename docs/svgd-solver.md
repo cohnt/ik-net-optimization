@@ -2992,6 +2992,7 @@ If only clause 4 fails, it is a TRADE (residual for wall) put to Thomas, not an 
 `polish_inactive_slack_drop` (how far a row outside the active set moved toward its bound), and
 `polish_seconds`.
 
-**Allotment**: 32 runs, 768 items; at R29 / R30's pace (2.8-5.6 h on four nodes for 768-1536 items)
-about 3 h on four nodes, ~6 node-h by the tool's count when the manifest exists. The cluster tree needs a
+**Allotment**: 32 runs, 768 items (manifest md5 `4efe670d`); the tool charges 25.8 node-h (6.5 h on
+four nodes: 5 s per learned cell, R21's joint-space measure), R30's measured pace on the same shape
+(768 items in 2.8 h) gives ~3 h on four nodes, ~11 node-h; worst case 403 node-h (every cell at the clock). The cluster tree needs a
 RESTAGE (new solver code), from `svgd-polish`.
