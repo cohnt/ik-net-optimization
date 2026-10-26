@@ -10,7 +10,7 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE -- 2026-10-26 00:20 cluster time: 15 of 24 exported, 2 killed (iiwa Bx A, LR collapsed); P relu rc 6; best chart 526 mm.
+## STATE -- 2026-10-26 00:40 cluster time: 16 of 24 exported, 4 killed (iiwa Bx/Bu A, LR collapsed), 4 P runs left; best chart 526 mm.
 Resume: `bash cluster/submit_chart_train.sh --status | grep loinkB`; the watcher
 `results/_watch/train_watch.sh` (laptop, background) fires on a new `node0.SENTINEL`, the kill
 rule, or an empty `lik_trainc` queue.
@@ -45,7 +45,13 @@ rule, or an empty `lik_trainc` queue.
     "recipe A: LR collapsed". `results/_watch/killed.txt` lists them for the watcher. The iiwa
     Bu A pair (6031777) started 00:19 and will meet the rule the same way; iiwa BmrA (relu A,
     6031775) is exporting; the iiwa Bx/Bu P pairs are at hours 5.7 / 4.6 of ~7.
- 3. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
+ 3. 00:35 Sun: **iiwa BurA + ButA KILLED** the same way (step 20k, lr 1.5e-8): `scancel 6031777`,
+    `checkpoints/last.ckpt` (step 20k) kept, "recipe A: LR collapsed". So recipe A on iiwa:
+    m pair ran out (started before the 15-min cadence), x and u pairs killed. iiwa BmrA (lr <
+    1e-6 at 17k, ran out): rc 0 ladder (1600, 5, none) cost 1640, screen running at 00:35.
+    Left: iiwa Bx P and Bu P pairs (~01:00 / ~02:00 + export). Watcher fix: the kill-rule awk
+    now matches only status lines (`/^[a-z].* step /`), the `.pkl` export listing had tripped it.
+ 4. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
 
 ## STATE -- 2026-10-25 14:50 cluster time: soft12 PROBE done (0/20 everywhere); the 24 branch runs training; downstream stages NOT started.
 Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'` (12 `lik_trainc_*loinkB*` pair jobs, 4 running);
