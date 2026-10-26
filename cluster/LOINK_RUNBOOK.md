@@ -52,7 +52,10 @@ rule, or an empty `lik_trainc` queue.
     lowest of the ladder), (g) off-branch 1966 mm, in the box 0.75.
     Left: iiwa Bx P and Bu P pairs (~01:00 / ~02:00 + export). Watcher fix: the kill-rule awk
     now matches only status lines (`/^[a-z].* step /`), the `.pkl` export listing had tripped it.
- 4. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
+ 4. 01:45 Sun: iiwa BxtP done (620k): val 678 mm / 103 deg; rc 0 ladder (25, 10, backtrack) cost
+    175, (a) 551 mm / 89 deg, (g) off-branch 1195 mm, in the box 0.71. iiwa BxrP (val 666 mm /
+    77 deg) exporting; iiwa Bu P pair at hour 6.2.
+ 5. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
 
 ## STATE -- 2026-10-25 14:50 cluster time: soft12 PROBE done (0/20 everywhere); the 24 branch runs training; downstream stages NOT started.
 Resume: `ssh tcohn@txe1-login.mit.edu 'squeue -u tcohn'` (12 `lik_trainc_*loinkB*` pair jobs, 4 running);
