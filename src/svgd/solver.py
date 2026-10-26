@@ -1421,11 +1421,19 @@ class SvgdSolver:
             X = step_fn(X, S, want_lam=(k == 2))[0]
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
+        ## The polish's float64 AutoDiffXd pass, once, so its first call is not a timed cell's:
+        ## on the soft PCS arm that first call was ~7 s per process (stage SVGD_R31).
+        polish_seconds = None
+        if self.options.svgd_polish == "newton":
+            tp = time.perf_counter()
+            self._drake_rows(self._tg.bp.to_drake_x(x0), with_gradient=True)
+            polish_seconds = time.perf_counter() - tp
         if hasattr(self.program, "ResetEvalCounts"):
             self.program.ResetEvalCounts()
         r = self._runner
         self.warmup_info = dict(step_mode=r.mode if r is not None else "eager",
                                 reused_template=bool(r is not None and r.reused),
                                 graphs_captured=r.graphs_captured() if r is not None else 0,
+                                polish_seconds=polish_seconds,
                                 seconds=time.perf_counter() - t0)
         return self.warmup_info["seconds"]
