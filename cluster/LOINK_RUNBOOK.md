@@ -10,7 +10,7 @@ The cVAE campaign's runbook (`cluster/CVAE_RUNBOOK.md`) is the precedent this on
 
 **If you are even remotely unsure about a cluster action, stop and ask Thomas.**
 
-## STATE -- 2026-10-25 20:30 cluster time: 8 of the 24 branch runs exported; relu rc 6 again; tanh charts 545-713 mm.
+## STATE -- 2026-10-25 22:20 cluster time: 12 of the 24 branch runs exported; P relu rc 6; tanh 545-713 mm; Panda A collapsed at 12-20k, ran out.
 Resume: `bash cluster/submit_chart_train.sh --status | grep loinkB`; the watcher
 `results/_watch/train_watch.sh` (laptop, background) fires on a new `node0.SENTINEL`, the kill
 rule, or an empty `lik_trainc` queue.
@@ -23,12 +23,18 @@ rule, or an empty `lik_trainc` queue.
     iiwa BmrP 662 / 77 rc 6; BmtP 664 / 104 rc 0 (25, 20, backtrack) cost 325, (a) 545 mm p95
     1174, > 50 mm 0.9996, (g) off-branch pos median 1183 mm, in the box 0.72.
     Exports in `~/learned-ik/repo/models/<robot>/<robot>__loinkB*P__step620000.pkl` (5 tanh).
- 1. Running: iiwa Bx P pair (step 220k) and Bu P pair (140k), ~01:30; Panda Bm A and Bx A pairs
-    (steps 100k-140k of 150k, lr 1.5e-8 already -- past the kill window, finishing in minutes);
-    pending Panda Bu A, iiwa Bm/Bx/Bu A pairs. A runs so far: Panda mtA 648 mm / 119 deg, xtA
-    629 / 120, mrA 678 / 93, xrA 680 / 93 -- a little lower than P, still above the constant
-    predictor's 581 mm. Check each A run's `metrics.csv` for the step where lr fell below 1e-6
-    and record "recipe A: LR collapsed" where it was before 50k.
+ 1. Panda recipe A, done 22:10 (150k steps, batch 500): **all four met the kill rule** --
+    `tr/learning_rate` < 1e-6 at step 13k (mtA), 18k (mrA), 20k (xrA), 12k (xtA), i.e. "recipe A:
+    LR collapsed", frozen at 1.5e-8 from there -- but the 2 h watcher cadence missed the 30-min
+    window, so they ran out (2 h each; nothing lost, the final chart is the 20k chart). Exports:
+    BmrA rc 0 ladder (1600, 20, none) cost 1760, (a) 585 mm / 74 deg; BxrA rc 0 (1600, 30, none)
+    cost 1840, (a) 577 mm / 73 deg (recipe-A relu charts DO invert, at 5-7x the tanh decode
+    cost; P relu did not); BmtA rc 0 (25, 10, backtrack) cost 175, (a) 579 mm / 113 deg; BxtA
+    rc 0 (25, 10, backtrack) cost 175, (a) 573 mm / 115 deg. (g) off-branch pos median
+    765-1257 mm (relu p95 21-23 m), in the box 0.70-0.81. Val pos RMSE 629-680 mm: the best of
+    the ladder, still at the constant predictor (581 mm). Watcher now polls every 15 min so the
+    rule can fire on the remaining A pairs (Panda Bu A, iiwa Bm/Bx/Bu A).
+    Running: iiwa Bx P pair (220k at 20:30) and Bu P pair (140k), ~01:30.
  2. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
 
 ## STATE -- 2026-10-25 14:50 cluster time: soft12 PROBE done (0/20 everywhere); the 24 branch runs training; downstream stages NOT started.
