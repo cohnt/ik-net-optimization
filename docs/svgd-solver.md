@@ -3099,3 +3099,55 @@ clean A/B the polish meets the prediction on success, residual and cost; its wal
 shard's first cell aside, is -4% to +4% on every row but joint-space screw grasp paired (+6.7%, above).
 Adoption, and whether to re-measure soft12 (and screw joint space) after the warm-up fix, are
 Thomas's call.
+
+**Statistical reproducibility (Thomas, 2026-10-26: "is it statistically reproducible?")**, read on the
+DIVERGED cells (the swarm differs before the polish, so each pair is a same-config replicate plus a
+polish whose own cost effect is 1.0000): YES on success and cost. Learned: success identical on all 12
+rows with diverged cells; median cost ratio 0.958-1.030, every 95% CI over targets containing 1.
+Joint space: screw grasp / pose 3/2, 6/2, 0/1 discordant (McNemar p >= 0.29); median cost ratio
+0.972-1.029, CIs containing 1 (screw grasp wide, 0.83-1.20). Every row inside the seed-to-seed band
+[0.94, 1.10]. Single cells do move: median per-cell |log cost ratio| 0.000-0.077 learned, up to 0.33 on
+screw joint-space grasp (p90 1.37: different local solutions). Wall is the least reproducible
+quantity (diverged-cell mean ratio 0.80-1.21, soft12's first-cell cost aside).
+
+### Stage SVGD_R31B: the polish re-measured after the warm-up fix (pre-registered 2026-10-26, before the manifest)
+
+**Why.** R31's clause-4 failures on soft12 were a ~7 s first AutoDiffXd pass inside each shard's first
+timed cell, now paid in `warm_up` (457d070); joint-space screw grasp paired's +6.7% was not the polish
+(6 ms per cell). Thomas, 2026-10-26: re-measure after the fix.
+
+**Variants** (R31's tokens and overrides exactly, R31's shape; code = c92817b + 457d070, a restage):
+`pol` on soft12 (4 rows, learned) and `polkq` on soft12 and screw (8 rows, joint space): 12 runs,
+288 items.
+
+**Read** with `scripts/report_svgd_polish.py` against the twins (R29 `pin4` / R30 `pin4kq`), all cells
+and `--same-swarm`, and against R31 (same config but the fix: a same-code replicate).
+
+**Prediction.** soft12 first-cell `polish_seconds` < 0.1 s on every shard (R31: 6.7-6.9 s); same-swarm
+mean wall ratio against the twin < 1.05 on all eight soft12 rows (R31 with each first cell dropped:
+0.96-1.04); joint-space screw grasp paired within 5% only if R31's shift was node noise (no
+prediction). Clauses 1-3 as R31 on same-swarm cells; the swarm will again diverge from the twin on
+some shards (the compiled-torch rows).
+
+**Decision rule**: R31's, applied to these 12 rows on same-swarm cells, with clause 4 read here and
+the other 20 rows' clause 4 taken from R31. Adoption remains Thomas's call.
+
+**Allotment**: 288 items; R31's pace on these rows gives ~1 h on four nodes (~4 node-h).
+
+### Diagnostic REPRO_SVGD: why the swarm is not bit reproducible (2026-10-26; a diagnostic, not a result)
+
+**Hypothesis.** Inductor autotunes Triton reduction kernels by benchmarking candidate configs on the
+device at first call, and the candidates differ in summation order (`torch._inductor.config.deterministic`
+"skips any on device benchmarking in Inductor if we know they affect numerics"). The choice is
+timing-dependent, so per process -- exactly the shard-level all-or-nothing pattern, independent of the
+host. Each run_items worker keeps its own inductor cache in the job's TMPDIR, so the choice is made
+afresh per worker per job.
+
+**Test.** One record shard (shard 0 of 24: 3 targets x 8 guesses, the record's cells), eight
+independent processes per condition, each with `TORCHINDUCTOR_FORCE_DISABLE_CACHES=1` (every process
+autotunes afresh): (A) iiwa learned pose native at R31 `pol`'s flags; (B) A +
+`TORCHINDUCTOR_DETERMINISTIC=1`; (C) soft12 joint-space pose native at R31 `polkq`'s flags (the FK's
+compiled torch); (D) C + `TORCHINDUCTOR_DETERMINISTIC=1`. 32 items. **Prediction**: A and C show at
+least two distinct outcomes across their eight replicas (cell `max_violation` before the polish and
+`q` bitwise); B and D show exactly one each. If B / D still diverge, the hypothesis is refuted and
+the next suspects are cuBLAS / CUDA-graph replay and the crc32-of-x0 seed (`_seed`).
