@@ -944,6 +944,28 @@ longer run into the round token. Promote as for R7 / R16:
 `cp -r <STAGING>/results/panda/benchmark/sc_SVGD_R19_*` and
 `<STAGING>/results/soft12/benchmark/sc_SVGD_R17P_*`.
 
+## R31 (branch `svgd-polish`, 2026-10-26): the float64 polish
+
+**Pre-registered 2026-10-26 (`docs/svgd-solver.md`, "Stage SVGD_R31") on Thomas's two answers: hold a
+satisfied active inequality at its current value, and run the joint-space ablation too.** `pol` (V4 +
+`svgd_polish=newton`, learned) and `polkq` (+ `svgd_kernel=q`, `--arms numerical`, declared two-factor)
+on the four record contexts: 32 runs, 768 items, manifest md5 `4efe670d`. NEW SOLVER CODE, so the
+tree is restaged from `svgd-polish` (the queue was empty, so restage in place, no side tree):
+
+```bash
+BRANCH=svgd-polish bash cluster/make_staging_clone.sh ~/.cache/learned-ik-svgd-polish/stage-svgd
+bash ~/.cache/learned-ik-svgd-polish/stage-svgd/cluster/stage_code.sh
+ssh tcohn@txe1-login.mit.edu 'cat ~/learned-ik/repo/.staged-commit; grep -c "polish_active_ineq_held" ~/learned-ik/repo/src/svgd/solver.py; md5sum ~/learned-ik/repo/cluster/manifest_stageSVGD_R31.txt'
+cd ~/.cache/learned-ik-svgd-polish/stage-svgd && DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R31.txt 4
+# read: scripts/report_svgd.py --stage SVGD --rows <robot> --variants pin4,pol   and   --variants pin4kq,polkq
+```
+
+Local smoke (2026-10-26, CPU only, one core, load ~22, Panda, 2 cells each at 60 s, graph / compile
+flags dropped): pose native `pol` 2 / 2 and `polkq` 2 / 2, grasp native `pol` 2 / 2 (both at the clock
+on one core, Drake-feasible); 0 error cells; polish on both arms, worst violation 6e-7 to 2e-5 -> 3e-17
+to 9e-16 in 2-3 steps; one `worse` rejection at round-off; one grasp cell drove a slightly violated
+active row (0 held). Not a result.
+
 ## R29 / R30 (branch `svgd-tune`, 2026-10-16): the regulariser's three roles, and the V4 pin's record re-measure
 
 **Pre-registered 2026-10-16 (`docs/svgd-solver.md`, "Stage SVGD_R29" / "Stage SVGD_R30") on Thomas's
