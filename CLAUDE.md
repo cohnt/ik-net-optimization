@@ -276,8 +276,7 @@ One stated exception: the svgd rounds' clearance wheel (`DRAKE_ENV=crc`, `~/lear
 ## AL-SVGD, the fourth method class (long form: `docs/notes-svgd.md`; evidence `docs/svgd-solver.md`)
 
 A batch-parallel particle method (`--solver svgd`) on exactly the existing programs; branch
-`svgd-tune` merged (0efb579), **the push is CLOSED (2026-10-18); next is network-architecture
-ablations, in another session.** Ops `cluster/SVGD_RUNBOOK.md`; tables `docs/svgd-2x2-tables.md`
+`svgd-tune` merged (0efb579), **the push is CLOSED (2026-10-18).** Ops `cluster/SVGD_RUNBOOK.md`; tables `docs/svgd-2x2-tables.md`
 (`scripts/report_svgd_2x2.py --write`).
 
 **Rulings**: SVGD-style only; exact Drake collision, no proxy; no formulation-specific information in
@@ -314,7 +313,7 @@ no iterations). Proposed = learned + AL-SVGD; ablation A = learned under the Dra
   and soft PCS. **Strong on success, robustness to the start, matched-time wall and generality; NOT a
   solution-quality result against joint space, and the paper must not claim one.**
 
-**Open**: twelve screw-arm segfaults in R22/R23 (recorded, not chased). Float64 Newton polish smoked on branch `svgd-polish`. GVS under svgd deferred. The soft PCS arm takes the split step (forward-mode row Jacobians).
+**Open**: R22/R23 screw segfaults (not chased). Float64 polish: opt-in `svgd_polish=newton`, off (R31). **TRAP: svgd is not bit reproducible** (statistically it is); A/B via `report_svgd_polish.py --same-swarm`. GVS svgd deferred. Soft PCS: split step (forward-mode row Jacobians).
 
 ## Results: the campaign of record (long form: `docs/notes-record.md`)
 
@@ -471,7 +470,7 @@ Exceptions on `xeon-p8`: datagen, and arms that never touch the GPU (the analyti
 IPOPT/SNOPT/NLopt; `submit_bench.sh` refuses learned/compile/svgd there). PyTorch's cu128 wheels drop
 sm_70 — use cu126 (`cluster/smoke.sh` launches a real kernel). `--shard K/N` splits target-major and
 the merger re-runs `summarise`; **run `bash cluster/verify_sharding.sh` after any change to sharding,
-the merger or grid construction.** Shard sets straddling collections merge normally. **Cluster-wide
+the merger or grid construction.** Collect with `collect_results.sh --stage <token>` (2 min, not ~25). **Cluster-wide
 checks on the shared account are scoped by JOB name; a guard nobody has seen refuse is untested.**
 Maintenance: second Tuesday monthly.
 
