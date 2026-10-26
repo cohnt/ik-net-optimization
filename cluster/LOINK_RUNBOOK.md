@@ -54,7 +54,8 @@ rule, or an empty `lik_trainc` queue.
     now matches only status lines (`/^[a-z].* step /`), the `.pkl` export listing had tripped it.
  4. 01:45 Sun: iiwa BxtP done (620k): val 678 mm / 103 deg; rc 0 ladder (25, 10, backtrack) cost
     175, (a) 551 mm / 89 deg, (g) off-branch 1195 mm, in the box 0.71. iiwa BxrP (val 666 mm /
-    77 deg) exporting; iiwa Bu P pair at hour 6.2.
+    77 deg) rc 6 at 01:53 (every recipe-P relu chart on both robots: not invertible at export).
+    iiwa Bu P pair at hour 6.4, the last job.
  5. Downstream (`LOINKSMOKE_branch`, `LOINKPROBE_branch`): NOT submitted, Thomas's call.
 
 ## STATE -- 2026-10-25 14:50 cluster time: soft12 PROBE done (0/20 everywhere); the 24 branch runs training; downstream stages NOT started.
