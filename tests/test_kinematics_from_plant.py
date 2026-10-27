@@ -25,6 +25,7 @@ scene that actually exercises it.
 
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__`
 driver.
+Tiers (tests/_tiers.py): the default `fast` runs in ~24 s on one CPU core; no `slow` group.
 """
 
 import math
@@ -35,6 +36,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.common.eigen_geometry import Quaternion
 from pydrake.math import RollPitchYaw, RotationMatrix
@@ -490,14 +492,16 @@ def test_from_plant_replays_a_floating_body():
     print("PASS from_plant replays a floating body; closed-form Jacobians refuse it by name")
 
 
+GROUPS = {"fast": [test_body_poses_match_drake_on_every_scene, test_task_frames_match_drake,
+                   test_rpy_from_quat_is_drakes_algorithm,
+                   test_quat_from_rpy_batched_round_trips_through_drake,
+                   test_wrap_residual_matches_orientation_error_rpy,
+                   test_jacobians_match_central_differences,
+                   test_rpy_gradient_is_finite_at_drakes_singular_guard,
+                   test_tree_is_topological_and_slots_come_from_position_start,
+                   test_from_plant_replays_a_floating_body]}
+
+
 if __name__ == "__main__":
-    test_body_poses_match_drake_on_every_scene()
-    test_task_frames_match_drake()
-    test_rpy_from_quat_is_drakes_algorithm()
-    test_quat_from_rpy_batched_round_trips_through_drake()
-    test_wrap_residual_matches_orientation_error_rpy()
-    test_jacobians_match_central_differences()
-    test_rpy_gradient_is_finite_at_drakes_singular_guard()
-    test_tree_is_topological_and_slots_come_from_position_start()
-    test_from_plant_replays_a_floating_body()
+    _tiers.run(GROUPS)
     print("ALL PASS")

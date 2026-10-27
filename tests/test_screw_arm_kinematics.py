@@ -16,6 +16,7 @@ screw joint shows up as a failure here rather than as silence.
 
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__`
 driver.
+Tiers (tests/_tiers.py): the default `fast` runs in ~7 s on one CPU core; no `slow` group.
 """
 
 import math
@@ -26,6 +27,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.multibody.parsing import Parser
 from pydrake.multibody.plant import AddMultibodyPlantSceneGraph, MultibodyPlant
@@ -375,19 +377,21 @@ def test_the_filtered_pair_that_must_stay_clear():
     print("PASS the pairs the chain-gap rule filters but must not touch stay clear")
 
 
+GROUPS = {"fast": [test_generated_models_are_current, test_generated_scenes_are_current,
+                   test_screw_pitch_round_trips_through_the_plant,
+                   test_the_screw_joints_limits_are_dropped_by_the_parser,
+                   test_the_repair_restores_the_limits_the_sdf_records,
+                   test_the_repair_must_precede_the_autodiff_copy,
+                   test_torch_forward_kinematics_matches_drake,
+                   test_link_poses_match_drake,
+                   test_gradients_are_finite_and_correct,
+                   test_the_screw_is_what_makes_the_arm_move_axially,
+                   test_pitch_zero_is_a_plain_revolute_arm,
+                   test_collision_filters_are_what_the_spec_claims,
+                   test_the_home_configuration_and_the_whole_stroke_are_clear,
+                   test_the_filtered_pair_that_must_stay_clear]}
+
+
 if __name__ == "__main__":
-    test_generated_models_are_current()
-    test_generated_scenes_are_current()
-    test_screw_pitch_round_trips_through_the_plant()
-    test_the_screw_joints_limits_are_dropped_by_the_parser()
-    test_the_repair_restores_the_limits_the_sdf_records()
-    test_the_repair_must_precede_the_autodiff_copy()
-    test_torch_forward_kinematics_matches_drake()
-    test_link_poses_match_drake()
-    test_gradients_are_finite_and_correct()
-    test_the_screw_is_what_makes_the_arm_move_axially()
-    test_pitch_zero_is_a_plain_revolute_arm()
-    test_collision_filters_are_what_the_spec_claims()
-    test_the_home_configuration_and_the_whole_stroke_are_clear()
-    test_the_filtered_pair_that_must_stay_clear()
+    _tiers.run(GROUPS)
     print("ALL PASS")

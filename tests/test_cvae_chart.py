@@ -24,9 +24,11 @@ through one `training_step` on a random batch, never a fit. What is protected:
    a sidecar written before the field existed loads as "learned" (the committed untrained
    Panda charts included); the fixed loss is exactly sum-of-squares + KL; the learned loss is
    bit-identical to the first rung's formula.
+Tiers (tests/_tiers.py): the default `fast` runs in ~28 s on one CPU core; no `slow` group.
 """
 
 import copy
+import functools
 import json
 import os
 import pickle
@@ -43,6 +45,7 @@ sys.path.insert(0, os.path.join(REPO, "scripts", "training"))
 from src.charts.cvae import (  # noqa: E402
     ArchFromCVAEStateDict, CVAEModel, JointScale, LoadCVAEChart, SidecarPath, elbo_loss)
 from export_cvae import write_untrained  # noqa: E402
+import _tiers  # noqa: E402
 from jrl.robots import get_robot  # noqa: E402
 
 CPU = torch.device("cpu")
@@ -379,37 +382,66 @@ def test_committed_untrained_panda_charts_load():
         print(f"PASS committed {os.path.basename(path)} loads as learned and decodes")
 
 
-if __name__ == "__main__":
-    t0 = time.monotonic()
-    panda = get_robot("panda")
-    counts = {}
-    for k in (7, 1):
-        counts[("panda", k)] = test_shapes_float64_and_encode_is_mu(panda, k)
-        test_jacrev_matches_central_differences(panda, k)
-        test_training_step_is_finite(panda, k)
-        test_training_step_is_finite(panda, k, decoder_variance="fixed")
-        test_decoder_variance_losses(panda, k)
+COUNTS = {}
+_ROBOTS = {}
 
-    ## soft12 only if it resolves cheaply: its construction is the robot's, not the chart's.
-    t = time.monotonic()
-    try:
-        soft12 = get_robot("soft12")
-    except Exception as e:
-        soft12 = None
-        print(f"SKIP soft12: does not resolve ({e})")
-    if soft12 is not None:
-        print(f"soft12 resolved in {time.monotonic() - t:.1f} s")
-        for k in (12, 6):
-            counts[("soft12", k)] = test_shapes_float64_and_encode_is_mu(soft12, k)
-            test_jacrev_matches_central_differences(soft12, k)
 
+def _panda():
+    if "panda" not in _ROBOTS:
+        _ROBOTS["panda"] = get_robot("panda")
+    return _ROBOTS["panda"]
+
+
+def _soft12():
+    """soft12 only if it resolves cheaply: its construction is the robot's, not the chart's.
+    Resolved (or skipped) once, at the first check that needs it."""
+    if "soft12" not in _ROBOTS:
+        t = time.monotonic()
+        try:
+            _ROBOTS["soft12"] = get_robot("soft12")
+        except Exception as e:
+            _ROBOTS["soft12"] = None
+            print(f"SKIP soft12: does not resolve ({e})")
+        if _ROBOTS["soft12"] is not None:
+            print(f"soft12 resolved in {time.monotonic() - t:.1f} s")
+    return _ROBOTS["soft12"]
+
+
+def panda_chart(k):
+    panda = _panda()
+    COUNTS[("panda", k)] = test_shapes_float64_and_encode_is_mu(panda, k)
+    test_jacrev_matches_central_differences(panda, k)
+    test_training_step_is_finite(panda, k)
+    test_training_step_is_finite(panda, k, decoder_variance="fixed")
+    test_decoder_variance_losses(panda, k)
+
+
+def soft12_chart(k):
+    soft12 = _soft12()
+    if soft12 is None:
+        return
+    COUNTS[("soft12", k)] = test_shapes_float64_and_encode_is_mu(soft12, k)
+    test_jacrev_matches_central_differences(soft12, k)
+
+
+def exports_and_sidecars():
     with tempfile.TemporaryDirectory() as tmp:
         for k in (7, 1):
             test_export_roundtrip_identical(tmp, "panda", k)
         test_contradicting_sidecars_raise(tmp)
         test_same_dof_other_robot_raises(tmp)
         test_fixed_variant_sidecars(tmp)
-    test_committed_untrained_panda_charts_load()
-    test_batched_dataloaders()
+
+
+GROUPS = {"fast": [functools.partial(panda_chart, 7), functools.partial(panda_chart, 1),
+                   functools.partial(soft12_chart, 12), functools.partial(soft12_chart, 6),
+                   exports_and_sidecars, test_committed_untrained_panda_charts_load,
+                   test_batched_dataloaders]}
+
+
+if __name__ == "__main__":
+    t0 = time.monotonic()
+    _tiers.run(GROUPS)
+    counts = COUNTS
     print("parameter counts:", {f"{r} K={k}": n for (r, k), n in counts.items()})
     print(f"ALL PASS ({time.monotonic() - t0:.1f} s)")

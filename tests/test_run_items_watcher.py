@@ -16,6 +16,7 @@ relaunch seeing the marker of the previous kill; an item that always overruns st
 MAX_OVERRUNS relaunches with no `.done`; a heartbeat past its deadline but in `post` (the solve
 returned) is never killed; an item that writes no heartbeat runs as before; every kill is in
 kills.log.
+Tiers (tests/_tiers.py): the default `fast` runs in ~18 s on one CPU core; no `slow` group.
 """
 import os
 import shutil
@@ -23,6 +24,8 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+
+import _tiers
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAILURES = []
@@ -70,7 +73,7 @@ FAKE = textwrap.dedent('''
 ''')
 
 
-def main():
+def checks():
     root = tempfile.mkdtemp(prefix="watcher_")
     repo, state, tmp = (os.path.join(root, d) for d in ("repo", "state", "tmp"))
     for d in (repo, state, tmp, os.path.join(root, "home", ".cache")):
@@ -122,6 +125,21 @@ def main():
     shutil.rmtree(root, ignore_errors=True)
     print(f"\n{len(FAILURES)} failure(s)")
     return 1 if FAILURES else 0
+
+
+RESULT = []
+
+
+def run_checks():
+    RESULT.append(checks())
+
+
+GROUPS = {"fast": [run_checks]}
+
+
+def main():
+    _tiers.run(GROUPS)
+    return RESULT[0]
 
 
 if __name__ == "__main__":

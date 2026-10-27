@@ -21,6 +21,7 @@ where the robot meets the shared machinery:
 Run with the project venv: `.venv/bin/python tests/test_soft_arm_program.py`. Uses an
 UNTRAINED chart on purpose -- it exercises every code path while saying nothing about solve
 quality, and the properties here are ones no amount of training would fix.
+Tiers (tests/_tiers.py): the default `fast` runs in ~5 s on one CPU core; no `slow` group.
 """
 
 import os
@@ -30,6 +31,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from ikflow.ikflow_solver import IKFlowSolver
 from ikflow.model import IkflowModelParameters
@@ -220,11 +222,13 @@ def test_every_program_accepts_what_the_driver_passes():
     print("PASS all four soft PCS arm programs accept the driver's keyword set")
 
 
+GROUPS = {"fast": [test_every_program_accepts_what_the_driver_passes,
+                   test_gradients_match_central_differences,
+                   test_paired_start_is_exact, test_config_is_a_memo_hit,
+                   test_joint_limits_row_bounds_the_configuration,
+                   test_verification_q_is_exact_under_a_learned_forward_model]}
+
+
 if __name__ == "__main__":
-    test_every_program_accepts_what_the_driver_passes()
-    test_gradients_match_central_differences()
-    test_paired_start_is_exact()
-    test_config_is_a_memo_hit()
-    test_joint_limits_row_bounds_the_configuration()
-    test_verification_q_is_exact_under_a_learned_forward_model()
+    _tiers.run(GROUPS)
     print("ALL PASS")

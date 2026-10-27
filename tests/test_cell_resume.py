@@ -18,6 +18,7 @@ There is no test suite in this repo; run this by hand:
   - the heartbeat carries the solve's deadline at the overrun factor;
   - `IterateFile` rejects a corrupt buffer and another cell's iterate;
   - the iterate's count layout is `IKFlowProgram.EVAL_COUNT_KEYS`.
+Tiers (tests/_tiers.py): the default `fast` runs in ~9 s on one CPU core; no `slow` group.
 """
 import json
 import os
@@ -31,6 +32,7 @@ import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(REPO)
+import _tiers                                                             # noqa: E402
 
 import src.benchmark as bm                                              # noqa: E402
 
@@ -155,7 +157,7 @@ def crash(*_):
     raise Crash()
 
 
-def main():
+def checks():
     root = tempfile.mkdtemp(prefix="cell_resume_")
 
     ## The reference: one uninterrupted process.
@@ -317,6 +319,21 @@ def main():
     shutil.rmtree(root, ignore_errors=True)
     print(f"\n{len(FAILURES)} failure(s)")
     return 1 if FAILURES else 0
+
+
+RESULT = []
+
+
+def run_checks():
+    RESULT.append(checks())
+
+
+GROUPS = {"fast": [run_checks]}
+
+
+def main():
+    _tiers.run(GROUPS)
+    return RESULT[0]
 
 
 if __name__ == "__main__":

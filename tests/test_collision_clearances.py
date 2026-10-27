@@ -21,6 +21,7 @@ without one: the wrist links are always within it of each other).
 
 Also pinned: results are BITWISE independent of the thread count (Max vs 1) and of the batch
 (a configuration alone vs inside a batch of 64), and `need_grad=False` returns the same values.
+Tiers (tests/_tiers.py): the default `fast` runs in ~8 s on one CPU core; no `slow` group.
 """
 
 import os
@@ -30,6 +31,7 @@ import time
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from src.svgd.collision_backend import clearances_unavailable_reason   # noqa: E402
 
@@ -161,6 +163,10 @@ def test_collision_row_through_autograd():
     print("PASS collision_row runs the clearances evaluator through autograd")
 
 
+GROUPS = {"fast": [test_parity_with_the_program, test_threads_and_batch_do_not_change_the_result,
+                   test_collision_row_through_autograd]}
+
+
 if __name__ == "__main__":
     reason = clearances_unavailable_reason()
     if reason is not None:
@@ -169,7 +175,5 @@ if __name__ == "__main__":
     import pydrake
     print(f"     pydrake: {os.path.dirname(pydrake.__file__)}")
     t0 = time.perf_counter()
-    test_parity_with_the_program()
-    test_threads_and_batch_do_not_change_the_result()
-    test_collision_row_through_autograd()
+    _tiers.run(GROUPS)
     print(f"ALL PASS ({time.perf_counter() - t0:.0f} s)")
