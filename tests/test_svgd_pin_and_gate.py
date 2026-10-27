@@ -129,10 +129,8 @@ def test_old_pin_reproduces_the_pre_change_solver():
 def test_gate_edge_rule_continues_after_a_failed_recheck(at_target=False):
     ## The fast tier starts both solves at the configuration the target was generated from, on
     ## an N=16 swarm (`test_svgd_solver.AT_TARGET`): the rule is what is checked, not the reach.
-    ## (the stall patience stays REST's 5).
     S.pose_program("learned")                                   # draws the target configuration
-    start = (dict(S.AT_TARGET, svgd_stop_patience=REST["svgd_stop_patience"],
-                  q_init=S._POSE["q_target"]) if at_target else {})
+    start = dict(S.AT_TARGET, q_init=S._POSE["q_target"]) if at_target else {}
     print(f"\n--- (b) the gate-edge rule: the first float64 re-check forced to fail"
           f"{' (at the target configuration, N=16)' if at_target else ''} ---")
     base, d0 = _solve("pose", "learned", NEW_PIN, **start)

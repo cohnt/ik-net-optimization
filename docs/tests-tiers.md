@@ -28,7 +28,7 @@ with CPU seconds.
 
 | file | main default (s) | default = `fast` (s) | `slow`, CPU (s) | `slow`, GPU (s) |
 | --- | ---: | ---: | ---: | ---: |
-| svgd_solver | 221 (rc 1) | 76 | 276 (rc 1) | 181 (rc 1) |
+| svgd_solver | 221 (rc 1) | 76 | 277 | 101 |
 | gvs_arm_model | 204 | 32 (cold cache 115) | 168 | |
 | solver_plumbing | 114 | 39 | 76 | |
 | svgd_soft_fastpath | 87 | 22 | 82 | 138 |
@@ -40,13 +40,14 @@ with CPU seconds.
 | batched_flow | 41 | 20 | 33 | |
 | constraint_bounds | 35 | 34 | no slow | |
 | svgd_result | 32 | 24 | 11 | |
-| batched_program | 28 (rc 1) | 25 (rc 1) | no slow | fast 64, passes |
+| batched_program | 28 (rc 1, aborts at check 2) | 50 (runs to the end) | no slow | fast 64 |
 | cvae_chart | 27 | 25 | no slow | |
-| 22 other files | 3-24 each | unchanged | no slow | flow_cuda_graph fast 26, soft_arm_program fast 6 (passes) |
-| **all 36 files** | **1261** | **579** | | |
+| 21 other files | 3-24 each | unchanged | no slow | flow_cuda_graph fast 26, soft_arm_program fast 6 (passes) |
+| report_svgd | 2 (rc 1, aborts) | 96 (runs to the end) | no slow | |
+| **all 36 files** | **1261** | **579** as measured; ~700 now that batched_program and report_svgd run to the end | | |
 
-The `slow` CPU seconds are each file's slow group alone. `svgd_solver`'s rc 1 in slow is the
-original `test_polish`, which fails on every device (see below). The cold-cache figures are the
+The `slow` CPU seconds are each file's slow group alone. `svgd_solver`'s slow figures are after
+the `test_polish` fix (below). The cold-cache figures are the
 first run on a machine. The GVS files fill a JAX persistent compilation cache at
 `~/.cache/learned-ik/jax` (`_tiers.jax_compilation_cache()`, ~8 MB); every later run reads it.
 
@@ -85,51 +86,47 @@ failure count fails pin_and_gate's fast (b); reading SNOPT's exit from the SNMEM
 solver_plumbing's capped SNOPT cell; misrecording `polish_viol_after` fails svgd_solver's fast
 polish.
 
-## The failures on main
+## The failures on main, and their fixes (Thomas: "Fix all 4 tests", 2026-10-27)
 
-Four files fail on `main` on one CPU core. Two are CPU v GPU, one is a regression on main, and
-one is a test bug. Nothing was loosened. The fixes below are proposals for Thomas.
+Four files failed on `main` on one CPU core. All four pass now, on one CPU core and on the GPU.
+Two were CPU v GPU, one was a test bug plus a seconds margin, and one was a regression in a
+reporting script.
 
-1. **`test_batched_program`, iiwa/mug learned VJP, `atol=1e-12` (l.549): a tolerance that was
-   never portable to CPU.**
-   - On the failing particle the error is 1.42e-12 on CPU and 8.5e-14 on the GPU, against
-     `|R| |J_q|` = 130, i.e. 1.1e-14 relative on CPU.
+1. **`test_batched_program`, iiwa/mug learned VJP, `atol=1e-12`: never portable to CPU.**
    - `vjp_q` (one backward of `(q R).sum()`) and `R @ jacobian_q` (ndof backwards, then a
-     matmul) are two summation orders of the same product, and the CPU kernels round
-     differently.
-   - `src/svgd/batched_program.py` is unchanged since the assert was written (bb11ccc) apart
-     from two unrelated commits. The file passes on the GPU.
-   - Proposal: `atol = 1e-14 * max(1, (|R| @ |J_q|).max())`, the scale-relative form the rest of
-     that test already uses.
+     matmul) are two summation orders of one product.
+   - Measured over every particle, relative to `max(|R| @ |J_q|)`: <= 1.15e-14 on one CPU core,
+     <= 1.1e-15 on the GPU. The worst CPU particle was 1.42e-12 absolute (iiwa grasp, scale 130).
+   - **Fix:** `atol = 1e-13 * max(1, max(|R| @ |J_q|))`, 9x over the worst CPU particle.
 2. **`test_soft_arm_program`, "learned/IK: gradient off by 3.03e-3": not a derivative error.**
-   - The untrained flow (LeakyReLU subnets) has a kink 5e-7 from the test point along `c_z`.
-   - One-sided differences: forward -0.168624 = the analytic derivative; backward -0.1747 at
-     h = 1e-6, -0.1686 at h <= 3e-7.
-   - The h = 1e-6 central difference straddles the kink. The error is flat for h in 1e-3..1e-6
-     and vanishes at h <= 1e-7.
-   - On the GPU the start point differs by ~1e-7 and the file passes (3.4e-10 relative).
-   - Proposal: assert agreement with one of the two one-sided differences, or move the point
-     off the kink. Not a loosening: the tolerance stays 1e-6.
+   - The untrained flow (LeakyReLU subnets) has a kink 5e-7 from the CPU start along `c_z`.
+     The h = 1e-6 central difference straddles it.
+   - The one-sided differences at 1e-8 match the derivative to <= 5e-7. On the GPU the start
+     moves ~1e-7 and misses the kink.
+   - **Fix:** where the central difference disagrees on a column, the column passes only if the
+     derivative equals a one-sided difference at step / 100 to the same 1e-6. Each such column is
+     printed as a note.
+   - Mutation: scaling the learned chain rule by 1.001 still fails it (7.96e-3).
 3. **`test_svgd_solver`, two causes.**
-   - (a) **CPU v GPU seconds.** `run_cell`'s `wall_time <= cap + 1` on the 3 s clock cell: an
-     N=64 outer step is 2.7-3.1 s on one CPU core. It failed on 1 of 4 CPU runs (5.5 s, when a
-     second outer step started before the deadline), and the other three stopped after one step
-     at 3.0-3.3 s. A fixed 1 s margin is not portable to a step longer than the margin; the
-     test's own step-scaled bounds pass on every run. The fast tier runs the cell at N=16.
-     On `main` the default run's rc 1 is otherwise (b).
-   - (b) **A test bug on main, on every device.** `test_polish` asserts "converges", but
-     `run_cell` accumulates overrides on the shared pose program, and the earlier
-     `test_wall_clock_stop` and `test_stop_reasons_and_log` leave `svgd_stop_patience = 10**6`.
-     No stall stop is then possible, and the solve runs to its 30 s clock.
-   - Evidence: in the default order it fails on the GPU too, stopping on `wall_clock`. Run
-     alone (`... polish`) on the GPU it passes in 8 s, stopping `converged`.
-   - The fast form names the fielded patience. Proposal for the original: the same one-word
-     fix (`svgd_stop_patience=ProgramOptions().svgd_stop_patience` in its overrides).
-4. **`test_report_svgd`: a regression on main (656238d, the R31B manifest).**
-   - `report_svgd.stage_catalogue()` refuses: "soft12 pol runs different settings or arms in
-     SVGD_R31 and SVGD_R31B".
-   - R31B re-runs R31's `pol` column with the same settings and arms, and the catalogue keys
-     variants by (robot, column), so the same column in two stages trips the
-     manifest-equality assert.
-   - This is a reporting-script bug, not a test problem: `scripts/report_svgd.py` refuses
-     the current manifests. Left for Thomas (svgd-polish's area).
+   - (a) **`run_cell`'s `wall_time <= cap + 1`.** The clock is read between outer steps, and an
+     N=64 outer step is 2.7-3.1 s on one CPU core. The bound failed on 1 of 4 CPU runs (5.5 s,
+     when a second step started before the deadline). **Fix:** `cap + max(1 s, 1.5 outer
+     steps)`, the granularity `test_wall_clock_stop` already bounds the swarm by.
+   - (b) **`test_polish` failed on every device in the default order.** `run_cell` accumulates
+     overrides on the shared pose program, and the wall-clock and stop-reason tests leave
+     `svgd_stop_patience = 10**6`, so no stall stop was possible. Run alone, it passed on the GPU
+     in 8 s. **Fix:** the test names the fielded patience.
+   - After both fixes the slow tier passes on the GPU (101 s) and on one CPU core (277 s), with
+     both polish solves stopping `converged`.
+4. **`test_report_svgd`: a regression from the R31B manifest commit (656238d).**
+   - `report_svgd.stage_catalogue()` refused "soft12 pol runs different settings or arms in
+     SVGD_R31 and SVGD_R31B". R31B re-runs R31's `pol` / `polkq` columns with exactly R31's
+     tokens, so the column appeared in two stages. Before the assert existed the report would
+     have picked between them by dict order.
+   - **Fix:** `scripts/report_svgd.py` declares `STAGE_REMEASURES = {"SVGD_R31B": "SVGD_R31"}`.
+     On every (robot, row, start, column) a re-measure runs, its run replaces the earlier
+     stage's, provided the settings and arms are identical; the column reads the later manifest.
+     Any other column built by two stages is still refused.
+   - Result: soft12 `pol` and the screw / soft12 `polkq` read R31B; the Panda and iiwa read R31.
+   - The test's expectations name R31B on that scope, and check one run per re-measured row
+     and column.

@@ -16,7 +16,7 @@ the per-outer trace is present and the right length. The numbers are PRINTED eit
 
 Tiers (tests/_tiers.py): the default `fast` runs in ~75 s on one CPU core (the clock-bound
 checks on small swarms, at the target's own configuration or stopped at a few outer steps);
-`slow` (~4.5 min on one CPU core, ~3 min on the GPU; its sweep is GPU cells) holds the record-
+`slow` (~4.5 min on one CPU core, ~2 min on the GPU; its sweep is GPU cells) holds the record-
 scale forms.
 
 The default run (`.venv/bin/python tests/test_svgd_solver.py`) is the short set: the
@@ -188,7 +188,12 @@ def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet
     tag = f"[{task}/{arm}] {label}"
     check(f"{tag}: returns an SvgdResult", isinstance(result, SvgdResult))
     check(f"{tag}: last_iterate set", getattr(p, "last_iterate", None) is not None)
-    check(f"{tag}: wall_time <= cap + 1", wall_time <= wall + 1.0, f"{wall_time}")
+    ## The clock is read between outer steps, so a solve may overrun its cap by one outer step
+    ## and the selection after it: the bound is the larger of 1 s and 1.5 steps (on one CPU core
+    ## an N=64 outer step is ~2.7-3.1 s, so a fixed 1 s missed on a cell that ran a second step).
+    step = d.phase_times.get("swarm", 0.0) / max(1, d.iterations)
+    check(f"{tag}: wall_time <= cap + max(1 s, 1.5 outer steps)", wall_time <= wall + max(1.0, 1.5 * step),
+          f"{wall_time} (outer step {step:.2f} s)")
     check(f"{tag}: map_evals agrees with eval_counts",
           ## `verify` and the Drake re-check evaluate single points through QAndPose, so the
           ## program's counter is >= the batched count; the delta recorded by the solver is exact.
@@ -571,11 +576,8 @@ def _latent_pose_program(weight):
 #: The fast tier's converged solves: the start is the configuration the target was generated
 #: from and the swarm the native-draw paired one (particle 0 exactly at that start; `jitter`
 #: moves every particle 0.1 off it), N=16 -- the stall rule fires in ~6 outer steps on one CPU
-#: core, where the generic start at N=32 runs into the 30 s clock unconverged. The stall
-#: patience is named because `run_cell` accumulates overrides on the shared pose program, and
-#: the wall-clock and stop-reason tests leave it at 10**6 (no stall stop is then possible).
-AT_TARGET = dict(svgd_n=16, svgd_paired_init="native",
-                 svgd_stop_patience=ProgramOptions().svgd_stop_patience)
+#: core, where the generic start at N=32 runs into the 30 s clock unconverged.
+AT_TARGET = dict(svgd_n=16, svgd_paired_init="native")
 
 
 def test_stop_select_objective(at_target=False):
@@ -666,7 +668,12 @@ def test_polish(at_target=False):
     for mode in ("newton", "none"):
         v, d, result = run_cell(p, "pose", f"polish={mode}",
                                 {**dict(svgd_n=32, svgd_kernel="q", svgd_outer_iters=300,
-                                     svgd_polish=mode, svgd_polish_steps=3), **(AT_TARGET if at_target else {})},
+                                        svgd_polish=mode, svgd_polish_steps=3,
+                                        ## Named: `run_cell` accumulates overrides on the shared
+                                        ## pose program, and the wall-clock and stop-reason tests
+                                        ## leave the patience at 10**6 (no stall stop possible).
+                                        svgd_stop_patience=ProgramOptions().svgd_stop_patience),
+                                 **(AT_TARGET if at_target else {})},
                                 wall=30.0, quiet=True, q_init=_POSE["q_target"] if at_target else None)
         rec = bm.solver_diagnostics(result, "svgd").get("svgd", {})
         pol = d.polish
