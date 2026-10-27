@@ -425,8 +425,12 @@ GROUPS = {
 }
 
 
-if __name__ == "__main__":
+def main():
     ## Each check starts with no private copy cached: the float32 check asserts that its FIRST
     ## request makes one, which under `all` would otherwise meet the fast form's copy.
     _tiers.run(GROUPS, after=_PRIVATE_COPIES.clear)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

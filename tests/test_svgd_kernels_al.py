@@ -1121,9 +1121,14 @@ GROUPS = {"fast": [test_al_value_and_coefficients_agree_with_autograd,
                    test_joint_space_refuses_latent_kernels]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    main()
     ## Exit without interpreter finalization. With CUDA visible, torch's autograd device thread
     ## (`pt_autograd_0`) can drop its last GraphTask while CPython is finalizing; the decref
     ## asks for the GIL, Python 3.12 answers with pthread_exit, and the forced unwind through a

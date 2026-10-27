@@ -405,6 +405,10 @@ GROUPS = {"fast": [test_region_table_matches_scene_welds,
                    test_rejection_guard_trips_with_a_useful_message]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

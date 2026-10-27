@@ -255,6 +255,10 @@ GROUPS = {"fast": [test_the_flow_frame_is_the_flange_on_both_tasks,
                    test_gradients_match_central_differences]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
