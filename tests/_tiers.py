@@ -6,7 +6,7 @@
   slow  the PARITY / PERFORMANCE tier, opt-in by name: reproductions of record behaviour,
         end-to-end grids, convergence from generic starts, anything that asserts seconds. It runs
         on the GPU or on SuperCloud (`cluster/tests_slow_job.sh`), never as a routine local check.
-  all   both, fast first.
+  all   both, fast first (fast alone in a file with no slow group).
 
 A file may name further groups (a single robot, a sweep, a profile); a check listed in two
 requested groups runs once. Every check is timed and printed as `[   12.3 s] name`, so a file's
@@ -32,7 +32,7 @@ def run(groups, argv=None, default=("fast",), after=None):
     names = list(sys.argv[1:] if argv is None else argv) or list(default)
     if "all" in names:
         i = names.index("all")
-        names[i:i + 1] = ["fast", "slow"]
+        names[i:i + 1] = [n for n in ("fast", "slow") if n in groups]
     unknown = [n for n in names if n not in groups]
     if unknown:
         sys.exit(f"unknown group(s) {unknown}; this file has {sorted(groups)} and 'all'")
