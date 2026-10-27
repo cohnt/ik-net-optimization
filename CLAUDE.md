@@ -48,9 +48,9 @@ python scripts/collate.py 'results/*/benchmark/*/summary.json'
 ```
 
 Older per-experiment scripts (`panda_mug*.py`, ...) are archive-only (`####### Options #######`
-block). **`tests/`** holds invariant guards, no suite or lint: `python tests/<f>.py` is the `fast`
-tier (<= ~2 min, one CPU core, local rules below), `... slow` / `all` the record-scale tier (GPU,
-or `cluster/tests_slow_job.sh`); details `docs/tests-tiers.md`. Output goes to
+block). **`tests/`** holds invariant guards, no suite: `python tests/run_fast.py` is every
+`fast` tier (~4 min); `python tests/<f>.py [slow|all]` one file, slow: GPU or
+`cluster/tests_slow_job.sh`; see `docs/tests-tiers.md`. Output goes to
 `results/` (gitignored). Visualization is Meshcat; mug experiments start a second one
 (`GenerateDiagramWithMug` rebuilds per target). Panda weights download via `ikflow`
 (`panda__full__lp191_5.25m`); iiwa weights are local pickles under `models/iiwa14/` (gitignored).
@@ -477,11 +477,12 @@ checks on the shared account are scoped by JOB name; a guard nobody has seen ref
 Maintenance: second Tuesday monthly.
 
 **Local compute must never take the laptop down** (Thomas, 2026-10-09: *"If a pytest sweep crashes my
-machine, that is unacceptable"*). **No process pools in this project.** Every local test file, smoke or
-end-to-end run that builds a program runs ONE AT A TIME, in the foreground, under `systemd-run --user
---scope -p MemoryMax=20G -p MemorySwapMax=0` (swap is his emergency buffer); log loadavg before and
-after timed runs, re-run any at load > 24. Detach with `setsid`, not `nohup`; `pgrep -f` can match the
-calling shell. The laptop does not sleep on AC; session gaps are deliberate, never diagnosed.
+machine, that is unacceptable"*). **No process pools in this project** (except `run_fast.py`'s 4 at
+once). Every other local test file, smoke or end-to-end run that builds a program runs ONE AT A
+TIME, in the foreground, under `systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0` (swap
+is his emergency buffer); log loadavg before and after timed runs, re-run any at load > 24. Detach
+with `setsid`, not `nohup`; `pgrep -f` can match the calling shell. The laptop does not sleep on AC;
+session gaps are deliberate, never diagnosed.
 
 ## Open items
 

@@ -18,6 +18,39 @@ is kept unchanged in `slow`. Nothing in `src/` changed, and no tolerance moved. 
 `systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0`, `taskset -c 0`, thread counts
 1, `CUDA_VISIBLE_DEVICES=` unless the GPU is approved.
 
+## Running the whole fast tier: `python tests/run_fast.py` (~4 min)
+
+The runner runs every file's `fast` tier in its own fresh process. Four files run at once,
+single-threaded each, on four cores, all under ONE `MemoryMax=20G` scope. Thomas allowed this
+pool for the test runner only (2026-10-27); the project has no other.
+- **Order:** longest first, by the previous run's seconds (`results/_tests_fast/last_seconds.json`).
+- **Conflicts:** files that write the same path never overlap (`CONFLICTS`:
+  `test_svgd_solver` and `test_svgd_pin_and_gate` share `run_cell`'s solver log).
+- **Output:** one log per file, then a line per file with its seconds and peak memory.
+- **Measured** 2026-10-27, load 1.5-4.3: 36/36 in 237 s and 225 s on two runs. The largest file
+  peaks at 2.9 GB, so four at once stays near 12 GB. One at a time (`--jobs 1`, 4 threads) took
+  626 s.
+
+What got the suite there, without changing any check:
+- **`report_svgd`'s manifest catalogue** is built once per process (deep copies to callers):
+  96 s -> 5 s.
+- **The upstream Panda chart** is loaded once per process (`_tiers.upstream_panda_chart`, the
+  program's own default call) instead of on every program build. About 1.8 s per build went to
+  klampt's robot parse and the weights' unpickle. `solver_plumbing` 44 -> 17 s,
+  `svgd_result` 33 -> 22 s.
+- **Every file that builds the GVS arm's model uses the JAX compilation cache** (about 9 s of cold
+  XLA compiles each).
+- **`test_cell_resume`'s harness stubs** apply during its own run only (they had replaced
+  `benchmark.verify` at import).
+- **The soft PCS golden-file check** ran its SoRoMoX oracle with every visible core. XLA's
+  threading moved the last bit (3.3e-16), so the bytewise check failed with more than one core
+  and left the committed file overwritten. The oracle now runs on one core: any single core
+  reproduces the committed bytes; forcing single-threaded Eigen through `XLA_FLAGS` does not. A
+  regeneration that differs is written back before the check fails.
+
+A single process for all files was tried and dropped: it saves little (imports are seconds), and
+memory piles up across files (killed by the 20 GB scope at the 35th file).
+
 ## Seconds
 
 Measured 2026-10-27 on the workstation, one file at a time, on one CPU core (load 2.0-3.3 on
