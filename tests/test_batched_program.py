@@ -51,7 +51,7 @@ GVS arm's `TorchConfigToPlantQ` refuses by name.
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__`
 driver. Needs the four `n6` charts under `models/`, so run it as a script, alone, under the
 memory scope: `.venv/bin/python tests/test_batched_program.py`.
-Tiers (tests/_tiers.py): the default `fast` runs in ~31 s on one CPU core; no `slow` group.
+Tiers (tests/_tiers.py): the default `fast` runs in ~50 s on one CPU core; no `slow` group.
 """
 
 import os
@@ -548,7 +548,12 @@ def test_gradients_match_autodiff():
             worst_jq = max(worst_jq, float((Jq - Jq_ref).abs().max()))
             R = torch.tensor(rng.standard_normal((1, bp.ndof)), dtype=torch.float64, device=bp.device)
             vjp = bp.vjp_q(x[None], R)
-            assert torch.allclose(vjp, (R[0] @ Jq)[None], rtol=0, atol=1e-12)
+            ## One backward of `(q R).sum()` against `ndof` backwards then a matmul: two
+            ## summation orders of one product, so the bound scales with |R| |J_q|. Measured
+            ## 2026-10-27 over every particle here: <= 1.15e-14 of that scale on one CPU core,
+            ## <= 1.1e-15 on the GPU (the old absolute 1e-12 missed by 1.4x on the CPU's iiwa grasp).
+            scale = max(1.0, float((R[0].abs() @ Jq.abs()).max()))
+            assert torch.allclose(vjp, (R[0] @ Jq)[None], rtol=0, atol=1e-13 * scale)
         assert n_used == 4, (robot, task, arm, n_used)
         assert bp.has_analytic_row_jacobians == ANALYTIC[robot], (robot, task, arm)
         tol = 1e-8 if bp.is_learned else 1e-12

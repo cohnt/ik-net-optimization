@@ -46,7 +46,7 @@ And the stage mode (`--stage SVGD`, the cluster's `sc_SVGD_*` family):
     and whose ABLATION pairs against the twin's joint-space arm.
 The stage fixtures keep gen_manifest's real tags but are 16-cell runs: the catalogue's cell count
 is patched to the fixture's, which is the one thing the 480-cell tag cannot carry.
-Tiers (tests/_tiers.py): the default `fast` runs in ~3 s on one CPU core; no `slow` group.
+Tiers (tests/_tiers.py): the default `fast` runs in ~95 s on one CPU core; no `slow` group.
 """
 import contextlib
 import io
@@ -323,6 +323,11 @@ def test_stage_tag_parsing_every_variant():
                                 str(t["cells"]), f"{t['cap']:g}", t["start"]]
                                + ([] if t["variant"] == R.STAGE_TWIN else [t["variant"]]))
             assert rebuilt == tag, (rebuilt, tag)
+            if tag not in runs:
+                ## Superseded: a declared re-measure (STAGE_REMEASURES) ran this row and column.
+                later = [st for st, old in R.STAGE_REMEASURES.items() if old == stage]
+                assert later and tag.replace(f"sc_{stage}_", f"sc_{later[0]}_") in runs, tag
+                continue
             assert runs[tag]["manifest"] == stage
             if (t["robot"], t["rung"], runs[tag]["seed"]) == ("panda", "n6", 1):
                 seen.add((t["variant"], t["row"], t["start"]))
@@ -665,13 +670,15 @@ OTHER_ROBOT_ROUNDS = {"screw7_p050": {"kcz": "SVGD_R17S", "kczrho1e5": "SVGD_R17
                                       "clipoff": "SVGD_R22", "drop2": "SVGD_R22",
                                       "T10v2": "SVGD_R22", "T0p1": "SVGD_R22",
                                       "ident": "SVGD_R23", "lm1": "SVGD_R23", "lm100": "SVGD_R23",
-                                      **LATER_ROUND_OF},
+                                      **LATER_ROUND_OF, "polkq": "SVGD_R31B"},
                       "soft12": {"kcz": "SVGD_R17P", "kczrho1e5": "SVGD_R17P", "pin2": "SVGD_R20",
                                  "pin2kq": "SVGD_R21",
                                  "clipoff": "SVGD_R22", "drop2": "SVGD_R22",
                                  "T10v2": "SVGD_R22", "T0p1": "SVGD_R22",
                                  "ident": "SVGD_R23", "lm1": "SVGD_R23", "lm100": "SVGD_R23",
-                                 **LATER_ROUND_OF}}
+                                 **LATER_ROUND_OF, "pol": "SVGD_R31B", "polkq": "SVGD_R31B"}}
+## R31B re-measures R31's `pol` on soft12 and `polkq` on the screw and soft12 contexts with exactly
+## R31's tokens (report_svgd.STAGE_REMEASURES): there its runs replace R31's and the column reads R31B.
 
 
 def test_stage_kernel_and_two_factor_rounds():
@@ -726,6 +733,11 @@ def test_stage_screw_and_soft_blocks():
         assert runs[twin]["sets"] == {"correction_cost_weight": 10.0, "flow_cuda_graph": True,
                                       "max_iter": 1000000}
         assert by[row + ("kq",)] == f"sc_{stage}_{robot}_{rung}_svgd_mugshelf_480_180_paired_kq"
+        for v in ("pol", "polkq"):
+            st = OTHER_ROBOT_ROUNDS[robot][v]
+            assert by[row + (v,)] == f"sc_{st}_{robot}_{rung}_svgd_mugshelf_480_180_paired_{v}", by[row + (v,)]
+            assert sum(1 for t in runs.values() if (t["robot"], t["row"], t["start"], t["column"])
+                       == row + (v,)) == 1, (robot, v, "one run per re-measured row and column")
         with tempfile.TemporaryDirectory() as root:
             ## Nothing on disk: MISSING, not fatal; `--rows` takes the robot smoke.py does not know.
             rep, text = _stage_run(root, row=row)

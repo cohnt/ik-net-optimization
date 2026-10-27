@@ -105,10 +105,31 @@ def test_gradients_match_central_differences():
             minus = np.asarray(program.EvalAllConstraints(x0 - bump), dtype=float)
             numeric[:, i] = (plus - minus) / (2 * step)
 
+        ## The untrained flow's subnets are LeakyReLU, so the map has kinks; a central difference
+        ## whose +-step bracket straddles one averages the two one-sided slopes (measured
+        ## 2026-10-27: a kink 5e-7 from the CPU start along c_z, 3.0e-3 off; on the GPU the start
+        ## moves ~1e-7 and misses it). Where the central difference disagrees, a column passes only
+        ## if the derivative equals one of its ONE-SIDED differences at step / 100 to the same
+        ## 1e-6 -- what an exact derivative at a point near a kink is, and what a wrong one is not.
+        def one_sided(i, rows):
+            bump = np.zeros(len(x0))
+            bump[i] = step / 100
+            f0, fp, fm = (np.asarray(program.EvalAllConstraints(x), dtype=float)[rows]
+                          for x in (x0, x0 + bump, x0 - bump))
+            return (fp - f0) / bump[i], (f0 - fm) / bump[i]
+
         blocks, index = {"IK": 6, "collision": 1, "strain limits": SPEC.ndof}, 0
         for name, count in blocks.items():
             rows = slice(index, index + count)
-            worst = float(np.abs(analytic[rows] - numeric[rows]).max())
+            error = np.abs(analytic[rows] - numeric[rows]).max(axis=0)
+            for i in np.flatnonzero(error >= 1e-6):
+                forward, backward = one_sided(i, rows)
+                off = [np.abs(analytic[rows, i] - d).max() for d in (forward, backward)]
+                print(f"  note  {label}/{name}: variable {i}: the central difference at {step:g} "
+                      f"is off by {error[i]:.2e}; the one-sided differences at {step / 100:g} are "
+                      f"off by {off[0]:.2e} (forward) and {off[1]:.2e} (backward)")
+                error[i] = min(off)
+            worst = float(error.max())
             assert worst < 1e-6, f"{label}/{name}: gradient off by {worst:.3e}"
             index += count
         scale = max(float(np.abs(analytic).max()), 1e-12)

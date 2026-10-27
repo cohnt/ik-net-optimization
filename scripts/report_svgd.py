@@ -611,6 +611,11 @@ STAGE_VERDICT_MARK = {"svgd": "W", "tie": "T", "IPOPT": "L"}
 ## A run on a grid seed other than the record's (stage R7) is its own COLUMN, `<variant>@seed<k>`,
 ## beside the seed-1 one in every table, and pairs only with the twin and runs of its own seed.
 SEED_SEP = "@seed"
+## A stage that RE-MEASURES a subset of an earlier stage's runs with exactly its tokens, settings
+## and arms (gen_manifest: R31B, R31's `pol` / `polkq` after the polish warm-up fix): on every
+## (robot, row, start, column) it runs, its run replaces the earlier stage's, and the column reads
+## the later manifest. Any other column built by two stages is refused.
+STAGE_REMEASURES = {"SVGD_R31B": "SVGD_R31"}
 
 
 def base_of(column):
@@ -759,6 +764,14 @@ def stage_catalogue(family="SVGD"):
             v = variants.setdefault(t["robot"], {}).setdefault(
                 column, dict(round=t["round"], manifest=stage, sets=sets, settings=settings,
                              arms=arms, seed=seed, variant=t["variant"]))
+            if v["manifest"] != stage and STAGE_REMEASURES.get(stage) == v["manifest"]:
+                assert (v["sets"], v["arms"]) == (sets, arms), \
+                    f"{t['robot']} {column}: {stage} re-measures {v['manifest']} with other settings or arms"
+                same = (t["robot"], t["row"], t["start"], column)
+                for old in [k for k, r in runs.items() if r["manifest"] == v["manifest"]
+                            and (r["robot"], r["row"], r["start"], r["column"]) == same]:
+                    del runs[old]
+                v.update(manifest=stage, round=t["round"])
             assert (v["manifest"], v["sets"], v["arms"]) == (stage, sets, arms), \
                 f"{t['robot']} {column} runs different settings or arms in {v['manifest']} and {stage}"
     ## Every svgd run pairs with an IPOPT twin on ITS OWN grid: same robot, rung, row, start, seed --
