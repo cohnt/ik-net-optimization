@@ -38,6 +38,7 @@ import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _tiers                                                             # noqa: E402
+_tiers.jax_compilation_cache()                 # the GVS arm's model is XLA programs
 
 from src.generic_program import ProgramOptions                          # noqa: E402
 from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints    # noqa: E402

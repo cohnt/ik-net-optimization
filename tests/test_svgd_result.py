@@ -75,7 +75,7 @@ def a_reachable_target():
 def _sample_reachable_target():
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
-        sampler = PandaIKProgram(diagram, options=ProgramOptions())
+        sampler = PandaIKProgram(diagram, options=ProgramOptions(), model=_tiers.upstream_panda_chart())
         sampler.create_prog()
     rng = np.random.default_rng(0)
     q = rng.uniform(sampler.plant.GetPositionLowerLimits(),
@@ -96,7 +96,7 @@ def test_svgd_result_duck_type(quick=False):
                           collision_avoidance=True, **LEGACY_PIN, **budget)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
-        p = PandaIKProgramNumerical(diagram, options=opts)
+        p = PandaIKProgramNumerical(diagram, options=opts, model=_tiers.upstream_panda_chart())
         p.create_prog(target)
     rng = np.random.default_rng(1)
     q_init = rng.uniform(sampler.plant.GetPositionLowerLimits(),
@@ -306,7 +306,7 @@ def test_svgd_kill_keeps_the_iterate():
                           collision_avoidance=True, **LEGACY_PIN)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
-        p = PandaIKProgramNumerical(diagram, options=opts)
+        p = PandaIKProgramNumerical(diagram, options=opts, model=_tiers.upstream_panda_chart())
         p.create_prog(target)
     rng = np.random.default_rng(2)
     q_init = rng.uniform(sampler.plant.GetPositionLowerLimits(),

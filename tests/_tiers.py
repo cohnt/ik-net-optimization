@@ -58,9 +58,29 @@ def jax_compilation_cache():
     before anything imports jax. The GVS arm's model is a set of XLA programs whose compiles are
     most of a cold run on one core (~190 s cold, ~45 s warm for `test_gvs_arm_model`); the cache
     is keyed on the program, the compile options and the jax/jaxlib version, so a hit is the
-    same executable. Set `JAX_COMPILATION_CACHE_DIR` yourself to move it, or to "" to disable."""
+    same executable. Set `JAX_COMPILATION_CACHE_DIR` yourself to move it, or to "" to disable.
+    Called after jax is imported, it updates jax's config instead."""
     import os
     os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", os.path.join(
         os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "learned-ik", "jax"))
     os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0.5")
+    if "jax" in sys.modules:
+        import jax
+        jax.config.update("jax_compilation_cache_dir", os.environ["JAX_COMPILATION_CACHE_DIR"] or None)
+        jax.config.update("jax_persistent_cache_min_compile_time_secs",
+                          float(os.environ["JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS"]))
 
+
+
+_UPSTREAM_PANDA = []
+
+
+def upstream_panda_chart():
+    """The upstream Panda chart a Panda program loads when no `model=` is passed
+    (`get_ik_solver("panda__full__lp191_5.25m")`, exactly that call), loaded once per process.
+    Passing it as `model=` is the program's own default path minus the reload, which is ~1.8 s
+    of every build (klampt parses the robot, the weights unpickle)."""
+    if not _UPSTREAM_PANDA:
+        from ikflow.model_loading import get_ik_solver
+        _UPSTREAM_PANDA.append(get_ik_solver("panda__full__lp191_5.25m")[0])
+    return _UPSTREAM_PANDA[0]

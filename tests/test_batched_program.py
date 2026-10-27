@@ -64,6 +64,7 @@ import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import _tiers                                                             # noqa: E402
+_tiers.jax_compilation_cache()                 # the GVS arm's model is XLA programs
 
 from pydrake.autodiffutils import InitializeAutoDiff                       # noqa: E402
 from pydrake.all import AutoDiffXd                                          # noqa: E402
