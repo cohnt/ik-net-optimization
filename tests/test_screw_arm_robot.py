@@ -13,6 +13,7 @@ eval AFTER training starts, so a cluster job burns its whole queue wait before s
 
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__`
 driver.
+Tiers (tests/_tiers.py): the default `fast` runs in ~3 s on one CPU core; no `slow` group.
 """
 
 import os
@@ -22,6 +23,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from jrl.robots import get_robot
 
@@ -212,13 +214,16 @@ def test_the_flow_accepts_this_robot():
           f"to {error:.1e}")
 
 
+GROUPS = {"fast": [test_every_rung_resolves_by_name,
+                   test_limits_are_the_specs_and_symmetric_where_it_matters,
+                   test_sampling_returns_poses_that_are_the_map,
+                   test_self_collision_shapes_match_both_calling_paths,
+                   test_results_come_back_on_the_callers_device,
+                   test_clamping_and_out_of_range_input,
+                   test_the_unreachable_paths_raise_with_a_reason,
+                   test_the_flow_accepts_this_robot]}
+
+
 if __name__ == "__main__":
-    test_every_rung_resolves_by_name()
-    test_limits_are_the_specs_and_symmetric_where_it_matters()
-    test_sampling_returns_poses_that_are_the_map()
-    test_self_collision_shapes_match_both_calling_paths()
-    test_results_come_back_on_the_callers_device()
-    test_clamping_and_out_of_range_input()
-    test_the_unreachable_paths_raise_with_a_reason()
-    test_the_flow_accepts_this_robot()
+    _tiers.run(GROUPS)
     print("ALL PASS")

@@ -24,6 +24,7 @@ What it pins:
   * REFUSALS: an unknown backend name, a missing library (at construction, not at the first
     solve), and a branch outside the chart's set all raise.
   * Prints us per call, python against cpp, float and AutoDiffXd -- indicative only.
+Tiers (tests/_tiers.py): the default `fast` runs in ~14 s on one CPU core; no `slow` group.
 """
 import os
 import subprocess
@@ -33,6 +34,7 @@ import time
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.all import (AutoDiffXd, ExtractGradient, ExtractValue,             # noqa: E402
                          InitializeAutoDiff, RigidTransform, RigidTransform_, RollPitchYaw,
@@ -405,14 +407,31 @@ def test_timing(programs):
               f"derivatives); cpp {row[2]:.1f} us float, {row[3]:.1f} us AutoDiffXd")
 
 
+PROGRAMS = []                  # built once by `build_programs_once`, read by the three program checks
+
+
+def build_programs_once():
+    PROGRAMS.append(build_programs())
+
+
+def program_parity():
+    test_program_parity(PROGRAMS[0])
+
+
+def missing_library_at_construction():
+    test_missing_library_at_construction(PROGRAMS[0])
+
+
+def timing():
+    test_timing(PROGRAMS[0])
+
+
+GROUPS = {"fast": [test_map_parity, test_q6_seam, test_refusals, build_programs_once,
+                   program_parity, missing_library_at_construction, timing]}
+
+
 if __name__ == "__main__":
-    test_map_parity()
-    test_q6_seam()
-    test_refusals()
-    programs = build_programs()
-    test_program_parity(programs)
-    test_missing_library_at_construction(programs)
-    test_timing(programs)
+    _tiers.run(GROUPS)
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:
         print("FAILED:", *FAILURES, sep="\n  ")

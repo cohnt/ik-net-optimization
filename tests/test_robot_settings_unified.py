@@ -25,6 +25,7 @@ This reads the bounds and guesses Drake was actually handed, never the docstring
 robot's programs are built: the Panda and iiwa on their local `n6` charts, the screw, soft
 PCS and GVS arms on UNTRAINED in-process charts (their trained charts are not local), which
 exercises every bound- and start-forming path and says nothing about solve quality.
+Tiers (tests/_tiers.py): the default `fast` runs in ~47 s on one CPU core; no `slow` group.
 """
 import contextlib
 import io
@@ -36,6 +37,7 @@ import tempfile
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from src.generic_program import ProgramOptions                          # noqa: E402
 from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints    # noqa: E402
@@ -450,7 +452,7 @@ def check_fingerprint():
               row2 and "not comparable" not in row2[0], "\n".join(lines))
 
 
-def main():
+def checks():
     base = dict(collision_avoidance=True, joint_limits=True, use_float64=True,
                 share_flow_evaluations=True)
     unified = ProgramOptions(**base, latent_trust_region=4.0)
@@ -475,6 +477,12 @@ def main():
 
     check_fingerprint()
 
+
+GROUPS = {"fast": [checks]}
+
+
+def main():
+    _tiers.run(GROUPS)
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failures")
     for f in FAILURES:
         print(f"  - {f}")

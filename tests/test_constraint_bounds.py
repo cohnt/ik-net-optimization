@@ -19,6 +19,7 @@ So this reads the ACTUAL bounds Drake was handed, never the docstrings, and chec
 directions: rows that must be equalities are equalities, and rows that are genuinely
 inequalities (a collision bound, joint limits, a task's own freedom such as the grasp
 height band, the analytic chart's reachability rows) have not been tightened by mistake.
+Tiers (tests/_tiers.py): the default `fast` runs in ~40 s on one CPU core; no `slow` group.
 """
 import os
 import sys
@@ -26,6 +27,7 @@ import sys
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from src.generic_program import ProgramOptions                          # noqa: E402
 from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints    # noqa: E402
@@ -119,7 +121,7 @@ def check_analytic_mug_rows(p, label, opts):
           and np.isclose(lb[2] + shift[2], -opts.mug_height), f"lb={lb[2]} ub={ub[2]}")
 
 
-def main():
+def checks():
     ## A nonzero centering weight so the cost binding exists and shares the map pass too.
     opts = ProgramOptions(collision_avoidance=True, joint_limits=True, use_float64=True,
                           joint_centering_cost=1.0)
@@ -514,6 +516,12 @@ def main():
         # The chart is built in-process, so a skip means the robot itself failed to build.
         print(f"  SKIP  GVS arm checks unavailable: {type(exc).__name__}: {exc}")
 
+
+GROUPS = {"fast": [checks]}
+
+
+def main():
+    _tiers.run(GROUPS)
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failures")
     for f in FAILURES:
         print(f"  - {f}")

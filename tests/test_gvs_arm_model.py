@@ -26,11 +26,17 @@ is tested is the WRAPPER and the DESIGN:
   `test_generated_files_are_current`, `test_redundancy_is_enforced`.
 
 Run with the project venv: `GVS_ARM_XLA_THREADS=2 .venv/bin/python tests/test_gvs_arm_model.py`.
+
+Tiers (tests/_tiers.py): the default `fast` runs in ~35 s on one CPU core (~115 s on the first
+run, which fills the JAX compilation cache); `slow` (~170 s, CPU ok) holds every rung of the
+per-rung checks, both tapered rungs of the taper trap, and the 2000-draw / 50-restart uniqueness
+probe and 30-configuration sphere screen at full size.
 """
 
 import dataclasses
 import os
 import sys
+from functools import partial
 
 import numpy as np
 
@@ -39,6 +45,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from pydrake.all import (AddMultibodyPlantSceneGraph, DiagramBuilder,  # noqa: E402
                          MinimumDistanceLowerBoundConstraint, Parser)
 
+import _tiers  # noqa: E402
+_tiers.jax_compilation_cache()                 # before src.gvs_arm imports jax
 from src.gvs_arm import generate_scenes as GS  # noqa: E402
 from src.gvs_arm import generate_sdf as GSDF  # noqa: E402
 from src.gvs_arm.model import GetModel, GvsArmModel, TIP_FRAME_PITCH  # noqa: E402
@@ -46,6 +54,15 @@ from src.gvs_arm.params import RUNGS, GetSpec, GvsArmSpec  # noqa: E402
 from src.utils import RepoDir  # noqa: E402
 
 PRIMARY = GetSpec("gvs_pushrod9_o1")
+#: The fast tier's rungs for the checks that loop over every rung: the primary one. Each rung
+#: costs its own JAX compiles, which are most of this file's time.
+FAST_RUNGS = (PRIMARY.name,)
+_BUILT = {}
+
+
+def _specs(rungs):
+    """`rungs` (names) as specs; None is every rung."""
+    return list(RUNGS.values()) if rungs is None else [GetSpec(name) for name in rungs]
 
 
 def _configurations(spec, count, seed=0, scale=1.0):
@@ -54,7 +71,14 @@ def _configurations(spec, count, seed=0, scale=1.0):
 
 
 def _build(spec):
-    """The bare arm, welded at the origin -- no scene, so this tests the model alone."""
+    """The bare arm, welded at the origin -- no scene, so this tests the model alone. Built
+    once per rung per process: every caller sets the positions it reads."""
+    if spec.name not in _BUILT:
+        _BUILT[spec.name] = _build_uncached(spec)
+    return _BUILT[spec.name][1:]
+
+
+def _build_uncached(spec):
     builder = DiagramBuilder()
     plant, scene_graph = AddMultibodyPlantSceneGraph(builder, time_step=0.0)
     parser = Parser(plant, scene_graph)
@@ -63,8 +87,10 @@ def _build(spec):
     plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("base"))
     plant.Finalize()
     diagram = builder.Build()
-    context = plant.GetMyContextFromRoot(diagram.CreateDefaultContext())
-    return plant, scene_graph, context
+    root = diagram.CreateDefaultContext()
+    context = plant.GetMyContextFromRoot(root)
+    ## The diagram and root context are cached too, so the plant context never outlives them.
+    return (diagram, root), plant, scene_graph, context
 
 
 def _differential(spec, segment, rod=0, level=1.0):
@@ -76,8 +102,8 @@ def _differential(spec, segment, rod=0, level=1.0):
     return cfg
 
 
-def test_rest_and_axial():
-    for spec in RUNGS.values():
+def test_rest_and_axial(rungs=None):
+    for spec in _specs(rungs):
         model = GetModel(spec)
         plant_q = model.PlantQ(np.zeros(spec.ninputs)).reshape(-1, 7)
         tip = model.TipPose(np.zeros(spec.ninputs))
@@ -124,8 +150,10 @@ def test_single_rod_bends_a_circular_arc():
           f"{sigma_x:+.4f} residual stretch from the rods' tilt")
 
 
-def test_taper_makes_the_strain_variable():
-    for name in ("gvs_pushrod9_o1", "gvs_pushrod9_o2"):
+def test_taper_makes_the_strain_variable(names=("gvs_pushrod9_o1", "gvs_pushrod9_o2")):
+    """Each tapered rung against its own uniform-section variant; the claim is per rung, so
+    the fast tier holds it on the primary (o1) alone, with o2 in `slow`."""
+    for name in names:
         spec = GetSpec(name)
         uniform = dataclasses.replace(spec, name=f"{name}_uniform", radius_tip=spec.radius_base)
         tapered, flat = GetModel(spec), GvsArmModel(uniform)
@@ -155,27 +183,27 @@ def test_jacobian_matches_central_differences():
     print(f"PASS the implicit Jacobian agrees with central differences to {relative:.1e} relative")
 
 
-def test_equilibrium_converges_and_is_unique():
+def test_equilibrium_converges_and_is_unique(draws=2000, restarts=50):
     spec = PRIMARY
     model = GetModel(spec)
-    cfgs = _configurations(spec, 2000, seed=1)
+    cfgs = _configurations(spec, draws, seed=1)
     q, ok, steps = model.EquilibriumBatch(cfgs)
     assert ok.all(), f"{int((~ok).sum())} of {len(cfgs)} draws did not converge"
     rng = np.random.default_rng(2)
     worst = 0.0
-    for i in range(50):
+    for i in range(restarts):
         scale = np.abs(q[i]).max() + 1.0
         q0 = rng.uniform(-scale, scale, size=q.shape[1])
         q_restart, ok_i, _ = model.EquilibriumFrom(cfgs[i], q0)
         assert ok_i, f"restart {i} did not converge"
         worst = max(worst, float(np.abs(q_restart - q[i]).max()))
     assert worst < 1e-8, f"a restart found a different equilibrium ({worst:.3e})"
-    print(f"PASS Newton converges on 2000/2000 draws (median {int(np.median(steps))} steps); "
-          f"50 random restarts agree with the cold start to {worst:.1e}")
+    print(f"PASS Newton converges on {draws}/{draws} draws (median {int(np.median(steps))} steps); "
+          f"{restarts} random restarts agree with the cold start to {worst:.1e}")
 
 
-def test_drake_matches_model():
-    for spec in RUNGS.values():
+def test_drake_matches_model(rungs=None):
+    for spec in _specs(rungs):
         model = GetModel(spec)
         plant, _, context = _build(spec)
         assert plant.num_positions() == spec.num_plant_positions
@@ -204,16 +232,17 @@ def test_drake_matches_model():
               f"rotation; the tip frame's z-axis is the backbone tangent (pitch {TIP_FRAME_PITCH:.4f})")
 
 
-def test_spheres_contain_the_backbone():
-    """Every point of the true rod surface is inside the sphere union -- a superset, not a fit."""
-    for spec in RUNGS.values():
+def test_spheres_contain_the_backbone(rungs=None, count=30):
+    """Every point of the true rod surface is inside the sphere union -- a superset, not a fit.
+    `count` random configurations plus the five box corners, where stretch and bend are worst."""
+    for spec in _specs(rungs):
         model = GetModel(spec)
         radii = np.asarray(spec.body_radii())
         corners = []
         for pattern in ((1, -1, -1), (1, 1, 1), (-1, -1, -1), (1, 1, -1), (-1, 1, 1)):
             corners.append(np.array(list(pattern) * spec.num_segments, dtype=float))
         worst = float("inf")
-        for cfg in list(_configurations(spec, 30, seed=11)) + corners:
+        for cfg in list(_configurations(spec, count, seed=11)) + corners:
             surface = model.BackboneSurfacePoints(cfg, samples=240, directions=12)
             centres = model.PlantQ(cfg).reshape(-1, 7)[:, 4:]
             distance = np.linalg.norm(surface[:, None, :] - centres[None], axis=-1)
@@ -304,17 +333,24 @@ def test_redundancy_is_enforced():
     raise AssertionError("a spec with no kinematic redundancy was accepted")
 
 
+GROUPS = {
+    "fast": [partial(test_rest_and_axial, rungs=FAST_RUNGS), test_single_rod_bends_a_circular_arc,
+             partial(test_taper_makes_the_strain_variable, names=FAST_RUNGS),
+             test_jacobian_matches_central_differences,
+             partial(test_equilibrium_converges_and_is_unique, draws=200, restarts=5),
+             partial(test_drake_matches_model, rungs=FAST_RUNGS),
+             partial(test_spheres_contain_the_backbone, rungs=FAST_RUNGS, count=8),
+             ## Drake-only or file-only, no JAX compile: every rung costs next to nothing.
+             test_collision_filters_are_what_they_claim, test_a_curled_arm_collides_with_itself,
+             test_sampler_path_is_one_solve, test_generated_files_are_current,
+             test_redundancy_is_enforced],
+    ## Every rung, both tapered rungs, and the full-size draws.
+    "slow": [test_rest_and_axial, test_taper_makes_the_strain_variable,
+             test_equilibrium_converges_and_is_unique, test_drake_matches_model,
+             test_spheres_contain_the_backbone],
+}
+
+
 if __name__ == "__main__":
-    test_rest_and_axial()
-    test_single_rod_bends_a_circular_arc()
-    test_taper_makes_the_strain_variable()
-    test_jacobian_matches_central_differences()
-    test_equilibrium_converges_and_is_unique()
-    test_drake_matches_model()
-    test_spheres_contain_the_backbone()
-    test_collision_filters_are_what_they_claim()
-    test_a_curled_arm_collides_with_itself()
-    test_sampler_path_is_one_solve()
-    test_generated_files_are_current()
-    test_redundancy_is_enforced()
+    _tiers.run(GROUPS)
     print("ALL PASS")

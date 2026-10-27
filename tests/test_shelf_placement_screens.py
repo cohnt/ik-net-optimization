@@ -12,6 +12,7 @@ Guards three things that are each silent when they break:
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__`
 driver.  `_LocalToWorld` is written here rather than imported, so this cross-checks
 `src/shelf_regions.py` instead of restating it.
+Tiers (tests/_tiers.py): the default `fast` runs in ~10 s on one CPU core; no `slow` group.
 """
 
 import os
@@ -20,6 +21,7 @@ import sys
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.math import RigidTransform, RotationMatrix
 from pydrake.multibody.parsing import LoadModelDirectives
@@ -387,19 +389,22 @@ def test_rejection_guard_trips_with_a_useful_message():
     print("PASS the rejection guard trips and says what was rejected and why")
 
 
+GROUPS = {"fast": [test_region_table_matches_scene_welds,
+                   test_hardened_scenes_have_no_bin_or_decorative_mugs,
+                   test_soft_rungs_have_no_separate_nobin_scene,
+                   test_nobin_scene_drops_only_the_bin,
+                   test_hardened_matches_legacy_minus_removals,
+                   test_screw_rungs_have_no_separate_nobin_scene,
+                   test_scene_registry_matches_plants,
+                   test_exact_containment_vs_world_aabb,
+                   test_inset_shrinks_depth_only,
+                   test_penetration_screen_accepts_and_rejects,
+                   test_screen_ignores_robot_pairs,
+                   test_containment_points_agree_across_robots,
+                   test_free_placement_reproduces_the_legacy_stream,
+                   test_rejection_guard_trips_with_a_useful_message]}
+
+
 if __name__ == "__main__":
-    test_region_table_matches_scene_welds()
-    test_hardened_scenes_have_no_bin_or_decorative_mugs()
-    test_soft_rungs_have_no_separate_nobin_scene()
-    test_nobin_scene_drops_only_the_bin()
-    test_hardened_matches_legacy_minus_removals()
-    test_screw_rungs_have_no_separate_nobin_scene()
-    test_scene_registry_matches_plants()
-    test_exact_containment_vs_world_aabb()
-    test_inset_shrinks_depth_only()
-    test_penetration_screen_accepts_and_rejects()
-    test_screen_ignores_robot_pairs()
-    test_containment_points_agree_across_robots()
-    test_free_placement_reproduces_the_legacy_stream()
-    test_rejection_guard_trips_with_a_useful_message()
+    _tiers.run(GROUPS)
     print("ALL PASS")

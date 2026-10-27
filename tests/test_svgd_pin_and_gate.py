@@ -1,6 +1,9 @@
 """The fielded pin of 2026-10-12 and the gate-edge rule, end to end on the Panda (n6).
 
     .venv/bin/python tests/test_svgd_pin_and_gate.py            (the checks; ~3 min on the GPU)
+    Tiers (tests/_tiers.py): the default `fast` runs (a) as pinned, (b) at the target's own
+    configuration on an N=16 swarm, and (c), in ~32 s on one CPU core; `slow` (~70 s,
+    CPU ok) holds (b) from the generic start at N=64.
     .venv/bin/python tests/test_svgd_pin_and_gate.py capture    (rewrite the reference: DON'T,
                                                                  unless the old pin's behaviour
                                                                  is meant to change)
@@ -35,6 +38,7 @@ What is pinned here:
 import os
 import sys
 from dataclasses import replace
+from functools import partial
 
 import numpy as np
 import torch
@@ -44,6 +48,7 @@ sys.path.append(os.path.dirname(HERE))
 sys.path.append(HERE)
 
 import test_svgd_solver as S                                          # noqa: E402
+import _tiers                                                         # noqa: E402
 from src.generic_program import ProgramOptions                        # noqa: E402
 from src.svgd.solver import SvgdSolver                                # noqa: E402
 
@@ -72,10 +77,10 @@ FIELDS = ("x", "iterations", "inner_steps", "best_history", "selected_index",
           "drake_max_violation", "n_feasible", "status")
 
 
-def _solve(task, arm, pin, wall=60.0, **extra):
+def _solve(task, arm, pin, wall=60.0, q_init=None, **extra):
     p = S.program_for(task, arm)
     _, d, result = S.run_cell(p, task, f"{task}/{arm}", {**REST, **pin, **extra}, wall=wall,
-                              seed=7, quiet=True)
+                              seed=7, quiet=True, q_init=q_init)
     out = dict(x=np.asarray(result.get_x_val(), dtype=float), iterations=int(d.iterations),
                inner_steps=int(d.inner_steps),
                best_history=np.asarray(d.extras["best_history"], dtype=float),
@@ -121,9 +126,14 @@ def test_old_pin_reproduces_the_pre_change_solver():
                 f"{d.n_recheck_failures} {d.feas_level} {d.stop_reason}")
 
 
-def test_gate_edge_rule_continues_after_a_failed_recheck():
-    print("\n--- (b) the gate-edge rule: the first float64 re-check forced to fail ---")
-    base, d0 = _solve("pose", "learned", NEW_PIN)
+def test_gate_edge_rule_continues_after_a_failed_recheck(at_target=False):
+    ## The fast tier starts both solves at the configuration the target was generated from, on
+    ## an N=16 swarm (`test_svgd_solver.AT_TARGET`): the rule is what is checked, not the reach.
+    S.pose_program("learned")                                   # draws the target configuration
+    start = dict(S.AT_TARGET, q_init=S._POSE["q_target"]) if at_target else {}
+    print(f"\n--- (b) the gate-edge rule: the first float64 re-check forced to fail"
+          f"{' (at the target configuration, N=16)' if at_target else ''} ---")
+    base, d0 = _solve("pose", "learned", NEW_PIN, **start)
     S.check("gate: the uninjected solve stops converged on its first re-check",
             d0.stop_reason == "converged" and d0.n_recheck_failures == 0 and d0.feas_level == 1.0
             and d0.drake_feasible, f"{d0.stop_reason} {d0.n_recheck_failures} {d0.feas_level}")
@@ -142,7 +152,7 @@ def test_gate_edge_rule_continues_after_a_failed_recheck():
             self._drake_max_violation = true_viol
     SvgdSolver._drake_recheck = injected
     try:
-        out, d = _solve("pose", "learned", NEW_PIN)
+        out, d = _solve("pose", "learned", NEW_PIN, **start)
     finally:
         SvgdSolver._drake_recheck = orig
     print(f"    uninjected: outer {base['iterations']}; injected: outer {out['iterations']}, "
@@ -179,17 +189,20 @@ def test_native_paired_swarm_keeps_particle_0_at_the_guess():
             str({k: getattr(ProgramOptions(), k) for k in NEW_PIN}))
 
 
+GROUPS = {
+    ## (a) skips loudly off the capture GPU, and on it is the pin: unchanged in both tiers.
+    "fast": [test_old_pin_reproduces_the_pre_change_solver,
+             partial(test_gate_edge_rule_continues_after_a_failed_recheck, at_target=True),
+             test_native_paired_swarm_keeps_particle_0_at_the_guess],
+    "slow": [test_gate_edge_rule_continues_after_a_failed_recheck],
+}
+
+
 def main():
     if sys.argv[1:] == ["capture"]:
         capture()
         return 0
-    for t in (test_old_pin_reproduces_the_pre_change_solver,
-              test_gate_edge_rule_continues_after_a_failed_recheck,
-              test_native_paired_swarm_keeps_particle_0_at_the_guess):
-        try:
-            t()
-        finally:
-            S.release()
+    _tiers.run(GROUPS, after=S.release)
     print(f"\n{len(S.FAILURES)} failed")
     for f in S.FAILURES:
         print("  FAILED:", f)

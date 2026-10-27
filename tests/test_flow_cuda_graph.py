@@ -13,6 +13,7 @@ and the AutoDiffXd values and their derivative blocks -- between a graphed progr
 compiled-only one sharing the same network, and checks that a value held across a later
 call is not overwritten. It also checks the two guards: the option refuses to run without
 --compile, and no graph may be captured after `WarmUpJacobian` froze them.
+Tiers (tests/_tiers.py): the default `fast` runs in ~2 s on one CPU core; no `slow` group. The CUDA-graph checks need a GPU and skip without one.
 """
 import os
 import sys
@@ -21,6 +22,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.autodiffutils import AutoDiffXd, InitializeAutoDiff   # noqa: E402
 
@@ -47,17 +49,20 @@ def ad_parts(q_ad):
             np.vstack([v.derivatives() for v in q_ad]))
 
 
-def main():
-    if not torch.cuda.is_available():
-        print("no CUDA device: nothing to test")
-        return 0
-
+def option_guard():
+    """CPU-safe: runs before the CUDA early return."""
     print("\n--- the option refuses to run without --compile ---")
     try:
         ProgramOptions(flow_cuda_graph=True)
         check("flow_cuda_graph without compile_flow_jacobian raises", False)
     except ValueError:
         check("flow_cuda_graph without compile_flow_jacobian raises", True)
+
+
+def cuda_graph_checks():
+    if not torch.cuda.is_available():
+        print("no CUDA device: nothing to test")
+        return
 
     plain = ProgramOptions(compile_flow_jacobian=True, collision_avoidance=False)
     graphed = ProgramOptions(compile_flow_jacobian=True, flow_cuda_graph=True,
@@ -116,6 +121,12 @@ def main():
         check("a capture after WarmUpJacobian raises", True)
     gp.FreezeFlowGraphs(False)
 
+
+GROUPS = {"fast": [option_guard, cuda_graph_checks]}
+
+
+def main():
+    _tiers.run(GROUPS)
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     return 1 if FAILURES else 0
 

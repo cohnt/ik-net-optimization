@@ -13,6 +13,7 @@ per-particle step `svgd_lr / ||H_i||_F`. The kernel spaces (`svgd_kernel`: the `
 reproducing the previous step bit for bit, and x, z, c, cz, qz, pose against autograd) close it.
 There is no temperature: `svgd_temperature` and `svgd_metric_temperature` were removed 2026-10-14
 (stage SVGD_R22 measured T inert), and the step is the T = 1 one.
+Tiers (tests/_tiers.py): the default `fast` runs in ~11 s on one CPU core; no `slow` group.
 """
 
 import math
@@ -24,6 +25,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from src.svgd import al, fused, kernels
 from src.svgd.al import ALState
@@ -1097,29 +1099,30 @@ def test_joint_space_refuses_latent_kernels():
     print("PASS z / c / cz / qz refused on the joint-space arm at construction; q / x / pose / none accepted")
 
 
+GROUPS = {"fast": [test_al_value_and_coefficients_agree_with_autograd,
+                   test_al_with_zero_multipliers_is_the_quadratic_penalty,
+                   test_dual_update_is_unconditional_and_per_particle,
+                   test_dual_update_counts_clips_by_row_group,
+                   test_al_rounds_converge_to_the_kkt_point_on_every_particle,
+                   test_pairwise_sqdist_matches_brute_force,
+                   test_median_bandwidth_matches_numpy_on_the_upper_triangle,
+                   test_rbf_repulsion_is_the_svgd_gradient,
+                   test_stein_direction_forms,
+                   test_plain_svgd_matches_a_gaussians_moments,
+                   test_gn_hessian_equals_the_autograd_hessian_on_linear_rows,
+                   test_svn_step_lands_on_the_minimiser_of_a_quadratic,
+                   test_identity_metric_is_projected_gradient_descent_with_the_frobenius_step,
+                   test_resample_mask, test_live_weights_drop_particles_exactly,
+                   test_no_host_synchronising_calls_in_the_modules,
+                   test_compiled_chain_matches_eager,
+                   test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise,
+                   test_new_kernel_spaces, test_pose_kernel_ignores_self_motion,
+                   test_pose_jacobian_matches_finite_differences_on_the_panda,
+                   test_joint_space_refuses_latent_kernels]}
+
+
 if __name__ == "__main__":
-    test_al_value_and_coefficients_agree_with_autograd()
-    test_al_with_zero_multipliers_is_the_quadratic_penalty()
-    test_dual_update_is_unconditional_and_per_particle()
-    test_dual_update_counts_clips_by_row_group()
-    test_al_rounds_converge_to_the_kkt_point_on_every_particle()
-    test_pairwise_sqdist_matches_brute_force()
-    test_median_bandwidth_matches_numpy_on_the_upper_triangle()
-    test_rbf_repulsion_is_the_svgd_gradient()
-    test_stein_direction_forms()
-    test_plain_svgd_matches_a_gaussians_moments()
-    test_gn_hessian_equals_the_autograd_hessian_on_linear_rows()
-    test_svn_step_lands_on_the_minimiser_of_a_quadratic()
-    test_identity_metric_is_projected_gradient_descent_with_the_frobenius_step()
-    test_resample_mask()
-    test_live_weights_drop_particles_exactly()
-    test_no_host_synchronising_calls_in_the_modules()
-    test_compiled_chain_matches_eager()
-    test_fielded_kernel_and_metric_reproduce_the_previous_step_bitwise()
-    test_new_kernel_spaces()
-    test_pose_kernel_ignores_self_motion()
-    test_pose_jacobian_matches_finite_differences_on_the_panda()
-    test_joint_space_refuses_latent_kernels()
+    _tiers.run(GROUPS)
     print("ALL PASS", flush=True)
     ## Exit without interpreter finalization. With CUDA visible, torch's autograd device thread
     ## (`pt_autograd_0`) can drop its last GraphTask while CPython is finalizing; the decref

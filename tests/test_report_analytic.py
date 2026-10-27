@@ -1,6 +1,7 @@
 """scripts/report_analytic.py on synthetic summaries: it pairs, counts and refuses correctly.
 
     python tests/test_report_analytic.py
+Tiers (tests/_tiers.py): the default `fast` runs in ~1 s on one CPU core; no `slow` group.
 """
 import contextlib
 import io
@@ -10,6 +11,7 @@ import sys
 import tempfile
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _tiers                                                             # noqa: E402
 from scripts import report_analytic as ra  # noqa: E402
 
 FAILURES = []
@@ -40,7 +42,7 @@ def write(root, tag, records, grid="g0-pose", fp="f" * 40):
         json.dump(dict(metadata=meta, records=records, summary={}), f)
 
 
-def main():
+def checks():
     cells = 12
     tail = "panda_n6_ipopt_posetip_12_180_paired"
     with tempfile.TemporaryDirectory() as tmp:
@@ -95,6 +97,13 @@ def main():
     check("an svgd analytic tag parses: stage S, tight ladder, kernel q",
           m is not None and m.group(1) == "S" and m.group(2) == "T" and m.group(4) == "_pin2kq"
           and ra.parse_tag(m.group(0)[:-len(m.group(4))])["start"] == "native", m and m.groups())
+
+
+GROUPS = {"fast": [checks]}
+
+
+def main():
+    _tiers.run(GROUPS)
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:
         sys.exit(1)
