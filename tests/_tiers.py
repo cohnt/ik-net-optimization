@@ -51,3 +51,15 @@ def run(groups, argv=None, default=("fast",), after=None):
                     after()
                 print(f"[{time.perf_counter() - t:7.1f} s] {label(check)}", flush=True)
     print(f"[{time.perf_counter() - t_all:7.1f} s] total, groups {' '.join(names)}", flush=True)
+
+
+def jax_compilation_cache():
+    """Point JAX's persistent compilation cache at this project's own cache directory. Call it
+    before anything imports jax. The GVS arm's model is a set of XLA programs whose compiles are
+    most of a cold run on one core (~190 s cold, ~45 s warm for `test_gvs_arm_model`); the cache
+    is keyed on the program, the compile options and the jax/jaxlib version, so a hit is the
+    same executable. Set `JAX_COMPILATION_CACHE_DIR` yourself to move it, or to "" to disable."""
+    import os
+    os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", os.path.join(
+        os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "learned-ik", "jax"))
+    os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0.5")

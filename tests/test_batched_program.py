@@ -51,6 +51,7 @@ GVS arm's `TorchConfigToPlantQ` refuses by name.
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__`
 driver. Needs the four `n6` charts under `models/`, so run it as a script, alone, under the
 memory scope: `.venv/bin/python tests/test_batched_program.py`.
+Tiers (tests/_tiers.py): the default `fast` runs in ~31 s on one CPU core; no `slow` group.
 """
 
 import os
@@ -62,6 +63,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.autodiffutils import InitializeAutoDiff                       # noqa: E402
 from pydrake.all import AutoDiffXd                                          # noqa: E402
@@ -1120,32 +1122,20 @@ def test_analytic_detection_and_refusals():
           "refused, x / q / pose / none accepted")
 
 
+ANALYTIC_TESTS = [test_analytic_row_parity, test_analytic_gradients, test_analytic_init_from_q,
+            test_analytic_native_draw, test_analytic_detection_and_refusals]
+
+GROUPS = {"fast": [test_row_parity_all_programs, test_gradients_match_autodiff,
+                   test_init_from_q_matches_SetStartFromQ,
+                   test_native_c_matches_the_programs_native_start,
+                   test_to_drake_x_round_trips, test_project, test_robot_hooks,
+                   *ANALYTIC_TESTS, test_timing],
+          "analytic": ANALYTIC_TESTS}   # the analytic arm's block alone
+
+
 if __name__ == "__main__":
-    if sys.argv[1:] == ["analytic"]:            # the analytic arm's block alone
-        try:
-            test_analytic_row_parity()
-            test_analytic_gradients()
-            test_analytic_init_from_q()
-            test_analytic_native_draw()
-            test_analytic_detection_and_refusals()
-        finally:
-            close_all()
-        print("ALL PASS (analytic)")
-        sys.exit(0)
     try:
-        test_row_parity_all_programs()
-        test_gradients_match_autodiff()
-        test_init_from_q_matches_SetStartFromQ()
-        test_native_c_matches_the_programs_native_start()
-        test_to_drake_x_round_trips()
-        test_project()
-        test_robot_hooks()
-        test_analytic_row_parity()
-        test_analytic_gradients()
-        test_analytic_init_from_q()
-        test_analytic_native_draw()
-        test_analytic_detection_and_refusals()
-        test_timing()
+        _tiers.run(GROUPS)
     finally:
         close_all()
-    print("ALL PASS")
+    print("ALL PASS (analytic)" if sys.argv[1:] == ["analytic"] else "ALL PASS")

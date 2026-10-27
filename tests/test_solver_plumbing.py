@@ -36,11 +36,15 @@ What this file protects, each learned by the thing being possible:
     and `solve_time` but no count, and `NloptSolverDetails` has a single `status` field --
     so the program counts map evaluations itself. If that stops working, the NLopt column
     has no cost measure at all.
+
+Tiers (tests/_tiers.py): the default `fast` runs in ~N_FAST s on one CPU core; `slow` (~N_SLOW s,
+CPU ok) holds the four solve-and-report cells uncapped, each running to its 20 s clock.
 """
 import os
 import sys
 import tempfile
 from dataclasses import replace
+from functools import partial
 
 import numpy as np
 from pydrake.solvers import NloptSolver, SnoptSolver
@@ -53,11 +57,13 @@ from src.generic_program import (IKFlowProgram, ProgramOptions,         # noqa: 
                                  NloptOptionSurface)
 from src.utils import BuildEnv, HiddenPrints                            # noqa: E402
 from src.panda_program import PandaIKProgram                            # noqa: E402
+import _tiers                                                           # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCENE = os.path.join(REPO, "models/panda/panda_finray_collision_hardened.yaml")
 FAILURES = []
 CHECKS = [0]
+_TARGET = []
 
 ## The exact option surface of Drake 1.56.0's NloptSolver, which is what the cluster runs.
 ## Read off ~/learned-ik/drake/include/drake/solvers/nlopt_solver.h there. Do NOT extend
@@ -118,7 +124,17 @@ def a_reachable_target(options):
 
     A fabricated pose could be unreachable, and a solver failing for that reason would
     tell us nothing about the plumbing.
+
+    Memoised on nothing: the pose is the FK of `panda_hand` (a fixed frame) at a seed-0 draw
+    over the PLANT's position limits, so no `options` field can change it (and every caller
+    passes the defaults). The sampler program is ~2 s to build and was built once per check.
     """
+    if not _TARGET:
+        _TARGET.append(_sample_reachable_target(options))
+    return _TARGET[0].copy()
+
+
+def _sample_reachable_target(options):
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
         sampler = PandaIKProgram(diagram, options=options)
@@ -233,12 +249,22 @@ def test_unknown_solver_raises_clearly():
               f"{type(exc).__name__}: {exc}  <- UnboundLocalError is the old bug")
 
 
-def test_each_solver_solves_and_reports(solver):
-    print(f"\n--- {solver}: solve, report, and keep the iterate ---")
+def test_each_solver_solves_and_reports(solver, capped=False):
+    """`capped` (the fast tier) stops the solve at an iteration budget, the 20 s clock kept
+    as the backstop: `max_iter = 5` on the Drake solvers (IPOPT max_iter, SNOPT majors, NLopt
+    max_eval) and 2 outer steps of an N=8 swarm on svgd (whose `max_iter` would REPLACE
+    `svgd_outer_iters`; an N=64 outer step is ~5.5 s on one CPU core). Nothing below asserts
+    convergence: every check is the reporting contract, which a solve stopped at a budget
+    meets as one stopped by the clock does."""
+    print(f"\n--- {solver}: solve, report, and keep the iterate"
+          f"{' (capped)' if capped else ''} ---")
     log = os.path.join(REPO, f"results/_test_solver_{solver}.log")
     os.makedirs(os.path.dirname(log), exist_ok=True)
+    cap = {}
+    if capped:
+        cap = dict(svgd_outer_iters=2, svgd_n=8) if solver == "svgd" else dict(max_iter=5)
     opts = ProgramOptions(which_solver=solver, max_wall_time=20.0,
-                          file_print_name=log, collision_avoidance=True)
+                          file_print_name=log, collision_avoidance=True, **cap)
     target = a_reachable_target(ProgramOptions())
     p = build(opts, target)
     with HiddenPrints():
@@ -776,38 +802,52 @@ def test_algorithms_drake_lists_but_cannot_run_are_refused():
             check(f"{algo} is still accepted as an inner algorithm", False, str(exc))
 
 
+def _nlopt_solve_runnable():
+    have = set(NloptOptionSurface())
+    return all(spec.accessor in have
+               for f, spec in NLOPT_POST_1_56_OPTIONS.items()
+               if f in ADOPTED_NLOPT_DEFAULTS)
+
+
+def solves_and_reports(solver, capped=False):
+    ## The adopted NLopt defaults need PR 25002. On an older Drake the refusal is the
+    ## correct behaviour (test_the_availability_check_spares_the_other_solvers proves it
+    ## fires), so running the solve here would only re-raise it. Say so loudly rather than
+    ## passing quietly: a silent skip of the NLopt column is how a real break would hide.
+    if solver == "nlopt" and not _nlopt_solve_runnable():
+        print("\n--- nlopt: SOLVE PATH NOT EXERCISED ON THIS DRAKE ---")
+        print("  skip  this Drake predates PR 25002, which the adopted NLopt defaults "
+              "require. Run this file against the 0.0.20260918 nightly (the project's "
+              "pin) to cover the NLopt solve path.")
+        return
+    test_each_solver_solves_and_reports(solver, capped=capped)
+
+
+SOLVERS = ("ipopt", "snopt", "nlopt", "svgd")
+GROUPS = {
+    "fast": [test_option_surface_is_the_cluster_s,
+             test_defaults_emit_exactly_what_they_always_have,
+             test_new_nlopt_fields_are_unset_by_default,
+             test_the_availability_check_spares_the_other_solvers,
+             test_the_accessor_table_names_the_options_it_claims_to,
+             test_inner_solver_options_are_refused_without_an_algorithm,
+             test_post_1_56_options_are_checked_against_the_running_drake,
+             test_algorithms_drake_lists_but_cannot_run_are_refused,
+             test_nlopt_is_an_augmented_lagrangian,
+             test_unknown_solver_raises_clearly,
+             test_svgd_options_emit_nothing_through_drake_branches,
+             test_no_step_rejection_knob_is_set_by_default,
+             test_the_adopted_snopt_step_limit_is_the_default,
+             test_new_knobs_reach_the_solver,
+             *(partial(solves_and_reports, solver, capped=True) for solver in SOLVERS)],
+    ## The four cells uncapped, as they ran before the tiers: each to its 20 s clock.
+    "slow": [partial(solves_and_reports, solver) for solver in SOLVERS],
+}
+
+
 def main():
     print("solver plumbing: three method classes -- interior point, SQP, augmented Lagrangian")
-    test_option_surface_is_the_cluster_s()
-    test_defaults_emit_exactly_what_they_always_have()
-    test_new_nlopt_fields_are_unset_by_default()
-    test_the_availability_check_spares_the_other_solvers()
-    test_the_accessor_table_names_the_options_it_claims_to()
-    test_inner_solver_options_are_refused_without_an_algorithm()
-    test_post_1_56_options_are_checked_against_the_running_drake()
-    test_algorithms_drake_lists_but_cannot_run_are_refused()
-    test_nlopt_is_an_augmented_lagrangian()
-    test_unknown_solver_raises_clearly()
-    test_svgd_options_emit_nothing_through_drake_branches()
-    test_no_step_rejection_knob_is_set_by_default()
-    test_the_adopted_snopt_step_limit_is_the_default()
-    test_new_knobs_reach_the_solver()
-    have = set(NloptOptionSurface())
-    runnable = all(spec.accessor in have
-                   for f, spec in NLOPT_POST_1_56_OPTIONS.items()
-                   if f in ADOPTED_NLOPT_DEFAULTS)
-    for solver in ("ipopt", "snopt", "nlopt", "svgd"):
-        ## The adopted NLopt defaults need PR 25002. On an older Drake the refusal is the
-        ## correct behaviour (test_the_availability_check_spares_the_other_solvers proves it
-        ## fires), so running the solve here would only re-raise it. Say so loudly rather than
-        ## passing quietly: a silent skip of the NLopt column is how a real break would hide.
-        if solver == "nlopt" and not runnable:
-            print("\n--- nlopt: SOLVE PATH NOT EXERCISED ON THIS DRAKE ---")
-            print("  skip  this Drake predates PR 25002, which the adopted NLopt defaults "
-                  "require. Run this file against the 0.0.20260918 nightly (the project's "
-                  "pin) to cover the NLopt solve path.")
-            continue
-        test_each_solver_solves_and_reports(solver)
+    _tiers.run(GROUPS)
 
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")
     for name in FAILURES:

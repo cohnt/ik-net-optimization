@@ -35,11 +35,15 @@ driver, as `tests/test_screw_arm_kinematics.py` does. Loading a program takes se
 one program per robot is built once and reused by every test.
 
     .venv/bin/python tests/test_batched_flow.py
+
+Tiers (tests/_tiers.py): the default `fast` runs in ~N_FAST s on one CPU core; `slow` (~N_SLOW s,
+CPU ok) holds the float32 check on 256 particles per robot (fast: 32).
 """
 
 import os
 import sys
 import time
+from functools import partial
 
 import numpy as np
 import torch
@@ -53,6 +57,7 @@ from src.svgd.batched_flow import (BatchedFlow, _PRIVATE_COPIES,      # noqa: E4
                                    quat_from_rpy_batched)
 from src.target_screening import SceneFile                            # noqa: E402
 from src.utils import BuildEnv, HiddenPrints, RepoDir                 # noqa: E402
+import _tiers                                                         # noqa: E402
 
 REPO = RepoDir()
 CHECKPOINTS = {
@@ -311,7 +316,10 @@ def bf64_jac(bf, x):
     return J.detach().abs().max()
 
 
-def test_float32_uses_a_cached_private_copy():
+def test_float32_uses_a_cached_private_copy(n=256):
+    """`n` particles per robot; both bounds are per-particle maxima, so the fast tier's 32 hold
+    the same invariant on fewer draws (the per-particle `jacrev` gain loop is the cost). At 32
+    the iiwa's rare runaway population may go undrawn; 256 is where it was measured."""
     rng = np.random.default_rng(4)
     for robot in ROBOTS:
         p = program(robot)
@@ -331,7 +339,7 @@ def test_float32_uses_a_cached_private_copy():
         assert BatchedFlow.from_program(p).model is shared
 
         bf64 = BatchedFlow.from_program(p)
-        X_np = lumped_batch(p, rng, 256)
+        X_np = lumped_batch(p, rng, n)
         dev = device_of(p)
         q64 = bf64.q_from_vars(torch.tensor(X_np, dtype=torch.float64, device=dev))
         q32 = bf32.q_from_vars(torch.tensor(X_np, dtype=torch.float32, device=dev))
@@ -348,14 +356,14 @@ def test_float32_uses_a_cached_private_copy():
         # float32: those particles are the ones the swarm re-draws (|q|_inf >
         # svgd_resample_q_max = 10), and the Drake re-check of the returned point is float64.
         X64 = torch.tensor(X_np, dtype=torch.float64, device=dev)
-        gain = torch.stack([bf64_jac(bf64, X64[i]) for i in range(256)])
+        gain = torch.stack([bf64_jac(bf64, X64[i]) for i in range(n)])
         normalised = diff / (1.0 + gain)
         near = q64.abs().max(dim=1).values < 10.0
         n_runaway = int((q64.abs().max(dim=1).values >= 100.0).sum().item())
-        print(f"  [{robot}] float32 vs float64 q over 256 particles: raw max |diff| "
+        print(f"  [{robot}] float32 vs float64 q over {n} particles: raw max |diff| "
               f"{diff[near].max().item():.3e} on {int(near.sum().item())} with |q|_inf < 10 "
               f"(median {diff.median().item():.3e}); gain-normalised max "
-              f"{normalised.max().item():.3e}; raw over all 256: {diff.max().item():.3e} "
+              f"{normalised.max().item():.3e}; raw over all {n}: {diff.max().item():.3e} "
               f"({n_runaway} particles at |q|_inf >= 100, max gain {gain.max().item():.3g})")
         # The raw bound is a gross-dtype-bug catch only (a particle with |q| < 10 can still
         # sit at gain 1e4, measured 1.2e-3 on the iiwa); the gain-normalised bound is the
@@ -409,11 +417,16 @@ def test_timing():
                       f"{row[0]:>10.2f} {row[1]:>10.2f}")
 
 
+GROUPS = {
+    "fast": [test_q_from_vars_matches_VarsToQ, test_conditioning_matches_CToPose7,
+             test_invert_matches_InvertFlow_and_round_trips, test_gradients_match_jacobian_gen,
+             partial(test_float32_uses_a_cached_private_copy, n=32), test_timing],
+    "slow": [test_float32_uses_a_cached_private_copy],
+}
+
+
 if __name__ == "__main__":
-    test_q_from_vars_matches_VarsToQ()
-    test_conditioning_matches_CToPose7()
-    test_invert_matches_InvertFlow_and_round_trips()
-    test_gradients_match_jacobian_gen()
-    test_float32_uses_a_cached_private_copy()
-    test_timing()
+    ## Each check starts with no private copy cached: the float32 check asserts that its FIRST
+    ## request makes one, which under `all` would otherwise meet the fast form's copy.
+    _tiers.run(GROUPS, after=_PRIVATE_COPIES.clear)
     print("ALL PASS")

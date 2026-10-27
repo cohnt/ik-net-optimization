@@ -35,12 +35,15 @@ gradient is pulled back through `J_plant`. This file pins:
 Plain `test_*` functions with a `__main__` driver, like the other svgd tests. Needs the
 `soft12` / `screw7_p050` / `panda` `n6` charts under `models/`. Run alone, under the memory
 scope: `.venv/bin/python tests/test_svgd_soft_fastpath.py` (`... quick` skips 4).
+Tiers (tests/_tiers.py): the default `fast` runs 3 at 5 steps and skips 4, in ~N_FAST s on one
+CPU core; `slow` (~N_SLOW s, CPU ok; 4 needs CUDA) holds 3 at 30 steps and 4.
 """
 
 import os
 import sys
 import time
 from dataclasses import replace
+from functools import partial
 
 import numpy as np
 import torch
@@ -54,6 +57,7 @@ from src.svgd.batched_program import BatchedProgram                     # noqa: 
 from src.svgd.solver import SvgdSolver, _Target                         # noqa: E402
 from src.utils import HiddenPrints                                      # noqa: E402
 import test_batched_program as T                                        # noqa: E402
+import _tiers                                                           # noqa: E402
 
 DEVICE = T.DEVICE
 FAILURES = []
@@ -295,34 +299,35 @@ ABS_TOL = {"float64": 1e-8, "float32": 1e-4}
 FLOOR_FACTOR = 10.0
 
 
-def test_split_step_matches_the_eager_autograd_step():
+def test_split_step_matches_the_eager_autograd_step(steps=30):
     """The derivative arithmetic differs (forward mode through the map vs a backward), so the
     two steps agree to rounding, not bitwise, and the GN solve at rho = 1e5 amplifies rounding
     by the metric's conditioning; over 30 coupled steps the swarm amplifies it further. So the
     claim is two numbers: the difference after ONE step (rounding times conditioning), and the
     difference after 30 steps against the floor the trajectory itself sets -- the old path
-    against itself from a start perturbed by one ulp."""
-    print("\n--- soft PCS: split steps (eager) vs eager autograd steps, same start ---")
-    print(f"    {'row':>18}  {'1 step':>9}  {'floor (1)':>9}  {'30 steps':>9}  {'floor (30)':>10}  "
+    against itself from a start perturbed by one ulp. The fast tier runs `steps = 5` (the floor
+    is taken at the same step, so the claim is the same one, over a shorter trajectory)."""
+    print(f"\n--- soft PCS: split steps (eager) vs eager autograd steps, same start, {steps} steps ---")
+    print(f"    {'row':>18}  {'1 step':>9}  {'floor (1)':>9}  {f'{steps} steps':>9}  {f'floor ({steps})':>10}  "
           f"{'moved':>6}  {'ms/step split / autograd':>24}")
     for dtype in ("float64", "float32"):
         for task in ("pose", "mug"):
             s, X0, S = _solver(task, dtype)
             r = s._make_runner()
             check(f"soft/{task}/{dtype}: the solver takes the split step", r is not None and r.mode == "eager")
-            tn, t_new = _trajectory(s, X0, S, "split")
-            ta, t_old = _trajectory(s, X0, S, "autograd")
+            tn, t_new = _trajectory(s, X0, S, "split", steps)
+            ta, t_old = _trajectory(s, X0, S, "autograd", steps)
             g = torch.Generator(device=X0.device).manual_seed(5)
             sign = torch.where(torch.rand(X0.shape, generator=g, device=X0.device, dtype=X0.dtype) < 0.5, -1.0, 1.0)
             Xp = X0 + sign * torch.finfo(X0.dtype).eps * X0.abs()
             Xp[0] = X0[0]
-            tp, _ = _trajectory(s, Xp, S, "autograd")
+            tp, _ = _trajectory(s, Xp, S, "autograd", steps)
             d1, d30 = _maxabs(tn[1], ta[1]), _maxabs(tn[-1], ta[-1])
             f1, f30 = _maxabs(tp[1], ta[1]), _maxabs(tp[-1], ta[-1])
             moved = _maxabs(ta[-1], X0)
             print(f"    {'soft/' + task + '/' + dtype:>18}  {d1:9.1e}  {f1:9.1e}  {d30:9.1e}  {f30:10.1e}  "
                   f"{moved:6.2f}  {1e3 * t_new:11.0f} / {1e3 * t_old:.0f}")
-            for k, d, f in (("one step", d1, f1), ("30 steps", d30, f30)):
+            for k, d, f in (("one step", d1, f1), (f"{steps} steps", d30, f30)):
                 bound = max(ABS_TOL[dtype], FLOOR_FACTOR * f)
                 check(f"soft/{task}/{dtype}: {k}: split vs autograd within max({ABS_TOL[dtype]:g}, "
                       f"{FLOOR_FACTOR:g} x the 1-ulp floor)", np.isfinite(d) and d <= bound and moved > 1e-3,
@@ -400,16 +405,21 @@ def test_gvs_still_refused():
         check("gvs: TorchConfigToPlantQ refuses by name (no torch forward map)", False, "no raise")
 
 
+GROUPS = {
+    "fast": [test_forward_mode_matches_framechain_on_rigid_arms, test_soft_row_jacobians_match_autograd,
+             test_soft_frame_jacobians_match_central_differences,
+             partial(test_split_step_matches_the_eager_autograd_step, steps=5), test_gvs_still_refused],
+    ## The 30-step trajectories, and the compiled / CUDA-graphed step (it skips without CUDA).
+    "slow": [test_split_step_matches_the_eager_autograd_step, test_compiled_and_graphed_split_step],
+}
+## The old `quick` run: everything but the compiled step, the trajectories at 30 steps.
+GROUPS["quick"] = [*GROUPS["fast"][:3], test_split_step_matches_the_eager_autograd_step,
+                   test_gvs_still_refused]
+
+
 def main():
-    quick = "quick" in sys.argv[1:]
     try:
-        test_forward_mode_matches_framechain_on_rigid_arms()
-        test_soft_row_jacobians_match_autograd()
-        test_soft_frame_jacobians_match_central_differences()
-        test_split_step_matches_the_eager_autograd_step()
-        if not quick:
-            test_compiled_and_graphed_split_step()
-        test_gvs_still_refused()
+        _tiers.run(GROUPS)
     finally:
         T.close_all()
     print(f"\n{'ALL PASS' if not FAILURES else 'FAILURES: ' + ', '.join(FAILURES)}")
