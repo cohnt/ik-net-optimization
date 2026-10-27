@@ -334,11 +334,19 @@ def test_golden_file_is_reproducible():
         return
     with open(GOLDEN, "rb") as handle:
         before = handle.read()
+    ## The file is compared bytewise, and XLA's CPU threading -- which follows the cores the
+    ## process may use -- moves the last bit of the oracle's float64 sums. The committed bytes
+    ## are XLA's defaults on ONE core (2026-10-27: identical on any single core; 3.3e-16 off
+    ## with four cores visible, and also off with single-threaded Eigen forced by XLA_FLAGS).
+    core = min(os.sched_getaffinity(0))
     subprocess.check_call(
         [oracle, os.path.join(RepoDir(), "scripts", "soft_arm", "generate_fk_golden.py")],
-        stdout=subprocess.DEVNULL)
+        stdout=subprocess.DEVNULL, preexec_fn=lambda: os.sched_setaffinity(0, {core}))
     with open(GOLDEN, "rb") as handle:
         after = handle.read()
+    if after != before:                     # the generator writes the committed file in place
+        with open(GOLDEN, "wb") as handle:
+            handle.write(before)
     assert after == before, (
         "regenerating the golden file changed it -- either SoRoMoX's model moved or the "
         "spec did, and the committed numbers no longer describe this robot")
@@ -365,6 +373,10 @@ GROUPS = {"fast": [test_discretization_is_exact, test_matches_closed_form_arc,
                    test_golden_file_is_reproducible, test_generated_sdf_is_current]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

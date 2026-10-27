@@ -430,9 +430,13 @@ GROUPS = {"fast": [test_map_parity, test_q6_seam, test_refusals, build_programs_
                    program_parity, missing_library_at_construction, timing]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:
         print("FAILED:", *FAILURES, sep="\n  ")
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

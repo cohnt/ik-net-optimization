@@ -502,6 +502,10 @@ GROUPS = {"fast": [test_body_poses_match_drake_on_every_scene, test_task_frames_
                    test_from_plant_replays_a_floating_body]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

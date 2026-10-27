@@ -317,10 +317,14 @@ GROUPS = {"fast": [test_rpy_to_R, test_values_and_jacobians_every_branch,
                    test_float32, test_iiwa_psi]}
 
 
-if __name__ == "__main__":
+def main():
     print(f"device: {DEVICE}")
     _tiers.run(GROUPS)
     if FAILURES:
         print(f"{len(FAILURES)} FAILED: {FAILURES}")
         sys.exit(1)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

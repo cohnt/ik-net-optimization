@@ -28,6 +28,7 @@ import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _tiers                                                             # noqa: E402
+_tiers.jax_compilation_cache()                 # the GVS arm's model is XLA programs
 
 from src.generic_program import ProgramOptions                          # noqa: E402
 from src.utils import BuildEnv, GenerateDiagramWithMug, HiddenPrints    # noqa: E402
@@ -131,7 +132,7 @@ def checks():
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None,
                            directives_file=os.path.join(REPO, "models/panda/panda_finray_collision_hardened.yaml"))
-        sampler = PandaIKProgram(diagram, options=opts)
+        sampler = PandaIKProgram(diagram, options=opts, model=_tiers.upstream_panda_chart())
         sampler.create_prog()
     # A reachable target, the way the benchmark makes them: the gripper pose of a real
     # configuration. A fabricated pose could be unreachable and mask a bounds error.

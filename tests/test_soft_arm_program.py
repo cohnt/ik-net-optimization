@@ -250,6 +250,10 @@ GROUPS = {"fast": [test_every_program_accepts_what_the_driver_passes,
                    test_verification_q_is_exact_under_a_learned_forward_model]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

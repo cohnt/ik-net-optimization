@@ -58,6 +58,7 @@ from src.svgd.solver import SvgdSolver, _Target                         # noqa: 
 from src.utils import HiddenPrints                                      # noqa: E402
 import test_batched_program as T                                        # noqa: E402
 import _tiers                                                           # noqa: E402
+_tiers.jax_compilation_cache()                 # the GVS arm's model is XLA programs
 
 DEVICE = T.DEVICE
 FAILURES = []
