@@ -276,7 +276,7 @@ GROUPS = {
 }
 
 
-if __name__ == "__main__":
+def main():
     print(f"device: {'cuda' if CUDA else 'cpu'}")
     if "--no-compile" in sys.argv:              # the old flag: the slow cells without the compile
         GROUPS["slow"].remove(test_compiled_and_graphed)
@@ -288,3 +288,7 @@ if __name__ == "__main__":
         print(f"{len(FAILURES)} FAILED: {FAILURES}")
         sys.exit(1)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

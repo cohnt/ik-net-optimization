@@ -49,6 +49,7 @@ is patched to the fixture's, which is the one thing the 480-cell tag cannot carr
 Tiers (tests/_tiers.py): the default `fast` runs in ~95 s on one CPU core; no `slow` group.
 """
 import contextlib
+import copy
 import io
 import json
 import os
@@ -66,6 +67,20 @@ import report_svgd as R                                             # noqa: E402
 import smoke as M                                                   # noqa: E402
 from src import benchmark as bm                                     # noqa: E402
 import _tiers                                                       # noqa: E402
+
+## `stage_catalogue` is a pure function of gen_manifest's code (nothing on disk), and every stage
+## check reads it, directly or through `R.main` -- ~5 s per build. Built once per process; each
+## caller gets a deep copy, so a check that edits what it is handed cannot leak into the next.
+_CATALOGUES, _build_catalogue = {}, R.stage_catalogue
+
+
+def _catalogue(family="SVGD"):
+    if family not in _CATALOGUES:
+        _CATALOGUES[family] = _build_catalogue(family)
+    return copy.deepcopy(_CATALOGUES[family])
+
+
+R.stage_catalogue = _catalogue
 
 T, G = 4, 4                       # a 16-cell grid
 N_CELLS, CAP = T * G, 20.0

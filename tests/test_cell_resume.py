@@ -97,10 +97,12 @@ def stub_verify(program, result, task_gate, tol, x_lumped=None, relaxed_tol=None
                            detail=detail)
 
 
-bm.verify = stub_verify
-bm.start_diagnostics = lambda program, q: {"start_q_error": np.float64(1e-7),
-                                           "clip_distance": 0.0, "start_z_norm": 1.5}
-bm.reported_cost = lambda program, result, weight: np.float64(program.cell[0] + 0.1) / weight
+## The harness's verdict, start diagnostics and cost, stubbed for the run of this file only
+## (`main` restores them: tests/run_fast.py runs every file in one process).
+STUBS = dict(verify=stub_verify,
+             start_diagnostics=lambda program, q: {"start_q_error": np.float64(1e-7),
+                                                   "clip_distance": 0.0, "start_z_norm": 1.5},
+             reported_cost=lambda program, result, weight: np.float64(program.cell[0] + 0.1) / weight)
 
 N_TARGETS, N_GUESSES = 3, 2
 TARGETS = [None] * N_TARGETS
@@ -332,7 +334,14 @@ GROUPS = {"fast": [run_checks]}
 
 
 def main():
-    _tiers.run(GROUPS)
+    real = {k: getattr(bm, k) for k in STUBS}
+    for k, f in STUBS.items():
+        setattr(bm, k, f)
+    try:
+        _tiers.run(GROUPS)
+    finally:
+        for k, f in real.items():
+            setattr(bm, k, f)
     return RESULT[0]
 
 

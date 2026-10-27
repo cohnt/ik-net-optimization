@@ -371,6 +371,10 @@ GROUPS = {"fast": [test_scene_spec_round_trips_the_mug_exactly,
                    test_timing_table]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

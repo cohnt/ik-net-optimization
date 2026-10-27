@@ -167,7 +167,7 @@ GROUPS = {"fast": [test_parity_with_the_program, test_threads_and_batch_do_not_c
                    test_collision_row_through_autograd]}
 
 
-if __name__ == "__main__":
+def main():
     reason = clearances_unavailable_reason()
     if reason is not None:
         _skip_branch(reason)
@@ -177,3 +177,7 @@ if __name__ == "__main__":
     t0 = time.perf_counter()
     _tiers.run(GROUPS)
     print(f"ALL PASS ({time.perf_counter() - t0:.0f} s)")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

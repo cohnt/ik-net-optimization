@@ -324,6 +324,10 @@ GROUPS = {"fast": [test_rpy_to_wxyz_matches_pydrake_exactly, test_sampler_stream
                    test_pole_domain_is_injectable_and_its_default_is_the_recorded_one]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

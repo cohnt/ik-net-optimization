@@ -199,7 +199,11 @@ GROUPS = {"fast": [test_flow_chart_bit_identical, test_load_chart_family_dispatc
                    test_density_option_refused_without_density]}
 
 
-if __name__ == "__main__":
+def main():
     print(f"device: {DEVICE}")
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

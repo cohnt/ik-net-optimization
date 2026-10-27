@@ -439,9 +439,13 @@ GROUPS = {"fast": [functools.partial(panda_chart, 7), functools.partial(panda_ch
                    test_batched_dataloaders]}
 
 
-if __name__ == "__main__":
+def main():
     t0 = time.monotonic()
     _tiers.run(GROUPS)
     counts = COUNTS
     print("parameter counts:", {f"{r} K={k}": n for (r, k), n in counts.items()})
     print(f"ALL PASS ({time.monotonic() - t0:.1f} s)")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
