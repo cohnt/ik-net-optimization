@@ -26,6 +26,7 @@ Each test can only fail for its own reason, so a failure names its own source:
 
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__`
 driver: `.venv/bin/python tests/test_soft_arm_kinematics.py`.
+Tiers (tests/_tiers.py): the default `fast` runs in ~30 s on one CPU core; no `slow` group.
 """
 
 import dataclasses
@@ -38,6 +39,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.all import (AddMultibodyPlantSceneGraph, DiagramBuilder,
                          MinimumDistanceLowerBoundConstraint, Parser, Quaternion,
@@ -354,16 +356,15 @@ def test_generated_sdf_is_current():
     print("PASS the committed SDFs are exactly what the generator emits")
 
 
+GROUPS = {"fast": [test_discretization_is_exact, test_matches_closed_form_arc,
+                   test_gradients_finite_at_zero_strain,
+                   test_gradients_match_central_differences,
+                   test_drake_matches_torch, test_spheres_contain_the_backbone,
+                   test_collision_filters_are_what_they_claim,
+                   test_a_curled_arm_collides_with_itself, test_matches_soromox,
+                   test_golden_file_is_reproducible, test_generated_sdf_is_current]}
+
+
 if __name__ == "__main__":
-    test_discretization_is_exact()
-    test_matches_closed_form_arc()
-    test_gradients_finite_at_zero_strain()
-    test_gradients_match_central_differences()
-    test_drake_matches_torch()
-    test_spheres_contain_the_backbone()
-    test_collision_filters_are_what_they_claim()
-    test_a_curled_arm_collides_with_itself()
-    test_matches_soromox()
-    test_golden_file_is_reproducible()
-    test_generated_sdf_is_current()
+    _tiers.run(GROUPS)
     print("ALL PASS")

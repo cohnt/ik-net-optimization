@@ -46,6 +46,7 @@ And the stage mode (`--stage SVGD`, the cluster's `sc_SVGD_*` family):
     and whose ABLATION pairs against the twin's joint-space arm.
 The stage fixtures keep gen_manifest's real tags but are 16-cell runs: the catalogue's cell count
 is patched to the fixture's, which is the one thing the 480-cell tag cannot carry.
+Tiers (tests/_tiers.py): the default `fast` runs in ~3 s on one CPU core; no `slow` group.
 """
 import contextlib
 import io
@@ -64,6 +65,7 @@ import gen_manifest as GM                                          # noqa: E402
 import report_svgd as R                                             # noqa: E402
 import smoke as M                                                   # noqa: E402
 from src import benchmark as bm                                     # noqa: E402
+import _tiers                                                       # noqa: E402
 
 T, G = 4, 4                       # a 16-cell grid
 N_CELLS, CAP = T * G, 20.0
@@ -933,12 +935,30 @@ def test_stage_r20_record_rows_at_the_pin():
         assert line.split()[1:6] == ["R20", "9", "10", "1", "2"], line
 
 
+## The test_* functions in name order (what `sorted(globals())` gave the old driver).
+GROUPS = {"fast": [test_everything_missing_is_not_fatal, test_grid_hash_refusal,
+                   test_mcnemar_directions_cost_and_bugs,
+                   test_metadata_mismatch_refused_even_on_equal_hash,
+                   test_multiplier_clips_by_group_line,
+                   test_stage_arms_not_the_manifests_are_refused,
+                   test_stage_catalogue_robots_and_seeds,
+                   test_stage_grid_hash_refusal,
+                   test_stage_iiwa_block_after_the_panda,
+                   test_stage_kernel_and_two_factor_rounds,
+                   test_stage_kernel_transfer_and_three_factor_rounds,
+                   test_stage_lead_pairing_ab_and_missing,
+                   test_stage_learned_only_round,
+                   test_stage_r20_record_rows_at_the_pin,
+                   test_stage_run_not_what_its_tag_names_is_refused,
+                   test_stage_screw_and_soft_blocks,
+                   test_stage_seed2_pairs_its_own_twin_only,
+                   test_stage_seed2_replication_of_the_candidate,
+                   test_stage_tag_parsing_every_variant]}
+
+
 def main():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    for t in tests:
-        t()
-        print(f"ok   {t.__name__}")
-    print(f"{len(tests)} passed")
+    _tiers.run(GROUPS)
+    print(f"{len(GROUPS['fast'])} passed")
 
 
 if __name__ == "__main__":

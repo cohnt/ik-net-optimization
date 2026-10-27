@@ -15,6 +15,7 @@ What it pins:
   * a pose out of reach clips with zero derivative on the clipped joint while the
     reported argument keeps a nonzero one (so a reachability row can still see it);
   * the Panda's q6 lands in [seam, seam + 2pi) and on its in-limit representative.
+Tiers (tests/_tiers.py): the default `fast` runs in ~8 s on one CPU core; no `slow` group.
 """
 import os
 import sys
@@ -23,6 +24,7 @@ import time
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.all import AutoDiffXd, InitializeAutoDiff, ExtractGradient, RigidTransform  # noqa: E402
 from src.iiwa_analytic_ik import (Analytic_IK_7DoF, iiwa_limits_lower,       # noqa: E402
@@ -240,14 +242,12 @@ def test_timing():
         print(f"    {name}: {dt:.0f} us float, {da:.0f} us AutoDiffXd (4 derivatives, incl. FK)")
 
 
+GROUPS = {"fast": [test_iiwa_codebase_parity, test_round_trip, test_one_pass_matches_old_api,
+                   test_gradients, test_out_of_reach_clips, test_panda_q6_window, test_timing]}
+
+
 if __name__ == "__main__":
-    test_iiwa_codebase_parity()
-    test_round_trip()
-    test_one_pass_matches_old_api()
-    test_gradients()
-    test_out_of_reach_clips()
-    test_panda_q6_window()
-    test_timing()
+    _tiers.run(GROUPS)
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:
         print("FAILED:", *FAILURES, sep="\n  ")

@@ -18,6 +18,7 @@ What is pinned:
   3. `flow_logdet_weight > 0` with a chart whose `has_density` is False is REFUSED at program
      construction (a dummy chart: the flow's own decode / encode with the density switched
      off), while the same chart at weight 0 constructs; `FlowNegLogDensity` refuses it too.
+Tiers (tests/_tiers.py): the default `fast` runs in ~10 s on one CPU core; no `slow` group.
 """
 import copy
 import json
@@ -32,6 +33,7 @@ import torch
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.dirname(HERE))
+import _tiers                                                             # noqa: E402
 
 from src.charts.base import Chart                                       # noqa: E402
 from src.charts.flow import FlowChart                                   # noqa: E402
@@ -193,9 +195,11 @@ def test_density_option_refused_without_density():
     print("PASS flow_logdet_weight > 0 refuses a chart without a density; w = 0 constructs")
 
 
+GROUPS = {"fast": [test_flow_chart_bit_identical, test_load_chart_family_dispatch,
+                   test_density_option_refused_without_density]}
+
+
 if __name__ == "__main__":
     print(f"device: {DEVICE}")
-    test_flow_chart_bit_identical()
-    test_load_chart_family_dispatch()
-    test_density_option_refused_without_density()
+    _tiers.run(GROUPS)
     print("ALL PASS")

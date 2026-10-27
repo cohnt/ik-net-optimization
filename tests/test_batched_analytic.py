@@ -25,6 +25,7 @@ Panda's 4-branch 2-element gc):
 
 Script-style like the other tests: `.venv/bin/python tests/test_batched_analytic.py`, alone,
 under the memory scope; prints ok / FAIL per check and exits nonzero on any failure.
+Tiers (tests/_tiers.py): the default `fast` runs in ~14 s on one CPU core; no `slow` group.
 """
 
 import math
@@ -36,6 +37,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.all import AutoDiffXd, RigidTransform, RollPitchYaw, RotationMatrix   # noqa: E402
 from pydrake.autodiffutils import InitializeAutoDiff                                # noqa: E402
@@ -310,14 +312,14 @@ def test_iiwa_psi():
           n_used >= 32 and rt <= 1e-8, (n_used, rt))
 
 
+GROUPS = {"fast": [test_rpy_to_R, test_values_and_jacobians_every_branch,
+                   test_from_program_uses_the_programs_branch_and_offset, test_panda_q6_seam,
+                   test_float32, test_iiwa_psi]}
+
+
 if __name__ == "__main__":
     print(f"device: {DEVICE}")
-    test_rpy_to_R()
-    test_values_and_jacobians_every_branch()
-    test_from_program_uses_the_programs_branch_and_offset()
-    test_panda_q6_seam()
-    test_float32()
-    test_iiwa_psi()
+    _tiers.run(GROUPS)
     if FAILURES:
         print(f"{len(FAILURES)} FAILED: {FAILURES}")
         sys.exit(1)
