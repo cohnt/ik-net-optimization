@@ -27,9 +27,10 @@ is tested is the WRAPPER and the DESIGN:
 
 Run with the project venv: `GVS_ARM_XLA_THREADS=2 .venv/bin/python tests/test_gvs_arm_model.py`.
 
-Tiers (tests/_tiers.py): the default `fast` runs in ~N_FAST s on one CPU core; `slow` (~N_SLOW s,
-CPU ok) holds every rung of the per-rung checks, both tapered rungs of the taper trap, and the
-2000-draw / 50-restart uniqueness probe and 30-configuration sphere screen at full size.
+Tiers (tests/_tiers.py): the default `fast` runs in ~35 s on one CPU core (~115 s on the first
+run, which fills the JAX compilation cache); `slow` (~170 s, CPU ok) holds every rung of the
+per-rung checks, both tapered rungs of the taper trap, and the 2000-draw / 50-restart uniqueness
+probe and 30-configuration sphere screen at full size.
 """
 
 import dataclasses

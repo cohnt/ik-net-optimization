@@ -25,7 +25,7 @@ what is asserted is that the verdicts agree and nothing breaks. Models: the `n6`
 (loaded only because the analytic programs inherit the learned base's construction; no
 network is evaluated). `.venv/bin/python tests/test_svgd_analytic.py`, alone, under the
 memory scope. Tiers (tests/_tiers.py): the default `fast` runs 1 and 5 whole and 2 and 4 on
-N=16 swarms stopped at 2 outer steps, in ~N_FAST s on one CPU core; `slow` (~N_SLOW s, CPU ok)
+N=16 swarms stopped at 2 outer steps, in ~13 s on one CPU core; `slow` (~75 s, CPU ok)
 holds 2 and 4 at the 20 s clock and 3 (`--no-compile` drops 3 from it).
 """
 

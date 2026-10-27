@@ -14,9 +14,10 @@ What is asserted on every cell: no exception; an `SvgdResult`; `last_iterate` se
 `drake_feasible == verify's feasible` (same Drake functional, so a disagreement is a bug);
 the per-outer trace is present and the right length. The numbers are PRINTED either way.
 
-Tiers (tests/_tiers.py): the default `fast` runs in ~N_FAST s on one CPU core (the clock-bound
+Tiers (tests/_tiers.py): the default `fast` runs in ~75 s on one CPU core (the clock-bound
 checks on small swarms, at the target's own configuration or stopped at a few outer steps);
-`slow` (~N_SLOW min on one CPU core; its sweep is GPU cells) holds the record-scale forms.
+`slow` (~4.5 min on one CPU core, ~3 min on the GPU; its sweep is GPU cells) holds the record-
+scale forms.
 
 The default run (`.venv/bin/python tests/test_svgd_solver.py`) is the short set: the
 closed-form derivative parity, the row scaling against Drake, the step with the kernel off

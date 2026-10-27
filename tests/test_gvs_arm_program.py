@@ -21,7 +21,8 @@ are held to, since these programs inherit theirs:
 Run with the project venv: `GVS_ARM_XLA_THREADS=2 .venv/bin/python tests/test_gvs_arm_program.py`.
 Uses an UNTRAINED chart on purpose.
 
-Tiers (tests/_tiers.py): the default `fast` runs in ~N_FAST s on one CPU core; no `slow` group.
+Tiers (tests/_tiers.py): the default `fast` runs in ~20 s on one CPU core (~50 s on the first
+run, which fills the JAX compilation cache); no `slow` group.
 """
 
 import os

@@ -36,7 +36,7 @@ one program per robot is built once and reused by every test.
 
     .venv/bin/python tests/test_batched_flow.py
 
-Tiers (tests/_tiers.py): the default `fast` runs in ~N_FAST s on one CPU core; `slow` (~N_SLOW s,
+Tiers (tests/_tiers.py): the default `fast` runs in ~20 s on one CPU core; `slow` (~35 s,
 CPU ok) holds the float32 check on 256 particles per robot (fast: 32).
 """
 
