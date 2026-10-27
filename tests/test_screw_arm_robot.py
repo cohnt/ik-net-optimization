@@ -224,6 +224,10 @@ GROUPS = {"fast": [test_every_rung_resolves_by_name,
                    test_the_flow_accepts_this_robot]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

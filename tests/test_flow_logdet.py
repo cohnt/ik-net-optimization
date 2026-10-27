@@ -248,6 +248,10 @@ GROUPS = {"fast": [test_options_refused, test_freia_logdet_is_slogdet,
                    test_batched_matches_drake, test_absent_at_zero_and_on_joint_space]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

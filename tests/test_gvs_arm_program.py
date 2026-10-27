@@ -224,6 +224,10 @@ GROUPS = {
 }
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

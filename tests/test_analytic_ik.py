@@ -246,9 +246,13 @@ GROUPS = {"fast": [test_iiwa_codebase_parity, test_round_trip, test_one_pass_mat
                    test_gradients, test_out_of_reach_clips, test_panda_q6_window, test_timing]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:
         print("FAILED:", *FAILURES, sep="\n  ")
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

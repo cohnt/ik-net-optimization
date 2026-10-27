@@ -166,7 +166,7 @@ def compare(ref, got, skip=(), label=""):
     return differ == 0
 
 
-def main(solvers):
+def run_solvers(solvers):
     if not solvers:
         print("fast tier: nothing to run -- this file is end to end (`slow`, GPU). The resume "
               "contract's cheap guards are tests/test_cell_resume.py and tests/test_run_items_watcher.py.")
@@ -241,12 +241,16 @@ def main(solvers):
 GROUPS = {"fast": [], "slow": ["ipopt", "svgd"], "ipopt": ["ipopt"], "svgd": ["svgd"]}
 
 
-if __name__ == "__main__":
+def main():
     ## The groups name solvers, not checks: the solvers share one tag stamp and one cleanup, so
-    ## they run in one `main` rather than through `_tiers.run`.
+    ## they run in one `run_solvers` rather than through `_tiers.run`.
     names = sys.argv[1:] or ["fast"]
     unknown = [n for n in names if n not in GROUPS and n != "all"]
     if unknown:
         sys.exit(f"unknown group(s) {unknown}; this file has {sorted(GROUPS)} and 'all'")
     solvers = [s for n in names for s in GROUPS["slow" if n == "all" else n]]
-    sys.exit(main(list(dict.fromkeys(solvers))))
+    return run_solvers(list(dict.fromkeys(solvers)))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

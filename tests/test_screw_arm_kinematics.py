@@ -392,6 +392,10 @@ GROUPS = {"fast": [test_generated_models_are_current, test_generated_scenes_are_
                    test_the_filtered_pair_that_must_stay_clear]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print("ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

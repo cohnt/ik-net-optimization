@@ -63,3 +63,4 @@ def jax_compilation_cache():
     os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", os.path.join(
         os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "learned-ik", "jax"))
     os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0.5")
+

@@ -128,7 +128,11 @@ GROUPS = {"fast": [test_arm_repeat_cancel, test_no_faulthandler_watchdog_in_tree
                    survives_compiled_workload]}
 
 
-if __name__ == "__main__":
+def main():
     _tiers.run(GROUPS)
     print(f"\n{len(FAILURES)} failure(s)")
     sys.exit(1 if FAILURES else 0)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

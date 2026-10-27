@@ -1138,9 +1138,13 @@ GROUPS = {"fast": [test_row_parity_all_programs, test_gradients_match_autodiff,
           "analytic": ANALYTIC_TESTS}   # the analytic arm's block alone
 
 
-if __name__ == "__main__":
+def main():
     try:
         _tiers.run(GROUPS)
     finally:
         close_all()
     print("ALL PASS (analytic)" if sys.argv[1:] == ["analytic"] else "ALL PASS")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
