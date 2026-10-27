@@ -2,7 +2,14 @@
 
 There is no test suite in this repo; run this by hand, alone, under the memory scope:
 
-    python tests/test_resume_e2e.py [ipopt|svgd ...]      # default: both
+    python tests/test_resume_e2e.py slow                  # both solvers
+    python tests/test_resume_e2e.py [ipopt|svgd ...]      # one of them
+
+Tiers (tests/_tiers.py): every check here is end to end, so the default `fast` tier runs
+nothing and says so -- the same contract is held cheaply by tests/test_cell_resume.py (run_grid's
+per-cell persistence, resume and kill marker, on stub arms) and tests/test_run_items_watcher.py
+(the watcher's kill and relaunch). `slow` (~20 min, needs the GPU: `--compile` and the CUDA
+graphs are the record's flags) is this file; on SuperCloud it is part of cluster/tests_slow_job.sh.
 
 For each solver, a 2 x 2 Panda pose grid (`scripts/panda/panda_benchmark.py`, the record's flags
 at a 60 s clock) is run three times, one process at a time:
@@ -160,6 +167,10 @@ def compare(ref, got, skip=(), label=""):
 
 
 def main(solvers):
+    if not solvers:
+        print("fast tier: nothing to run -- this file is end to end (`slow`, GPU). The resume "
+              "contract's cheap guards are tests/test_cell_resume.py and tests/test_run_items_watcher.py.")
+        return 0
     stamp = time.strftime("%Y%m%d-%H%M%S")
     work = tempfile.mkdtemp(prefix="resume_e2e_")
     tags = []
@@ -227,5 +238,15 @@ def main(solvers):
     return 1 if FAILURES else 0
 
 
+GROUPS = {"fast": [], "slow": ["ipopt", "svgd"], "ipopt": ["ipopt"], "svgd": ["svgd"]}
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:] or ["ipopt", "svgd"]))
+    ## The groups name solvers, not checks: the solvers share one tag stamp and one cleanup, so
+    ## they run in one `main` rather than through `_tiers.run`.
+    names = sys.argv[1:] or ["fast"]
+    unknown = [n for n in names if n not in GROUPS and n != "all"]
+    if unknown:
+        sys.exit(f"unknown group(s) {unknown}; this file has {sorted(GROUPS)} and 'all'")
+    solvers = [s for n in names for s in GROUPS["slow" if n == "all" else n]]
+    sys.exit(main(list(dict.fromkeys(solvers))))

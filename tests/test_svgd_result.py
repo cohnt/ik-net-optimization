@@ -16,9 +16,14 @@ and nothing here asserts that it converges. What is asserted of the returned poi
 it is a real point of the program -- finite, inside the variable bounds, not necessarily the
 start -- that `is_success()` agrees with the solver's own Drake re-check, and that the status
 is one of the real statuses with its name on the log's exit line.
+
+Tiers (tests/_tiers.py): the default `fast` runs in ~N_FAST s on one CPU core; `slow` (~N_SLOW s,
+CPU ok) holds the duck-type contract on the original 5 s cell (fast: an N=8 swarm stopped at 2
+outer steps).
 """
 import os
 import sys
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -34,10 +39,12 @@ from src.panda_program import PandaIKProgram, PandaIKProgramNumerical  # noqa: E
 from src.svgd.result import (SvgdResult, STATUS_NAMES,                   # noqa: E402
                              STATUS_NOT_IMPLEMENTED, status_name)
 from src.utils import BuildEnv, HiddenPrints                            # noqa: E402
+import _tiers                                                           # noqa: E402
 
 SCENE = os.path.join(REPO, "models/panda/panda_finray_collision_hardened.yaml")
 FAILURES = []
 CHECKS = [0]
+_TARGET = []
 
 
 def check(name, condition, detail=""):
@@ -57,6 +64,15 @@ LEGACY_PIN = dict(svgd_kernel="q", svgd_rho=1000.0, svgd_paired_init="jitter")
 
 
 def a_reachable_target():
+    """Memoised: a function of the scene alone (seed-0 draw over the plant's limits, FK of
+    `panda_hand`, default options). The sampler is only read for the plant's limits."""
+    if not _TARGET:
+        _TARGET.append(_sample_reachable_target())
+    target, sampler = _TARGET[0]
+    return target.copy(), sampler
+
+
+def _sample_reachable_target():
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
         sampler = PandaIKProgram(diagram, options=ProgramOptions())
@@ -68,13 +84,16 @@ def a_reachable_target():
     return np.concatenate([translation, wxyz]), sampler
 
 
-def test_svgd_result_duck_type():
+def test_svgd_result_duck_type(quick=False):
+    """`quick` (the fast tier) stops an N=8 swarm at 2 outer steps, the 5 s clock kept as the
+    backstop: every check is the result contract, met by a step-cap stop as by a clock stop."""
     print("\n--- svgd result: the seven calls the harness makes ---")
     log = os.path.join(REPO, "results/_test_svgd_result.log")
     os.makedirs(os.path.dirname(log), exist_ok=True)
     target, sampler = a_reachable_target()
+    budget = dict(svgd_n=8, svgd_outer_iters=2) if quick else {}
     opts = ProgramOptions(which_solver="svgd", max_wall_time=5.0, file_print_name=log,
-                          collision_avoidance=True, **LEGACY_PIN)
+                          collision_avoidance=True, **LEGACY_PIN, **budget)
     with HiddenPrints():
         diagram = BuildEnv(meshcat=None, directives_file=SCENE)
         p = PandaIKProgramNumerical(diagram, options=opts)
@@ -511,13 +530,17 @@ def test_resample_modes_on_injected_particles():
           "the last iterate under recovered_*)", verdict.fail_reason == "nan", str(verdict))
 
 
+GROUPS = {
+    "fast": [partial(test_svgd_result_duck_type, quick=True), test_svgd_kill_keeps_the_iterate,
+             test_bad_svgd_set_is_refused_at_options, test_option_guard,
+             test_resample_modes_without_deaths_are_bit_identical_to_native,
+             test_resample_modes_on_injected_particles],
+    "slow": [test_svgd_result_duck_type],
+}
+
+
 def main():
-    test_svgd_result_duck_type()
-    test_svgd_kill_keeps_the_iterate()
-    test_bad_svgd_set_is_refused_at_options()
-    test_option_guard()
-    test_resample_modes_without_deaths_are_bit_identical_to_native()
-    test_resample_modes_on_injected_particles()
+    _tiers.run(GROUPS)
     print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")
     for name in FAILURES:
         print(f"  FAILED: {name}")
