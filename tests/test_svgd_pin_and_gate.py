@@ -2,7 +2,7 @@
 
     .venv/bin/python tests/test_svgd_pin_and_gate.py            (the checks; ~3 min on the GPU)
     Tiers (tests/_tiers.py): the default `fast` runs (a) as pinned, (b) at the target's own
-    configuration on an N=16 swarm, and (c), in ~N_FAST s on one CPU core; `slow` (~N_SLOW s,
+    configuration on an N=16 swarm, and (c), in ~32 s on one CPU core; `slow` (~70 s,
     CPU ok) holds (b) from the generic start at N=64.
     .venv/bin/python tests/test_svgd_pin_and_gate.py capture    (rewrite the reference: DON'T,
                                                                  unless the old pin's behaviour

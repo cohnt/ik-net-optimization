@@ -17,7 +17,7 @@ it is a real point of the program -- finite, inside the variable bounds, not nec
 start -- that `is_success()` agrees with the solver's own Drake re-check, and that the status
 is one of the real statuses with its name on the log's exit line.
 
-Tiers (tests/_tiers.py): the default `fast` runs in ~N_FAST s on one CPU core; `slow` (~N_SLOW s,
+Tiers (tests/_tiers.py): the default `fast` runs in ~25 s on one CPU core; `slow` (~11 s,
 CPU ok) holds the duck-type contract on the original 5 s cell (fast: an N=8 swarm stopped at 2
 outer steps).
 """

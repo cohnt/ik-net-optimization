@@ -35,8 +35,8 @@ gradient is pulled back through `J_plant`. This file pins:
 Plain `test_*` functions with a `__main__` driver, like the other svgd tests. Needs the
 `soft12` / `screw7_p050` / `panda` `n6` charts under `models/`. Run alone, under the memory
 scope: `.venv/bin/python tests/test_svgd_soft_fastpath.py` (`... quick` skips 4).
-Tiers (tests/_tiers.py): the default `fast` runs 3 at 5 steps and skips 4, in ~N_FAST s on one
-CPU core; `slow` (~N_SLOW s, CPU ok; 4 needs CUDA) holds 3 at 30 steps and 4.
+Tiers (tests/_tiers.py): the default `fast` runs 3 at 5 steps and skips 4, in ~22 s on one
+CPU core; `slow` (~85 s, CPU ok; 4 needs CUDA) holds 3 at 30 steps and 4.
 """
 
 import os

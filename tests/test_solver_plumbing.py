@@ -37,7 +37,7 @@ What this file protects, each learned by the thing being possible:
     so the program counts map evaluations itself. If that stops working, the NLopt column
     has no cost measure at all.
 
-Tiers (tests/_tiers.py): the default `fast` runs in ~N_FAST s on one CPU core; `slow` (~N_SLOW s,
+Tiers (tests/_tiers.py): the default `fast` runs in ~40 s on one CPU core; `slow` (~75 s,
 CPU ok) holds the four solve-and-report cells uncapped, each running to its 20 s clock.
 """
 import os
