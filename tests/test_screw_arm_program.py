@@ -20,6 +20,7 @@ Uses an UNTRAINED chart on purpose: it exercises every code path while saying no
 solve quality, and the properties here are ones no amount of training would fix.
 
 Run with the project venv: `.venv/bin/python tests/test_screw_arm_program.py`.
+Tiers (tests/_tiers.py): the default `fast` runs in ~9 s on one CPU core; no `slow` group.
 """
 
 import os
@@ -29,6 +30,7 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from ikflow.ikflow_solver import IKFlowSolver
 from ikflow.model import IkflowModelParameters
@@ -245,11 +247,14 @@ def test_a_missing_checkpoint_is_an_error_not_a_column_of_zeros():
     print("PASS a missing checkpoint raises rather than scoring zero")
 
 
+GROUPS = {"fast": [test_the_flow_frame_is_the_flange_on_both_tasks,
+                   test_joint_limits_row_bounds_the_screw_coordinate,
+                   test_the_numerical_box_is_the_plants_own_limits,
+                   test_paired_start_is_exact,
+                   test_a_missing_checkpoint_is_an_error_not_a_column_of_zeros,
+                   test_gradients_match_central_differences]}
+
+
 if __name__ == "__main__":
-    test_the_flow_frame_is_the_flange_on_both_tasks()
-    test_joint_limits_row_bounds_the_screw_coordinate()
-    test_the_numerical_box_is_the_plants_own_limits()
-    test_paired_start_is_exact()
-    test_a_missing_checkpoint_is_an_error_not_a_column_of_zeros()
-    test_gradients_match_central_differences()
+    _tiers.run(GROUPS)
     print("ALL PASS")

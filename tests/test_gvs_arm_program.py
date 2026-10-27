@@ -20,6 +20,9 @@ are held to, since these programs inherit theirs:
 
 Run with the project venv: `GVS_ARM_XLA_THREADS=2 .venv/bin/python tests/test_gvs_arm_program.py`.
 Uses an UNTRAINED chart on purpose.
+
+Tiers (tests/_tiers.py): the default `fast` runs in ~20 s on one CPU core (~50 s on the first
+run, which fills the JAX compilation cache); no `slow` group.
 """
 
 import os
@@ -35,6 +38,8 @@ from ikflow.model import IkflowModelParameters  # noqa: E402
 from jrl.robots import get_robot  # noqa: E402
 from pydrake.all import InitializeAutoDiff  # noqa: E402
 
+import _tiers  # noqa: E402
+_tiers.jax_compilation_cache()                 # before src.gvs_arm imports jax
 import src.register_robots  # noqa: E402,F401
 from src.flow_loading import LEGACY_GVS_ARCH  # noqa: E402
 from src.generic_program import ProgramOptions  # noqa: E402
@@ -206,12 +211,19 @@ def test_grasp_programs_build_and_calibrate():
     print("PASS both grasp programs build on the GVS model and act at between_fingers")
 
 
+## Every check stays at full size: the time is the first program's compiles (the flow's
+## `jacrev`, the model's implicit Jacobian), paid by whichever check runs first. Programs are
+## not shared between checks: `create_prog` does not reset `self.constraints` (only `__init__`
+## does), so re-targeting a built program would hand Drake every row block twice.
+GROUPS = {
+    "fast": [test_every_program_accepts_what_the_driver_passes,
+             test_gradients_match_central_differences, test_paired_start_is_exact,
+             test_config_is_a_memo_hit, test_joint_limits_row_bounds_the_configuration,
+             test_verification_q_is_exact_under_a_learned_forward_model,
+             test_grasp_programs_build_and_calibrate],
+}
+
+
 if __name__ == "__main__":
-    test_every_program_accepts_what_the_driver_passes()
-    test_gradients_match_central_differences()
-    test_paired_start_is_exact()
-    test_config_is_a_memo_hit()
-    test_joint_limits_row_bounds_the_configuration()
-    test_verification_q_is_exact_under_a_learned_forward_model()
-    test_grasp_programs_build_and_calibrate()
+    _tiers.run(GROUPS)
     print("ALL PASS")

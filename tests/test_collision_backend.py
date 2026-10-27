@@ -19,6 +19,7 @@ is `SmoothOverMax(...)`, which over-approximates the maximum, so `min distance <
 No pytest config in this repo, so these are plain `test_*` functions with a `__main__` driver.
 Needs the Panda and iiwa `n6` charts under `models/` (the joint-space programs still load a
 network, because the base class does).
+Tiers (tests/_tiers.py): the default `fast` runs in ~13 s on one CPU core; no `slow` group.
 """
 
 import os
@@ -29,6 +30,7 @@ import time
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import _tiers                                                             # noqa: E402
 
 from pydrake.autodiffutils import ExtractGradient, ExtractValue, InitializeAutoDiff  # noqa: E402
 
@@ -363,10 +365,12 @@ def test_timing_table():
           f"({os.cpu_count()} CPUs on this machine; seconds are never compared across machines)")
 
 
+GROUPS = {"fast": [test_scene_spec_round_trips_the_mug_exactly,
+                   test_evaluator_matches_the_program_bitwise, test_collision_row_autograd,
+                   test_boolean_checker_agrees_with_the_row_outside_the_band,
+                   test_timing_table]}
+
+
 if __name__ == "__main__":
-    test_scene_spec_round_trips_the_mug_exactly()
-    test_evaluator_matches_the_program_bitwise()
-    test_collision_row_autograd()
-    test_boolean_checker_agrees_with_the_row_outside_the_band()
-    test_timing_table()
+    _tiers.run(GROUPS)
     print("ALL PASS")

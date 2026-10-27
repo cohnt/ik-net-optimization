@@ -24,13 +24,16 @@ Successes are PRINTED (the cap is 20 s; a single cell's verdict is not a measure
 what is asserted is that the verdicts agree and nothing breaks. Models: the `n6` charts
 (loaded only because the analytic programs inherit the learned base's construction; no
 network is evaluated). `.venv/bin/python tests/test_svgd_analytic.py`, alone, under the
-memory scope.
+memory scope. Tiers (tests/_tiers.py): the default `fast` runs 1 and 5 whole and 2 and 4 on
+N=16 swarms stopped at 2 outer steps, in ~13 s on one CPU core; `slow` (~75 s, CPU ok)
+holds 2 and 4 at the 20 s clock and 3 (`--no-compile` drops 3 from it).
 """
 
 import os
 import sys
 import time
 from dataclasses import replace
+from functools import partial
 
 import numpy as np
 import torch
@@ -48,6 +51,7 @@ from src.target_screening import SceneFile                                  # no
 from src.utils import BuildEnv, HiddenPrints, RepoDir                       # noqa: E402
 import test_batched_program as T                                            # noqa: E402
 from test_svgd_solver import grasp_gate, pose_gate                          # noqa: E402
+import _tiers                                                               # noqa: E402
 
 WALL = 20.0
 CUDA = torch.cuda.is_available()
@@ -207,22 +211,28 @@ def test_split_step_derivatives_match_autograd():
                   and err_F <= 1e-12 and d_val <= 1e-12, (err, err_q, err_F, d_val))
 
 
-def test_cells_eager_both_kernels():
+#: The fast tier's cells: every check `run_cell` makes is a record field (none asserts that the
+#: cell is solved), so an N=16 swarm stopped at 2 outer steps exercises the same split step,
+#: counts and Drake verdict as a solve run to the stop rule or the 20 s clock.
+QUICK = dict(svgd_n=16, svgd_outer_iters=2)
+
+
+def test_cells_eager_both_kernels(quick=False):
     print("\n--- one feasible-by-construction cell per robot x task, paired, eager, kernels x and q ---")
     n_ok, n = 0, 0
     for robot in ("panda", "iiwa"):
         for task in ("pose", "mug"):
             for kernel in ("x", "q"):
-                verdict, _ = run_cell(robot, task, kernel)
+                verdict, _ = run_cell(robot, task, kernel, **(QUICK if quick else {}))
                 n += 1
                 n_ok += bool(verdict.feasible)
     print(f"    solved {n_ok}/{n}")
 
 
-def test_native_start():
+def test_native_start(quick=False):
     print("\n--- the native start protocol, kernel x ---")
     for robot, task in (("panda", "pose"), ("iiwa", "mug")):
-        run_cell(robot, task, "x", start="native")
+        run_cell(robot, task, "x", start="native", **(QUICK if quick else {}))
 
 
 def test_compiled_and_graphed():
@@ -257,15 +267,21 @@ def test_latent_kernels_refused():
     check("svgd_kernel=cz (the learned-only default) refused on the analytic arm", ok, msg)
 
 
+GROUPS = {
+    "fast": [test_latent_kernels_refused, test_split_step_derivatives_match_autograd,
+             partial(test_cells_eager_both_kernels, quick=True), partial(test_native_start, quick=True)],
+    ## The cells solved to the stop rule or the clock, and the compiled (and, on CUDA, graphed)
+    ## step with its warm-up compile -- ~25 s of inductor on one CPU core with a warm cache.
+    "slow": [test_cells_eager_both_kernels, test_native_start, test_compiled_and_graphed],
+}
+
+
 if __name__ == "__main__":
     print(f"device: {'cuda' if CUDA else 'cpu'}")
+    if "--no-compile" in sys.argv:              # the old flag: the slow cells without the compile
+        GROUPS["slow"].remove(test_compiled_and_graphed)
     try:
-        test_latent_kernels_refused()
-        test_split_step_derivatives_match_autograd()
-        test_cells_eager_both_kernels()
-        test_native_start()
-        if "--no-compile" not in sys.argv:
-            test_compiled_and_graphed()
+        _tiers.run(GROUPS, argv=[a for a in sys.argv[1:] if a != "--no-compile"])
     finally:
         T.close_all()
     if FAILURES:

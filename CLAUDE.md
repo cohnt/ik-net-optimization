@@ -47,12 +47,14 @@ python scripts/iiwa/iiwa_benchmark.py   --task mug  --targets 12 --guesses 2 --c
 python scripts/collate.py 'results/*/benchmark/*/summary.json'
 ```
 
-Older per-experiment scripts (`panda_mug*.py`, `*_collision.py`, `iiwa_mug.py`, ...) are kept for
-archived comparability, configured by their `####### Options #######` block. `tests/` holds invariant
-guards, not a suite; no lint config. Output goes to `results/` (gitignored). Visualization is Meshcat;
-mug experiments start a second one (`GenerateDiagramWithMug` rebuilds the diagram per target). Panda
-weights download via `ikflow` (`panda__full__lp191_5.25m`); iiwa weights are local pickles under
-`models/iiwa14/` (gitignored). URDFs use `package://combining_kinematics/...` with vendored meshes.
+Older per-experiment scripts (`panda_mug*.py`, ...) are archive-only (`####### Options #######`
+block). **`tests/`** holds invariant guards, no suite or lint: `python tests/<f>.py` is the `fast`
+tier (<= ~2 min, one CPU core, local rules below), `... slow` / `all` the record-scale tier (GPU,
+or `cluster/tests_slow_job.sh`); details `docs/tests-tiers.md`. Output goes to
+`results/` (gitignored). Visualization is Meshcat; mug experiments start a second one
+(`GenerateDiagramWithMug` rebuilds per target). Panda weights download via `ikflow`
+(`panda__full__lp191_5.25m`); iiwa weights are local pickles under `models/iiwa14/` (gitignored).
+URDFs use `package://combining_kinematics/...` with vendored meshes.
 
 ## Architecture (long form: `docs/notes-architecture.md`)
 
@@ -407,7 +409,7 @@ chart fits at LOInK's own `K = n - 6 = 1`** (the latent width is why), **and ret
 on ONE IK branch (phase 2, 24 `loinkB*` charts, 2026-10-25) changed nothing**: 0.5-0.7 m median
 task error on the branch itself, so topology was not the binding constraint. **Soft12 (`K = 6`)
 learns but no chart fits** (0.18-0.29 m, `z = 0` a metre off, cost head R^2 < 0; cells 0/20 under
-IPOPT and AL-SVGD); real latents lie OUTSIDE the +-5 box (paired starts clip). Recipe-P relu charts end non-invertible (`tau` > 7e4); recipe A's LR collapses by step 20k (the paper's schedule). **DISMISSED (Thomas, 2026-10-26)**: a decode is 155-1840
+IPOPT and AL-SVGD); real latents lie OUTSIDE the +-5 box (paired starts clip). **DISMISSED (Thomas, 2026-10-26)**: a decode is 155-1840
 network passes (Davis-Yin + polish) against the flow's one, i.e. 1-9 s per IPOPT iteration, ~100x the flow. The branch is tag `archive/chart-loink` (code, tables, runbook, manifests).
 Long form `docs/notes-chart.md`; replication `docs/loink-replication.md`.
 

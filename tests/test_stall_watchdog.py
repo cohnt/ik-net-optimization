@@ -13,6 +13,7 @@ the GIL and segfaulted ~7% of the processes it fired on (stage SEGVREP, 2026-10-
 So this runs that same workload in a subprocess under `StallWatchdog` firing every 1 ms and
 requires it to exit cleanly with every dump complete, checks arm/repeat/cancel, and guards
 against `dump_traceback_later` coming back anywhere in the tree.
+Tiers (tests/_tiers.py): the default `fast` runs in ~26 s on one CPU core; no `slow` group.
 """
 import io
 import os
@@ -23,6 +24,7 @@ import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(REPO)
+import _tiers                                                             # noqa: E402
 
 from src.benchmark import StallWatchdog                                 # noqa: E402
 
@@ -116,11 +118,17 @@ def test_no_faulthandler_watchdog_in_tree():
           (f": {hits}" if hits else ""))
 
 
-if __name__ == "__main__":
+def survives_compiled_workload():
     import tempfile
-    test_arm_repeat_cancel()
-    test_no_faulthandler_watchdog_in_tree()
     with tempfile.TemporaryDirectory() as tmp:
         test_survives_compiled_workload(tmp)
+
+
+GROUPS = {"fast": [test_arm_repeat_cancel, test_no_faulthandler_watchdog_in_tree,
+                   survives_compiled_workload]}
+
+
+if __name__ == "__main__":
+    _tiers.run(GROUPS)
     print(f"\n{len(FAILURES)} failure(s)")
     sys.exit(1 if FAILURES else 0)

@@ -30,6 +30,7 @@ Three things are protected, each of which failed silently at least once in desig
    directory is itself a stray clone of an unrelated project, so a staged tree with no
    `.git` of its own had `rev-parse HEAD` answer for that project -- recorded as
    `ikflow_commit`, a well-formed hash in the one field claiming to be provenance.
+Tiers (tests/_tiers.py): the default `fast` runs in ~8 s on one CPU core; no `slow` group.
 """
 
 import os
@@ -42,6 +43,7 @@ import torch
 
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(REPO)
+import _tiers                                                             # noqa: E402
 
 from ikflow.training.pole_callback import (  # noqa: E402
     rpy_to_wxyz,
@@ -315,13 +317,13 @@ def test_pole_domain_is_injectable_and_its_default_is_the_recorded_one():
     print("PASS pole domain injectable, default unchanged")
 
 
+GROUPS = {"fast": [test_rpy_to_wxyz_matches_pydrake_exactly, test_sampler_stream_frozen,
+                   test_export_roundtrip_and_sidecar, test_non_default_architecture_roundtrip,
+                   test_sidecar_weight_mismatch_raises, test_pole_metrics_shape,
+                   test_provenance_ignores_an_enclosing_repository,
+                   test_pole_domain_is_injectable_and_its_default_is_the_recorded_one]}
+
+
 if __name__ == "__main__":
-    test_rpy_to_wxyz_matches_pydrake_exactly()
-    test_sampler_stream_frozen()
-    test_export_roundtrip_and_sidecar()
-    test_non_default_architecture_roundtrip()
-    test_sidecar_weight_mismatch_raises()
-    test_pole_metrics_shape()
-    test_provenance_ignores_an_enclosing_repository()
-    test_pole_domain_is_injectable_and_its_default_is_the_recorded_one()
+    _tiers.run(GROUPS)
     print("ALL PASS")

@@ -14,6 +14,11 @@ What is asserted on every cell: no exception; an `SvgdResult`; `last_iterate` se
 `drake_feasible == verify's feasible` (same Drake functional, so a disagreement is a bug);
 the per-outer trace is present and the right length. The numbers are PRINTED either way.
 
+Tiers (tests/_tiers.py): the default `fast` runs in ~75 s on one CPU core (the clock-bound
+checks on small swarms, at the target's own configuration or stopped at a few outer steps);
+`slow` (~4.5 min on one CPU core, ~2 min on the GPU; its sweep is GPU cells) holds the record-
+scale forms.
+
 The default run (`.venv/bin/python tests/test_svgd_solver.py`) is the short set: the
 closed-form derivative parity, the row scaling against Drake, the step with the kernel off
 against projected gradient descent on the program's own L_rho (full autograd), the grasp
@@ -33,6 +38,7 @@ import subprocess
 import sys
 import time
 from dataclasses import replace
+from functools import partial
 
 import numpy as np
 import torch
@@ -52,6 +58,7 @@ from src.svgd.solver import SvgdSolver, _Target                         # noqa: 
 from src.target_screening import SceneFile                              # noqa: E402
 from src.utils import BuildEnv, HiddenPrints, RepoDir                   # noqa: E402
 import test_batched_program as T                                        # noqa: E402
+import _tiers                                                           # noqa: E402
 
 WALL = 20.0
 N_SWEEP = 64
@@ -181,7 +188,12 @@ def run_cell(p, task, label, overrides, wall=WALL, seed=7, start="paired", quiet
     tag = f"[{task}/{arm}] {label}"
     check(f"{tag}: returns an SvgdResult", isinstance(result, SvgdResult))
     check(f"{tag}: last_iterate set", getattr(p, "last_iterate", None) is not None)
-    check(f"{tag}: wall_time <= cap + 1", wall_time <= wall + 1.0, f"{wall_time}")
+    ## The clock is read between outer steps, so a solve may overrun its cap by one outer step
+    ## and the selection after it: the bound is the larger of 1 s and 1.5 steps (on one CPU core
+    ## an N=64 outer step is ~2.7-3.1 s, so a fixed 1 s missed on a cell that ran a second step).
+    step = d.phase_times.get("swarm", 0.0) / max(1, d.iterations)
+    check(f"{tag}: wall_time <= cap + max(1 s, 1.5 outer steps)", wall_time <= wall + max(1.0, 1.5 * step),
+          f"{wall_time} (outer step {step:.2f} s)")
     check(f"{tag}: map_evals agrees with eval_counts",
           ## `verify` and the Drake re-check evaluate single points through QAndPose, so the
           ## program's counter is >= the batched count; the delta recorded by the solver is exact.
@@ -263,13 +275,16 @@ def test_closed_form_derivatives_match_autograd():
                   f"rows {err_rows} cost {err_cost} extra {err_extra} chain {err_chain} det {err_det}")
 
 
-def test_grasp_cells():
-    """Panda mug, both arms, the two paired-start swarm inits (`jitter`, `native`)."""
-    print("\n--- Panda grasp cells (al_svgd N=64 kernel=q), paired start ---")
+def test_grasp_cells(quick=False):
+    """Panda mug, both arms, the two paired-start swarm inits (`jitter`, `native`). `quick`
+    (the fast tier) holds the same record checks on N=16 swarms stopped at 2 outer steps;
+    the full cells solve to the stop rule or the 20 s clock."""
+    n, budget = (16, dict(svgd_outer_iters=2)) if quick else (N_SWEEP, {})
+    print(f"\n--- Panda grasp cells (al_svgd N={n} kernel=q), paired start ---")
     for arm in ("learned", "numerical"):
         for init in ("jitter", "native"):
             run_cell(T.program("panda", "mug", arm), "mug", f"init={init}",
-                     dict(svgd_n=N_SWEEP, svgd_kernel="q", svgd_paired_init=init))
+                     dict(svgd_n=n, svgd_kernel="q", svgd_paired_init=init, **budget))
 
 
 def _run_fixed_steps(p, N, outer, seed=11, **ov):
@@ -300,18 +315,19 @@ def test_determinism():
           f"{da.inner_steps} {db.inner_steps}")
 
 
-def test_wall_clock_stop():
+def test_wall_clock_stop(n=64):
     """`max_wall_time = 3` at N=64 stops at the clock with the iterate kept. The solver is
     warmed first (`warm_up`), as the benchmark's `WarmUpSvgdStep` guarantees before any timed
-    cell."""
-    print("\n--- wall-clock stop: max_wall_time=3, N=64 ---")
+    cell. The fast tier runs N=16: on one CPU core an N=64 outer step is ~2.7 s, longer than
+    `run_cell`'s fixed `cap + 1` margin (the step-scaled bounds below hold at either N)."""
+    print(f"\n--- wall-clock stop: max_wall_time=3, N={n} ---")
     p = pose_program("learned")
-    p.options = replace(p.options, which_solver="svgd", **dict(LEGACY_PIN, svgd_n=64))
+    p.options = replace(p.options, which_solver="svgd", **dict(LEGACY_PIN, svgd_n=n))
     SvgdSolver(p).warm_up()
     t0 = time.time()
     ## Both budgets lifted explicitly: `run_cell` builds on `p.options`, which an earlier
     ## test may have left with a small `svgd_outer_iters` (the determinism test's 5).
-    _, d, _ = run_cell(p, "pose", "wall=3", dict(svgd_n=64, svgd_kernel="q",
+    _, d, _ = run_cell(p, "pose", "wall=3", dict(svgd_n=n, svgd_kernel="q",
                                                  svgd_stop_patience=10 ** 6, svgd_outer_iters=10 ** 6),
                        wall=3.0, quiet=True)
     wall = time.time() - t0
@@ -377,9 +393,10 @@ def test_cem_warmup_toggle():
     check("cem: warmup phase time recorded", "warmup" in d.phase_times)
 
 
-def test_benchmark_subprocess():
+def test_benchmark_subprocess(quick=False):
     """One cell of `panda_benchmark.py --solver svgd`: `summary.json` carries both arms with
-    `record["svgd"]` populated. The tag's directory is deleted afterwards."""
+    `record["svgd"]` populated. The tag's directory is deleted afterwards. `quick` (the fast
+    tier) runs the same cell on an N=8 swarm stopped at 2 outer steps."""
     print("\n--- panda_benchmark.py --solver svgd, one cell, subprocess ---")
     tag = "smoke_svgd_test"
     out_dir = os.path.join(RepoDir(), "results", "panda", "benchmark", tag)
@@ -389,6 +406,8 @@ def test_benchmark_subprocess():
            "--solver", "svgd", "--arms", "learned,numerical", "--config", "latent", "--tag", tag]
     for k, v in LEGACY_PIN.items():             # cz, the new default kernel, is learned-only
         cmd += ["--set", f"{k}={v}"]
+    if quick:
+        cmd += ["--set", "svgd_n=8", "--set", "svgd_outer_iters=2"]
     t0 = time.time()
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     print(f"    exit {proc.returncode} in {time.time() - t0:.0f} s")
@@ -554,7 +573,14 @@ def _latent_pose_program(weight):
     return _POSE[key]
 
 
-def test_stop_select_objective():
+#: The fast tier's converged solves: the start is the configuration the target was generated
+#: from and the swarm the native-draw paired one (particle 0 exactly at that start; `jitter`
+#: moves every particle 0.1 off it), N=16 -- the stall rule fires in ~6 outer steps on one CPU
+#: core, where the generic start at N=32 runs into the 30 s clock unconverged.
+AT_TARGET = dict(svgd_n=16, svgd_paired_init="native")
+
+
+def test_stop_select_objective(at_target=False):
     """`svgd_stop_select_objective` (stage SVGD_R29): which objective the stall rule and the
     selection read. On a Panda pose learned cell with `latent_cost_weight = 1` (so the full
     objective and the shared one differ by a material regulariser), the final selection's
@@ -562,7 +588,9 @@ def test_stop_select_objective():
     swarm: under 'shared' the selected particle is the argmin of `F_reported` among those
     feasible at the solve's `feas_level`, under 'full' the argmin of `F`. The selection is
     captured by wrapping `SvgdSolver._select` (its last call is the one returned). An unknown
-    value is refused at options construction."""
+    value is refused at options construction. `at_target` (the fast tier) starts the swarm at
+    the configuration the target was generated from (`AT_TARGET`), so the stall rule fires in a
+    few outer steps; what is checked is the selection, not the method's reach."""
     print("\n--- stop / select objective: 'shared' vs 'full' (latent_cost_weight=1) ---")
     try:
         ProgramOptions(svgd_stop_select_objective="bogus")
@@ -585,8 +613,9 @@ def test_stop_select_objective():
         SvgdSolver._select = spy
         try:
             _, d, _ = run_cell(p, "pose", f"objective={mode}",
-                               dict(svgd_n=32, svgd_kernel="q", svgd_outer_iters=300,
-                                    svgd_stop_select_objective=mode), wall=30.0, quiet=True)
+                               {**dict(svgd_n=32, svgd_kernel="q", svgd_outer_iters=300,
+                                    svgd_stop_select_objective=mode), **(AT_TARGET if at_target else {})},
+                               wall=30.0, quiet=True, q_init=_POSE["q_target"] if at_target else None)
         finally:
             SvgdSolver._select = orig
         tag = f"stop/select objective={mode}"
@@ -618,13 +647,15 @@ def test_stop_select_objective():
               f"selected {sel.selected} argmin {amin} candidates {sel.cands}")
 
 
-def test_polish():
+def test_polish(at_target=False):
     """`svgd_polish` (a smoke, 2026-10-18): the float64 minimum-norm Gauss-Newton polish of
     the returned particle. On the Panda pose learned cell under 'newton': the solve converges,
     a polish ran, the worst signed Drake violation did not rise and stays within the gate, and
     `verify` (the harness's own re-measurement) agrees the point is feasible. Under 'none' no
     polish ran and the per-cell svgd record carries no polish_* key. An unknown value is
-    refused at options construction."""
+    refused at options construction. `at_target` (the fast tier, `AT_TARGET`) starts the swarm at
+    the configuration the target was generated from: the polish and its record are checked, not
+    the method's reach (on one CPU core the generic start does not converge inside 30 s)."""
     print("\n--- polish: 'newton' vs 'none' (Panda pose, learned) ---")
     try:
         ProgramOptions(svgd_polish="bogus")
@@ -636,8 +667,14 @@ def test_polish():
     tol = 1e-4
     for mode in ("newton", "none"):
         v, d, result = run_cell(p, "pose", f"polish={mode}",
-                                dict(svgd_n=32, svgd_kernel="q", svgd_outer_iters=300,
-                                     svgd_polish=mode, svgd_polish_steps=3), wall=30.0, quiet=True)
+                                {**dict(svgd_n=32, svgd_kernel="q", svgd_outer_iters=300,
+                                        svgd_polish=mode, svgd_polish_steps=3,
+                                        ## Named: `run_cell` accumulates overrides on the shared
+                                        ## pose program, and the wall-clock and stop-reason tests
+                                        ## leave the patience at 10**6 (no stall stop possible).
+                                        svgd_stop_patience=ProgramOptions().svgd_stop_patience),
+                                 **(AT_TARGET if at_target else {})},
+                                wall=30.0, quiet=True, q_init=_POSE["q_target"] if at_target else None)
         rec = bm.solver_diagnostics(result, "svgd").get("svgd", {})
         pol = d.polish
         tag = f"polish={mode}"
@@ -920,27 +957,27 @@ def release():
     T.close_all()
 
 
+FAST = [test_closed_form_derivatives_match_autograd, test_scaled_rows_map_back_to_drake_rows,
+        partial(test_grasp_cells, quick=True), test_determinism, partial(test_wall_clock_stop, n=16),
+        test_nan_injection, test_cem_warmup_toggle, test_stop_reasons_and_log,
+        partial(test_stop_select_objective, at_target=True), partial(test_polish, at_target=True),
+        test_polish_holds_satisfied_active_rows, test_step_with_kernel_off_is_pgd_on_the_programs_L,
+        test_graph_replay_is_bitwise, partial(test_benchmark_subprocess, quick=True)]
+GROUPS = {
+    "fast": FAST,
+    "short": FAST,                         # the default's name before the tiers
+    ## The record-scale forms: the full grasp cells, the N=64 clock, the converged solves from
+    ## a generic start, the benchmark cell at its 20 s clock, and the pose sweep (GPU cells).
+    "slow": [test_grasp_cells, test_wall_clock_stop, test_stop_select_objective, test_polish,
+             test_benchmark_subprocess, sweep],
+    "polish": [test_polish_holds_satisfied_active_rows, test_polish],
+    "sweep": [sweep],
+    "profile": [profile],
+}
+
+
 def main():
-    which = sys.argv[1:] or ["short"]
-    tests = []
-    if "short" in which:
-        tests += [test_closed_form_derivatives_match_autograd, test_scaled_rows_map_back_to_drake_rows,
-                  test_grasp_cells, test_determinism, test_wall_clock_stop, test_nan_injection,
-                  test_cem_warmup_toggle, test_stop_reasons_and_log, test_stop_select_objective,
-                  test_polish, test_polish_holds_satisfied_active_rows,
-                  test_step_with_kernel_off_is_pgd_on_the_programs_L, test_graph_replay_is_bitwise,
-                  test_benchmark_subprocess]
-    if "polish" in which:
-        tests += [test_polish_holds_satisfied_active_rows, test_polish]
-    if "sweep" in which:
-        tests.append(sweep)
-    if "profile" in which:
-        tests.append(profile)
-    for t in tests:
-        try:
-            t()
-        finally:
-            release()
+    _tiers.run(GROUPS, after=release)
     print(f"\n{len(FAILURES)} failed")
     for f in FAILURES:
         print("  FAILED:", f)

@@ -15,6 +15,7 @@
      `F_reported` against the cost bindings with the term excluded from the reported one;
   4. the binding is absent at w = 0 and on the joint-space arm, and `ProgramOptions` refuses
      the term under `lift_q` and under `chart_error_scale`.
+Tiers (tests/_tiers.py): the default `fast` runs in ~10 s on one CPU core; no `slow` group.
 """
 import os
 import sys
@@ -26,6 +27,7 @@ import torch
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.dirname(HERE))
 sys.path.append(HERE)
+import _tiers                                                             # noqa: E402
 
 from pydrake.autodiffutils import InitializeAutoDiff                   # noqa: E402
 
@@ -241,10 +243,11 @@ def test_options_refused():
     print("PASS ProgramOptions refuses the term under lift_q / chart_error_scale / w < 0")
 
 
+GROUPS = {"fast": [test_options_refused, test_freia_logdet_is_slogdet,
+                   test_drake_cost_gradient_matches_central_differences,
+                   test_batched_matches_drake, test_absent_at_zero_and_on_joint_space]}
+
+
 if __name__ == "__main__":
-    test_options_refused()
-    test_freia_logdet_is_slogdet()
-    test_drake_cost_gradient_matches_central_differences()
-    test_batched_matches_drake()
-    test_absent_at_zero_and_on_joint_space()
+    _tiers.run(GROUPS)
     print("ALL PASS")
