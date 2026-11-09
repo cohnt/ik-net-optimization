@@ -23,9 +23,8 @@ implemented inline here rather than imported, so it cannot drift when read by a 
 Settings are named by their OPTIONS, never by the manifest token (Thomas: an internal token
 "is an abbreviation. Don't do that.").
 
-Reads merged 480-cell summaries out of results/_cluster_staging/*/ as well as the promoted
-tree, because a run in flight is only ever staged -- a glob over the promoted location alone
-silently matches nothing and any check written against it passes vacuously.
+Reads merged 480-cell summaries under results/: collect_results.sh promotes every merged run
+there (cluster/condense_staging.py), so a glob over results/ sees a run as soon as it merges.
 
 Usage:
     scripts/report_snoptcombo.py                    # every candidate found
@@ -79,8 +78,7 @@ def median(xs):
 def load_complete(cells=480):
     """tag -> summary, for every MERGED run of the right size. Per-shard dirs are skipped."""
     out = {}
-    for pat in (f"results/_cluster_staging/*/results/*/benchmark/{TAG}*/summary.json",
-                f"results/*/benchmark/{TAG}*/summary.json"):
+    for pat in (f"results/*/benchmark/{TAG}*/summary.json",):   # results/ only: collect_results.sh promotes every merged run (cluster/condense_staging.py)
         for f in sorted(glob.glob(pat)):
             tag = os.path.basename(os.path.dirname(f))
             if "_shard" in tag:

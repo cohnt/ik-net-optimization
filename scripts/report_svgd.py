@@ -120,10 +120,9 @@ class Report:
 
 ## ------------------------------------------------------------------- loading --
 def find_summary(root, tag):
-    """`<root>/<robot>/benchmark/<tag>/summary.json`, staged trees too (a run in flight is only
-    ever staged). Per-shard directories are never read: only merged runs are."""
-    for pattern in (f"{root}/*/benchmark/{tag}/summary.json",
-                    f"{root}/_cluster_staging/*/results/*/benchmark/{tag}/summary.json"):
+    """`<root>/<robot>/benchmark/<tag>/summary.json` (collect_results.sh promotes every merged
+    run, cluster/condense_staging.py). Per-shard directories are never read: only merged runs are."""
+    for pattern in (f"{root}/*/benchmark/{tag}/summary.json",):
         hits = sorted(glob.glob(pattern))
         if hits:
             return hits[-1]

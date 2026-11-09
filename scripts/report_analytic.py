@@ -50,7 +50,7 @@ TAG = re.compile(r"^sc_ANALYTIC([NSC]?)(T?)_(.+?)(_pin2k[xq])?$")
 def load_analytic(cells=480):
     """tag -> summary for every merged analytic run (smokes and shards skipped)."""
     out = {}
-    for root in ("results/_cluster_staging/*/results", "results"):
+    for root in ("results",):              # results/ only: collect_results.sh promotes every merged run (cluster/condense_staging.py)
         for f in sorted(glob.glob(f"{root}/*/benchmark/sc_ANALYTIC*/summary.json")):
             tag = os.path.basename(os.path.dirname(f))
             if "_shard" in tag or tag.startswith("sc_ANALYTICSMOKE") or not TAG.match(tag):

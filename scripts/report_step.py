@@ -30,9 +30,8 @@ import tarfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-## Stage STEP's persisted runs, promoted tree and staging drops alike.
-DEFAULT_GLOBS = ("results/_cluster_staging/*/results/*/benchmark/sc_STEP_*/summary.json",
-                 "results/*/benchmark/sc_STEP_*/summary.json")
+## Stage STEP's persisted runs (results/ only: collect_results.sh promotes every merged run (cluster/condense_staging.py)).
+DEFAULT_GLOBS = ("results/*/benchmark/sc_STEP_*/summary.json",)
 
 
 def discover_rows():
@@ -42,10 +41,8 @@ def discover_rows():
     `report()` compares WITHIN. Per-shard directories are skipped, as in every other
     report_* reader.
     """
-    ## Keyed by TAG first, because a run promoted to results/ is usually ALSO still present
-    ## in the staging drop it arrived in, and two paths to one run would look like two runs
-    ## carrying the same setting token -- which is exactly the condition report() refuses.
-    ## DEFAULT_GLOBS lists staging first so the promoted copy wins the overwrite.
+    ## Keyed by TAG: two paths to one run would look like two runs carrying the same setting
+    ## token -- which is exactly the condition report() refuses.
     by_tag = {}
     for pat in DEFAULT_GLOBS:
         for f in sorted(glob.glob(pat)):

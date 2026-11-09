@@ -139,8 +139,8 @@ after the rename and after `~/learned-ik-screw` was verified against it. What su
   the originals (sha256-checked by `cluster/import_chart.py`), sidecars carrying the new robot name and
   a provenance entry naming the original path.
 * **Every benchmark result, the training metrics and wandb logs, and all 465 pole screens**: locally,
-  under the new names, in `results/screw_arm/`, `results/_cluster_staging/20261002-*/` and
-  `results/pole/screw7_*/`. Both reporters and the record's tables regenerate from them.
+  under the new names, in `results/screw_arm/`, `results/_cluster_staging/20261002-*/` (promoted into results/ by
+  `cluster/condense_staging.py`, 2026-11-09) and `results/pole/screw7_*/`. Both reporters and the record's tables regenerate from them.
 
 **What is gone**: the four datasets (5.3 GB; rebuilding one is ~6 minutes on `xeon-p8`, and must be
 done under the new name), the intermediate Lightning checkpoints and per-step exports (61 GB), and

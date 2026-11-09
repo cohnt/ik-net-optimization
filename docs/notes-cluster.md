@@ -56,7 +56,9 @@ The measured calibration — workers per node, GPU-vs-CPU, the cap ladder and pr
 Three operational post-mortems live in `cluster/README.md` in more detail than a project record
 needs, and the transferable lesson of each is stated there. **A shard set straddling any number of
 collections merges normally** — `collect_results.sh` passes `--also` for every prior staging
-directory — so collect when you want results and act only on an actual `INCOMPLETE`; the old advice
+directory (after condensation only unmerged shards remain there, `cluster/condense_staging.py`;
+staging is temporary, readers read `results/` only) — so collect when you want results and act
+only on an actual `INCOMPLETE`; the old advice
 here to "collect less often than an item takes" was stale, and a stale MITIGATION costs more than a
 stale diagnosis because it gets acted on. Per-cell solver logs go to node-local `$TMPDIR` and roll
 into one archive, because 35,596 small files on Lustre took a routine collection from three minutes

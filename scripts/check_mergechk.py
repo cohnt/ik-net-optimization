@@ -20,7 +20,7 @@ cell the ORIGINAL ran past F x the clock must come back `killed_overrun`, infeas
 at F x the clock (within 30 s: the watcher polls every 5 s), and no other cell may have been killed.
 
 Shards are read directly (a partial shard set does not merge, by design). Originals are the merged
-runs under results/ or results/_cluster_staging/*/results/.
+runs under results/; the MERGECHK shards, which never merge by design, under results/_unmerged_shards/.
 
     python scripts/check_mergechk.py [--root <checkout holding results/>]
 """
@@ -35,7 +35,7 @@ import numpy as np
 
 
 def load_original(tag):
-    for root in ("results", "results/_cluster_staging/*/results"):
+    for root in ("results",):
         hits = sorted(glob.glob(f"{root}/*/benchmark/{tag}/summary.json"))
         if hits:
             with open(hits[-1]) as fh:
@@ -56,7 +56,7 @@ def main():
     os.chdir(args.root)
 
     shards = {}
-    for root in ("results", "results/_cluster_staging/*/results"):
+    for root in ("results", "results/_unmerged_shards"):   # never-merged shards: condense_staging.py
         for f in glob.glob(f"{root}/*/benchmark/sc_*_shard*of8/summary.json"):
             if re.match(rf"sc_{args.prefix}_", os.path.basename(os.path.dirname(f))):
                 shards.setdefault(os.path.basename(os.path.dirname(f)), f)

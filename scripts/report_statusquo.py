@@ -149,7 +149,7 @@ def num(x, w, prec=0, dash="--"):
 def load(prefix, cells=None):
     """tag -> summary for every MERGED run with the prefix. Per-shard directories are skipped."""
     out = {}
-    for root in ("results/_cluster_staging/*/results", "results"):
+    for root in ("results",):              # results/ only: collect_results.sh promotes every merged run (cluster/condense_staging.py)
         for f in sorted(glob.glob(f"{root}/*/benchmark/{prefix}*/summary.json")):
             tag = os.path.basename(os.path.dirname(f))
             if "_shard" in tag:

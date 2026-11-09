@@ -104,8 +104,7 @@ def load():
     baseline's by substitution silently misses it.
     """
     rows = {}
-    for pat in (f"results/_cluster_staging/*/results/*/benchmark/{TAG}*/summary.json",
-                f"results/*/benchmark/{TAG}*/summary.json"):
+    for pat in (f"results/*/benchmark/{TAG}*/summary.json",):   # results/ only: collect_results.sh promotes every merged run (cluster/condense_staging.py)
         for f in sorted(glob.glob(pat)):
             tag = os.path.basename(os.path.dirname(f))
             if "_shard" in tag:
