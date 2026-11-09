@@ -304,8 +304,14 @@ def unit_size(path, kind):
     return os.lstat(path).st_size
 
 
-def plan(index, args, dry=False):
-    """{unit path: [verdict, destination, kind, size]} over every collection."""
+def plan(index, args, anticipate=False):
+    """{unit path: [verdict, destination, kind, size]} over every collection.
+
+    `anticipate` counts the staged files this plan is about to promote (and, with
+    --archive-conflicts, archive) as if already under results/ -- needed by the FIRST plan, or a
+    shard whose merged run is still in staging looks unmerged and --promote-unmerged copies it
+    too (it did, 2026-11-09: 1,407 duplicate shards). The second plan, the one that decides what
+    is trashed, never anticipates and runs on a fresh Index: disk only."""
     out, by_dest, pending = {}, {}, []
     for stamp in collections():
         for kind, path in units(stamp):
@@ -331,10 +337,10 @@ def plan(index, args, dry=False):
             for p in paths[:-1]:
                 out[p][0] = "redundant" if contained(p, newest, kind) else "conflict"
 
-    if dry and args.archive_conflicts:
+    if anticipate and args.archive_conflicts:
         pending += [(os.path.join(p, SUMMARY), robot_tag(p)[0])
                     for p, r in out.items() if r[0] == "conflict" and r[2] == "run"]
-    index.refresh(pending if dry else ())
+    index.refresh(pending if anticipate else ())
     for p, row in out.items():
         if row[0] != "shard?":
             continue
@@ -409,8 +415,7 @@ def main():
         print("no staging directory")
         return 0
 
-    index = Index()
-    p = plan(index, args, dry=not args.apply)
+    p = plan(Index(), args, anticipate=True)
     tally(p, "plan")
     for path, (v, dest, kind, size) in sorted(p.items()):
         if v in ("conflict", "unmerged", "keep") or (args.list and v == "promote"):
@@ -438,7 +443,7 @@ def main():
                 copy_unit(path, target, kind)
 
     ## Re-plan from scratch, from disk: only what is now verifiably redundant leaves staging.
-    p = plan(index, args)
+    p = plan(Index(), args)                      # fresh index: no anticipated keys survive
     if args.archive_conflicts:
         for path, row in p.items():
             if row[0] == "conflict" and archived(path, row[2])[1]:
