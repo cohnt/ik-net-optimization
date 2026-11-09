@@ -21,6 +21,11 @@ shards were re-run (`overrun_rerun_shards`).
 
     python scripts/apply_overrun_rerun.py            # dry run: what would be folded and moved
     python scripts/apply_overrun_rerun.py --apply
+
+HISTORICAL (2026-11-09): stage OVR is applied and closed, and staging has since been condensed
+(cluster/condense_staging.py): the shards this read are gone from staging. Their records are in the
+merged runs (results/, results/archive_preoverrun/, results/archive_staging/), their metadata in
+results/_shard_stubs/, their logs in results/_solver_logs/. Re-running it now finds nothing to do.
 """
 import argparse
 import glob

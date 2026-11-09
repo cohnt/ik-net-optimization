@@ -51,12 +51,15 @@ def main():
         sig = Counter(tuple(per_cell[i][k] for i in range(n_cells)) for k in range(len(runs)))
         tag = re.sub(r"_r\d+_", "_", os.path.basename(runs[0]))
         r31_tag = tag.replace(f"sc_REPRO_SVGD_{c}_", "sc_SVGD_R31_")
-        ## shard dirs are not promoted: R31's lives in a collection's staging dir
-        r31 = sorted(glob.glob(os.path.join(args.root, robot, "benchmark", r31_tag)) +
-                     glob.glob(os.path.join(args.root, "_cluster_staging", "*", "results", robot, "benchmark", r31_tag)))
+        ## R31's shard 0 is read out of R31's MERGED run, cell by cell: staging is condensed
+        ## (cluster/condense_staging.py), and a merged run holds every shard's records verbatim.
+        merged = os.path.join(args.root, robot, "benchmark", re.sub(r"_shard\d+of\d+$", "", r31_tag),
+                              "summary.json")
         vs_r31 = ""
-        if r31:
-            ref = [fingerprint(r) for r in json.load(open(os.path.join(r31[0], "summary.json")))["records"][arm]]
+        if os.path.exists(merged):
+            first = json.load(open(os.path.join(runs[0], "summary.json")))["records"][arm]
+            by_cell = {(r["target"], r["guess"]): r for r in json.load(open(merged))["records"][arm]}
+            ref = [fingerprint(by_cell[(r["target"], r["guess"])]) for r in first]
             same = sum(all(per_cell[i][k] == ref[i] for i in range(n_cells)) for k in range(len(runs)))
             vs_r31 = f"; replicas identical to R31's shard 0 on every cell: {same} / {len(runs)}"
         print(f"{c} ({what}): {len(runs)} replicas x {n_cells} cells; replica classes {sorted(sig.values(), reverse=True)}; "

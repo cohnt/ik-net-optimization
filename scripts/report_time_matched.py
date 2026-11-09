@@ -30,7 +30,7 @@ multi-start would reuse, so the baseline is if anything slightly pessimistic for
         --exclude sc_REMEASURE_LEGACY_ --exclude sc_REMEASURE_RULE_     # the record since 2026-10-09
 
 Selection matches scripts/report_statusquo.py's `load`: merged runs with --cells learned cells,
-staged and promoted trees both (promoted wins on a duplicate tag), per-shard directories
+under results/ (collect_results.sh promotes every merged run), per-shard directories
 skipped, rows `mugshelf` (contained grasp) and `posetip` (contained pose). Success is
 `feasible`. Results on the record: CLAUDE.md, "What the tables say". `portfolio_stats` is the
 one implementation of the rule; `scripts/report_svgd_2x2.py` imports it for the AL-SVGD rows
@@ -47,7 +47,7 @@ import numpy as np
 
 def load(prefix, cells, tag_re, exclude=()):
     out = {}
-    for root in ("results/_cluster_staging/*/results", "results"):
+    for root in ("results",):              # results/ only: collect_results.sh promotes every merged run (cluster/condense_staging.py)
         for f in sorted(glob.glob(f"{root}/*/benchmark/{prefix}*/summary.json")):
             tag = os.path.basename(os.path.dirname(f))
             if "_shard" in tag or not tag_re.match(tag) or tag.startswith(tuple(exclude)):

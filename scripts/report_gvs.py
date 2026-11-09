@@ -56,7 +56,7 @@ def load_any(prefix):
     """tag -> summary for every MERGED run with the prefix (or any of a comma-separated list),
     whatever arms it carries."""
     out = {}
-    for root in ("results/_cluster_staging/*/results", "results"):
+    for root in ("results",):              # results/ only: collect_results.sh promotes every merged run (cluster/condense_staging.py)
         for f in sorted(f for pre in prefix.split(",")
                         for f in glob.glob(f"{root}/*/benchmark/{pre}*/summary.json")):
             tag = os.path.basename(os.path.dirname(f))

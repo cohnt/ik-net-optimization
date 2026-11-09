@@ -176,6 +176,17 @@ cluster/collect_results.sh                             # incremental since the l
 cluster/collect_results.sh --full                      # ...or the whole results tree
 ```
 
+**Staging is temporary** (Thomas, 2026-11-09). Every collection ends with
+`cluster/condense_staging.py --apply`: merged runs (and anything else results/ lacks) are promoted
+into `results/`, solver logs move to `results/_solver_logs/<robot>/<tag>/`, each shard's
+non-record content to `results/_shard_stubs/`, and whatever is then verifiably held under results/
+(a shard by its records, hash by hash, inside a merged run) goes to the desktop trash as ONE
+`_condensed-<time>` entry -- never `rm`; empty the trash only after a check, nothing on the cluster
+is touched. Unmerged shards (a stage in flight) and conflicts with results/ stay in staging and are
+listed. Once a stage whose shard set never merges by design (MERGECHK) is closed:
+`condense_staging.py --apply --promote-unmerged` (to `results/_unmerged_shards/`). Superseded staged
+copies: `--archive-conflicts` (to `results/archive_staging/<stamp>/`). Readers read `results/` only.
+
 ## Wall-clock limits: three caps, and the invariant between them
 
 | cap | where | default | what it is |

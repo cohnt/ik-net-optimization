@@ -9,6 +9,11 @@ This reads the collected shard summaries and writes `cluster/overrun_rerun_items
 OVR reads.
 
     python scripts/find_overrun_shards.py [--factor 1.5] [--write]
+
+HISTORICAL (2026-11-09): stage OVR is applied and closed, and staging has since been condensed
+(cluster/condense_staging.py): the shards this read are gone from staging. Their records are in the
+merged runs (results/, results/archive_preoverrun/, results/archive_staging/), their metadata in
+results/_shard_stubs/, their logs in results/_solver_logs/. Re-running it now finds nothing to do.
 """
 import argparse
 import glob

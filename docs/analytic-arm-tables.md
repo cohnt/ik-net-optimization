@@ -2,8 +2,8 @@
 
 Generated output, regenerate rather than edit: `python scripts/report_analytic.py` (analytic beside the
 record, pairwise) and `python scripts/report_threeway.py` (learned / joint space / analytic, three-way,
-single start and multi-start). Raw runs: `results/_cluster_staging/20261014-015030` and `-105935`
-(local, gitignored). Numbers only; the reading is Thomas's.
+single start and multi-start). Raw runs: `results/{panda,iiwa}/benchmark/sc_ANALYTIC*` (local, gitignored; collected
+20261014-015030 and -105935, promoted out of staging 2026-11-09). Numbers only; the reading is Thomas's.
 
 SNOPT runs carry stage OVR's re-run shards (2026-10-22; overrun watcher, `cluster/README.md`;
 superseded merges in `results/archive_preoverrun/`). No verdict moved. iiwa posetip native SNOPT

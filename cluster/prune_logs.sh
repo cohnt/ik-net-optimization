@@ -44,16 +44,17 @@ bytes() { find results -name "$1" -type f -printf '%s\n' 2>/dev/null \
 
 echo "local results/: $(du -sh results 2>/dev/null | cut -f1)"
 printf "  loose .txt logs      %6s files  %5s MB\n" "$(count '*.txt')" "$(bytes '*.txt')"
-printf "  solver_logs.tar.gz   %6s files  %5s MB\n" "$(count 'solver_logs.tar.gz')" "$(bytes 'solver_logs.tar.gz')"
+printf "  solver_logs.tar.gz   %6s files  %5s MB\n" "$(count '*solver_logs.tar.gz')" "$(bytes '*solver_logs.tar.gz')"
 printf "  summary.json (KEPT)  %6s files  %5s MB\n" "$(count 'summary.json')" "$(bytes 'summary.json')"
 STAGING=$(du -sh results/_cluster_staging 2>/dev/null | cut -f1)
-[ -n "$STAGING" ] && echo "  _cluster_staging     $STAGING (duplicate of promoted runs)"
+## Staging is never deleted here: cluster/condense_staging.py promotes what is unique in it and
+## trashes the rest (the logs move to results/_solver_logs/, which the finds below do prune).
+[ -n "$STAGING" ] && echo "  _cluster_staging     $STAGING (left to cluster/condense_staging.py)"
 
 if [ "$DRY" = "1" ]; then echo "DRY RUN: nothing removed"; exit 0; fi
 
-rm -rf results/_cluster_staging
 find results -name '*.txt' -type f -delete
-find results -name 'solver_logs.tar.gz' -type f -delete
+find results -name '*solver_logs.tar.gz' -type f -delete   # also the log store's <stamp>.solver_logs.tar.gz
 find results -type d -empty -delete 2>/dev/null
 echo "pruned. local results/ now $(du -sh results | cut -f1), $(count 'summary.json') summaries kept"
 

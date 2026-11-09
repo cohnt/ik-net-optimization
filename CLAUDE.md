@@ -47,8 +47,8 @@ python scripts/iiwa/iiwa_benchmark.py   --task mug  --targets 12 --guesses 2 --c
 python scripts/collate.py 'results/*/benchmark/*/summary.json'
 ```
 
-Older per-experiment scripts (`panda_mug*.py`, ...) are archive-only (`####### Options #######`
-block). **`tests/`** holds invariant guards, no suite: `python tests/run_fast.py` is every
+Older per-experiment scripts (`panda_mug*.py`, ...) are archive-only.
+**`tests/`** holds invariant guards, no suite: `python tests/run_fast.py` is every
 `fast` tier (~4 min); `python tests/<f>.py [slow|all]` one file, slow: GPU or
 `cluster/tests_slow_job.sh`; see `docs/tests-tiers.md`. Output goes to
 `results/` (gitignored). Visualization is Meshcat; mug experiments start a second one
@@ -410,7 +410,7 @@ on ONE IK branch (phase 2, 24 `loinkB*` charts, 2026-10-25) changed nothing**: 0
 task error on the branch itself, so topology was not the binding constraint. **Soft12 (`K = 6`)
 learns but no chart fits** (0.18-0.29 m, `z = 0` a metre off, cost head R^2 < 0; cells 0/20 under
 IPOPT and AL-SVGD); real latents lie OUTSIDE the +-5 box (paired starts clip). **DISMISSED (Thomas, 2026-10-26)**: a decode is 155-1840
-network passes (Davis-Yin + polish) against the flow's one, i.e. 1-9 s per IPOPT iteration, ~100x the flow. The branch is tag `archive/chart-loink` (code, tables, runbook, manifests).
+network passes, 1-9 s per IPOPT iteration, ~100x the flow. Tag `archive/chart-loink`.
 Long form `docs/notes-chart.md`; replication `docs/loink-replication.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
@@ -472,7 +472,8 @@ Exceptions on `xeon-p8`: datagen, and arms that never touch the GPU (the analyti
 IPOPT/SNOPT/NLopt; `submit_bench.sh` refuses learned/compile/svgd there). PyTorch's cu128 wheels drop
 sm_70 — use cu126 (`cluster/smoke.sh` launches a real kernel). `--shard K/N` splits target-major and
 the merger re-runs `summarise`; **run `bash cluster/verify_sharding.sh` after any change to sharding,
-the merger or grid construction.** Collect with `collect_results.sh --stage <token>` (2 min, not ~25). **Cluster-wide
+the merger or grid construction.** Collect with `collect_results.sh --stage <token>`. **Staging is temporary** (2026-11-09): collections end in
+`cluster/condense_staging.py --apply`; readers read `results/` only. **Cluster-wide
 checks on the shared account are scoped by JOB name; a guard nobody has seen refuse is untested.**
 Maintenance: second Tuesday monthly.
 

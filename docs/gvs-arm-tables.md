@@ -87,7 +87,7 @@ commit `9e98604`), collected and merged 2026-10-05. `docs/gvs-arm.md` carries th
 pre-registration and the pre-check; `CLAUDE.md` carries what these tables **say**.
 
 **`python scripts/report_gvs.py stage` owns the table below and regenerates it from the merged runs
-(`sc_GVS_*` under `results/`, including `results/_cluster_staging/*`). Do not hand-maintain it.** If a
+(`sc_GVS_*` under `results/`). Do not hand-maintain it.** If a
 number here disagrees with that script, the script is right.
 
 **Conditions.** These match the record's except for the PROCS and the solvers:

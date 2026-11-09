@@ -225,7 +225,9 @@ fi
 # them behind had accumulated 177 GB of superseded tars by 2026-09-12.  Nothing else here
 # deletes anything on the cluster.  Merge shards in the staging tree, then review before
 # promoting anything into results/ proper -- staging does not match collate.py's glob, so
-# a half-collected campaign cannot silently enter a table.
+# a half-collected campaign cannot silently enter a table.  (Since 2026-11-09 the promotion is
+# automatic -- condense_staging.py, below -- and covers merged runs only: the merger refuses an
+# incomplete shard set, so a half-collected stage still cannot enter a table.)
 sc_run "rm -f ~/$ARCHIVE"
 ## Search EVERY earlier staging directory, not just the most recent one. Collection is
 ## incremental, so a collection that runs while a stage is in flight splits that stage, and
@@ -263,5 +265,13 @@ echo "merging: searching $STAGING plus $(( ${#ALSO[@]} / 2 )) prior staging dire
 # have succeeded, or the next run must re-fetch what this one failed to bring back.
 [ -n "$STAGE" ] || sc_run "echo $COLLECT_WATERMARK > ~/$SC_ROOT/.last_collect"
 fetch_kills
+
+## Staging is TEMPORARY (Thomas, 2026-11-09): promote every merged run (and anything else the
+## collection brought that results/ lacks) into results/, move every solver log to
+## results/_solver_logs/, and send whatever is then verifiably held under results/ to the desktop
+## trash. Unmerged shards (a stage still in flight) and conflicts with results/ stay in staging
+## and are listed; a shard set that never merges by design (MERGECHK) is promoted once its stage
+## is closed with `--apply --promote-unmerged`. Empty the trash only after a check. Read
+## cluster/condense_staging.py's docstring before changing any of this.
 echo
-echo "review, then promote with:  cp -r $STAGING/results/<robot>/benchmark/<tag> results/<robot>/benchmark/"
+"$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/cluster/condense_staging.py" --apply
