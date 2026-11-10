@@ -6,7 +6,7 @@ import sys
 import numpy as np
 
 D = sys.argv[1]
-for r in ("soft12", "soft16", "gvs_pushrod9_o1", "gvs_pushrod9_o2", "iiwa14", "panda"):
+for r in ("soft9", "soft12", "soft16", "gvs_pushrod9_o1", "gvs_pushrod9_o2", "iiwa14", "panda"):
     T = []
     for f in sorted(glob.glob(f"{D}/{r}.s*.json")):
         T += json.load(open(f))["targets"]

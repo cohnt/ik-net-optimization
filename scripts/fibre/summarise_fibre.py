@@ -8,7 +8,7 @@ import sys
 
 import numpy as np
 
-ROBOTS = ("soft12", "soft16", "gvs_pushrod9_o1", "gvs_pushrod9_o2", "panda", "iiwa14")
+ROBOTS = ("soft9", "soft12", "soft16", "gvs_pushrod9_o1", "gvs_pushrod9_o2", "panda", "iiwa14")
 med = lambda xs: float(np.median(xs))
 
 

@@ -42,6 +42,7 @@ from pole_metric import load_solver  # noqa: E402
 CKPT = {
     "panda": "models/panda/panda__n6__step620000.pkl",
     "iiwa14": "models/iiwa14/iiwa14__n4__step620000.pkl",   # the record's rung (cluster tree)
+    "soft9": "models/soft9/soft9__n6__step620000.pkl",
     "soft12": "models/soft12/soft12__n6__step620000.pkl",
     "soft16": "models/soft16/soft16__n6__step620000.pkl",
     "gvs_pushrod9_o1": "models/gvs_pushrod9_o1/gvs_pushrod9_o1__n6__step620000.pkl",
