@@ -304,6 +304,16 @@ def track(R, ua, ub, tgt, H=0.05, maxsteps=400, stall_max=40, box=True):
     return ok
 
 
+PROGRESS = False
+
+
+def _progress(msg):
+    """Progress lines inside one target (--progress): the GVS arm's targets take long enough
+    that the per-target line alone cannot tell slow from stuck."""
+    if PROGRESS:
+        print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
+
+
 def components(R, sols, tgt7, knn=4, cross=3, rounds=4):
     m = len(sols)
     parent = list(range(m))
@@ -330,8 +340,11 @@ def components(R, sols, tgt7, knn=4, cross=3, rounds=4):
                 parent[find(i)] = find(j)
         return len(pairs)
 
+    t0 = time.time()
     n_tried = attempt([(i, int(j)) for i in range(m) for j in np.argsort(D[i])[1:knn + 1]])
-    for _ in range(rounds):  # closest members of each pair of distinct components
+    _progress(f"  kNN joins: {len({find(i) for i in range(m)})} components, {n_tried} pairs, "
+              f"{time.time() - t0:.0f} s")
+    for rnd in range(rounds):  # closest members of each pair of distinct components
         roots = sorted({find(i) for i in range(m)})
         if len(roots) == 1:
             break
@@ -347,6 +360,8 @@ def components(R, sols, tgt7, knn=4, cross=3, rounds=4):
         if attempt(pairs) == 0:
             break
         n_tried += len(pairs)
+        _progress(f"  cross round {rnd}: {len({find(i) for i in range(m)})} components, "
+                  f"{n_tried} pairs, {time.time() - t0:.0f} s")
     return np.array([find(i) for i in range(m)]), n_tried
 
 
@@ -411,7 +426,10 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
     ap.add_argument("--skip_conn", action="store_true")
+    ap.add_argument("--progress", action="store_true")
     a = ap.parse_args()
+    global PROGRESS
+    PROGRESS = a.progress
     rng = np.random.default_rng(a.seed)
     R = Robot(a.robot)
     n = R.ndof
@@ -440,12 +458,14 @@ def main():
         C = R.fk(Upath)
         Z = np.repeat(rng.standard_normal((a.lines, R.width)), a.steps, 0)
         rec["pose_lines"] = line_metrics(R, R.decode(Z, np.nan_to_num(C)), C, a.lines, a.steps)
+        _progress(f"target {t}: lines done, {time.time() - t0:.0f} s")
         # ---------------- connectivity
         if not a.skip_conn:
             uf = R.decode(rng.standard_normal((a.nflow, R.width)), np.repeat(tgt7[None], a.nflow, 0))
             ur = rng.uniform(-1, 1, (a.nrand, n))
             T = np.repeat(tgt7[None], a.nflow + a.nrand, 0)
             up, okp = project(R, np.clip(np.vstack([uf, ur]), -1, 1), T)
+            _progress(f"target {t}: {int(okp.sum())}/{len(okp)} projected, {time.time() - t0:.0f} s")
             src = np.array(["flow"] * a.nflow + ["rand"] * a.nrand)
             sols = np.vstack([up[okp], u_star])
             ssrc = list(src[okp]) + ["target"]
