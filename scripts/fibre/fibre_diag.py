@@ -1,4 +1,5 @@
-"""Why does an IK fibre split into several components? Three tests per target.
+"""What do the joint / strain limits do to an IK fibre? (fibre_probe.py now measures
+connectivity WITHOUT limits by default; this tool compares the two.) Three stages per target.
 
 `fibre_probe.py` counts components of {u in box : FK(u) = target} by joining sampled
 solutions with a greedy fibre-following path (`track`). That count is an UPPER bound: the
@@ -29,6 +30,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import fibre_probe as fp  # noqa: E402
 from fibre_probe import Robot, components, pinv, project, track  # noqa: E402
 
 
@@ -141,6 +143,9 @@ def main():
         tgt7 = R.fk(u_star)[0]
         uf = R.decode(rng.standard_normal((a.nflow, R.width)), np.repeat(tgt7[None], a.nflow, 0))
         ur = rng.uniform(-1, 1, (a.nrand, n))
+        ## This tool studies what the BOX does, so solutions and the first two stages run
+        ## with the probe's LIMITS on; the third stage switches them off.
+        fp.LIMITS = True
         up, okp = project(R, np.clip(np.vstack([uf, ur]), -1, 1),
                           np.repeat(tgt7[None], a.nflow + a.nrand, 0))
         sols = np.vstack([up[okp], u_star])
@@ -149,9 +154,10 @@ def main():
             if all(np.linalg.norm(sols[i] - sols[j]) > 1e-2 for j in keep):
                 keep.append(i)
         sols = sols[keep]
-        lab0, _ = components(R, sols, tgt7)
+        lab0, _ = components(R, sols, tgt7)  # greedy OR chord since the probe's revision
         lab1, tried1 = merge(R, sols, tgt7, lab0, [chord])
-        nobox = [lambda R_, x, y, T: track(R_, x, y, T, box=False),
+        fp.LIMITS = False  # track() reads it: no box, revolute joints wrapped
+        nobox = [lambda R_, x, y, T: track(R_, x, y, T),
                  lambda R_, x, y, T: chord(R_, x, y, T, box=False)]
         lab2, tried2 = merge(R, sols, tgt7, lab1, nobox)
         rec = {"n_solutions": int(len(sols)), "greedy_box": ncomp(lab0), "plus_chord_box": ncomp(lab1),

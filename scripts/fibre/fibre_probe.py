@@ -1,16 +1,20 @@
 """IK-fibre connectivity and flow-latent jumps, per robot (an investigation for future work:
 constrained motion planning in the chart's coordinates; see docs/notes-fibre.md).
 
-Everything is in the chart's OWN world: targets are jrl FK of random in-limit configs, the
-flow is conditioned on those poses (the frame it was trained on), and the fibre is
-{u in [-1,1]^n : FK(u) = target}, u = normalized config (q = mid + half * u). No Drake,
-no collision: the pure kinematic fibre inside the joint/strain box.
+Everything is in the chart's OWN world: targets are jrl FK of random in-limit configs (the
+reachable domain the flow was trained on), the flow is conditioned on those poses, and the
+fibre is {u : FK(u) = target}, u = normalized config (q = mid + half * u). No Drake, no
+collision.
 
-(1) connectivity: solutions from flow draws AND uniform random starts, Newton-projected
-    onto the fibre (min-norm). Pairs are joined by a fibre-following path (null-space
-    step toward the other end, chord corrector, active-set at the box). Union-find gives
-    components. Path-following is conservative, so #components is an UPPER bound.
-    Rigid arms: the analytic branch label must be constant on a component (purity check).
+(1) connectivity, WITHOUT limits by default (`--limits` imposes the box): joint, strain and
+    force limits are additional constraints, not kinematic or topological obstructions.
+    Revolute joints are then periodic (configuration space is a torus; differences wrap).
+    Solutions from flow draws AND uniform random starts are Newton-projected onto the fibre.
+    A one-dimensional fibre (a 7-DoF arm) is a union of closed loops, traced EXACTLY
+    (`trace_loops`). Higher-dimensional fibres (soft PCS, GVS) join pairs by a greedy
+    fibre-following path OR a projected chord; union-find components are an UPPER bound.
+    Rigid arms carry the analytic branch label as a purity check (on the iiwa the GC signs
+    are separated by singular configurations, so a component must be label-pure).
 (2) latent lines: straight lines z0 -> z1 (both N(0,I)) at fixed c; per-step |du|,
     jumpiness = max/median, pose error along the line, branch flips (rigid).
 (3) pose lines: z fixed, c moving along a reachable pose path (FK of a straight
@@ -123,6 +127,8 @@ class Robot:
             self.labeler = lambda q: tuple(int(x) for x in a.gc(q, branches=3))
         elif name == "iiwa14":
             self.labeler = lambda q: tuple(int(np.sign(q[k]) or 1) for k in (1, 3, 5))
+        ## Revolute joints are periodic: one turn in normalized units (None for strain / force).
+        self.period = (2 * np.pi / self.half) if name in ("panda", "iiwa14") else None
         self.gvs = name.startswith("gvs_")
         if self.gvs:
             self._build_gvs()
@@ -230,40 +236,80 @@ def pinv(J, act=None, lam=1e-12):
     return J.transpose(0, 2, 1) @ np.linalg.inv(JJt), J
 
 
+# ------------------------------------------------------------------- connectivity
+# LIMITS: whether the joint / strain / force box is imposed on the fibre. OFF by default:
+# limits are additional constraints, not kinematic or topological obstructions (Thomas,
+# 2026-11-09). Off, revolute joints are periodic -- the arm's configuration space is a
+# torus -- so differences are wrapped and solutions are stored with angles in (-pi, pi].
+LIMITS = False
+
+
+def wrap(R, d):
+    """Differences in u, wrapped onto the torus for revolute joints (no-op with LIMITS or for
+    strain / force coordinates, which live in R^n)."""
+    if LIMITS or R.period is None:
+        return d
+    return d - R.period * np.round(d / R.period)
+
+
+def canon(R, u):
+    """u with every revolute angle in (-pi, pi]."""
+    if LIMITS or R.period is None:
+        return u
+    return R.u(np.mod(R.q(u) + np.pi, 2 * np.pi) - np.pi)
+
+
+def dist(R, a, b):
+    return np.linalg.norm(wrap(R, a - b), axis=-1)
+
+
 def project(R, u, tgt, iters=60, maxstep=0.2, tol=1e-10):
+    """Min-norm Newton onto the fibre, P points at once. With LIMITS the box is an active set
+    and a solution must lie in it. Rows whose FK fails (GVS: equilibrium not converged) stay
+    put and come back unconverged. Returns (u, converged)."""
     u = u.copy()
     for _ in range(iters):
         e = R.err(u, tgt)
-        if np.abs(e).max() < tol:
+        if np.isfinite(e).all() and np.abs(e).max() < tol:
             break
         J = R.jac(u, tgt)
+        bad = ~(np.isfinite(e).all(1) & np.isfinite(J).all((1, 2)))
+        e[bad], J[bad] = 0.0, 0.0
         Jp, _ = pinv(J)
         du = -(Jp @ e[..., None])[..., 0]
-        # active set at the box: freeze coordinates sitting on a bound that the step pushes out
-        act = (np.abs(u) >= 1 - 1e-12) & (np.sign(du) * np.sign(u) > 0)
-        if act.any():
-            Jp, _ = pinv(J, act)
-            du = -(Jp @ e[..., None])[..., 0]
+        if LIMITS:
+            act = (np.abs(u) >= 1 - 1e-12) & (np.sign(du) * np.sign(u) > 0)
+            if act.any():
+                Jp, _ = pinv(J, act)
+                du = -(Jp @ e[..., None])[..., 0]
         nrm = np.linalg.norm(du, axis=1, keepdims=True)
-        u = np.clip(u + du * np.minimum(1, maxstep / np.maximum(nrm, 1e-300)), -1, 1)
+        u = u + du * np.minimum(1, maxstep / np.maximum(nrm, 1e-300))
+        if LIMITS:
+            u = np.clip(u, -1, 1)
     e = np.abs(R.err(u, tgt)).max(1)
-    return u, (e < 1e-9) & (np.abs(u).max(1) <= 1 + 1e-9)
+    ok = np.nan_to_num(e, nan=np.inf) < 1e-9
+    if LIMITS:
+        ok &= np.abs(u).max(1) <= 1 + 1e-9
+    return canon(R, u), ok
 
 
-def track(R, ua, ub, tgt, H=0.05, maxsteps=400, stall_max=40, box=True):
-    """Fibre-following path ua -> ub for P pairs at once. Returns ok [P], maxmove [P]."""
+def track(R, ua, ub, tgt, H=0.05, maxsteps=400, stall_max=40):
+    """Greedy fibre-following path ua -> ub for P pairs at once: a null-space step toward the
+    (wrapped) other end, a chord-Newton corrector, the box as an active set under LIMITS.
+    Returns ok [P]. Can stall where the fibre is connected, so joins are a lower bound."""
     P = len(ua)
     u = ua.copy()
     h = np.full(P, H)
     done = np.zeros(P, bool)
     ok = np.zeros(P, bool)
-    best = np.linalg.norm(ub - u, axis=1)
+    best = dist(R, ub, u)
     stall = np.zeros(P, int)
+    lim = 1.0 if LIMITS else np.inf
     for _ in range(maxsteps):
         idx = np.where(~done)[0]
         if len(idx) == 0:
             break
-        U, D = u[idx], ub[idx] - u[idx]
+        U, D = u[idx], wrap(R, ub[idx] - u[idx])
         dn = np.linalg.norm(D, axis=1)
         close = dn < h[idx]
         ok[idx[close]] = True
@@ -273,20 +319,22 @@ def track(R, ua, ub, tgt, H=0.05, maxsteps=400, stall_max=40, box=True):
         if len(idx) == 0:
             continue
         T = tgt[idx]
-        act = ((np.abs(U) >= 1 - 1e-9) & (np.sign(D) * np.sign(U) > 0)) if box else np.zeros_like(U, bool)
-        Jp, Jm = pinv(R.jac(U, T), act)
-        lim = 1.0 if box else np.inf
+        act = ((np.abs(U) >= 1 - 1e-9) & (np.sign(D) * np.sign(U) > 0)) if LIMITS else np.zeros_like(U, bool)
+        J = R.jac(U, T)
+        badJ = ~np.isfinite(J).all((1, 2))
+        J[badJ] = 0.0
+        Jp, Jm = pinv(J, act)
         Dm = D * ~act
         step = Dm - (Jp @ (Jm @ Dm[..., None]))[..., 0]
         sn = np.linalg.norm(step, axis=1)
-        stuck = sn < 1e-3 * dn
+        stuck = (sn < 1e-3 * dn) | badJ
         done[idx[stuck]] = True
         step = step * (np.minimum(h[idx], sn) / np.maximum(sn, 1e-300))[:, None]
         Up = np.clip(U + step, -lim, lim)
         for _ in range(8):
-            e = R.err(Up, T)
+            e = np.nan_to_num(R.err(Up, T))
             Up = np.clip(Up - (Jp @ e[..., None])[..., 0], -lim, lim)
-        e = np.abs(R.err(Up, T)).max(1)
+        e = np.nan_to_num(np.abs(R.err(Up, T)).max(1), nan=np.inf)
         moved = np.linalg.norm(Up - U, axis=1)
         good = (e < 1e-8) & (moved < 3 * h[idx]) & ~stuck
         gi = idx[good]
@@ -295,13 +343,99 @@ def track(R, ua, ub, tgt, H=0.05, maxsteps=400, stall_max=40, box=True):
         h[bi] /= 2
         done[bi[h[bi] < H / 64]] = True
         h[gi] = np.minimum(h[gi] * 1.5, H)
-        nd = np.linalg.norm(ub[idx] - u[idx], axis=1)
+        nd = dist(R, ub[idx], u[idx])
         imp = nd < best[idx] - 1e-4
         best[idx[imp]] = nd[imp]
         stall[idx[imp]] = 0
         stall[idx[~imp]] += 1
         done[idx[stall[idx] > stall_max]] = True
     return ok
+
+
+def chord(R, ua, ub, tgt, ds=0.02, iters=6):
+    """Second joining method: follow the straight chord ua -> (nearest lift of) ub, projecting
+    each point onto the fibre (predictor along the chord, chord-Newton corrector, the box as
+    an active set under LIMITS). Returns ok [P]."""
+    P, n = ua.shape
+    ub = ua + wrap(R, ub - ua)
+    lim = 1.0 if LIMITS else np.inf
+    K = int(max(20, np.ceil(np.linalg.norm(ub - ua, axis=1).max() / ds)))
+    du = (ub - ua) / K
+    u = ua.copy()
+    ok = np.ones(P, bool)
+    for _ in range(K):
+        idx = np.where(ok)[0]
+        if len(idx) == 0:
+            break
+        U, T = u[idx], tgt[idx]
+        Up = np.clip(U + du[idx], -lim, lim)
+        J = R.jac(Up, T)
+        badJ = ~np.isfinite(J).all((1, 2))
+        J[badJ] = 0.0
+        for _ in range(iters):
+            e = np.nan_to_num(R.err(Up, T))
+            Jp, _ = pinv(J)
+            step = -(Jp @ e[..., None])[..., 0]
+            if LIMITS:
+                act = (np.abs(Up) >= 1 - 1e-12) & (np.sign(step) * np.sign(Up) > 0)
+                if act.any():
+                    Jp, _ = pinv(J, act)
+                    step = -(Jp @ e[..., None])[..., 0]
+            Up = np.clip(Up + step, -lim, lim)
+        e = np.nan_to_num(np.abs(R.err(Up, T)).max(1), nan=np.inf)
+        moved = np.linalg.norm(Up - U, axis=1)
+        good = (e < 1e-8) & (moved < 3 * np.maximum(np.linalg.norm(du[idx], axis=1), 0.01)) & ~badJ
+        u[idx[good]] = Up[good]
+        ok[idx[~good]] = False
+    return ok & (np.linalg.norm(u - ub, axis=1) < 0.05)
+
+
+def trace_loops(R, sols, tgt7, h=0.01, tol=0.02, maxsteps=30000):
+    """EXACT components of a one-dimensional fibre without limits (a 7-DoF arm): every
+    component is a closed loop on the torus, so trace each loop from an unlabelled solution
+    (tangent = the Jacobian's null vector, predictor-corrector) until it closes, labelling
+    every solution it passes within `tol`. Returns labels, loops closed, loops left open."""
+    m = len(sols)
+    labels = -np.ones(m, int)
+    closed = opened = 0
+    T1 = tgt7[None]
+    for i in range(m):
+        if labels[i] >= 0:
+            continue
+        labels[i] = i
+        u, tprev, travelled, step, ok_loop = sols[i].copy(), None, 0.0, h, False
+        for _ in range(maxsteps):
+            J = R.jac(u[None], T1)
+            t = np.linalg.svd(J[0])[2][-1]
+            if tprev is not None and t @ tprev < 0:
+                t = -t
+            Jp, _ = pinv(J)
+            while True:
+                up = u + step * t
+                for _ in range(8):
+                    up = up - Jp[0] @ np.nan_to_num(R.err(up[None], T1)[0])
+                e = np.nan_to_num(np.abs(R.err(up[None], T1)).max(), nan=np.inf)
+                if e < 1e-9 and np.linalg.norm(up - u) < 2 * step:
+                    break
+                step /= 2
+                if step < h / 64:
+                    break
+            if step < h / 64:
+                break
+            travelled += np.linalg.norm(up - u)
+            u, tprev, step = up, t, min(step * 1.5, h)
+            near = dist(R, sols, u[None]) < tol
+            for j in np.where(near & (labels != i))[0]:
+                if labels[j] < 0:
+                    labels[j] = i
+                else:  # a loop through an already-labelled solution: one component
+                    labels[labels == labels[j]] = i
+            if travelled > 10 * h and dist(R, u, sols[i]) < h:
+                ok_loop = True
+                break
+        closed += ok_loop
+        opened += not ok_loop
+    return labels, closed, opened
 
 
 PROGRESS = False
@@ -315,7 +449,16 @@ def _progress(msg):
 
 
 def components(R, sols, tgt7, knn=4, cross=3, rounds=4):
+    """Component labels of the sampled solutions. A one-dimensional fibre without limits is
+    traced exactly (`trace_loops`); otherwise pairs are joined by `track` OR `chord` (kNN
+    pairs, then the closest `cross` pairs of every two components, `rounds` times) -- an
+    upper bound on the component count. Returns (labels, info)."""
     m = len(sols)
+    if not LIMITS and R.ndof - 6 == 1:
+        t0 = time.time()
+        lab, closed, opened = trace_loops(R, sols, tgt7)
+        _progress(f"  traced {closed} closed / {opened} open loops, {time.time() - t0:.0f} s")
+        return lab, {"method": "trace", "loops_closed": closed, "loops_open": opened}
     parent = list(range(m))
 
     def find(i):
@@ -324,7 +467,7 @@ def components(R, sols, tgt7, knn=4, cross=3, rounds=4):
             i = parent[i]
         return i
 
-    D = np.linalg.norm(sols[:, None] - sols[None], axis=-1)
+    D = dist(R, sols[:, None], sols[None])
     tried = set()
 
     def attempt(pairs):
@@ -334,7 +477,10 @@ def components(R, sols, tgt7, knn=4, cross=3, rounds=4):
         tried.update(pairs)
         a = np.array([p[0] for p in pairs])
         b = np.array([p[1] for p in pairs])
-        ok = track(R, sols[a], sols[b], np.repeat(tgt7[None], len(pairs), 0))
+        T = np.repeat(tgt7[None], len(pairs), 0)
+        ok = track(R, sols[a], sols[b], T)
+        if (~ok).any():
+            ok[~ok] = chord(R, sols[a[~ok]], sols[b[~ok]], T[~ok])
         for (i, j), o in zip(pairs, ok):
             if o:
                 parent[find(i)] = find(j)
@@ -362,15 +508,7 @@ def components(R, sols, tgt7, knn=4, cross=3, rounds=4):
         n_tried += len(pairs)
         _progress(f"  cross round {rnd}: {len({find(i) for i in range(m)})} components, "
                   f"{n_tried} pairs, {time.time() - t0:.0f} s")
-    return np.array([find(i) for i in range(m)]), n_tried
-
-
-def dedupe(u, tol=1e-2):
-    keep = []
-    for i in range(len(u)):
-        if all(np.linalg.norm(u[i] - u[j]) > tol for j in keep):
-            keep.append(i)
-    return u[keep]
+    return np.array([find(i) for i in range(m)]), {"method": "track+chord", "pairs": n_tried}
 
 
 
@@ -427,14 +565,16 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--skip_conn", action="store_true")
     ap.add_argument("--progress", action="store_true")
+    ap.add_argument("--limits", action="store_true",
+                    help="impose the joint / strain / force box on the fibre (default: off)")
     a = ap.parse_args()
-    global PROGRESS
-    PROGRESS = a.progress
+    global PROGRESS, LIMITS
+    PROGRESS, LIMITS = a.progress, a.limits
     rng = np.random.default_rng(a.seed)
     R = Robot(a.robot)
     n = R.ndof
     print(f"{a.robot}: ndof {n}, width {R.width}, ckpt {CKPT[a.robot]}", flush=True)
-    res = {"robot": a.robot, "ckpt": CKPT[a.robot], "jac_check_rel": R.jac_check,
+    res = {"robot": a.robot, "ckpt": CKPT[a.robot], "jac_check_rel": R.jac_check, "limits": LIMITS,
            "args": vars(a), "targets": []}
     for t in range(a.targets):
         t0 = time.time()
@@ -464,25 +604,28 @@ def main():
             uf = R.decode(rng.standard_normal((a.nflow, R.width)), np.repeat(tgt7[None], a.nflow, 0))
             ur = rng.uniform(-1, 1, (a.nrand, n))
             T = np.repeat(tgt7[None], a.nflow + a.nrand, 0)
-            up, okp = project(R, np.clip(np.vstack([uf, ur]), -1, 1), T)
+            starts = np.vstack([uf, ur])
+            up, okp = project(R, np.clip(starts, -1, 1) if LIMITS else starts, T)
             _progress(f"target {t}: {int(okp.sum())}/{len(okp)} projected, {time.time() - t0:.0f} s")
             src = np.array(["flow"] * a.nflow + ["rand"] * a.nrand)
-            sols = np.vstack([up[okp], u_star])
+            sols = np.vstack([up[okp], canon(R, u_star)])
             ssrc = list(src[okp]) + ["target"]
             keep = []
             for i in range(len(sols)):
-                if all(np.linalg.norm(sols[i] - sols[j]) > 1e-2 for j in keep):
+                if all(dist(R, sols[i], sols[j]) > 1e-2 for j in keep):
                     keep.append(i)
             sols = sols[keep]
             ssrc = [ssrc[i] for i in keep]
-            comp, n_tried = components(R, sols, tgt7)
+            comp, info = components(R, sols, tgt7)
             roots, sizes = np.unique(comp, return_counts=True)
             c = {"n_solutions": int(len(sols)), "flow_converged": int(okp[:a.nflow].sum()),
                  "rand_converged": int(okp[a.nflow:].sum()), "components": int(len(roots)),
-                 "component_sizes": sorted(sizes.tolist(), reverse=True), "pairs_tracked": n_tried,
+                 "component_sizes": sorted(sizes.tolist(), reverse=True), **info,
+                 "outside_box_solutions": int((np.abs(sols) > 1 + 1e-9).any(1).sum()),
                  "flow_components": int(len({comp[i] for i in range(len(sols)) if ssrc[i] == "flow"})),
                  "target_component_size": (int(sizes[list(roots).index(comp[ssrc.index("target")])])
-                                           if "target" in ssrc else None)}
+                                           if "target" in ssrc else None),
+                 "solutions": sols.round(6).tolist(), "labels": comp.tolist()}
             if R.labeler is not None:
                 labs = [R.labeler(R.q(x)) for x in sols]
                 c["distinct_branches"] = len(set(labs))
@@ -493,7 +636,9 @@ def main():
             rec["conn"] = c
         rec["seconds"] = round(time.time() - t0, 1)
         res["targets"].append(rec)
-        print(f"target {t}: {json.dumps(rec)}", flush=True)
+        brief = {k: ({kk: vv for kk, vv in v.items() if kk not in ("solutions", "labels")}
+                     if isinstance(v, dict) else v) for k, v in rec.items()}
+        print(f"target {t}: {json.dumps(brief)}", flush=True)
         with open(a.out, "w") as f:
             json.dump(res, f, indent=1)
 
