@@ -89,6 +89,11 @@ def _err_torch(p, tgt):
                         lambda c, a, b: torch.where(c, a, torch.as_tensor(b, dtype=p.dtype)))
 
 
+#: Largest GVS batch handed to JAX at once. The vmapped equilibrium solve's memory grows with
+#: the batch: 48 workers each solving 16384 configurations OOM-killed a 192 GB node.
+GVS_CHUNK = 1024
+
+
 def _bucket(x, floor=8):
     """`x` padded along axis 0 to the next power of two (repeating row 0), and the true size.
     JAX compiles one program per batch SHAPE; the path-follower's batch shrinks every step,
@@ -161,6 +166,8 @@ class Robot:
     def fk(self, u):
         """[B,7] in the chart's frame; NaN rows where the GVS equilibrium did not converge."""
         if self.gvs:
+            if len(u) > GVS_CHUNK:  # a vmapped solve over 16k configs OOM-killed 48 workers
+                return np.concatenate([self.fk(u[i:i + GVS_CHUNK]) for i in range(0, len(u), GVS_CHUNK)])
             x, B = _bucket(self.q(u))
             poses, ok = self.jrl._model.TipPoseBatch(x)
             poses, ok = np.array(poses, dtype=np.float64)[:B], np.asarray(ok)[:B]
@@ -180,6 +187,9 @@ class Robot:
     def jac(self, u, tgt):
         """[B,6,n] exact d err / d u. Rows that come back non-finite fall back to `jac_fd`."""
         if self.gvs:
+            if len(u) > GVS_CHUNK:
+                return np.concatenate([self.jac(u[i:i + GVS_CHUNK], tgt[i:i + GVS_CHUNK])
+                                       for i in range(0, len(u), GVS_CHUNK)])
             x, B = _bucket(self.q(u))
             t, _ = _bucket(tgt)
             J, ok = self._gvs_jac(self._jnp.asarray(x), self._jnp.asarray(t))
