@@ -564,6 +564,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
     ap.add_argument("--skip_conn", action="store_true")
+    ap.add_argument("--skip_lines", action="store_true",
+                    help="connectivity only (the GVS arm: ~20-40 ms per equilibrium solve)")
     ap.add_argument("--progress", action="store_true")
     ap.add_argument("--limits", action="store_true",
                     help="impose the joint / strain / force box on the fibre (default: off)")
@@ -582,12 +584,15 @@ def main():
         tgt7 = R.fk(u_star)[0]
         rec = {}
         # ---------------- latent lines: c fixed at the target, z0 -> z1
+        ## The draws below happen with or without --skip_lines, so the same seed gives the same
+        ## targets either way; only the decodes and the FK are skipped.
         z0 = rng.standard_normal((a.lines, R.width))
         z1 = rng.standard_normal((a.lines, R.width))
         s = np.linspace(0, 1, a.steps)
         Z = (z0[:, None] * (1 - s)[None, :, None] + z1[:, None] * s[None, :, None]).reshape(-1, R.width)
         C = np.repeat(tgt7[None], len(Z), 0)
-        rec["latent"] = line_metrics(R, R.decode(Z, C), C, a.lines, a.steps)
+        if not a.skip_lines:
+            rec["latent"] = line_metrics(R, R.decode(Z, C), C, a.lines, a.steps)
         # ---------------- pose lines: z fixed, c along a REACHABLE pose path (the FK of a
         # straight segment of length `pose_seg` in normalized configuration space)
         ua = rng.uniform(-1, 1, (a.lines, n))
@@ -595,9 +600,10 @@ def main():
         d /= np.linalg.norm(d, axis=1, keepdims=True)
         ub = np.clip(ua + a.pose_seg * d, -1, 1)
         Upath = (ua[:, None] * (1 - s)[None, :, None] + ub[:, None] * s[None, :, None]).reshape(-1, n)
-        C = R.fk(Upath)
         Z = np.repeat(rng.standard_normal((a.lines, R.width)), a.steps, 0)
-        rec["pose_lines"] = line_metrics(R, R.decode(Z, np.nan_to_num(C)), C, a.lines, a.steps)
+        if not a.skip_lines:
+            C = R.fk(Upath)
+            rec["pose_lines"] = line_metrics(R, R.decode(Z, np.nan_to_num(C)), C, a.lines, a.steps)
         _progress(f"target {t}: lines done, {time.time() - t0:.0f} s")
         # ---------------- connectivity
         if not a.skip_conn:
