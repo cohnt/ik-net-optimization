@@ -17,7 +17,7 @@ poses. No Drake scene, no collision.
   periodic, so the rigid arms' configuration space is a torus.
   - Solutions: flow draws and uniform starts, Newton-projected onto the fibre.
   - 7-DoF arms (one-dimensional fibre): every component is a closed loop, **traced exactly**.
-  - Soft PCS and GVS (6, 10, 3-dimensional fibres): pairs joined by a greedy fibre-following
+  - Soft PCS (soft9/12/16: 3, 6, 10-dimensional fibres) and GVS (3-dimensional): pairs joined by a greedy fibre-following
     path or a projected chord; the component count is an **upper bound**.
 - **Latent lines**: `z0 -> z1` at a fixed pose. **Pose lines**: `z` fixed, the pose moving
   along a reachable path (FK of a configuration segment) -- the measurement a planner needs.
@@ -26,21 +26,25 @@ poses. No Drake scene, no collision.
   equilibrium, never through the Newton iterations), checked against central differences at
   start-up (agreement ~1e-10 on all six robots).
 
-Charts: Panda `n6`, iiwa `n4` (the record's rungs), `soft12__n6`, `soft16__n6`,
+Charts: Panda `n6`, iiwa `n4` (the record's rungs), `soft9__n6`, `soft12__n6`, `soft16__n6`,
 `gvs_pushrod9_o{1,2}__n6`. 96 targets per robot (48 seeds x 2), 64 lines of each kind per
-target. SuperCloud `xeon-p8`, one single-threaded process per seed.
+target, one single-threaded process per seed: SuperCloud `xeon-p8`, except soft9 and the GVS
+arm, run on Engaging `mit_preemptable` (`cluster/engaging/`, CPU image) while SuperCloud was down.
 
 ## Results (limits off)
 
-| | soft12 | soft16 | Panda | iiwa |
-| --- | --- | --- | --- | --- |
-| fibre components, median (p10-p90) | 2 (2-3) | 2 (2-3) | 4 (4-8) | **8 (8-8)** |
-| components containing an in-limit solution | **1 on 92/96** | 2 (1 on 25/96) | 2 | 8 |
-| latent lines with a jump | **4.9%** | 29% | 60% | 89% |
-| latent jumpiness (max/median step), median | **1.6** | 1.7 | 35 | 110 |
-| latent-line position error, median / p99 | **2.1 / 6.8 mm** | 4.8 / 16 mm | 6.6 / 142 mm | 15 / 256 mm |
-| pose lines with a jump | **13%** | 20% | 51% | 58% |
-| pose-line position error, median / p99 | **2.8 / 26 mm** | 6.1 / 34 mm | 9.5 / 184 mm | 19 / 402 mm |
+p99 columns are the median over targets of each target's p99. GVS settings differ (next section).
+
+| | soft9 | soft12 | soft16 | GVS o1 | GVS o2 | Panda | iiwa |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| DOF / fibre dimension | 9 / 3 | 12 / 6 | 16 / 10 | 9 / 3 | 9 / 3 | 7 / 1 | 7 / 1 |
+| fibre components, median (p10-p90) | 4 (3-6) | 2 (2-3) | 2 (2-3) | 2 (1-4) | 2 (1-4) | 4 (4-8) | **8 (8-8)** |
+| components containing an in-limit solution | 1 on 84/96 | **1 on 92/96** | 2 (1 on 25/96) | 1 on 45/48 | 1 on 46/48 | 2 | 8 |
+| latent lines with a jump | 6.8% | 4.9% | 29% | **1.2%** | **1.1%** | 60% | 89% |
+| latent jumpiness (max/median step), median | 1.3 | 1.6 | 1.7 | 1.3 | 1.3 | 35 | 110 |
+| latent-line position error, median / p99 | 1.7 / 4.3 mm | 2.1 / 6.8 mm | 4.8 / 16 mm | 1.6 / 4.0 mm | 1.6 / 4.2 mm | 6.6 / 142 mm | 15 / 256 mm |
+| pose lines with a jump | 23% | 13% | 20% | 12.7% | 14.4% | 51% | 58% |
+| pose-line position error, median / p99 | 2.0 / 21 mm | 2.8 / 26 mm | 6.1 / 34 mm | 1.7 / 13 mm | 1.8 / 14 mm | 9.5 / 184 mm | 19 / 402 mm |
 
 - **iiwa: exactly its 8 GC classes**, every loop closed (764/764), 5 of 763 components mix two
   GC labels (loops passing within the 0.02 labelling tolerance near a singular
@@ -52,6 +56,12 @@ target. SuperCloud `xeon-p8`, one single-threaded process per seed.
   components are made only of strongly coiled configurations (closest point at ~1.9x the
   strain limit, more than pi of bend per segment). Whether they are separate or merely far
   away is not settled: the joins are an upper bound.
+- **soft9 (the soft PCS arm at the GVS arm's redundancy) fragments more than soft12**: median 4
+  components against 2, all in-limit solutions in one component on 84/96 against 92/96, and more
+  latent and pose-line jumps, at identical settings. One pair of rungs, so it suggests rather
+  than shows that less redundancy means more pieces. Against the GVS arm at the same fibre
+  dimension, the GVS arm jumps less (latent 1.2% v 6.8%, pose 13-14% v 23%); its component
+  counts are not comparable (16 + 16 starts against 32 + 32; fewer starts find fewer pieces).
 - **soft16: a binary split** that reaches into the limits (two or more in-limit components on 71/96).
   Total torsion does not separate the two (separates 7/87 with the box; spans ~10.7 rad
   inside one component), so it is not 2-pi twist wrap-around. Cause unknown; a method
@@ -74,22 +84,16 @@ box removed), which is why the rigid arms are traced.
 
 ## GVS push-rod arm
 
-**PARTIAL: `o1` only, ~10 targets; the monthly maintenance cancelled every job at
-2026-11-10 00:00:38 and `o2` finished none.** One equilibrium solve is ~20-40 ms per
-single-threaded worker, so connectivity runs without lines (`--skip_lines`) and with 16 + 16
-starts; FK and Jacobians go to JAX in chunks of 1024 (16k at once OOM-killed a node).
+Complete (2026-11-10, Engaging, both rungs, 48 targets each). One equilibrium solve is ~20-40 ms
+per single-threaded worker, so connectivity ran without lines (`--skip_lines`, 48 seeds x 1
+target, **16 + 16 starts, not 32 + 32**) and the lines separately (`--skip_conn`, 12 seeds x 4
+targets); FK and Jacobians go to JAX in chunks of 1024 (16k at once OOM-killed a node). The
+connectivity targets and the line targets are different draws. Numbers in the table above.
 
-| `gvs_pushrod9_o1` | value |
-| --- | --- |
-| components (10 targets), limits off | 1 on 6/10, max 2 |
-| components containing an in-limit solution | **1 on 10/10** |
-| latent lines with a jump (9 targets) | **0.7%**, p99 position error 3.7 mm |
-| pose lines with a jump (9 targets) | 11.6%, p99 position error 8.6 mm |
-
-Read as soft12's pattern, if anything cleaner: one component holds the in-limit solutions,
-the extra ones are large-force configurations. To finish: rerun both rungs after the
-maintenance (`SCRIPT=fibre_probe EXTRA='--progress --skip_lines --nflow 16 --nrand 16'`, 48
-seeds x 1 target, ~1 h; lines `EXTRA=--skip_conn`, 12 seeds x 4 targets per rung, ~1 h).
+Read as soft12's pattern: one component holds the in-limit solutions, the extra ones are
+large-force configurations (closest point at ~2.7-2.9x the force limit). o1 and o2 do not
+separate. The forward map is a cold-start Newton equilibrium; whether it is continuous
+everywhere was not checked (Thomas: the GVS arm is not the focus).
 
 ## Open
 
