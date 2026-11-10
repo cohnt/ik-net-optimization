@@ -1,0 +1,40 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# learned-ik on MIT ORCD Engaging, CPU only (Rocky 8's glibc 2.28 is too old for Drake's
+# wheel, hence a container). Built for the IK-fibre GVS runs (scripts/fibre/) while SuperCloud
+# was down for maintenance, 2026-11-10. Versions are the workstation venv's, except:
+#   * torch is the CPU build of the same release (2.11.0+cpu, not +cu128);
+#   * Drake is the PyPI wheel 1.58.0, not the project's nightly pin (that nightly has expired).
+#     The fibre probe builds no Drake program and runs no Drake solver, so this does not
+#     touch the "one Drake" rule for benchmarks. Do NOT run benchmark arms in this image.
+# ikflow is NOT installed here: it is the vendored fork (third_party/ikflow), put on
+# PYTHONPATH from the staged repo at run time.
+#
+# Build as a job (cluster/engaging/README.md):
+#   module load apptainer/1.4.2 && apptainer build --fakeroot lik-cpu.sif learned_ik_cpu.def
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates python3 python3-venv \
+        libx11-6 libsm6 libglib2.0-0t64 libgl1 libglu1-mesa libegl1
+    python3 -m venv /opt/venv
+    P=/opt/venv/bin/pip
+    $P install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.11.0
+    $P install --no-cache-dir numpy==2.5.2 scipy==1.18.1 klampt==0.10.1.post1 roma==1.6.1 \
+        more-itertools==11.1.0 FrEIA==0.2 tqdm==4.70.0 pyyaml==6.0.3 \
+        matplotlib==3.11.1 meshcat==0.3.2 PyOpenGL==3.1.10
+    $P install --no-cache-dir "jax[cpu]==0.11.2" soromox==0.5.0 optimistix==0.1.0 \
+        equinox==0.13.8 diffrax==0.7.2 lineax==0.1.1
+    # The fork's ikflow.training.pole_callback (imported by pole_metric.load_solver) needs these.
+    $P install --no-cache-dir pytorch-lightning==2.6.5 wandb==0.29.0
+    # jrl: --no-deps (its metadata pins torch==2.0.1); the workstation's commit.
+    $P install --no-cache-dir --no-deps \
+        "jrl @ https://github.com/jstmn/Jrl/archive/5032d22db0608d36729c41d974d6bc8f9c5b41cf.tar.gz"
+    $P install --no-cache-dir drake==1.58.0
+    /opt/venv/bin/python -c "import torch, numpy, jax, pydrake, pytorch_lightning; assert torch.__version__ == '2.11.0+cpu', torch.__version__; assert numpy.__version__ == '2.5.2', numpy.__version__; assert jax.default_backend() == 'cpu'; print('versions ok', torch.__version__, numpy.__version__, jax.__version__)"
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+%environment
+    export PATH=/opt/venv/bin:$PATH
