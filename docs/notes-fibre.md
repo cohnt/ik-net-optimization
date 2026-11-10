@@ -74,8 +74,22 @@ box removed), which is why the rigid arms are traced.
 
 ## GVS push-rod arm
 
-Pending (runs 2026-11-09). One equilibrium solve is ~20-40 ms per single-threaded worker,
-so its connectivity runs without lines and with 16 + 16 starts per target.
+**PARTIAL: `o1` only, ~10 targets; the monthly maintenance cancelled every job at
+2026-11-10 00:00:38 and `o2` finished none.** One equilibrium solve is ~20-40 ms per
+single-threaded worker, so connectivity runs without lines (`--skip_lines`) and with 16 + 16
+starts; FK and Jacobians go to JAX in chunks of 1024 (16k at once OOM-killed a node).
+
+| `gvs_pushrod9_o1` | value |
+| --- | --- |
+| components (10 targets), limits off | 1 on 6/10, max 2 |
+| components containing an in-limit solution | **1 on 10/10** |
+| latent lines with a jump (9 targets) | **0.7%**, p99 position error 3.7 mm |
+| pose lines with a jump (9 targets) | 11.6%, p99 position error 8.6 mm |
+
+Read as soft12's pattern, if anything cleaner: one component holds the in-limit solutions,
+the extra ones are large-force configurations. To finish: rerun both rungs after the
+maintenance (`SCRIPT=fibre_probe EXTRA='--progress --skip_lines --nflow 16 --nrand 16'`, 48
+seeds x 1 target, ~1 h; lines `EXTRA=--skip_conn`, 12 seeds x 4 targets per rung, ~1 h).
 
 ## Open
 

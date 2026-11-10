@@ -42,35 +42,36 @@ def main(D):
         comps = np.array([c["components"] for c in C])
         print(f"\n== {r}: {len(T)} targets; exact-vs-FD Jacobian max rel diff "
               f"{max(x for x in checks if x is not None):.1e}")
-        print(f"connectivity: solutions/target median {med([c['n_solutions'] for c in C]):.0f}; "
-              f"components median {med(comps):.0f} (p10 {np.percentile(comps, 10):.0f}, "
-              f"p90 {np.percentile(comps, 90):.0f}, max {comps.max()}); ONE component on "
-              f"{(comps == 1).sum()}/{len(C)}; largest component share median "
-              f"{med([c['component_sizes'][0] / c['n_solutions'] for c in C]):.2f}; "
-              f"flow solutions span median {med([c['flow_components'] for c in C]):.0f} components")
-        if "labels" in C[0]:
-            # pieces that contain at least one solution inside the joint / strain / force box
-            touch, far = [], []
-            for c in C:
-                U, lab = np.array(c["solutions"]), np.array(c["labels"])
-                inbox = (np.abs(U) <= 1 + 1e-9).all(1)
-                roots = set(lab.tolist())
-                touch.append(sum(inbox[lab == r].any() for r in roots))
-                far.append(float(np.median([np.abs(U[lab == r]).max(1).min() for r in roots
-                                            if not inbox[lab == r].any()] or [np.nan])))
-            touch = np.array(touch)
-            print(f"  limits {'ON' if d.get('limits') else 'OFF'}; method {C[0].get('method')}"
-                  + (f", loops closed {sum(c['loops_closed'] for c in C)}, open {sum(c['loops_open'] for c in C)}"
-                     if C[0].get("method") == "trace" else "")
-                  + f"; solutions outside the box median {med([c['outside_box_solutions'] for c in C]):.0f}")
-            print(f"  pieces containing an in-box solution: median {med(touch):.0f}, ONE on "
-                  f"{(touch == 1).sum()}/{len(C)}; pieces entirely outside the box: median "
-                  f"{med(comps - touch):.0f}, their closest point max|u| median {np.nanmedian(far):.2f}")
-        if "distinct_branches" in C[0]:
-            print(f"  analytic branches/target median {med([c['distinct_branches'] for c in C]):.0f}; "
-                  f"impure components (tracker merged two branches) {sum(c['impure_components'] for c in C)}"
-                  f"/{comps.sum()}; branches split into >1 component {sum(c['branches_split'] for c in C)}"
-                  f"/{sum(c['distinct_branches'] for c in C)}")
+        if C:
+            print(f"connectivity: solutions/target median {med([c['n_solutions'] for c in C]):.0f}; "
+                  f"components median {med(comps):.0f} (p10 {np.percentile(comps, 10):.0f}, "
+                  f"p90 {np.percentile(comps, 90):.0f}, max {comps.max()}); ONE component on "
+                  f"{(comps == 1).sum()}/{len(C)}; largest component share median "
+                  f"{med([c['component_sizes'][0] / c['n_solutions'] for c in C]):.2f}; "
+                  f"flow solutions span median {med([c['flow_components'] for c in C]):.0f} components")
+            if "labels" in C[0]:
+                # pieces that contain at least one solution inside the joint / strain / force box
+                touch, far = [], []
+                for c in C:
+                    U, lab = np.array(c["solutions"]), np.array(c["labels"])
+                    inbox = (np.abs(U) <= 1 + 1e-9).all(1)
+                    roots = set(lab.tolist())
+                    touch.append(sum(inbox[lab == r].any() for r in roots))
+                    far.append(float(np.median([np.abs(U[lab == r]).max(1).min() for r in roots
+                                                if not inbox[lab == r].any()] or [np.nan])))
+                touch = np.array(touch)
+                print(f"  limits {'ON' if d.get('limits') else 'OFF'}; method {C[0].get('method')}"
+                      + (f", loops closed {sum(c['loops_closed'] for c in C)}, open {sum(c['loops_open'] for c in C)}"
+                         if C[0].get("method") == "trace" else "")
+                      + f"; solutions outside the box median {med([c['outside_box_solutions'] for c in C]):.0f}")
+                print(f"  pieces containing an in-box solution: median {med(touch):.0f}, ONE on "
+                      f"{(touch == 1).sum()}/{len(C)}; pieces entirely outside the box: median "
+                      f"{med(comps - touch):.0f}, their closest point max|u| median {np.nanmedian(far):.2f}")
+            if "distinct_branches" in C[0]:
+                print(f"  analytic branches/target median {med([c['distinct_branches'] for c in C]):.0f}; "
+                      f"impure components (tracker merged two branches) {sum(c['impure_components'] for c in C)}"
+                      f"/{comps.sum()}; branches split into >1 component {sum(c['branches_split'] for c in C)}"
+                      f"/{sum(c['distinct_branches'] for c in C)}")
         if "latent" in T[0]:
             lines_block("latent lines, c fixed", [t["latent"] for t in T])
         if "pose_lines" in T[0]:
