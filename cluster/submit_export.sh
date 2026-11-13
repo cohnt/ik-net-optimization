@@ -26,6 +26,7 @@ source "$(dirname "$0")/ssh_common.sh"
 
 RUN_NAME="${1:?usage: submit_export.sh <run_name> <robot> [final_step]}"
 ROBOT="${2:?usage: submit_export.sh <run_name> <robot> [final_step]}"
+source "$(dirname "$0")/verify_staged_tree.sh"; lik_laptop_check || exit $?   # code integrity: cluster tree == laptop manifest, exports EXPECT_MANIFEST_SHA
 FINAL_STEP="${3:-620000}"
 PARTITION="${PARTITION:-xeon-p8}"
 WALL="${WALL:-02:00:00}"
@@ -60,4 +61,4 @@ RUN_NAME='$RUN_NAME' ROBOT='$ROBOT' FINAL_STEP='$FINAL_STEP' SCREEN_N='$SCREEN_N
     "\$HOME/$SC_ROOT/repo/cluster/export_and_screen_job.sh"
 LAUNCH
 
-sc_run "cd ~/$SC_ROOT/repo && LLsub $RUN_DIR_R/export_launch.sh"
+sc_run "cd ~/$SC_ROOT/repo && EXPECT_MANIFEST_SHA=$EXPECT_MANIFEST_SHA LLsub $RUN_DIR_R/export_launch.sh"

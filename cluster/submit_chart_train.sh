@@ -45,6 +45,7 @@
 # contain -- so a flow ladder submitted while cVAE runs hold GPUs would START and contend for
 # the cap rather than be refused. Do not run the two families at once (the runbook says so).
 set -uo pipefail
+source "$(dirname "$0")/verify_staged_tree.sh"
 source "$(dirname "$0")/ssh_common.sh"
 
 SPEC="$(dirname "$0")/chart_runs.txt"
@@ -117,6 +118,7 @@ submit_one() {
     local RUN_NAME="$1" WALL="$2" EXTRA_ARGS="$3"
     local ROBOT="${ROBOT:?set ROBOT, e.g. ROBOT=panda or ROBOT=iiwa14}"
     refuse_if_live "$RUN_NAME" || return $?
+    lik_laptop_check || return $?   # code integrity (EXPECT_MANIFEST_SHA)
     require_exec train_chart.sh || return $?
 
     local RUN_DIR_R="\$HOME/$SC_ROOT/results/train/$RUN_NAME"    # expanded remotely
@@ -140,7 +142,7 @@ LAUNCH
 
     sc_run "cd ~/$SC_ROOT/repo && $(common_env) \
       RUN_NAME='$RUN_NAME' ROBOT='$ROBOT' TRAIN_EXTRA_ARGS='$EXTRA_ARGS' \
-      LLsub $RUN_DIR_R/launch.sh"
+      EXPECT_MANIFEST_SHA=$EXPECT_MANIFEST_SHA LLsub $RUN_DIR_R/launch.sh"
 }
 
 ## ----------------------------------------------------------------- one pair --
@@ -166,6 +168,7 @@ submit_pair_runs() {   # <family> <run_a> <robot_a> <args_a> <run_b> <robot_b> <
     local fa="$1" A="$2" ra="$3" aa="$4" B="$5" rb="$6" ab="$7" WALL="$8"
     [ "$A" != "$B" ] || { echo "REFUSING: a pair of one run would race itself" >&2; return 2; }
     refuse_if_live "$A" "$B" || return $?
+    lik_laptop_check || return $?   # code integrity (EXPECT_MANIFEST_SHA)
     require_exec train_chart.sh || return $?
     require_exec train_chart_pair.sh || return $?
 
@@ -190,7 +193,7 @@ LAUNCH
 
     sc_run "cd ~/$SC_ROOT/repo && $(FAMILY="$fa" common_env) \
       RUN_A='$A' ROBOT_A='$ra' ARGS_A='$aa' RUN_B='$B' ROBOT_B='$rb' ARGS_B='$ab' \
-      LLsub $PAIR_DIR_R/launch.sh"
+      EXPECT_MANIFEST_SHA=$EXPECT_MANIFEST_SHA LLsub $PAIR_DIR_R/launch.sh"
 }
 
 ## ------------------------------------------------------------------ status --

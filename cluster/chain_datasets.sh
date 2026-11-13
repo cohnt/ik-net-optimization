@@ -33,6 +33,8 @@ SEED="${DATASET_SEED:-0}"
 PART="${PARTITION:-xeon-p8}"
 WALL="${WALL:-04:00:00}"
 CPUS="${CPUS:-48}"
+# Run from the cluster tree after `bash cluster/verify_staged_tree.sh` (laptop) printed the value to export.
+: "${EXPECT_MANIFEST_SHA:?set EXPECT_MANIFEST_SHA (bash cluster/verify_staged_tree.sh on the laptop prints it); build_dataset_job.sh refuses without it}"
 [ $# -gt 0 ] || { echo "usage: chain_datasets.sh <robot> [robot...]" >&2; exit 2; }
 
 PREV=""
@@ -43,7 +45,7 @@ for robot in "$@"; do
                  --job-name="lik_ds_${robot}" \
                  --output="./lik_ds_${robot}.log-%j" \
                  "${DEP[@]}" \
-                 --export="ALL,LEARNED_IK_ROOT=$ROOT,DATASET_ROBOT=$robot,DATASET_SIZE=$SIZE,DATASET_SEED=$SEED" \
+                 --export="ALL,EXPECT_MANIFEST_SHA=$EXPECT_MANIFEST_SHA,LEARNED_IK_ROOT=$ROOT,DATASET_ROBOT=$robot,DATASET_SIZE=$SIZE,DATASET_SEED=$SEED" \
                  ./cluster/build_dataset_job.sh 2>&1)
     echo "$out"
     jobid=$(grep -oE 'Submitted batch job [0-9]+' <<<"$out" | grep -oE '[0-9]+$')

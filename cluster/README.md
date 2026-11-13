@@ -187,6 +187,33 @@ listed. Once a stage whose shard set never merges by design (MERGECHK) is closed
 `condense_staging.py --apply --promote-unmerged` (to `results/_unmerged_shards/`). Superseded staged
 copies: `--archive-conflicts` (to `results/archive_staging/<stamp>/`). Readers read `results/` only.
 
+## Code integrity: the code that runs here is exactly the committed code
+
+- **The one hoop: commit before staging.** `stage_code.sh` refuses (exit 6) while `git status --porcelain` is
+  non-empty, and refuses (exit 7) a shipped file that is neither git-tracked (the `third_party/ikflow`
+  submodule included) nor gitignored payload (`models/*/*.pkl`, `*.arch.json`, `*__fk_surrogate.*`).
+- **What it records.** A sha256 manifest of exactly what rsync ships (a local dry run with the same excludes):
+  `.staged-manifest.sha256` and the full `.staged-commit` in the tree; laptop copies in `logs/staged/`
+  (also by the manifest's own hash, so a `repo-next` -> `repo` swap needs no laptop step). After the normal
+  rsync a second `--checksum` pass (files <= 50 MB) ships a change that kept both size and mtime.
+- **Laptop check**, before every submission (every `submit*.sh` and the end of `stage_code.sh`; by hand:
+  `bash cluster/verify_staged_tree.sh`): the laptop's manifest goes to the cluster's own `sha256sum -c`
+  inside the tree (files > 50 MB: existence only, to keep login-node work light); unlisted `*.py *.sh *.pth`
+  files and any symlink are refused. It exports `EXPECT_MANIFEST_SHA`, which the submitter passes into the job.
+- **Job check**, first thing in every job script that runs repo code (`lik_job_check`): refuses unless
+  `EXPECT_MANIFEST_SHA` is set and is the hash of the tree's manifest, hashes the whole tree (checkpoints too)
+  against it, repeats the unlisted-code and symlink refusal, and points `PYTHONPYCACHEPREFIX` at a fresh dir
+  removed at exit. Not hashed, never flagged: `cpp/build/`, `__pycache__/`, `results/`, `logs/`, `LLSUB.*/`,
+  `*.egg-info/`, cluster-exported checkpoints (`*__step*.pkl`, FK surrogates).
+- **`STOP: staged code differs from its recorded commit -- tell Thomas`** (exit 1): the tree is not what was
+  staged. Do not repair or restage over it; tell Thomas. **`CANNOT VERIFY`** (exit 75, 76 = no laptop
+  reference): ssh or the cluster failed; it says nothing about the code. Retry.
+- **Hand-run job scripts:** never a bare `LLsub` (the job refuses without `EXPECT_MANIFEST_SHA`):
+  `bash cluster/submit_job.sh cluster/smoke.sh -g volta:2 -s 40 -q debug-gpu` (extra env: `JOB_ENV="A=b"`;
+  the swap: `STAGE_SUBDIR=repo-next SUBMIT_CMD="sbatch --dependency=afterany:<job>"`). `chain_datasets.sh`
+  runs on the cluster and needs `EXPECT_MANIFEST_SHA` exported from the laptop check's output.
+- Tests: `tests/test_staging_integrity.py` (stubs only, no cluster).
+
 ## Wall-clock limits: three caps, and the invariant between them
 
 | cap | where | default | what it is |

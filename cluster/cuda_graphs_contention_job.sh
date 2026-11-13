@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUBMIT WITH: bash cluster/submit_job.sh cluster/cuda_graphs_contention_job.sh [LLsub args] (env vars via JOB_ENV="A=b"); a bare LLsub refuses at job start (README "Code integrity").
 # LLsub payload: does the CUDA-graph gain survive several solver processes sharing a V100?
 #
 # ============================ STANDING REMINDER ============================
@@ -30,6 +31,7 @@ set -uo pipefail
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 export HOME="$ROOT/home"
 export TQDM_DISABLE=1 PYTHONUNBUFFERED=1 MPLBACKEND=Agg
 export LD_LIBRARY_PATH="$ROOT/sysdeps/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -45,7 +47,7 @@ if [ "${MPS:-0}" = 1 ]; then
     mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
     ## The daemon must see every allocated card; clients then pick one by UUID.
     CUDA_VISIBLE_DEVICES="$SLURM_GPUS" nvidia-cuda-mps-control -d || { echo "MPS daemon failed to start"; exit 3; }
-    trap 'echo quit | nvidia-cuda-mps-control; cat "$CUDA_MPS_LOG_DIRECTORY"/control.log 2>/dev/null | tail -5' EXIT
+    trap 'echo quit | nvidia-cuda-mps-control; cat "$CUDA_MPS_LOG_DIRECTORY"/control.log 2>/dev/null | tail -5; lik_cleanup' EXIT
     echo "MPS daemon started"
 fi
 

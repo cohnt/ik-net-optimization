@@ -37,6 +37,7 @@ echo "train_flow: alive on $(hostname) date=$(date -Is) nodeid=${SLURM_NODEID:-?
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 RUN_NAME="${RUN_NAME:?set RUN_NAME, e.g. iiwa14_n6}"
 ROBOT="${ROBOT:?set ROBOT, e.g. iiwa14 or panda}"
 RUN_DIR="$ROOT/results/train/$RUN_NAME"

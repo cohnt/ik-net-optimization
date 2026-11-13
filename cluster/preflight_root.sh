@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUBMIT WITH: bash cluster/submit_job.sh cluster/preflight_root.sh [LLsub args] (env vars via JOB_ENV="A=b"); a bare LLsub refuses at job start (README "Code integrity").
 # Pre-flight for a cluster tree: does a benchmark worker's environment actually resolve?
 #
 # ============================ STANDING REMINDER ============================
@@ -25,6 +26,7 @@ set -uo pipefail
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 ROBOT="${ROBOT:-gvs_pushrod9_o1}"
 
 ## Exactly what run_items.sh sets up for a worker, minus the per-worker TMPDIR.

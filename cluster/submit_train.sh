@@ -46,6 +46,7 @@ source "$(dirname "$0")/ssh_common.sh"
 
 RUN_NAME="${1:?usage: ROBOT=<robot> submit_train.sh <run_name> [nnodes] [walltime] [-- extra args]}"
 ROBOT="${ROBOT:?set ROBOT, e.g. ROBOT=iiwa14 or ROBOT=panda}"
+source "$(dirname "$0")/verify_staged_tree.sh"; lik_laptop_check || exit $?   # code integrity: cluster tree == laptop manifest, exports EXPECT_MANIFEST_SHA
 NNODES="${2:-4}"
 WALL="${3:-96:00:00}"
 ## A REAL partition, always. Even a 200-step validation run trains, and anything that
@@ -163,4 +164,4 @@ sc_run "cd ~/$SC_ROOT/repo && \
   RUN_NAME='$RUN_NAME' ROBOT='$ROBOT' NNODES=$NNODES GPUS_PER_NODE=$GPUS_PER_NODE BATCH=$BATCH \
   RUN_EXPORT='${RUN_EXPORT:-1}' \
   TRAIN_EXTRA_ARGS='$EXTRA_ARGS' \
-  LLsub $RUN_DIR_R/launch.sh"
+  EXPECT_MANIFEST_SHA=$EXPECT_MANIFEST_SHA LLsub $RUN_DIR_R/launch.sh"

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUBMIT WITH: bash cluster/submit_job.sh cluster/build_dataset_job.sh [LLsub args] (env vars via JOB_ENV="A=b"); a bare LLsub refuses at job start (README "Code integrity").
 # LLsub payload: build a robot's IKFlow training dataset into the persistent fake HOME.
 #
 # DATASET_ROBOT selects the arm (iiwa14 / panda). The Panda ladder needs its own dataset;
@@ -22,6 +23,7 @@ set -uo pipefail
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 ROBOT="${DATASET_ROBOT:-iiwa14}"
 SIZE="${DATASET_SIZE:-25000000}"
 SEED="${DATASET_SEED:-0}"

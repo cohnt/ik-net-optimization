@@ -95,6 +95,8 @@ JobSecondsLeft() {
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="${TEST_REPO:-$ROOT/repo}"
+## TEST_REPO (a fake tree with no manifest, tests/test_run_items_watcher.py) is honoured only outside Slurm.
+{ [ -n "${TEST_REPO:-}" ] && [ -z "${SLURM_JOB_ID:-}" ]; } || { source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"; }   # code integrity (README)
 STATE_ROOT="${TEST_STATE_DIR:-$ROOT/state}"
 RESULTS_ROOT="${LEARNED_IK_RESULTS:-$ROOT/results}"
 PROCS="${PROCS:-1}"
@@ -411,7 +413,7 @@ if [ "${MPS:-0}" = 1 ] && [ -n "$SLURM_GPUS" ]; then
     mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
     CUDA_VISIBLE_DEVICES="$SLURM_GPUS" nvidia-cuda-mps-control -d \
         || { echo "run_items: MPS daemon failed to start" >&2; exit 3; }
-    trap 'echo quit | nvidia-cuda-mps-control >/dev/null 2>&1' EXIT
+    trap 'echo quit | nvidia-cuda-mps-control >/dev/null 2>&1; declare -F lik_cleanup >/dev/null && lik_cleanup' EXIT   # lik_cleanup: the verifier's per-job pycache dir
     echo "run_items: MPS daemon started over [$SLURM_GPUS]"
 fi
 ## Wait on PIDs we collected ourselves, never on a bare `wait` and never on

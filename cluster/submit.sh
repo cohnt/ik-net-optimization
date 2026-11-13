@@ -18,6 +18,7 @@ source "$(dirname "$0")/ssh_common.sh"
 
 MANIFEST="${1:?usage: submit.sh <manifest-basename> [n_jobs]}"
 NJOBS="${2:-4}"
+source "$(dirname "$0")/verify_staged_tree.sh"; lik_laptop_check || exit $?   # code integrity: cluster tree == laptop manifest, exports EXPECT_MANIFEST_SHA
 LOCAL="$(_sc_repo_root)/cluster/$MANIFEST"
 [ -f "$LOCAL" ] || { echo "no such local manifest: $LOCAL"; exit 1; }
 echo "local:  $MANIFEST ($(grep -vc '^#' "$LOCAL") items)"
@@ -29,6 +30,6 @@ if [ ! -f cluster/$MANIFEST ]; then
 fi
 echo \"remote: \$(grep -vc '^#' cluster/$MANIFEST) items\"
 for i in \$(seq 1 $NJOBS); do
-    MANIFEST=cluster/$MANIFEST PROCS=\${PROCS:-8} LLsub ./cluster/run_items.sh \\
+    EXPECT_MANIFEST_SHA=$EXPECT_MANIFEST_SHA MANIFEST=cluster/$MANIFEST PROCS=\${PROCS:-8} LLsub ./cluster/run_items.sh \\
         -g volta:2 -s 40 -q xeon-g6-volta -T 12:00:00 2>&1 | grep Submitted
 done"

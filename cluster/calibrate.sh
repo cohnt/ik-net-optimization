@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUBMIT WITH: bash cluster/submit_job.sh cluster/calibrate.sh [LLsub args] (env vars via JOB_ENV="A=b"); a bare LLsub refuses at job start (README "Code integrity").
 # Placement / contention / cap calibration -- a REAL job on a REAL node.
 #
 # ============================ STANDING REMINDER ============================
@@ -67,6 +68,7 @@ WaitPids() { local p rc=0; for p in "$@"; do wait "$p" || rc=1; done; return $rc
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 ARM="${CALIB_ARM:-gpu-procs}"
 OUT="$ROOT/calib/$ARM"
 LOG="$ROOT/calibrate.$ARM.log"

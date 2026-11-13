@@ -31,6 +31,7 @@ echo "train_chart: alive on $(hostname) date=$(date -Is) job=${SLURM_JOB_ID:-?}"
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 FAMILY="${FAMILY:-cvae}"
 RUN_NAME="${RUN_NAME:?set RUN_NAME, e.g. panda_cvae7}"
 ROBOT="${ROBOT:?set ROBOT, e.g. panda or iiwa14}"

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUBMIT WITH: bash cluster/submit_job.sh cluster/setup_supercloud.sh [LLsub args] (env vars via JOB_ENV="A=b"); a bare LLsub refuses at job start (README "Code integrity").
 # Build this project's ISOLATED environment on SuperCloud. Idempotent.
 #
 # ============================ STANDING REMINDER ============================
@@ -31,6 +32,7 @@ rm -f "$DONE"
 exec > >(tee "$LOG") 2>&1
 echo "===== learned-ik setup on $(hostname) at $(date -Is) ====="
 cd "$ROOT"
+source "$ROOT/repo/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$ROOT/repo"   # code integrity: the repo it installs from == laptop manifest (README)
 
 ## THE PROJECT'S DRAKE PIN, moved off release 1.56.0 to this nightly on 2026-09-19 by
 ## Thomas's decision, because the adopted NLopt configuration needs PR 25002

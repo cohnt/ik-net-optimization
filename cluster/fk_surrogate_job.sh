@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUBMIT WITH: bash cluster/submit_job.sh cluster/fk_surrogate_job.sh [LLsub args] (env vars via JOB_ENV="A=b"); a bare LLsub refuses at job start (README "Code integrity").
 # LLsub payload: fit the soft PCS arm's learned forward-kinematics surrogate.
 #
 # ============================ STANDING REMINDER ============================
@@ -20,6 +21,7 @@ set -uo pipefail
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 RUNG="${FK_RUNG:-soft12}"
 STEPS="${FK_STEPS:-60000}"
 WIDTH="${FK_WIDTH:-1024}"

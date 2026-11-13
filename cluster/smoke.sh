@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUBMIT WITH: bash cluster/submit_job.sh cluster/smoke.sh [LLsub args] (env vars via JOB_ENV="A=b"); a bare LLsub refuses at job start (README "Code integrity").
 # The ONLY thing this project runs on debug-gpu: a few-minute smoke test.
 #
 # ============================ STANDING REMINDER ============================
@@ -23,6 +24,7 @@ set -uo pipefail
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 LOG="$ROOT/smoke.log"
 DONE="$ROOT/smoke.DONE"
 rm -f "$DONE"

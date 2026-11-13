@@ -29,6 +29,7 @@ echo "train_chart_pair: alive on $(hostname) date=$(date -Is) job=${SLURM_JOB_ID
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 : "${RUN_A:?}" "${ROBOT_A:?}" "${RUN_B:?}" "${ROBOT_B:?}"
 
 ## Slurm sets the job's GPUs as a comma-separated list (UUIDs or indices). Exactly two, or the

@@ -107,6 +107,7 @@ esac
 ## Refuse rather than launch jobs that cannot work -- a manifest that is not on the cluster
 ## produces jobs that start, find nothing, and exit silently, which reads as "submitted and
 ## produced nothing" only much later.
+source "$(dirname "$0")/verify_staged_tree.sh"; lik_laptop_check || exit $?   # code integrity: cluster tree == laptop manifest, exports EXPECT_MANIFEST_SHA
 sc_run "test -f ~/$SC_ROOT/repo/cluster/$MANIFEST" || {
     echo "REFUSING: cluster/$MANIFEST is not staged. Run cluster/stage_code.sh first." >&2
     exit 2
@@ -182,5 +183,5 @@ MANIFEST=cluster/$MANIFEST PROCS=$PROCS MPS=${MPS:-0} ${DRAKE_ENV:+DRAKE_ENV=$DR
 LAUNCH
 
 for i in $(seq 1 "$NJOBS"); do
-    sc_run "cd ~/$SC_ROOT/repo && LLsub $LAUNCH_R" 2>&1 | grep -E "Submitted batch job"
+    sc_run "cd ~/$SC_ROOT/repo && EXPECT_MANIFEST_SHA=$EXPECT_MANIFEST_SHA LLsub $LAUNCH_R" 2>&1 | grep -E "Submitted batch job"
 done

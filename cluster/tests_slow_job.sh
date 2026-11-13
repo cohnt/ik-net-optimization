@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUBMIT WITH: bash cluster/submit_job.sh cluster/tests_slow_job.sh [LLsub args] (env vars via JOB_ENV="A=b"); a bare LLsub refuses at job start (README "Code integrity").
 # The tests' SLOW tier (tests/_tiers.py), on one V100: every file's `all` (fast + slow),
 # one process at a time, a TSV of seconds and exit codes. ~1 h; not a measurement, so its
 # seconds are for budgeting the tier, never compared with anything.
@@ -17,6 +18,7 @@ set -uo pipefail
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="$ROOT/tests_slow/$STAMP"
 mkdir -p "$OUT"

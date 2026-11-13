@@ -33,6 +33,7 @@ echo "export_and_screen: alive on $(hostname) date=$(date -Is) job=${SLURM_JOB_I
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 RUN_NAME="${RUN_NAME:?set RUN_NAME, e.g. iiwa14_n6}"
 ROBOT="${ROBOT:?set ROBOT, e.g. iiwa14 or panda}"
 FINAL_STEP="${FINAL_STEP:-620000}"

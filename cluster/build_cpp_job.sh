@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUBMIT WITH: bash cluster/submit_job.sh cluster/build_cpp_job.sh [LLsub args] (env vars via JOB_ENV="A=b"); a bare LLsub refuses at job start (README "Code integrity").
 # LLsub payload: build the analytic arm's C++ backend (cpp/build.sh) in the staged tree, then
 # load it with the project's own venv and Drake pin and run its parity test.
 #
@@ -20,6 +21,7 @@ set -uo pipefail
 
 ROOT="${LEARNED_IK_ROOT:-$HOME/learned-ik}"
 REPO="$ROOT/repo"
+source "$REPO/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$REPO"   # code integrity: tree == laptop manifest (README)
 SENTINEL="$ROOT/build_cpp.DONE"
 rm -f "$SENTINEL"
 cd "$REPO" || { echo "no repo at $REPO" >&2; exit 2; }

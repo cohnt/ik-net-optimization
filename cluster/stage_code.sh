@@ -19,6 +19,7 @@
 #     copy up would make it ambiguous which machine produced a summary.
 set -uo pipefail
 source "$(dirname "$0")/ssh_common.sh"
+source "$(dirname "$0")/verify_staged_tree.sh"
 REPO_ROOT="$(_sc_repo_root)"
 ## STAGE_SUBDIR (default `repo`, the live tree): `STAGE_SUBDIR=repo-next` stages the same tree
 ## BESIDE the live one, to be swapped in between two campaigns by `cluster/swap_staged_tree.sh`
@@ -28,8 +29,13 @@ REPO_ROOT="$(_sc_repo_root)"
 STAGE_SUBDIR="${STAGE_SUBDIR:-repo}"
 
 COMMIT=$(git -C "$REPO_ROOT" rev-parse HEAD)
-if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]; then
-    echo "WARNING: tracked files are dirty; staging the working tree anyway." >&2
+## Code integrity (README "Code integrity"): only a clean, committed tree is staged, so the cluster's
+## code is exactly COMMIT. Commit first; there is no override.
+DIRTY=$(git -C "$REPO_ROOT" status --porcelain)
+if [ -n "$DIRTY" ]; then
+    echo "REFUSING: the working tree is not clean; commit (or discard) first, then stage that commit." >&2
+    printf '%s\n' "$DIRTY" | head -20 >&2
+    exit 6
 fi
 
 ## Refuse to restage under a live campaign unless explicitly forced. rsync has no
@@ -105,8 +111,6 @@ if [ "${LINKS:-0}" -gt 0 ]; then
     exit 5
 fi
 
-sc_run "mkdir -p ~/$SC_ROOT/$STAGE_SUBDIR ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/home/.cache"
-
 ## PROTECT filters, not excludes: cluster-side exported checkpoints must survive
 ## --delete, but locally-held ones (lemon-haze-7, ddp-r1) must still be PUSHED.
 ## An --exclude would do both; rsync's "P" filter only suppresses deletion.
@@ -122,15 +126,7 @@ sc_run "mkdir -p ~/$SC_ROOT/$STAGE_SUBDIR ~/$SC_ROOT/state ~/$SC_ROOT/results ~/
 ##
 ## An --exclude ALSO protects the path from --delete, so adding one stops future pushes
 ## but does NOT remove a copy already on the cluster. That needs an explicit rm.
-EXCLUDES=(
-    '.git/' '.git' '.claude/' '.venv/' '.venv-soromox/'
-    'results/' 'logs/' 'notebooks/artifacts/'
-    '__pycache__/' '*.pyc' '.pytest_cache/'
-    'workshop-paper-draft.pdf'
-    ## Built ON the cluster (cluster/build_cpp_job.sh), never pushed: a laptop .so links the
-    ## laptop's libstdc++. The loader refuses a stale one by its compiled-in source hash.
-    'cpp/build/'
-)
+EXCLUDES=("${LIK_STAGE_EXCLUDES[@]}")    ## the list lives in verify_staged_tree.sh (shared with the swap)
 
 ## STAGE_EXTRA_EXCLUDES adds to the list for one run, space-separated:
 ##   STAGE_EXTRA_EXCLUDES='models/panda/ scratch.npz' bash cluster/stage_code.sh
@@ -147,12 +143,33 @@ for _e in "${EXCLUDES[@]}"; do
 done
 echo "excluding: ${EXCLUDES[*]}"
 
-sc_rsync -az --delete \
-    --filter='P models/*/*__step*.pkl' --filter='P models/*/*__step*.arch.json' \
-    --filter='P models/*/*__global_step*.pkl' --filter='P models/*/*__global_step*.arch.json' \
-    "${EXCLUDE_ARGS[@]}" \
-    "$REPO_ROOT/" "$SC_DEST:$SC_ROOT/$STAGE_SUBDIR/"
+FILTER_ARGS=()
+for _p in "${LIK_STAGE_PROTECT[@]}"; do FILTER_ARGS+=("--filter=P $_p"); done
 
+## The MANIFEST of what is shipped: a local rsync dry run with the same excludes; every file must be
+## tracked or allowlisted payload, then is sha256'd. Built BEFORE anything is sent.
+SDIR="$REPO_ROOT/logs/staged"; NAME="$SC_ROOT-$STAGE_SUBDIR"; NEWDIR="$SDIR/.new"
+rm -rf "$NEWDIR"; mkdir -p "$NEWDIR"
+lik_build_manifest "$REPO_ROOT" "$NEWDIR/$NAME.sha256" "${EXCLUDE_ARGS[@]}" || exit 7
+echo "$COMMIT" > "$NEWDIR/$NAME.commit"
+echo "manifest: $(wc -l < "$NEWDIR/$NAME.sha256") files"
+
+sc_run "mkdir -p ~/$SC_ROOT/$STAGE_SUBDIR ~/$SC_ROOT/state ~/$SC_ROOT/results ~/$SC_ROOT/home/.cache"
+
+sc_rsync -az --delete "${FILTER_ARGS[@]}" "${EXCLUDE_ARGS[@]}" \
+    "$REPO_ROOT/" "$SC_DEST:$SC_ROOT/$STAGE_SUBDIR/" || { echo "ERROR: rsync failed; the cluster tree is a mix: do NOT submit from it" >&2; exit 11; }
+## Content pass: rsync's size+mtime quick check skips a same-size same-second change; --checksum (files up
+## to the large threshold, no --delete) sends exactly what differs in content.
+sc_rsync -az --checksum "--max-size=$LIK_LARGE_BYTES" "${FILTER_ARGS[@]}" "${EXCLUDE_ARGS[@]}" \
+    "$REPO_ROOT/" "$SC_DEST:$SC_ROOT/$STAGE_SUBDIR/" || { echo "ERROR: the --checksum rsync pass failed; do NOT submit from this tree" >&2; exit 11; }
+
+sc_run "cat > ~/$SC_ROOT/$STAGE_SUBDIR/.staged-manifest.sha256" < "$NEWDIR/$NAME.sha256" || exit 8
+## The laptop's reference: per-subdir, and keyed by the manifest's own hash (a repo-next -> repo swap
+## then needs no laptop step: the check finds its reference from the live tree's manifest).
+_MKEY=$(sha256sum < "$NEWDIR/$NAME.sha256" | cut -d' ' -f1)
+mkdir -p "$SDIR/by-manifest"
+for _x in sha256 commit large; do cp "$NEWDIR/$NAME.$_x" "$SDIR/by-manifest/$_MKEY.$_x"; mv -f "$NEWDIR/$NAME.$_x" "$SDIR/$NAME.$_x"; done
+rmdir "$NEWDIR" 2>/dev/null || true
 sc_run "echo $COMMIT > ~/$SC_ROOT/$STAGE_SUBDIR/.staged-commit
 echo 'staged commit:' \$(cat ~/$SC_ROOT/$STAGE_SUBDIR/.staged-commit)
 du -sh ~/$SC_ROOT/$STAGE_SUBDIR
@@ -165,3 +182,6 @@ fi"
 
 echo
 echo "local iiwa checkpoint sha256: $(sha256sum "$REPO_ROOT/models/iiwa14/iiwa14__lemon-haze-7__global_step_4.25M.pkl" 2>/dev/null | cut -c1-16)"
+
+## Prove it: the cluster's own sha256sum against the laptop's manifest (also what the submit scripts do).
+lik_laptop_check || exit $?
