@@ -25,6 +25,14 @@
 # `rm -rf` removes without disturbing anything else.
 
 SC_DEST="tcohn@txe1-login.mit.edu"
+# Security (supercloud skill, "Security"): only this login host is ever used.
+# A different host -- or ssh reporting an unknown or changed host key, which
+# BatchMode turns into a failed connection -- means STOP and ask Thomas: never
+# ssh-keygen -R, never accept a key automatically, never switch hosts.
+if ! [[ "$SC_DEST" =~ ^[A-Za-z0-9._-]+@txe1-login\.mit\.edu$ ]]; then
+    echo "ssh_common.sh: SC_DEST='$SC_DEST' is not <user>@txe1-login.mit.edu; refusing." >&2
+    return 1 2>/dev/null || exit 1
+fi
 ## Overridable so an EXPLORATION BRANCH can stage its own isolated tree beside the
 ## default one instead of rsync --delete-ing over a live campaign's code. Each root
 ## is self-contained and removable with one `rm -rf`.
@@ -42,7 +50,9 @@ esac
 
 SC_CTL_DIR="${XDG_RUNTIME_DIR:-/tmp}/supercloud-ctl"
 mkdir -p "$SC_CTL_DIR"
-SC_SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$SC_CTL_DIR/%r@%h:%p" -o ControlPersist=10m -o BatchMode=yes)
+# -F /dev/null: ~/.ssh/config can change nothing (no ProxyCommand, LocalCommand,
+# ForwardAgent, host aliases); the key is used from its default path.
+SC_SSH_OPTS=(-F /dev/null -o ControlMaster=auto -o "ControlPath=$SC_CTL_DIR/%r@%h:%p" -o ControlPersist=10m -o BatchMode=yes)
 
 _sc_repo_root() { git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel; }
 SC_AUDIT_LOG="$(_sc_repo_root)/logs/cluster_audit.log"
