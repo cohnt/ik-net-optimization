@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Keep this file under 40k characters.** It is read at the start of every session. It holds the
 verdicts, rulings and traps; the mechanisms, numbers and history behind them live in
-**`docs/notes-*.md`** (architecture, rules-and-benchmarking, solver-axis, svgd, record, chart, robots,
-cluster) — **read the matching notes file before changing or re-measuring anything in that area.**
+**`docs/notes-*.md`** — **read the matching notes file before changing or re-measuring anything in that area.**
 When a measurement supersedes an older one, delete the old table and keep the conclusion; git history
 holds the numbers. Evidence for closed questions: `docs/closed-axes.md`.
+**History rewritten 2026-11-13** (a leaked key scrubbed): hashes cited before then are pre-rewrite;
+translate them with `docs/history-rewrite-2026-11-13.md`.
 
 ## Project
 
