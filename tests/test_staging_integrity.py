@@ -42,7 +42,7 @@ echo "ssh $*" >> $S/calls.log
 [ -e $S/ssh_down ] && exit 255
 while [[ "$1" == -* ]]; do case "$1" in -F|-o) shift 2;; *) shift;; esac; done
 shift
-HOME=$H exec bash -c "$*"
+exec env -i HOME=$H USER=tcohn PATH="$PATH" TMPDIR="$TMPDIR" bash -c "$*"   # like real ssh: the laptop environment does not travel
 ''',
     "rsync": r'''#!/bin/bash
 echo "rsync $*" >> $S/calls.log
