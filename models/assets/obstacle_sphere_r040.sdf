@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!-- A welded spherical obstacle, radius 0.04 m (src/obstacles). One link, collision + visual. -->
+<sdf version="1.7">
+  <model name="obstacle_sphere_r040">
+    <link name="sphere_link">
+      <inertial>
+        <mass>0.1</mass>
+        <inertia>
+          <ixx>6.4e-5</ixx><iyy>6.4e-5</iyy><izz>6.4e-5</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry><sphere><radius>0.04</radius></sphere></geometry>
+        <material><diffuse>0.85 0.2 0.2 1.0</diffuse></material>
+      </visual>
+      <collision name="collision">
+        <geometry><sphere><radius>0.04</radius></sphere></geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>

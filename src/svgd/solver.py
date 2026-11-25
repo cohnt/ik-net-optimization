@@ -185,7 +185,16 @@ def _scene_spec(program):
         if yaml is None:
             raise
         opts = program.options
-        return SceneSpec(yaml_path=yaml, collision_bound=float(opts.collision_bound),
+        ## The fallback must carry the obstacles too: a bare yaml spec would silently drop
+        ## them and the particle method would optimise in a different scene.
+        obstacles = tuple(tuple(float(v) for v in c)
+                          for c in getattr(program.diagram, "extra_obstacles", ()))
+        from src.obstacles.directives import ObstacleInstanceNames
+        n_plant = len(ObstacleInstanceNames(program.plant))
+        if n_plant != len(obstacles):
+            raise ValueError("svgd scene spec: the plant has %d obstacle instances, the "
+                             "diagram records %d centres" % (n_plant, len(obstacles)))
+        return SceneSpec(yaml_path=yaml, obstacles=obstacles, collision_bound=float(opts.collision_bound),
                          influence_distance_offset=float(opts.collision_influence_offset),
                          row_scale=float(opts.collision_row_scale))
 

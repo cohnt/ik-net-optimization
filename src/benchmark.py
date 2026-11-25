@@ -362,7 +362,7 @@ def scene_model_files(yaml_file):
     return files
 
 
-def scene_fingerprint(yaml_file, extra_models=()):
+def scene_fingerprint(yaml_file, extra_models=(), extra_payload=None):
     """sha1 over the directives YAML text and the text of every model file it references.
 
     WHY, in one sentence: `grid_hash` hashes only the sampled q's, so a run on a scene with
@@ -373,6 +373,11 @@ def scene_fingerprint(yaml_file, extra_models=()):
 
     `extra_models` are model files the experiment appends in memory -- the grasp task's
     target mug, which `GenerateDiagramWithMug` adds per target and no YAML names.
+
+    `extra_payload` (bytes) is for scene content no file holds -- the per-target obstacle
+    centres (`src/obstacles/per_target.ObstacleFingerprintPayload`).  None leaves the digest
+    byte-identical to what it was before obstacles existed (every record fingerprint).  Pillar
+    scenes need no payload: their YAML and SDFs are hashed like any scene file.
     """
     h = hashlib.sha1()
     with open(yaml_file, "rb") as f:
@@ -381,6 +386,8 @@ def scene_fingerprint(yaml_file, extra_models=()):
         h.update(b"\0" + os.path.basename(path).encode() + b"\0")
         with open(path, "rb") as f:
             h.update(f.read())
+    if extra_payload is not None:
+        h.update(b"\0payload\0" + bytes(extra_payload))
     return h.hexdigest()
 
 

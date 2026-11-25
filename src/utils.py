@@ -187,18 +187,13 @@ class Mug:
         self.middle = middle
         self.height = height
 
-def GenerateDiagramWithMug(q, program, yaml_file, meshcat):
-    """
-    Build the scene in `yaml_file` with an extra mug welded at the gripper pose of `q`.
+def _MugDirectives(target):
+    """The `add_model`/`add_weld` pair that welds `target_mug` at the RigidTransform `target`.
 
-    The mug is appended as an in-memory model directive; the YAML file itself is never
-    modified, so a crash or interrupt here cannot leave a stray mug in a tracked scene.
+    Named `target_mug` rather than `mug` so this can be appended to scenes that already
+    contain static mugs (the iiwa scene defines several).  The one place these directives are
+    formed: `GenerateDiagramWithMug` and `BuildTargetDiagram` both call it.
     """
-    program.SetPositions(q)
-    target = program.frame.CalcPoseInWorld(program.plant_context)
-
-    # Named `target_mug` rather than `mug` so this can be appended to scenes that
-    # already contain static mugs (the iiwa scene defines several).
     add_mug = ModelDirective()
     add_mug.add_model = AddModel(
         name="target_mug",
@@ -210,14 +205,41 @@ def GenerateDiagramWithMug(q, program, yaml_file, meshcat):
         child="target_mug::mug_body_link",
         X_PC=SchemaTransform(target),
     )
+    return [add_mug, weld_mug]
 
+
+def BuildTargetDiagram(yaml_file, centres=(), mug_pose=None, meshcat=None):
+    """The per-target solve diagram: scene + optional welded mug + welded obstacles.
+
+    Directive order is mug, then obstacles (`SceneSpec.extra_directives` uses the same order).
+    `diagram.extra_obstacles` records the centres so every rebuild of this scene (the svgd
+    collision checker) can see them; an empty tuple when there are none.
+    """
+    from src.obstacles.directives import ObstacleDirectives
+    extra = []
+    if mug_pose is not None:
+        extra += _MugDirectives(mug_pose)
+    extra += ObstacleDirectives(centres)
     if meshcat is not None:
         meshcat.Delete()
-    diagram_with_mug = BuildEnv(
-        meshcat=meshcat,
-        directives_file=yaml_file,
-        extra_directives=[add_mug, weld_mug],
-    )
+    diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file,
+                       extra_directives=extra or None)
+    diagram.extra_obstacles = tuple(tuple(float(v) for v in c) for c in centres)
+    return diagram
+
+
+def GenerateDiagramWithMug(q, program, yaml_file, meshcat, obstacle_centres=()):
+    """
+    Build the scene in `yaml_file` with an extra mug welded at the gripper pose of `q`,
+    plus (optionally) welded spherical obstacles at `obstacle_centres`.
+
+    The mug is appended as an in-memory model directive; the YAML file itself is never
+    modified, so a crash or interrupt here cannot leave a stray mug in a tracked scene.
+    With no obstacles the diagram is exactly what it was before obstacles existed.
+    """
+    program.SetPositions(q)
+    target = program.frame.CalcPoseInWorld(program.plant_context)
+    diagram_with_mug = BuildTargetDiagram(yaml_file, obstacle_centres, target, meshcat)
     return diagram_with_mug, Mug(target)
 
 

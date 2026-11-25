@@ -78,6 +78,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from src.obstacles.directives import OBSTACLE_SDF, ObstacleDirectives, ObstacleInstanceNames
 from src.utils import BuildEnv, HiddenPrints, RepoDir
 
 MUG_URDF = "package://combining_kinematics/models/mug/mug_simple_red.urdf"
@@ -106,6 +107,11 @@ class SceneSpec:
     collision_bound: float = 1e-3
     influence_distance_offset: float = 0.1
     row_scale: float = 0.1
+    ## Welded spherical obstacles (centres, float64 3-tuples), appended after the mug in the
+    ## same order the program's diagram has them.  A spec that drops them rebuilds a DIFFERENT
+    ## scene, so `from_program` cross-checks the plant's `obstacle_###` instances.
+    obstacles: tuple = ()
+    obstacle_sdf: str = OBSTACLE_SDF
 
     @staticmethod
     def from_program(program, yaml_path=None):
@@ -160,9 +166,19 @@ class SceneSpec:
                                  "`%s`, found %d" % (MUG_MODEL_NAME, len(welds)))
             X_mug = welds[0].X_FM()
 
+        obstacles = tuple(tuple(float(v) for v in c)
+                          for c in getattr(program.diagram, "extra_obstacles", ()))
+        n_plant = len(ObstacleInstanceNames(plant))
+        if n_plant != len(obstacles):
+            raise ValueError(
+                "SceneSpec.from_program: the plant has %d `obstacle_###` model instances but "
+                "the diagram records %d obstacle centres (`diagram.extra_obstacles`) -- a "
+                "rebuilt scene would not match the solve scene." % (n_plant, len(obstacles)))
+
         opts = program.options
         return SceneSpec(
             yaml_path=yaml,
+            obstacles=obstacles,
             mug_xyz=None if X_mug is None else tuple(float(v) for v in X_mug.translation()),
             mug_wxyz=None if X_mug is None else tuple(
                 float(v) for v in X_mug.rotation().ToQuaternion().wxyz()),
@@ -186,9 +202,11 @@ class SceneSpec:
         return RigidTransform(RotationMatrix(R), np.array(self.mug_xyz, dtype=np.float64))
 
     def extra_directives(self):
-        """The in-memory `add_model`/`add_weld` pair `GenerateDiagramWithMug` appends."""
+        """The in-memory directives the solve scene appends: the mug's `add_model`/`add_weld`
+        pair (`GenerateDiagramWithMug`) then the obstacles' (`BuildTargetDiagram`)."""
+        obst = ObstacleDirectives(self.obstacles, sdf=self.obstacle_sdf)
         if not self.has_mug:
-            return []
+            return obst
         from pydrake.common.schema import Transform as SchemaTransform
         from pydrake.multibody.parsing import AddModel, AddWeld, ModelDirective
         add_mug = ModelDirective()
@@ -199,13 +217,15 @@ class SceneSpec:
             child="%s::%s" % (self.mug_model_name, self.mug_body_name),
             X_PC=SchemaTransform(self.mug_pose()),
         )
-        return [add_mug, weld_mug]
+        return [add_mug, weld_mug] + obst
 
     def build_diagram(self):
         """The solve scene, headless, exactly as the program's diagram was built."""
         with HiddenPrints():
-            return BuildEnv(meshcat=None, directives_file=self.yaml_path,
-                            extra_directives=self.extra_directives() or None)
+            diagram = BuildEnv(meshcat=None, directives_file=self.yaml_path,
+                               extra_directives=self.extra_directives() or None)
+        diagram.extra_obstacles = tuple(self.obstacles)
+        return diagram
 
 
 ## ------------------------------------------------------------------------------------ ##

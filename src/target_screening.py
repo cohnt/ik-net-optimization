@@ -199,6 +199,11 @@ for _spec in _GVS_RUNGS.values():
         wrist_frame="hand", fingertip_frame="between_fingers")
 
 
+## The pillar rungs (src/obstacles/pillars.py), generated for the four record robots only.
+PILLAR_SCENES = ("pillars_r040", "pillars_r080", "pillars_r120")
+PILLAR_ROBOTS = ("panda", "iiwa", "screw7_p050", "soft12")
+
+
 def SceneFile(robot, task, scene="hardened"):
     """Absolute path to the scene YAML for this (robot, task) and scene mode.
 
@@ -208,6 +213,12 @@ def SceneFile(robot, task, scene="hardened"):
     `nobin` that quietly measured `hardened` would be worse than no run at all.
     """
     spec = SCENES[(robot, task)]
+    if scene in PILLAR_SCENES:
+        if robot not in PILLAR_ROBOTS:
+            raise SystemExit("--scene %s: pillar scenes exist for %s only, not %r"
+                             % (scene, PILLAR_ROBOTS, robot))
+        return os.path.join(RepoDir(), spec.hardened[:-len("_hardened.yaml")]
+                            + "_%s.yaml" % scene)
     path = {"hardened": spec.hardened, "legacy": spec.legacy, "nobin": spec.nobin}[scene]
     if path is None:
         raise SystemExit(

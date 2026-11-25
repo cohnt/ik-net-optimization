@@ -1,0 +1,10 @@
+{
+ "iiwa/mug": "e8f8de49adba58edcd16a2186c2069252757cda0",
+ "iiwa/pose": "3a1c302e3626429ec83096d7b7255b4d133ad15b",
+ "panda/mug": "64dbd94dc2c2f4007d89fc3bfe3f8777e0be272f",
+ "panda/pose": "bcdb2d2af9008872489178b88d14a93bcfcf3f79",
+ "screw7_p050/mug": "48e42ac398bde6051e4dc031638a76549d5d812e",
+ "screw7_p050/pose": "6a0cb1658654ddecead277eca81cde24a653ea6f",
+ "soft12/mug": "414394e0409a4000bb3491635480b6c9c9403987",
+ "soft12/pose": "f034ae3a9859f7e8a897ef24add7f3918a88c4c6"
+}
