@@ -28,7 +28,7 @@ From: {{ BASE }}
 # sha256-checked by the job and again below) and IKFLOW_SRC (third_party/ikflow of the VERIFIED staged tree).
 
 %arguments
-    BASE=docker://ubuntu:24.04
+    BASE=ubuntu:24.04
     DRAKE_VERSION=1.58.0
     DRAKE_URL=https://github.com/RobotLocomotion/drake/releases/download/v1.58.0/drake-1.58.0-noble.tar.gz
     DRAKE_SHA256=91f5e2807b10b1ec117cf2037419d3dc50b8ba8a341f509f2d4696a9e27c63b9
