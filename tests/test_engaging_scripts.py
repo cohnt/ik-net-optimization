@@ -242,7 +242,66 @@ def t_hardware_pin():
         fx.close()
 
 
-GROUPS = {"fast": [t_syntax_and_pin, t_stage_and_submit, t_requeue_claims, t_hardware_pin]}
+STUBS = {
+    "apptainer": '#!/bin/bash\necho "apptainer $*" >> "$S/apptainer.log"\nif [ "$1" = build ]; then\n  args=("$@"); out="${args[$(( $# - 2 ))]}"; echo sif > "$out"\nfi\nexit 0\n',
+    "nvidia-smi": "#!/bin/bash\n[ \"$1\" = -L ] && echo 'GPU 0: NVIDIA L40S' || echo 'NVIDIA L40S'\n",
+    "squeue": "#!/bin/bash\nexit 0\n",
+    "scontrol": "#!/bin/bash\necho scontrol \"$@\"\n",
+}
+
+
+def t_job_dryrun():
+    """The orchestrator's rule: dry-run every job script against a fake Slurm environment before submitting it.
+    Real cluster-relative paths under a scratch HOME, cwd = the submit dir, apptainer/nvidia-smi/squeue/scontrol
+    stubbed, SLURM_* faked (including a restart count). Each script must reach its end with rc 0."""
+    fx = Fx()
+    try:
+        bin_ = os.path.join(fx.root, "bin")
+        for k, v in STUBS.items():
+            open(os.path.join(bin_, k), "w").write(v)
+            os.chmod(os.path.join(bin_, k), 0o755)
+        r = fx.script("stage.sh")
+        croot = os.path.join(fx.H, "lik-engaging", "c-" + fx.commit[:12])
+        check(r.returncode == 0, "dry run: staged", r.stdout + r.stderr)
+        eb = os.path.join(fx.H, "lik-engaging")
+        os.makedirs(os.path.join(eb, "image"), exist_ok=True)
+        open(os.path.join(eb, "image", "lik.sif"), "w").write("sif")
+        sif_sha = subprocess.run(["sha256sum", os.path.join(eb, "image", "lik.sif")], capture_output=True, text=True).stdout.split()[0]
+        man_sha = subprocess.run(f"sha256sum < {croot}/repo/.staged-manifest.sha256", shell=True, capture_output=True, text=True).stdout.split()[0]
+        os.makedirs(os.path.join(eb, "home-cache", ".cache", "ikflow"))
+        env = dict(LIK_CROOT="lik-engaging/c-" + fx.commit[:12], EXPECT_MANIFEST_SHA=man_sha, EXPECT_SIF_SHA=sif_sha,
+                   SLURM_JOB_ID="900", SLURM_ARRAY_TASK_ID="0", SLURM_RESTART_COUNT="1", SLURM_JOB_NAME="lik_test",
+                   LIK_EXPECT_GPU="L40S", LIK_EXPECT_CPU="", ITEM_TIMEOUT="3600", USER="tcohn", EXPECT_X="1")
+        for job, extra in (("build_image_job.sh", {}), ("plumb_job.sh", {}),
+                           ("bench_job.sh", {"MANIFEST": "cluster/engaging/manifest_engaging_smoke.txt"})):
+            r = subprocess.run(["bash", "-n", f"{croot}/repo/cluster/engaging/{job}"], capture_output=True, text=True)
+            check(r.returncode == 0, f"dry run: bash -n {job}", r.stderr)
+        # a stale claim of THIS job's previous attempt (the requeue trap), seen by the bench dry run
+        st = os.path.join(croot, "state", "manifest_engaging_smoke", "eg_SMOKE_panda_mug_ipopt.claim")
+        os.makedirs(st)
+        open(os.path.join(st, "owner"), "w").write("host_p0_j900 2026-11-25T00:00:00 job=900")
+        for job, extra in (("build_image_job.sh", {}), ("plumb_job.sh", {}),
+                           ("bench_job.sh", {"MANIFEST": "cluster/engaging/manifest_engaging_smoke.txt"})):
+            r = fx.sh(f"bash {croot}/repo/cluster/engaging/{job}", dict(env, **extra), cwd=croot)
+            check(r.returncode == 0, f"dry run: {job} reaches its end with rc 0 (cwd = the submit dir, relative LIK_CROOT, fake SLURM_*)",
+                  r.stdout[-800:] + r.stderr[-1200:])
+            if job == "build_image_job.sh":
+                done = open(os.path.join(eb, "build.DONE")).read()
+                check(done.startswith("OK "), "dry run: build wrote its OK sentinel", done)
+                env["EXPECT_SIF_SHA"] = done.split()[1]      # what record-sif would anchor: later jobs check this
+            if job == "plumb_job.sh":
+                check(open(os.path.join(eb, "plumb.DONE")).read().startswith("OK "), "dry run: plumb wrote its OK sentinel")
+            if job == "bench_job.sh":
+                check("released stale claim" in r.stdout, "dry run: the requeued job released its own stale claim", r.stdout[-800:])
+                check(os.path.exists(os.path.join(croot, "state", "manifest_engaging_smoke", "eg_SMOKE_panda_mug_ipopt.done")),
+                      "dry run: the item ran through the worker and is .done")
+                own = open(os.path.join(croot, "state", "manifest_engaging_smoke", "eg_SMOKE_panda_mug_ipopt.claim", "owner")).read()
+                check("job=900" in own, "dry run: the new claim carries job=900", own)
+    finally:
+        fx.close()
+
+
+GROUPS = {"fast": [t_syntax_and_pin, t_stage_and_submit, t_requeue_claims, t_hardware_pin, t_job_dryrun]}
 
 
 def main():
