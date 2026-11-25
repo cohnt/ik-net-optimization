@@ -218,6 +218,60 @@ class MobileBaseMixin:
                 np.linalg.norm(self.ConditioningPoseInArmFrame(x0)[:3]))
         return out
 
+    ## ------------------------------- AL-SVGD hooks -------------------------------- ##
+    ##
+    ## The particle solver's CONFIGURATION on a mobile program is `[q_arm | b]` -- the arm
+    ## FIRST, so every `cfg[:, :ndof]` the batched replay already reads (joint-limit rows,
+    ## centering) is the arm unchanged -- and its plant map is this one.
+
+    def SvgdConfigLimits(self):
+        """`(lower, upper)` of `[q_arm | b]`, with yaw drawn in [-pi, pi] (no start at the seam)."""
+        lo, hi = self.ConfigLimits()
+        blo, bhi = self.BaseLimits()
+        blo, bhi = blo.copy(), bhi.copy()
+        blo[2], bhi[2] = -np.pi, np.pi
+        return np.concatenate([lo, blo]), np.concatenate([hi, bhi])
+
+    def SvgdConfigToPlantQ(self, ext):
+        ext = np.asarray(ext, dtype=float)
+        n = self.num_arm_dof
+        return self.GridToPlantQ(self.GridVector(ext[n:n + 3], ext[:n]))
+
+    def TorchMobileConfigToPlantQ(self, dtype, device):
+        """`[q_arm | b] [N, ndof + 3] -> plant q [N, num_pos]`, differentiable (rigid arms:
+        a scatter into the plant's slots)."""
+        import torch
+        n = self.num_arm_dof
+        default = torch.tensor(np.asarray(self.plant.GetDefaultPositions(), dtype=float),
+                               dtype=dtype, device=device)
+        idx = torch.tensor(np.concatenate([self.ArmSlots(), self.BaseSlots()]),
+                           dtype=torch.long, device=device)
+
+        def to_plant(ext):
+            out = default.unsqueeze(0).expand(ext.shape[0], -1).clone()
+            return out.index_copy(1, idx, ext[:, :n + 3])
+        return to_plant
+
+    def SvgdNativeBase(self, N, rng):
+        """`[N, 3]` base draws from this cell's base-start rule, for the swarm's native
+        particles (particle 0 is the cell's own start). `MobileSetup.Attach` supplies the rule
+        and the grid; the target is the program's own."""
+        grid, rule = getattr(self, "base_start_grid", None), getattr(self, "base_start_rule", None)
+        if grid is None or rule is None:
+            raise RuntimeError(f"{type(self).__name__}: no base-start rule attached "
+                               f"(MobileSetup.Attach) -- the swarm cannot draw a native base")
+        return np.stack([grid.BaseOnly(rule, self.TargetFramePose(), rng) for _ in range(N)])
+
+    def TargetFramePose(self):
+        """The target as a pose of `program.frame`: the mug's frame on the grasp task (welded
+        at the generating `between_fingers` pose), the target pose on the pose task."""
+        mug = getattr(self, "target_mug", None)
+        if mug is not None:
+            return mug.middle
+        tp = np.asarray(self.target_pose, dtype=float)
+        from pydrake.all import Quaternion
+        return RigidTransform(Quaternion(tp[3:] / np.linalg.norm(tp[3:])), tp[:3])
+
     def RobotSettings(self):
         out = super().RobotSettings()
         out["base_limits"] = [[float(v) for v in bound] for bound in self.BaseLimits()]

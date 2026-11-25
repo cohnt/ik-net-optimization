@@ -67,6 +67,7 @@ class MobileSetup:
             lambda v: sampler.collision_free_constraint_eval.Eval(sampler.GridToPlantQ(v)) < 1,
             wrist)
         self.start_draws = []
+        self.Attach(sampler)      # the warm-up solve draws native particles on the sampler
 
     def Draw(self, rng):
         return self.grid.Draw(rng)
@@ -89,6 +90,12 @@ class MobileSetup:
                 self.start_draws.append(draws)
             guesses.append(row)
         return guesses
+
+    def Attach(self, program):
+        """Give a per-cell program the cell's base-start rule (the swarm's native base draw)."""
+        program.base_start_rule = self.rule
+        program.base_start_grid = self.grid
+        return program
 
     def Metadata(self):
         return dict(mobile_base=True, base_start=self.rule,

@@ -122,7 +122,23 @@ class MobileSoftMixin:
         return self.ConfigToPlantQ(q_arm, rng.uniform(*self.BaseLimits()))
 
     def TorchConfigToPlantQ(self, dtype=torch.float64, device=_CPU):
-        raise NotImplementedError("the batched mobile soft map is built by BatchedProgram")
+        raise NotImplementedError("on a mobile base the swarm uses TorchMobileConfigToPlantQ")
+
+    def TorchMobileConfigToPlantQ(self, dtype, device):
+        """`[strain | b] [N, ndof + 3] -> plant q [N, num_pos]`: the composed map, batched."""
+        n = self.num_arm_dof
+        fmap = MakeMobileConfigToPlant(self.spec, self._mb.X_FA, dtype=dtype, device=device)
+        default = torch.tensor(np.asarray(self.plant.GetDefaultPositions(), dtype=float),
+                               dtype=dtype, device=device)
+        base_idx = torch.tensor(self.BaseSlots(), dtype=torch.long, device=device)
+        soft_idx = torch.tensor(self._soft_slots, dtype=torch.long, device=device)
+
+        def to_plant(ext):
+            bc = torch.cat([ext[:, n:n + 3], ext[:, :n]], dim=1)
+            out = default.unsqueeze(0).expand(ext.shape[0], -1).clone()
+            out = out.index_copy(1, base_idx, ext[:, n:n + 3])
+            return out.index_copy(1, soft_idx, fmap(bc))
+        return to_plant
 
     ## ------------------------------ grid vectors -------------------------------- ##
 

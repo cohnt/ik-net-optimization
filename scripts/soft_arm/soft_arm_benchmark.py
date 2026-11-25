@@ -333,6 +333,8 @@ def main():
                 program = cls(diagram, options=options, rung=args.rung, model=ik_solver,
                               fk=args.fk, surrogate=sampler.fk_surrogate)
                 program.create_prog(target)
+        if mobile:
+            mobile_setup.Attach(program)
         with HiddenPrints():
             if args.start == "paired":
                 program.clip_distance = program.SetStartFromQ(q_init)

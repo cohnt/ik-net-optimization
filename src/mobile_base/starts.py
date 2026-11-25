@@ -116,6 +116,20 @@ class MobileGrid:
         ## variable bound and every start must respect it), so it is redrawn by the caller.
         return b
 
+    def BaseOnly(self, rule, X_WT, rng):
+        """One base draw under `rule`, no arm and no collision filter: the swarm's native
+        particles take only their base from the rule (the arm comes from the flow, or from the
+        joint-space arm's own collision-filtered draw)."""
+        if rule == "uniform":
+            return self.UniformBase(rng)
+        if rule == "home":
+            return np.array(HOME_BASE, dtype=float)
+        for _ in range(MAX_START_DRAWS):
+            b = self.FacingBase(X_WT, rng)
+            if self._InBox(b):
+                return b
+        raise RuntimeError("no facing base inside the box")
+
     def _InBox(self, b):
         return bool(np.all(b >= self.base_lower) and np.all(b <= self.base_upper))
 

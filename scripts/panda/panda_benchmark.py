@@ -460,6 +460,8 @@ def main():
             with HiddenPrints():
                 program = cls(diagram, options=options, model=ik_solver)
                 program.create_prog(target, **extra)
+        if mobile:
+            mobile_setup.Attach(program)
         with HiddenPrints():
             if args.start == "paired":
                 program.clip_distance = program.SetStartFromQ(q_init)
