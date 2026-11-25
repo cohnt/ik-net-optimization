@@ -156,6 +156,11 @@ def t_stage_and_submit():
         log = open(sb).read()
         check("-p mit_normal_gpu" in log and "--requeue" not in log and "--array" not in log and "-J lik_plumb" in log,
               "plumb: one GPU on mit_normal_gpu, no requeue, no array", log)
+        os.remove(sb)
+        r = fx.script("submit.sh", "build")
+        log = open(sb).read()
+        check(r.returncode == 0 and "-p mit_normal " in log and "LIK_EXPECT_GPU= " in log and "unbound" not in r.stderr and "-t 01:00:00" in log,
+              "build: a CPU job with no GPU pin (the hardware check would refuse a node without nvidia-smi)", log + r.stderr)
         # ---- a tampered tree is STOP before any submit
         open(croot + "/repo/cluster/engaging/py_in_image.sh", "a").write("\necho owned\n")
         os.remove(sb)

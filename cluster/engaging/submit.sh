@@ -90,7 +90,8 @@ eg_check_commit "$COMMIT" || exit $?
 ## ---- per-kind allotment ----------------------------------------------------------------------
 case "$KIND" in
 build)
-    JOB=lik_build; SB=(-p mit_normal -c 8 --mem=32G -t 01:00:00); NEEDIMG=0; SCRIPT=build_image_job.sh; ARRAY=() ;;
+    ## A CPU job: no GPU pin (the in-job hardware check would refuse a node with no nvidia-smi).
+    WALL=01:00:00; GPU_NAME=""; JOB=lik_build; SB=(-p mit_normal -c 8 --mem=32G -t "$WALL"); NEEDIMG=0; SCRIPT=build_image_job.sh; ARRAY=() ;;
 plumb|bench)
     case "$PARTITION" in
         mit_normal_gpu)  CAP=2; DEFWALL=06:00:00; REQ=() ;;
