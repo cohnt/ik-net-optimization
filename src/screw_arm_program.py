@@ -39,9 +39,14 @@ from src.utils import Mug
 class ScrewArmIKProgram(IKFlowProgram):
     """The learned formulation on the pose task: free conditioning pose, latent, correction."""
 
+    #: Where `robot` is looked up. The cuspidal arm (`src/cusp_arm_program.py`) is the same
+    #: kind of robot -- a rigid chain whose configuration is the plant's position vector --
+    #: and reuses these classes by pointing this at its own spec table.
+    ResolveSpec = staticmethod(GetSpec)
+
     def __init__(self, diagram, options=ProgramOptions(), robot=PRIMARY,
                  model=None, checkpoint=None):
-        self.spec = GetSpec(robot)
+        self.spec = type(self).ResolveSpec(robot)
         self.diagram = diagram
         self.plant = diagram.GetSubsystemByName("plant")
 
