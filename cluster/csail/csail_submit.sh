@@ -15,12 +15,15 @@ csail_sbatch() {
     [[ "$envs" =~ ^([A-Za-z_][A-Za-z0-9_]*=[^[:space:]\'\"\;\&\|\$\`\\]*[[:space:]]*)*$ ]] \
         || { echo "REFUSING: an environment value has whitespace or shell characters: $envs" >&2; return 2; }
     cmd="cd $root && $envs sbatch --parsable --job-name=$name --chdir=$root --output=$root/logs/$outpat.out --error=$root/logs/$outpat.err $opts $script"
-    out=$(cs_run "$cmd" 2>&1) && rc=0 || rc=$?
+    ## stdout only is the job id: sbatch prints informational lines ("sbatch: partition ...") on stderr.
+    out=$(cs_run "$cmd" 2>"${TMPDIR:-/tmp}/csail_sbatch.err.$$") && rc=0 || rc=$?
     if [ "$rc" -ne 0 ]; then
-        echo "SBATCH ERROR (rc $rc): $out" >&2
+        echo "SBATCH ERROR (rc $rc): $out $(cat "${TMPDIR:-/tmp}/csail_sbatch.err.$$")" >&2
+        rm -f "${TMPDIR:-/tmp}/csail_sbatch.err.$$"
         echo "DO NOT RESUBMIT. Wait 1-2 minutes, then: squeue --me -n $name   (sbatch can error and still submit)" >&2
         return 1
     fi
+    rm -f "${TMPDIR:-/tmp}/csail_sbatch.err.$$"
     printf '%s\n' "$out" | tail -1
 }
 
