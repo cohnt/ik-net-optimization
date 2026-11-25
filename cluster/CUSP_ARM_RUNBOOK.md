@@ -62,4 +62,4 @@ status-quo-style table and the time-matched report.
 
 | when | job | what | state |
 | --- | --- | --- | --- |
-| 2026-11-25 17:59 | 6330999 | `lik_ds_cusp7`, 25M dataset, staged commit 3794fd7 | running |
+| 2026-11-25 17:59 | 6330999 | `lik_ds_cusp7`, 25M dataset, staged commit 3794fd7 | COMPLETED 18:06:49, 6m57s, .DONE present |
