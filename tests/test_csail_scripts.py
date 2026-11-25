@@ -389,7 +389,77 @@ def t_collect():
         fx.close()
 
 
-GROUPS = {"fast": [t_stage, t_submit, t_job, t_preempt, t_collect]}
+BUILD_APPTAINER = r"""#!/bin/bash
+echo "apptainer $*" >> $S/apptainer.log
+case "$1" in
+  --version) echo "apptainer version 1.5.5" ;;
+  build) n=$#; out=${@:$n-1:1}; echo fake-image > "$out"; echo "INFO: built" ;;
+  exec) shift 2
+        case "$*" in
+          "cat /opt/lik/freeze.txt") echo "torch==2.14.0+cu126" ;;
+          "cat /opt/lik/drake/share/doc/drake/VERSION.TXT") echo "1.58.0 09bc913cf1af0cdde31073d5f1f7f66ca35ee0d8" ;;
+          *) echo "unexpected exec: $*" >&2; exit 9 ;;
+        esac ;;
+esac
+"""
+
+
+def t_dry_runs():
+    """Dry run of the two other job payloads: bash -n on every script, then a stub run with a fake SLURM environment
+    (real paths under a scratch dir, cwd = the --chdir target, apptainer/python/nvidia-smi/sbatch stubs). job.sh's own
+    dry run is t_job. Each must reach its end without error (orchestrator rule, 2026-11-25: before EVERY submission)."""
+    fx = Fx()
+    try:
+        for f in sorted(os.listdir(f"{REPO}/cluster/csail")):
+            if f.endswith(".sh"):
+                r = subprocess.run(["bash", "-n", f"{REPO}/cluster/csail/{f}"], capture_output=True, text=True)
+                check(r.returncode == 0, f"bash -n {f}", r.stderr)
+        r = staged(fx)
+        sha = [ln for ln in r[1].splitlines() if ln.startswith("EXPECT_MANIFEST_SHA=")][0].split("=")[1]
+        root = fx.root()
+        env = job_env(fx, 700, 0, EXPECT_MANIFEST_SHA=sha)
+        p = subprocess.run(["bash", f"{root}/repo/cluster/csail/check_job.sh"], env=fx.env(**env), cwd=root,
+                           capture_output=True, text=True, timeout=120)
+        check(p.returncode == 0 and "check OK" in p.stdout, "check_job.sh dry run reaches its end", p.stdout[-1200:] + p.stderr[-600:])
+        check(open(f"{root}/check.700.DONE").read().strip() == "OK", "check sentinel says OK")
+        # build_image_job.sh: a fake apptainer, and THIS fixture's .def pin edited to a fake tarball's sha
+        fake_tar = fx.S + "/fake.tar.gz"
+        open(fake_tar, "wb").write(b"fake drake")
+        tsha = subprocess.run(["sha256sum", fake_tar], capture_output=True, text=True).stdout.split()[0]
+        text = open(f"{REPO}/cluster/csail/learned-ik.def").read()
+        old = [ln for ln in text.splitlines() if ln.startswith("    DRAKE_SHA256=")][0].split("=")[1].strip()
+        fx.write("cluster/csail/learned-ik.def", text.replace(old, tsha))
+        fx.commit("fixture pin")
+        r = fx.script("stage.sh")
+        sha2 = [ln for ln in r[1].splitlines() if ln.startswith("EXPECT_MANIFEST_SHA=")][0].split("=")[1]
+        root = fx.root()
+        open(f"{fx.bin}/apptainer", "w").write(BUILD_APPTAINER.replace("$S", fx.S))
+        os.makedirs(fx.CSR + "/cache", exist_ok=True)
+        shutil.copy(fake_tar, f"{fx.CSR}/cache/drake-1.58.0-noble.tar.gz")
+        benv = fx.env(LIK_ROOT=root, LIK_CS_ROOT=fx.CSR, EXPECT_MANIFEST_SHA=sha2, SLURM_JOB_ID="701")
+        p = subprocess.run(["bash", f"{root}/repo/cluster/csail/build_image_job.sh"], env=benv, cwd=root,
+                           capture_output=True, text=True, timeout=120)
+        out = p.stdout + p.stderr
+        done = [f for f in os.listdir(fx.CSR + "/images") if f.endswith(".DONE")]
+        check(p.returncode == 0 and done and open(f"{fx.CSR}/images/{done[0]}").read().startswith("OK "),
+              "build_image_job.sh dry run reaches its end", out[-1500:])
+        check("APPTAINER_TMPDIR=" + fx.CSR + "/cache/apptainer-tmp-701" in out, "APPTAINER_TMPDIR/CACHEDIR are under the /data tree", out[-1500:])
+        base = done[0][:-5] if done else "x"
+        check(all(os.path.exists(f"{fx.CSR}/images/{base}{x}") for x in (".sif", ".sif.sha256", ".freeze.txt")),
+              "sif, sha256 and freeze are written")
+        bl = open(fx.S + "/apptainer.log").read()
+        check("--build-arg DRAKE_TARBALL=" in bl and "--build-arg IKFLOW_SRC=" in bl, "build passes the tarball and ikflow paths", bl)
+        os.remove(f"{fx.CSR}/cache/drake-1.58.0-noble.tar.gz")
+        open(f"{fx.bin}/curl", "w").write("#!/bin/bash\nexit 22\n")
+        os.chmod(f"{fx.bin}/curl", 0o755)
+        p = subprocess.run(["bash", f"{root}/repo/cluster/csail/build_image_job.sh"], env=dict(benv, SLURM_JOB_ID="702"), cwd=root,
+                           capture_output=True, text=True, timeout=120)
+        check(p.returncode == 20 and "BUILD FAILED" in p.stdout + p.stderr, "an unfetchable pin fails with exit 20", p.stdout[-600:])
+    finally:
+        fx.close()
+
+
+GROUPS = {"fast": [t_stage, t_submit, t_job, t_preempt, t_collect, t_dry_runs]}
 
 
 def main():
