@@ -199,7 +199,8 @@ Watch() {
 ## --- one worker ------------------------------------------------------------
 Worker() {
     local LOCAL=$1
-    local TAGID; TAGID="$(hostname)_p$LOCAL"
+    ## LIK_TAG_SUFFIX (unset on SuperCloud): cluster/engaging gives each array task its own log/sentinel names.
+    local TAGID; TAGID="$(hostname)_p$LOCAL${LIK_TAG_SUFFIX:-}"
     local LOG="$TMPDIR/worker_$LOCAL.log"
 
     ## Per-worker HOME.  jrl/urdf_utils.py unconditionally truncates and rewrites
@@ -297,7 +298,9 @@ Worker() {
         fi
 
         mkdir "$CLAIM" 2>/dev/null || { SKIP=$((SKIP + 1)); continue; }
-        echo "$TAGID $(date -Is)" > "$CLAIM/owner"
+        ## LIK_CLAIM_JOB (unset on SuperCloud): the claiming job's id, so a REQUEUED job (same id) can release
+        ## the claims of its dead previous attempt (cluster/engaging/job_lib.sh eg_release_own_claims).
+        echo "$TAGID $(date -Is)${LIK_CLAIM_JOB:+ job=$LIK_CLAIM_JOB}" > "$CLAIM/owner"
 
         ## ONE Drake per JOB, never per item. The record's Drake is this project's pin, exported
         ## as PYTHONPATH above. A per-item `DRAKE=nightly` sentinel used to select a second
