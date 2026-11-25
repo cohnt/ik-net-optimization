@@ -67,8 +67,13 @@ From: ubuntu:24.04
         equinox==0.13.8 diffrax==0.7.2 lineax==0.1.1
     $P install --no-cache-dir pytorch-lightning==2.6.5 wandb==0.29.0
     # jrl: --no-deps (its metadata pins torch==2.0.1); pinned to the workstation's commit.
-    $P install --no-cache-dir --no-deps \
-        "jrl @ https://github.com/jstmn/Jrl/archive/5032d22db0608d36729c41d974d6bc8f9c5b41cf.tar.gz"
+    # (github.com timed out from one compute node on 2026-11-25: retry the fetch, with a long timeout.)
+    n=0
+    until $P install --no-cache-dir --no-deps --retries 10 --timeout 60 \
+        "jrl @ https://github.com/jstmn/Jrl/archive/5032d22db0608d36729c41d974d6bc8f9c5b41cf.tar.gz"; do
+        n=$((n + 1)); [ "$n" -lt 4 ] || { echo "jrl fetch failed 4 times"; exit 1; }
+        echo "jrl fetch failed, retrying in 60 s"; sleep 60
+    done
     /opt/lik/venv/bin/python -c "import torch, numpy, jax; assert torch.__version__ == '2.14.0+cu126', torch.__version__; assert numpy.__version__ == '2.5.2'; assert jax.default_backend() == 'cpu'; print('versions ok', torch.__version__, torch.version.cuda, torch.cuda.get_arch_list())"
     PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages /opt/lik/venv/bin/python -c "import pydrake; from pydrake.solvers import IpoptSolver; from pydrake.planning import CollisionChecker; assert IpoptSolver().available(); assert hasattr(CollisionChecker, 'CalcRobotClearances'); print('pydrake ok', pydrake.__file__)"
     /opt/lik/venv/bin/pip freeze > /opt/lik/pip-freeze.txt

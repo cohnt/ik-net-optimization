@@ -103,6 +103,9 @@ def t_syntax_and_pin():
               f"{f} makes the (cluster-home-relative) LIK_CROOT absolute before sourcing job_lib.sh (first real submit died on this)")
     d = open(os.path.join(REPO, "cluster", "engaging", "lik.def")).read()
     sc = open(os.path.join(REPO, "cluster", "setup_supercloud.sh")).read()
+    post = d.split("%post\n")[1].split("%environment")[0]
+    r = subprocess.run(["bash", "-n"], input=post, capture_output=True, text=True)
+    check(r.returncode == 0, "lik.def's %post section parses (bash -n)", r.stderr)
     check(re.search(r'^\s*DRAKE_VERSION="1\.58\.0"', d, re.M) and re.search(r'DRAKE_SHA256="[0-9a-f]{64}"', d),
           "lik.def pins Drake release 1.58.0 with a sha256")
     check("drake-${DRAKE_VERSION}-noble.tar.gz" in d and '$DRAKE_URL.sha256' in d,
