@@ -664,6 +664,15 @@ def start_diagnostics(program, q_init):
         out["start_q_error"] = _finite(np.max(np.abs(q0[:n] - np.asarray(q_init, dtype=float)[:n])))
     except Exception:
         out["start_q_error"] = None
+    ## The program's own collision criterion at the start, on the program's own scene: the
+    ## guesses are drawn on the base scene, so with welded obstacles a start can already
+    ## violate it.  `q0_plant` is the PLANT vector (the soft arm's configuration is strains).
+    try:
+        q0_plant = np.asarray(program.VarsToConfigAndQ(x0)[1], dtype=float)
+        out["start_collision_value"] = _finite(
+            np.asarray(program.collision_free_constraint_eval.Eval(q0_plant)).flatten()[0])
+    except Exception:
+        out["start_collision_value"] = None
     if hasattr(program, "z"):
         try:
             out["start_z_norm"] = _finite(

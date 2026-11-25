@@ -34,6 +34,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from src.utils import (RepoDir, BuildEnv, GenerateDiagramWithMug, HiddenPrints,
                        CalculateError)
 from src import benchmark as bm
+from src.obstacles import benchmark_hooks as bh
+from src.target_screening import PILLAR_SCENES
 from src.shelf_regions import DEFAULT_SHELF_DEPTH_INSET, ShelfCompartmentRegions
 from src.target_screening import (MAX_CONSECUTIVE_REJECTIONS, SCENES,
                                   ContainmentPose, FloatingMugScreen,
@@ -142,7 +144,7 @@ def parse_args():
                         "fixed cap, so runs being compared must set it the same way.")
     p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
                    help="override any ProgramOptions field, e.g. --set correction_bound=0.4")
-    p.add_argument("--scene", choices=("hardened", "nobin", "legacy"), default="hardened",
+    p.add_argument("--scene", choices=("hardened", "nobin", "legacy") + PILLAR_SCENES, default="hardened",
                    help="`hardened` is the campaign scene: four shelves, two tables, no bin "
                         "and no decorative mugs. `nobin` drops ONLY the bin, keeping the "
                         "clutter -- it exists to separate 'targets must be in a shelf' from "
@@ -190,7 +192,10 @@ def parse_args():
                    help="consecutive rejected candidates before target sampling gives up. "
                         "A tail bound, not a budget; the default is sized from the measured "
                         "acceptance rates.")
-    return p.parse_args()
+    bh.add_arguments(p)
+    args = p.parse_args()
+    bh.check_arguments(args)
+    return args
 
 
 def apply_overrides(options, overrides):
@@ -227,17 +232,6 @@ def main():
     ## q's, so a run on a defective gripper SDF and one on the fixed SDF share a grid hash
     ## and would otherwise pair. The grasp task's in-memory mug is folded in.
     yaml_file = SceneFile(args.robot, args.task, args.scene)
-    scene_fp = bm.scene_fingerprint(
-        yaml_file, extra_models=([os.path.join(RepoDir(), bm.MUG_MODEL_FILE)]
-                                 if args.task == "mug" else ()))
-    tag = args.tag or "_".join(
-        [args.robot, args.task, args.config, args.solver, args.start] + ckpt_tok
-        + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
-        + (["compiled"] if args.compile else []) + [scene_fp[:8]])
-    if shard is not None:
-        tag = f"{tag}_shard{shard[0]}of{shard[1]}"
-    log_dir = os.path.join(RepoDir(), "results/screw_arm/benchmark", tag)
-    out_path = os.path.join(log_dir, "summary.json")
 
     base_options = ProgramOptions(
         visualize=False, joint_centering_cost=1e-4, max_wall_time=args.wall_time,
@@ -336,6 +330,23 @@ def main():
     grid_hash = hashlib.sha1(np.asarray(
         target_qs + [g for row in guesses for g in row]).tobytes()).hexdigest()[:12]
     grid_hash = f"{grid_hash}-{args.task}"
+    ## Obstacles (src/obstacles/benchmark_hooks.py): prepared AFTER the grid is drawn, from their
+    ## own per-target generators, so the grid and grid_hash are exactly the record's; the tag
+    ## (it carries the scene fingerprint) is therefore resolved here, not at the top.
+    plan = bh.ObstaclePlan(args, args.robot, yaml_file, spec.robot_instances)
+    plan.set_grid(sampler, target_qs, guesses, target_pose_of, target_stats)
+    scene_fp = bm.scene_fingerprint(
+        yaml_file, extra_models=([os.path.join(RepoDir(), bm.MUG_MODEL_FILE)]
+                                 if args.task == "mug" else ()),
+        extra_payload=plan.payload())
+    tag = args.tag or "_".join(
+        [args.robot, args.task, args.config, args.solver, args.start] + ckpt_tok
+        + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
+        + (["compiled"] if args.compile else []) + [scene_fp[:8]] + plan.tag_tokens())
+    if shard is not None:
+        tag = f"{tag}_shard{shard[0]}of{shard[1]}"
+    log_dir = os.path.join(RepoDir(), "results/screw_arm/benchmark", tag)
+    out_path = os.path.join(log_dir, "summary.json")
 
     # Resolved before the scenes are built: the mug loop only builds this shard's targets.
     if shard is not None:
@@ -346,10 +357,10 @@ def main():
         cells = None
 
     compile_seconds = None
-    if args.compile:
+    if args.compile and not args.prepare_only:
         compile_seconds = sampler.WarmUpJacobian()
         print(f"compiled the flow Jacobian in {compile_seconds:.1f} s")
-    if base_options.which_solver == "svgd":
+    if base_options.which_solver == "svgd" and not args.prepare_only:
         ## The svgd solver's compile cost, paid here for the reason the Jacobian's is: so
         ## the first timed cell does not carry it. Folded into compile_seconds.
         svgd_seconds = sampler.WarmUpSvgdStep()
@@ -360,13 +371,17 @@ def main():
         mug_meshcat = Meshcat() if base_options.visualize else None
         # Only this shard's targets need a scene; the draws above are unconditional, so the
         # grid and its hash are untouched.
-        wanted = {ti for ti, _ in cells} if cells is not None else set(range(args.targets))
+        wanted = plan.wanted(cells, args.targets)
         targets = [None] * len(target_qs)
         for ti, q in enumerate(tqdm(target_qs, desc="mugs")):
-            if ti not in wanted:
+            if ti not in wanted and not plan.active:
                 continue
             with HiddenPrints():
-                targets[ti] = GenerateDiagramWithMug(q, sampler, yaml_file, mug_meshcat)
+                built = GenerateDiagramWithMug(q, sampler, yaml_file, mug_meshcat,
+                                               obstacle_centres=plan.centres(ti))
+                plan.on_diagram(ti, built[0], base_options)
+            if ti in wanted:
+                targets[ti] = built
 
         def task_gate(program, q):
             program.plant.SetPositions(program.plant_context, q)
@@ -379,6 +394,8 @@ def main():
                   and height <= program.options.mug_height + args.task_tol)
             return ok, dict(axis_error=axis_error, height=height)
     else:
+        wanted = plan.wanted(cells, args.targets)
+        plan.pose_diagrams(diagram, wanted, base_options)
         targets = []
         for q in target_qs:
             sampler.plant.SetPositions(sampler.plant_context, q)
@@ -396,6 +413,9 @@ def main():
             ok = axis_max <= args.task_tol and rpy_max <= ori_tol
             return ok, dict(pos_error=axis_max, rpy_error=rpy_max)
 
+    if args.prepare_only:
+        plan.write_prepare(log_dir, grid_hash, scene_fp)
+        return
     numerical_options = replace(base_options, joint_centering_cost=1e0)
     mug = args.task == "mug"
 
@@ -408,7 +428,7 @@ def main():
                 program.create_prog(target_mug=target_mug)
         else:
             with HiddenPrints():
-                program = cls(diagram, options=options, robot=args.robot,
+                program = cls(plan.pose_diagram(cell[0], diagram), options=options, robot=args.robot,
                               model=ik_solver)
                 program.create_prog(target)
         with HiddenPrints():
@@ -455,6 +475,7 @@ def main():
                                         scene=os.path.basename(yaml_file),
                                         scene_mode=args.scene,
                                         scene_fingerprint=scene_fp,
+                                        obstacles=plan.metadata(),
                                         latent_trust_region_effective=(
                                             sampler.LatentTrustRadius()),
                                         target_placement=placement,

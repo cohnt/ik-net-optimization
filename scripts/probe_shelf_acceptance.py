@@ -47,7 +47,7 @@ from src.generic_program import ProgramOptions
 from src.shelf_regions import PointInShelfCompartments, ShelfCompartmentRegions
 from src.gvs_arm.params import RUNGS as _GVS_RUNGS
 from src.soft_arm.params import RUNGS as _SOFT_RUNGS
-from src.target_screening import SCENES, FloatingMugScreen, SceneFile
+from src.target_screening import PILLAR_SCENES, SCENES, FloatingMugScreen, SceneFile
 from src.utils import BuildEnv, HiddenPrints
 
 
@@ -67,8 +67,11 @@ def parse_args():
     p.add_argument("--targets", type=int, default=60,
                    help="targets per grid, for the P(trip) column")
     p.add_argument("--scene", default="hardened",
-                   choices=("hardened", "nobin", "legacy"),
-                   help="which obstacle set to probe. `nobin` keeps the decorative mugs, "
+                   choices=("hardened", "nobin", "legacy") + PILLAR_SCENES,
+                   help="which obstacle set to probe (`pillars_r040|r080|r120`: the pillar "
+                        "scenes of src/obstacles/pillars.py, the four record robots only; "
+                        "targets must clear the pillars, so this measures their acceptance "
+                        "and P(trip) per robot x task). `nobin` keeps the decorative mugs, "
                         "four of which sit inside shelf compartments, so its acceptance is "
                         "strictly lower than `hardened`'s -- check it before fielding it.")
     p.add_argument("--seed", type=int, default=0)

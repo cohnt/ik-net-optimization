@@ -29,6 +29,8 @@ import numpy as np
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from src.utils import RepoDir, BuildEnv, GenerateDiagramWithMug, HiddenPrints
 from src import benchmark as bm
+from src.obstacles import benchmark_hooks as bh
+from src.target_screening import PILLAR_SCENES
 from src.shelf_regions import DEFAULT_SHELF_DEPTH_INSET, ShelfCompartmentRegions
 from src.target_screening import (MAX_CONSECUTIVE_REJECTIONS, SCENES, ContainmentPose,
                                   FloatingMugScreen, FormatTargetStats,
@@ -112,12 +114,15 @@ def parse_args():
                         "same way. The map's compiled forward-mode Jacobian is worth 68x.")
     p.add_argument("--set", dest="overrides", action="append", default=[],
                    metavar="NAME=VALUE")
-    p.add_argument("--scene", choices=("hardened", "nobin", "legacy"), default="hardened")
+    p.add_argument("--scene", choices=("hardened", "nobin", "legacy") + PILLAR_SCENES, default="hardened")
     p.add_argument("--target-placement", choices=("shelf", "free", "auto"), default="auto")
     p.add_argument("--placement-point", choices=("wrist", "fingertips"), default="fingertips")
     p.add_argument("--shelf-inset", type=float, default=DEFAULT_SHELF_DEPTH_INSET)
     p.add_argument("--max-target-rejections", type=int, default=MAX_CONSECUTIVE_REJECTIONS)
-    return p.parse_args()
+    bh.add_arguments(p)
+    args = p.parse_args()
+    bh.check_arguments(args)
+    return args
 
 
 def apply_overrides(options, overrides):
@@ -153,18 +158,6 @@ def main():
     ## q's, so a run on a defective gripper SDF and one on the fixed SDF share a grid hash
     ## and would otherwise pair. The grasp task's in-memory mug is folded in.
     yaml_file = SceneFile(args.rung, args.task, args.scene)
-    scene_fp = bm.scene_fingerprint(
-        yaml_file, extra_models=([os.path.join(RepoDir(), bm.MUG_MODEL_FILE)]
-                                 if args.task == "mug" else ()))
-    tag = args.tag or "_".join(
-        [args.rung, args.task, args.config, args.solver, args.start]
-        + ([] if args.fk == "analytic" else [f"fk{args.fk}"]) + ckpt_tok
-        + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
-        + (["compiled"] if args.compile else []) + [scene_fp[:8]])
-    if shard is not None:
-        tag = f"{tag}_shard{shard[0]}of{shard[1]}"
-    log_dir = os.path.join(RepoDir(), f"results/{args.rung}/benchmark", tag)
-    out_path = os.path.join(log_dir, "summary.json")
 
     base_options = ProgramOptions(
         visualize=False, joint_centering_cost=1e-4, max_wall_time=args.wall_time,
@@ -239,6 +232,24 @@ def main():
     grid_hash = hashlib.sha1(np.asarray(
         target_cfgs + [g for row in guesses for g in row]).tobytes()).hexdigest()[:12]
     grid_hash = f"{grid_hash}-{args.task}"
+    ## Obstacles (src/obstacles/benchmark_hooks.py): prepared AFTER the grid is drawn, from their
+    ## own per-target generators, so the grid and grid_hash are exactly the record's; the tag
+    ## (it carries the scene fingerprint) is therefore resolved here, not at the top.
+    plan = bh.ObstaclePlan(args, args.rung, yaml_file, scene_spec.robot_instances, to_plant=to_plant)
+    plan.set_grid(sampler, target_cfgs, guesses, pose_of_plant_q, target_stats)
+    scene_fp = bm.scene_fingerprint(
+        yaml_file, extra_models=([os.path.join(RepoDir(), bm.MUG_MODEL_FILE)]
+                                 if args.task == "mug" else ()),
+        extra_payload=plan.payload())
+    tag = args.tag or "_".join(
+        [args.rung, args.task, args.config, args.solver, args.start]
+        + ([] if args.fk == "analytic" else [f"fk{args.fk}"]) + ckpt_tok
+        + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
+        + (["compiled"] if args.compile else []) + [scene_fp[:8]] + plan.tag_tokens())
+    if shard is not None:
+        tag = f"{tag}_shard{shard[0]}of{shard[1]}"
+    log_dir = os.path.join(RepoDir(), f"results/{args.rung}/benchmark", tag)
+    out_path = os.path.join(log_dir, "summary.json")
 
     if shard is not None:
         cells = bm.shard_cells(*shard, args.targets, args.guesses)
@@ -248,10 +259,10 @@ def main():
         cells = None
 
     compile_seconds = None
-    if args.compile:
+    if args.compile and not args.prepare_only:
         compile_seconds = sampler.WarmUpJacobian()
         print(f"compiled the flow Jacobian in {compile_seconds:.1f} s")
-    if base_options.which_solver == "svgd":
+    if base_options.which_solver == "svgd" and not args.prepare_only:
         ## The svgd solver's compile cost, paid here for the reason the Jacobian's is: so
         ## the first timed cell does not carry it. Folded into compile_seconds.
         svgd_seconds = sampler.WarmUpSvgdStep()
@@ -260,14 +271,17 @@ def main():
 
     if args.task == "mug":
         mug_meshcat = Meshcat() if base_options.visualize else None
-        wanted = {ti for ti, _ in cells} if cells is not None else set(range(args.targets))
+        wanted = plan.wanted(cells, args.targets)
         targets = [None] * len(target_cfgs)
         for ti, cfg in enumerate(tqdm(target_cfgs, desc="mugs")):
-            if ti not in wanted:
+            if ti not in wanted and not plan.active:
                 continue
             with HiddenPrints():
-                targets[ti] = GenerateDiagramWithMug(to_plant(cfg), sampler, yaml_file,
-                                                     mug_meshcat)
+                built = GenerateDiagramWithMug(to_plant(cfg), sampler, yaml_file, mug_meshcat,
+                                               obstacle_centres=plan.centres(ti))
+                plan.on_diagram(ti, built[0], base_options)
+            if ti in wanted:
+                targets[ti] = built
 
         def task_gate(program, q):
             program.plant.SetPositions(program.plant_context, q)
@@ -280,6 +294,8 @@ def main():
                   and height <= program.options.mug_height + args.task_tol)
             return ok, dict(axis_error=axis_error, height=height)
     else:
+        wanted = plan.wanted(cells, args.targets)
+        plan.pose_diagrams(diagram, wanted, base_options)
         targets = []
         for cfg in target_cfgs:
             sampler.plant.SetPositions(sampler.plant_context, to_plant(cfg))
@@ -297,6 +313,9 @@ def main():
             ok = axis_max <= args.task_tol and rpy_max <= ori_tol
             return ok, dict(pos_error=axis_max, rpy_error=rpy_max)
 
+    if args.prepare_only:
+        plan.write_prepare(log_dir, grid_hash, scene_fp)
+        return
     numerical_options = replace(base_options, joint_centering_cost=1e0)
     mug = args.task == "mug"
 
@@ -310,7 +329,7 @@ def main():
                 program.create_prog(target_mug=target_mug)
         else:
             with HiddenPrints():
-                program = cls(diagram, options=options, rung=args.rung, model=ik_solver,
+                program = cls(plan.pose_diagram(cell[0], diagram), options=options, rung=args.rung, model=ik_solver,
                               fk=args.fk, surrogate=sampler.fk_surrogate)
                 program.create_prog(target)
         with HiddenPrints():
@@ -352,6 +371,7 @@ def main():
                       grid_hash=grid_hash, compiled=args.compile,
                       scene=os.path.basename(yaml_file), scene_mode=args.scene,
                       scene_fingerprint=scene_fp,
+                      obstacles=plan.metadata(),
                       latent_trust_region_effective=sampler.LatentTrustRadius(),
                       target_placement=placement,
                       shelf_inset=(args.shelf_inset if placement == "shelf" else None),

@@ -228,6 +228,13 @@ def BuildTargetDiagram(yaml_file, centres=(), mug_pose=None, meshcat=None):
     return diagram
 
 
+def MugTargetPose(q, program):
+    """The pose `GenerateDiagramWithMug` welds the mug at for the plant positions `q`: the
+    program's grasp frame at `q`.  The one function both it and the obstacle sampler call."""
+    program.SetPositions(q)
+    return program.frame.CalcPoseInWorld(program.plant_context)
+
+
 def GenerateDiagramWithMug(q, program, yaml_file, meshcat, obstacle_centres=()):
     """
     Build the scene in `yaml_file` with an extra mug welded at the gripper pose of `q`,
@@ -237,8 +244,7 @@ def GenerateDiagramWithMug(q, program, yaml_file, meshcat, obstacle_centres=()):
     modified, so a crash or interrupt here cannot leave a stray mug in a tracked scene.
     With no obstacles the diagram is exactly what it was before obstacles existed.
     """
-    program.SetPositions(q)
-    target = program.frame.CalcPoseInWorld(program.plant_context)
+    target = MugTargetPose(q, program)
     diagram_with_mug = BuildTargetDiagram(yaml_file, obstacle_centres, target, meshcat)
     return diagram_with_mug, Mug(target)
 
