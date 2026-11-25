@@ -1706,10 +1706,21 @@ class IKFlowProgram:
         # on whether calibrate_flow_frame was on.
         rng = np.random.default_rng(0)
         offsets = []
+        ## A program on a MOBILE base (src/mobile_base/program.py) supplies the arm's base
+        ## frame `A`, the frame the flow's training FK is expressed in, and a plant vector
+        ## with a random base as well; the scene pose is then measured relative to `A`, so the
+        ## constancy check also proves the offset does not depend on the base. Every
+        ## fixed-base program has neither hook and takes the original world-frame path
+        ## unchanged (it requires the base welded at the origin, where `A` IS the world).
+        arm_base = getattr(self, "ArmBaseFrame", None)
         for _ in range(samples):
             q_arm = rng.uniform(lower, upper)
-            self.plant.SetPositions(self.plant_context, self.ConfigToPlantQ(q_arm))
-            X_scene = self.frame_for_flow.CalcPoseInWorld(self.plant_context)
+            if arm_base is None:
+                self.plant.SetPositions(self.plant_context, self.ConfigToPlantQ(q_arm))
+                X_scene = self.frame_for_flow.CalcPoseInWorld(self.plant_context)
+            else:
+                self.plant.SetPositions(self.plant_context, self.CalibrationPlantQ(q_arm, rng))
+                X_scene = self.frame_for_flow.CalcPose(self.plant_context, arm_base())
             pose = self.ik_solver.robot.forward_kinematics(
                 torch.tensor(q_arm[None, :], dtype=torch.float64, device=DEVICE))
             pose = pose.detach().cpu().numpy()[0]
