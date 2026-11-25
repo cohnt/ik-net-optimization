@@ -55,12 +55,23 @@ SHELF_WELDS = (
     ("shelves4", -0.45,  0.55, 0.4, 135.0),
 )
 
+## The mobile-base campaign's room (src/mobile_base/generate_scenes.py): ../codebase's Basic
+## Mobile Manipulator layout -- four units at (+-0.85, 0) and (0, +-0.85), facing the centre,
+## standing on a central table -- built from the SAME shelf unit, so only the welds differ.
+MOBILE_SHELF_Z = 1.396706
+MOBILE_SHELF_WELDS = (
+    ("shelves",   0.85,  0.00, MOBILE_SHELF_Z, -180.0),
+    ("shelves2",  0.00,  0.85, MOBILE_SHELF_Z,  -90.0),
+    ("shelves3", -0.85,  0.00, MOBILE_SHELF_Z,    0.0),
+    ("shelves4",  0.00, -0.85, MOBILE_SHELF_Z,   90.0),
+)
+
 ## Adopted 2026-09-15, matching `../codebase`.  See `scripts/probe_shelf_acceptance.py` for
 ## the acceptance rates this buys on each robot, and for why 0.125 is not fielded.
 DEFAULT_SHELF_DEPTH_INSET = 0.10
 
 
-def ShelfCompartmentRegions(shelf_depth_inset=0.0):
+def ShelfCompartmentRegions(shelf_depth_inset=0.0, welds=SHELF_WELDS):
     """The twelve shelf compartments, as (translation, yaw_rad, lo_local, hi_local).
 
     Four units x three compartments.  `lo_local`/`hi_local` are in the unit's own frame;
@@ -76,7 +87,7 @@ def ShelfCompartmentRegions(shelf_depth_inset=0.0):
     shelf_hx -= shelf_depth_inset
 
     regions = []
-    for _, tx, ty, tz, yaw_deg in SHELF_WELDS:
+    for _, tx, ty, tz, yaw_deg in welds:
         translation = np.array([tx, ty, tz])
         yaw = np.deg2rad(yaw_deg)
         for z_lo, z_hi in SHELF_Z_COMPARTMENTS:
@@ -103,7 +114,7 @@ def PointInShelfCompartments(point_world, regions):
     return False
 
 
-def ShelfRegionsFromPlant(plant, plant_context, shelf_depth_inset=0.0):
+def ShelfRegionsFromPlant(plant, plant_context, shelf_depth_inset=0.0, welds=SHELF_WELDS):
     """The same table, rebuilt from the poses a finalized plant actually reports.
 
     Production never calls this: the hardcoded table needs no plant, and a scene is built once
@@ -123,7 +134,7 @@ def ShelfRegionsFromPlant(plant, plant_context, shelf_depth_inset=0.0):
     shelf_hx -= shelf_depth_inset
 
     regions = []
-    for name, _, _, _, _ in SHELF_WELDS:
+    for name, _, _, _, _ in welds:
         if not plant.HasModelInstanceNamed(name):
             raise RuntimeError("scene has no shelf model instance %r" % name)
         instance = plant.GetModelInstanceByName(name)

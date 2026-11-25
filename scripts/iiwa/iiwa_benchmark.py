@@ -23,6 +23,9 @@ from src.utils import (RepoDir, BuildEnv, GenerateDiagramWithMug, HiddenPrints,
                        CalculateError)
 from src import benchmark as bm
 from src.shelf_regions import DEFAULT_SHELF_DEPTH_INSET, ShelfCompartmentRegions
+from src.mobile_base.harness import (AddMobileArgs, CheckMobileArgs, MobileClass,
+                                     MobileSetup, MobileTagTokens)
+from src.target_screening import RobotInstances
 from src.target_screening import (MAX_CONSECUTIVE_REJECTIONS, SCENES,
                                   ContainmentPose, FloatingMugScreen,
                                   FormatTargetStats,
@@ -114,7 +117,7 @@ def parse_args():
                         "fixed cap, so runs being compared must set it the same way.")
     p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
                    help="override any ProgramOptions field, e.g. --set correction_bound=0.4")
-    p.add_argument("--scene", choices=("hardened", "nobin", "legacy"), default="hardened",
+    p.add_argument("--scene", choices=("hardened", "nobin", "legacy", "mobile"), default="hardened",
                    help="`hardened` is the campaign scene: four shelves, two tables, no bin "
                         "and no decorative mugs. `nobin` drops ONLY the bin, keeping the "
                         "clutter -- it exists to separate 'targets must be in a shelf' from "
@@ -162,6 +165,7 @@ def parse_args():
                    help="consecutive rejected candidates before target sampling gives up. "
                         "A tail bound, not a budget; the default is sized from the measured "
                         "acceptance rates.")
+    AddMobileArgs(p)
     return p.parse_args()
 
 
@@ -186,6 +190,7 @@ def main():
     if args.shard and args.cells:
         raise SystemExit("--shard and --cells are mutually exclusive")
     shard = bm.parse_shard(args.shard)
+    mobile = CheckMobileArgs(args)
     # A non-default checkpoint goes in the tag as well as the metadata: two runs of the
     # same grid against DIFFERENT networks are not comparable, and without this they would
     # resolve to the same summary.json and overwrite each other (the same trap --shard hit).
@@ -206,7 +211,7 @@ def main():
     tag = args.tag or "_".join(
         ["iiwa", args.task, args.config, args.solver, args.start] + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
-        + (["compiled"] if args.compile else []) + [scene_fp[:8]])
+        + (["compiled"] if args.compile else []) + MobileTagTokens(args) + [scene_fp[:8]])
     if shard is not None:
         tag = f"{tag}_shard{shard[0]}of{shard[1]}"
     log_dir = os.path.join(RepoDir(), "results/iiwa/benchmark", tag)
@@ -245,12 +250,15 @@ def main():
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
         sampler_cls = IiwaMugProgram if args.task == "mug" else Iiwa14IKProgram
+        if mobile:
+            sampler_cls = MobileClass("iiwa", args.task, "learned")
         sampler = sampler_cls(diagram, options=base_options, checkpoint=args.checkpoint,
                               nb_nodes=args.nb_nodes)
         sampler.create_prog()
     ik_solver = sampler.ik_solver
     lower = sampler.plant.GetPositionLowerLimits()
     upper = sampler.plant.GetPositionUpperLimits()
+    mobile_setup = MobileSetup("iiwa", sampler, args) if mobile else None
 
     def sample_collision_free():
         while True:
@@ -270,16 +278,19 @@ def main():
         ## Both tasks, since 2026-09-19. See --target-placement's help.
         placement = "shelf"
     regions = (ShelfCompartmentRegions(args.shelf_inset) if placement == "shelf" else None)
+    if mobile and regions is not None:
+        regions = mobile_setup.Regions(args.shelf_inset)
     target_pose_of, placement_point = ContainmentPose(
         sampler.plant, sampler.plant_context, spec, args.placement_point)
     mug_screen = None
     if regions is not None and args.task == "mug":
         with HiddenPrints():
-            mug_screen = FloatingMugScreen(yaml_file, spec.robot_instances)
+            mug_screen = FloatingMugScreen(yaml_file, RobotInstances("iiwa", args.task, args.scene))
 
     target_qs, target_stats = SampleShelfTargets(
         args.targets,
-        draw=lambda: rng.uniform(lower, upper),
+        draw=((lambda: mobile_setup.Draw(rng)) if mobile
+              else (lambda: rng.uniform(lower, upper))),
         collision_free=lambda q: sampler.collision_free_constraint_eval.Eval(q) < 1,
         target_pose=target_pose_of, regions=regions,
         screen=(lambda X: mug_screen.Penetrates([X])) if mug_screen else None,
@@ -288,7 +299,11 @@ def main():
         progress=tqdm(total=args.targets, desc="targets"))
     print(FormatTargetStats(f"iiwa/{args.task}", target_stats))
     # Per-target guesses; see the panda script for the rationale.
-    guesses = [[sample_collision_free() for _ in range(args.guesses)] for _ in range(args.targets)]
+    if mobile:
+        guesses = mobile_setup.Guesses(target_qs, args.guesses)
+    else:
+        guesses = [[sample_collision_free() for _ in range(args.guesses)]
+                   for _ in range(args.targets)]
     # The task is a suffix rather than part of the hash input: the mug and pose grids are
     # drawn from the same seed over the same joint limits, so they hashed *identically*
     # (9f5953e3c669 for both) and `collate.py --pair` would happily have compared a mug run
@@ -388,13 +403,16 @@ def main():
     learned_cls = Iiwa14IKProgram
     if mug:
         learned_cls = IiwaMugProgram
+    if mobile:
+        learned_cls = MobileClass("iiwa", args.task, "learned")
     all_arms = {
         "learned": bm.Arm("learned",
                           lambda t, g, c: build(learned_cls, base_options, t, g, c),
                           base_options.joint_centering_cost),
         "numerical": bm.Arm("numerical",
                             lambda t, g, c: build(
-                                IiwaMugProgramNumerical if mug else Iiwa14IKProgramNumerical,
+                                (MobileClass("iiwa", args.task, "numerical") if mobile
+                                 else IiwaMugProgramNumerical if mug else Iiwa14IKProgramNumerical),
                                 numerical_options, t, g, c),
                             numerical_options.joint_centering_cost),
         "analytic": bm.Arm("analytic",
@@ -442,6 +460,7 @@ def main():
                                         # The chart actually loaded (its resolved sidecar, with `family`), so a
                                         # run records which network it solved through, not only a path.
                                         chart_arch=ik_solver.arch,
+                                        **(mobile_setup.Metadata() if mobile else {}),
                                         nb_nodes=args.nb_nodes,
                                         **bm.provenance()))
     bar.close()

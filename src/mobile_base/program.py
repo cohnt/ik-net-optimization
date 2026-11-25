@@ -194,6 +194,18 @@ class MobileBaseMixin:
         self.base_bounding_box = self.prog.AddBoundingBoxConstraint(lower, upper, self.b)
         self.base_bounding_box.evaluator().set_description("BaseBoundingBoxConstraint")
 
+    def MobileStartDiagnostics(self, x0, b_init):
+        """Per-cell start record: the cell's base start, how far this arm's base guess sits
+        from it, and -- on the learned arm -- how far from the arm base the network is first
+        conditioned (the off-distribution risk the proposal said to measure, not fix)."""
+        x0 = np.asarray(x0, dtype=float)
+        out = {"base_start": [float(v) for v in b_init],
+               "start_base_error": float(np.max(np.abs(x0[:3] - np.asarray(b_init))))}
+        if hasattr(self, "ConditioningPoseInArmFrame"):
+            out["start_conditioning_reach"] = float(
+                np.linalg.norm(self.ConditioningPoseInArmFrame(x0)[:3]))
+        return out
+
     def RobotSettings(self):
         out = super().RobotSettings()
         out["base_limits"] = [[float(v) for v in bound] for bound in self.BaseLimits()]

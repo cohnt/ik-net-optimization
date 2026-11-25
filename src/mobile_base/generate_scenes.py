@@ -39,6 +39,7 @@ import math
 import os
 import re
 
+from src.shelf_regions import MOBILE_SHELF_WELDS
 from src.utils import RepoDir
 
 MOBILE_MODEL = "mobile_base"
@@ -60,12 +61,6 @@ _YAW_LIMIT = 2.0 * math.pi
 HOME_BASE = (1.5, 0.0, 0.0)
 
 _TABLE_Z = 0.996706
-_SHELF_Z = 1.396706
-#: (name, x, y, yaw_deg) -- ../codebase shelf_1..4 welds.
-MOBILE_SHELVES = (("shelves", 0.85, 0.0, -180.0),
-                  ("shelves2", 0.0, 0.85, -90.0),
-                  ("shelves3", -0.85, 0.0, 0.0),
-                  ("shelves4", 0.0, -0.85, 90.0))
 
 _PLATFORM_URI = "package://combining_kinematics/models/mobile_base/kmr_platform.urdf"
 _TABLE_URI = "package://combining_kinematics/models/mobile_base/central_table.sdf"
@@ -238,9 +233,9 @@ def RenderScene(robot, repo=None) -> str:
     lines += ["# ../codebase's room: a central table, four shelf units standing on it."]
     lines += _Model("table", _TABLE_URI)
     lines += _Weld("table::table_body", (0.0, 0.0, _TABLE_Z))
-    for name, x, y, yaw in MOBILE_SHELVES:
+    for name, x, y, z, yaw in MOBILE_SHELF_WELDS:
         lines += _Model(name, _SHELF_URI)
-        lines += _Weld(f"{name}::shelves_body", (x, y, _SHELF_Z), yaw)
+        lines += _Weld(f"{name}::shelves_body", (x, y, z), yaw)
     members = [f"{MOBILE_MODEL}::{PLATFORM_BODY}", base_link] + _TableFilterSpheres(text)
     lines += ["# The arm's base is bolted to the platform: the one filter, on every robot. On the",
               "# soft PCS arm it also covers the sub-link spheres its hardened scene filters",

@@ -208,6 +208,13 @@ def SceneFile(robot, task, scene="hardened"):
     `nobin` that quietly measured `hardened` would be worse than no run at all.
     """
     spec = SCENES[(robot, task)]
+    if scene == "mobile":
+        ## The mobile-base campaign's scenes (src/mobile_base/generate_scenes.py): one per
+        ## robot, shared by both tasks as the hardened ones are.
+        from src.mobile_base.generate_scenes import ROBOTS as _MOBILE
+        if robot not in _MOBILE:
+            raise SystemExit(f"--scene mobile: no mobile-base scene for {robot!r}")
+        return os.path.join(RepoDir(), _MOBILE[robot][1])
     path = {"hardened": spec.hardened, "legacy": spec.legacy, "nobin": spec.nobin}[scene]
     if path is None:
         raise SystemExit(
@@ -215,6 +222,13 @@ def SceneFile(robot, task, scene="hardened"):
             "scene never had decorative mugs, so its hardened scene already is its nobin "
             "scene; the Panda pose scene has no variant built." % (robot, task))
     return os.path.join(RepoDir(), path)
+
+
+def RobotInstances(robot, task, scene="hardened"):
+    """The model instances that ARE the robot in this scene: on a mobile base the platform
+    (`mobile_base`) is robot too, so mug-vs-platform contact is the robot's, not the room's."""
+    instances = tuple(SCENES[(robot, task)].robot_instances)
+    return instances + ("mobile_base",) if scene == "mobile" else instances
 
 
 class FloatingMugScreen:

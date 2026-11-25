@@ -37,6 +37,9 @@ from src.analytic_program import CheckClipCannotEscapeGate
 from src.panda_program import (PandaIKProgram, PandaIKProgramNumerical,
                                PandaIKProgramAnalytic, PandaMugProgram,
                                PandaMugProgramNumerical, PandaMugProgramAnalytic)
+from src.mobile_base.harness import (AddMobileArgs, CheckMobileArgs, MobileClass,
+                                     MobileSetup, MobileTagTokens)
+from src.target_screening import RobotInstances
 from pydrake.all import Quaternion, RigidTransform, RollPitchYaw, RotationMatrix
 from pydrake.geometry import Meshcat
 from tqdm import tqdm
@@ -140,7 +143,8 @@ def parse_args():
     p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
                    help="override any ProgramOptions field, e.g. --set correction_bound=0.4. "
                         "Applied after --config, recorded in the metadata and the tag.")
-    p.add_argument("--scene", choices=("hardened", "nobin", "legacy"), default="hardened",
+    p.add_argument("--scene", choices=("hardened", "nobin", "legacy", "mobile"),
+                   default="hardened",
                    help="`hardened` is the campaign scene: four shelves, two tables, no bin "
                         "and no decorative mugs. `nobin` drops ONLY the bin, keeping the "
                         "clutter -- it exists to separate 'targets must be in a shelf' from "
@@ -188,6 +192,7 @@ def parse_args():
                    help="consecutive rejected candidates before target sampling gives up. "
                         "A tail bound, not a budget; the default is sized from the measured "
                         "acceptance rates.")
+    AddMobileArgs(p)
     return p.parse_args()
 
 
@@ -213,6 +218,7 @@ def main():
     if args.shard and args.cells:
         raise SystemExit("--shard and --cells are mutually exclusive")
     shard = bm.parse_shard(args.shard)
+    mobile = CheckMobileArgs(args)
     # A non-default checkpoint goes in the tag as well as the metadata: two runs of the
     # same grid against DIFFERENT networks are not comparable, and without this they would
     # resolve to the same summary.json and overwrite each other (the same trap --shard hit).
@@ -229,7 +235,7 @@ def main():
     tag = args.tag or "_".join(
         [args.task, args.config, args.solver, args.start] + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
-        + (["compiled"] if args.compile else []) + [scene_fp[:8]])
+        + (["compiled"] if args.compile else []) + MobileTagTokens(args) + [scene_fp[:8]])
     # The suffix is what makes a shard shard-safe: without it every shard of a run
     # resolves to the same log_dir and the same summary.json and they overwrite one
     # another. Matches the `_shard(\d+)of(\d+)$` convention the merger keys on.
@@ -283,11 +289,14 @@ def main():
         # One program, used only to sample targets and to hold the loaded network so
         # every later program shares it (the flow is ~1.8 s to load).
         sampler_cls = PandaMugProgram if args.task == "mug" else PandaIKProgram
+        if mobile:
+            sampler_cls = MobileClass("panda", args.task, "learned")
         sampler = sampler_cls(diagram, options=base_options, checkpoint=args.checkpoint)
         sampler.create_prog()
     ik_solver = sampler.ik_solver
     lower = sampler.plant.GetPositionLowerLimits()
     upper = sampler.plant.GetPositionUpperLimits()
+    mobile_setup = MobileSetup("panda", sampler, args) if mobile else None
 
     def sample_collision_free():
         while True:
@@ -308,6 +317,8 @@ def main():
         ## Both tasks, since 2026-09-19. See --target-placement's help.
         placement = "shelf"
     regions = (ShelfCompartmentRegions(args.shelf_inset) if placement == "shelf" else None)
+    if mobile and regions is not None:
+        regions = mobile_setup.Regions(args.shelf_inset)
     target_pose_of, placement_point = ContainmentPose(
         sampler.plant, sampler.plant_context, spec, args.placement_point)
     # The mug is welded at the target point, so a target inside a compartment can still put
@@ -317,11 +328,13 @@ def main():
     mug_screen = None
     if regions is not None and args.task == "mug":
         with HiddenPrints():
-            mug_screen = FloatingMugScreen(yaml_file, spec.robot_instances)
+            mug_screen = FloatingMugScreen(yaml_file,
+                                           RobotInstances("panda", args.task, args.scene))
 
     target_qs, target_stats = SampleShelfTargets(
         args.targets,
-        draw=lambda: rng.uniform(lower, upper),
+        draw=((lambda: mobile_setup.Draw(rng)) if mobile
+              else (lambda: rng.uniform(lower, upper))),
         collision_free=lambda q: sampler.collision_free_constraint_eval.Eval(q) < 1,
         target_pose=target_pose_of, regions=regions,
         screen=(lambda X: mug_screen.Penetrates([X])) if mug_screen else None,
@@ -346,7 +359,11 @@ def main():
     # effects average over n_targets independent draws instead of riding on a handful of
     # shared ones -- and cross-target comparability of guesses was never used, arguably
     # harmful. Pairing is untouched: every arm still receives the identical q_init per cell.
-    guesses = [[sample_guess() for _ in range(args.guesses)] for _ in range(args.targets)]
+    if mobile:
+        guesses = mobile_setup.Guesses(target_qs, args.guesses)
+    else:
+        guesses = [[sample_guess() for _ in range(args.guesses)]
+                   for _ in range(args.targets)]
     # Identical cells across runs are what makes the ladder and the sweeps paired; record a
     # hash of them so a mismatch is visible in the summary rather than silently compared.
     grid_hash = hashlib.sha1(np.asarray(
@@ -457,6 +474,10 @@ def main():
     learned_cls = PandaIKProgram
     if mug:
         learned_cls = PandaMugProgram
+    numerical_cls = PandaMugProgramNumerical if mug else PandaIKProgramNumerical
+    if mobile:
+        learned_cls = MobileClass("panda", args.task, "learned")
+        numerical_cls = MobileClass("panda", args.task, "numerical")
     all_arms = {
         "learned": bm.Arm(
             "learned",
@@ -464,8 +485,7 @@ def main():
             base_options.joint_centering_cost),
         "numerical": bm.Arm(
             "numerical",
-            lambda t, g, c: build(PandaMugProgramNumerical if mug else PandaIKProgramNumerical,
-                               numerical_options, t, g, c),
+            lambda t, g, c: build(numerical_cls, numerical_options, t, g, c),
             numerical_options.joint_centering_cost),
         ## The map's frame offset is MEASURED by the program against the plant
         ## (src/analytic_program.py:MeasureAnalyticFrame), not passed in.
@@ -520,6 +540,7 @@ def main():
                       # The chart actually loaded (its resolved sidecar, with `family`), so a
                       # run records which network it solved through, not only a path.
                       chart_arch=ik_solver.arch,
+                      **(mobile_setup.Metadata() if mobile else {}),
                       **bm.provenance()))
     bar.close()
 

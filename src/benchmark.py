@@ -654,7 +654,14 @@ def start_diagnostics(program, q_init):
         ## quaternion components, reads ~1.2 rad on an EXACT start, and scores every cell
         ## `unrepresentable_start` before a single solve is attempted.
         q0 = np.asarray([float(v) for v in program.Config(x0)], dtype=float)
-        out["start_q_error"] = _finite(np.max(np.abs(q0[:n] - np.asarray(q_init, dtype=float)[:n])))
+        q_ref = np.asarray(q_init, dtype=float)
+        if hasattr(program, "SplitPlantQ"):
+            ## A mobile base: `q_init` is a full plant vector, base entries first in no
+            ## guaranteed order, so compare the ARM configuration against the arm's slots
+            ## and record the base start beside it.
+            b_ref, q_ref = program.SplitPlantQ(q_init)
+            out.update(program.MobileStartDiagnostics(x0, b_ref))
+        out["start_q_error"] = _finite(np.max(np.abs(q0[:n] - q_ref[:n])))
     except Exception:
         out["start_q_error"] = None
     if hasattr(program, "z"):
