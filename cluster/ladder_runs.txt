@@ -97,3 +97,12 @@ screw7_p050  screw7_p050_n6r  --nb_nodes=6 --dim_latent_space=7
 # until asked for. Datasets are built ONE AT A TIME (cluster/chain_datasets.sh).
 gvs_pushrod9_o1  gvs_pushrod9_o1_n6   --nb_nodes=6 --dim_latent_space=9
 gvs_pushrod9_o2  gvs_pushrod9_o2_n6   --nb_nodes=6 --dim_latent_space=9
+
+# ---------------------------------------------------------------------------------------
+# The cuspidal arm (branch cuspidal-arm, 2026-11-25): the simplified Transpressor 6R of
+# Feeß & Weiß plus a tool pitch, 7-DoF, so 7-wide like the Panda and the screw arm. ONE rung
+# (Tommy: no non-cuspidal control). The fielded chart is PRE-REGISTERED at n6, before any
+# cell is read; n4 is trained and reported (the iiwa preferred it). No n8: the gain-ceiling
+# rule (exp(2.4976 * nb_nodes) below the ~1e7 runaway band) already rules it out.
+cusp7  cusp7_n6   --nb_nodes=6 --dim_latent_space=7
+cusp7  cusp7_n4   --nb_nodes=4 --dim_latent_space=7

@@ -28,7 +28,8 @@ import and nothing else.
 
 #: Modules whose import registers robots. Each is expected to be idempotent and to expose
 #: `REGISTERED`, a tuple of the names it added.
-MODULES = ("src.screw_arm.register", "src.soft_arm.register", "src.gvs_arm.register")
+MODULES = ("src.screw_arm.register", "src.soft_arm.register", "src.gvs_arm.register",
+           "src.cusp_arm.register")
 
 
 def RegisterAll():

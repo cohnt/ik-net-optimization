@@ -24,6 +24,7 @@ from pydrake.geometry import SceneGraph  # noqa: F401  (documents what BuildEnv 
 from pydrake.multibody.parsing import ModelDirective, AddModel
 
 from src.screw_arm.params import SPECS as _SCREW_SPECS
+from src.cusp_arm.params import SPECS as _CUSP_SPECS
 from src.shelf_regions import PointInShelfCompartments
 from src.gvs_arm.params import RUNGS as _GVS_RUNGS
 from src.soft_arm.params import RUNGS as _SOFT_RUNGS
@@ -152,7 +153,10 @@ SCENES = {
 ## flow is conditioned on -- the iiwa's arrangement exactly.  The containment points are the
 ## gripper's own, as on every other robot: this arm carries the SAME finray, so
 ## `between_fingers` and the 0.100 m step behind it are literally the same geometry.
-for _screw in _SCREW_SPECS.values():
+## The cuspidal arm (`cusp7`) is built the same way and carries the same finray, so it
+## takes the same scene entries; the pose task targets its `tool` link, the frame the flow
+## is conditioned on.
+for _screw in (*_SCREW_SPECS.values(), *_CUSP_SPECS.values()):
     _hardened = f"models/{_screw.name}/{_screw.name}_collision_hardened.yaml"
     _legacy = f"models/{_screw.name}/{_screw.name}_collision.yaml"
     _instances = (_screw.name, "finray")

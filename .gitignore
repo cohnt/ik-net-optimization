@@ -44,3 +44,5 @@ models/screw7_p*/*.pkl
 cpp/build/
 ## Untrained cVAE plumbing charts (scripts/training/export_cvae.py --untrained), same rule.
 models/*/*__cvae*untrained__*
+## The cuspidal arm, same rule.
+models/cusp7/*.pkl

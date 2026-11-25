@@ -73,6 +73,7 @@ def ScreenDomain(robot):
     import math
 
     from src.gvs_arm.params import RUNGS as GVS_RUNGS
+    from src.cusp_arm.params import SPECS as CUSP_SPECS
     from src.screw_arm.params import SPECS as SCREW_SPECS
     from src.soft_arm.params import RUNGS
 
@@ -85,6 +86,9 @@ def ScreenDomain(robot):
         return ((0.0, 0.0, 0.45), 0.25, GVS_RUNGS[robot].latent_radius, 345.0)
     if robot in SCREW_SPECS:
         return ((0.4, 0.0, 0.5), 0.25, SCREW_SPECS[robot].latent_trust_region, 1000.0)
+    if robot in CUSP_SPECS:
+        ## The cuspidal arm: radians, the rigid band, the same reach -- the screw arm's case.
+        return ((0.4, 0.0, 0.5), 0.25, CUSP_SPECS[robot].latent_trust_region, 1000.0)
     return ((0.4, 0.0, 0.5), 0.25, 4.3, 1000.0)
 
 

@@ -111,6 +111,11 @@ from src.screw_arm.params import SPECS as _SCREW_SPECS  # noqa: E402
 
 LEGACY_ARCH_BY_ROBOT.update({name: LEGACY_PANDA_ARCH for name in _SCREW_SPECS})
 
+# The cuspidal arm is 7-DoF too: the Panda's baseline width, on its own spec table.
+from src.cusp_arm.params import SPECS as _CUSP_SPECS  # noqa: E402
+
+LEGACY_ARCH_BY_ROBOT.update({name: LEGACY_PANDA_ARCH for name in _CUSP_SPECS})
+
 
 def SidecarPath(checkpoint):
     """The architecture sidecar that belongs to `checkpoint`."""
