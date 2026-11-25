@@ -91,7 +91,12 @@ eg_check_commit "$COMMIT" || exit $?
 case "$KIND" in
 build)
     ## A CPU job: no GPU pin (the in-job hardware check would refuse a node with no nvidia-smi).
-    WALL=01:00:00; GPU_NAME=""; JOB=lik_build; SB=(-p mit_normal -c 8 --mem=32G -t "$WALL"); NEEDIMG=0; SCRIPT=build_image_job.sh; ARRAY=() ;;
+    ## BUILD_PARTITION=mit_preemptable (idempotent: a preemption only costs a rerun; the job builds to a temp
+    ## name and renames, and build.DONE is written last) adds --requeue.
+    BUILD_PARTITION="${BUILD_PARTITION:-mit_normal}"
+    case "$BUILD_PARTITION" in mit_normal|mit_preemptable) ;; *) die "BUILD_PARTITION='$BUILD_PARTITION' is not mit_normal or mit_preemptable" ;; esac
+    WALL=01:00:00; GPU_NAME=""; JOB=lik_build; SB=(-p "$BUILD_PARTITION" -c 8 --mem=32G -t "$WALL"); NEEDIMG=0; SCRIPT=build_image_job.sh; ARRAY=()
+    [ "$BUILD_PARTITION" != mit_preemptable ] || SB+=(--requeue) ;;
 plumb|bench)
     case "$PARTITION" in
         mit_normal_gpu)  CAP=2; DEFWALL=06:00:00; REQ=() ;;

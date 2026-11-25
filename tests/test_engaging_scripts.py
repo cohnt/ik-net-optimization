@@ -161,6 +161,10 @@ def t_stage_and_submit():
         log = open(sb).read()
         check(r.returncode == 0 and "-p mit_normal " in log and "LIK_EXPECT_GPU= " in log and "unbound" not in r.stderr and "-t 01:00:00" in log,
               "build: a CPU job with no GPU pin (the hardware check would refuse a node without nvidia-smi)", log + r.stderr)
+        os.remove(sb)
+        r = fx.script("submit.sh", "build", extra={"BUILD_PARTITION": "mit_preemptable"})
+        log = open(sb).read()
+        check("-p mit_preemptable" in log and "--requeue" in log, "build on mit_preemptable carries --requeue", log + r.stderr)
         # ---- a tampered tree is STOP before any submit
         open(croot + "/repo/cluster/engaging/py_in_image.sh", "a").write("\necho owned\n")
         os.remove(sb)
