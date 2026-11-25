@@ -9,7 +9,7 @@
 #   bash cluster/csail/build_image.sh status <jobid>    # read-only
 #   bash cluster/csail/build_image.sh record <name>     # after the job: anchor the image's sha256 ON THE LAPTOP
 #
-# The job: -A csail -p tig-cpu -q tig-main (not preemptible; nothing preempts tig-main), 8 CPUs, 32G, 2 h.
+# The job: -A csail -p tig-cpu -q tig-main (not preemptible; nothing preempts tig-main), 8 CPUs, 32G, 3 h.
 # `record` reads the build's .DONE ("OK <sha256>") and sidecar, recomputes nothing on the laptop, and keeps
 # logs/staged/csail-image-<name>.sha256: every GPU job is submitted with that hash and refuses an image that
 # hashes otherwise (group scratch may be modified by others).
@@ -31,7 +31,7 @@ submit)
     NAME="lik_build_${C12:0:8}_$(date +%H%M%S)"
     JOB=$(csail_sbatch "$ROOT" "$NAME" '%x-%j' \
         "LIK_ROOT=$ROOT LIK_CS_ROOT=$CS_ROOT EXPECT_MANIFEST_SHA=$EXPECT_MANIFEST_SHA FAKEROOT=${FAKEROOT:-auto}" \
-        "-A csail -p tig-cpu -q tig-main --cpus-per-task=8 --mem=32G --time=02:00:00" \
+        "-A csail -p tig-cpu -q tig-main --cpus-per-task=8 --mem=32G --time=03:00:00" \
         "$ROOT/repo/cluster/csail/build_image_job.sh") || exit 1
     echo "submitted $NAME as job $JOB (tig-cpu; log $ROOT/logs/$NAME-$JOB.out)"
     echo "JOB=$JOB"
