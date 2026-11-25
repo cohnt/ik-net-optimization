@@ -3051,7 +3051,9 @@ SVGD_STAGE_CONTEXTS = {"SVGD_R20": SVGD_RECORD_CONTEXTS, "SVGD_R21": SVGD_RECORD
                        "SVGD_R24": SVGD_RECORD_CONTEXTS, "SVGD_R26": SVGD_RECORD_CONTEXTS,
                        "SVGD_R27": SVGD_RECORD_CONTEXTS, "SVGD_R28": SVGD_RECORD_CONTEXTS,
                        "SVGD_R29": SVGD_RECORD_CONTEXTS, "SVGD_R30": SVGD_RECORD_CONTEXTS,
-                       "SVGD_R31": SVGD_RECORD_CONTEXTS, "SVGD_R31B": SVGD_RECORD_CONTEXTS}
+                       "SVGD_R31": SVGD_RECORD_CONTEXTS, "SVGD_R31B": SVGD_RECORD_CONTEXTS,
+                       ## The cuspidal arm's AL-SVGD rows (branch cuspidal-arm): its one context.
+                       "SVGD_CUSP": ((CUSP_PRIMARY, CUSP_ADOPTED[0], SVGD_SEED),)}
 #: The four record robots at their fielded rungs on grid SEED 2 (R30's `pin4s2`, the V4 pin's seed-2
 #: replication). The Panda's is R7 / R19's context, twinned with SVGD_R7IPOPT; the other three have
 #: no IPOPT twin at seed 2 (SVGD_TWINLESS_CONTEXTS).
@@ -3062,7 +3064,8 @@ SVGD_RECORD_CONTEXTS_SEED2 = tuple((robot, rung, 2) for robot, rung, _ in SVGD_R
 #: stage_SOFT12 -- they are deliberately not in ADOPTED_RUNGS (see those stages).
 SVGD_RUNGS = {**{(r, label): (ck, "STATUSQUO") for r, label, ck in ADOPTED_RUNGS},
               (SCREW_PRIMARY, SCREW_ADOPTED[0]): (SCREW_ADOPTED[1], "SCREW"),
-              ("soft12", SOFT_ADOPTED["soft12"][0]): (SOFT_ADOPTED["soft12"][1], "SOFT12")}
+              ("soft12", SOFT_ADOPTED["soft12"][0]): (SOFT_ADOPTED["soft12"][1], "SOFT12"),
+              (CUSP_PRIMARY, CUSP_ADOPTED[0]): (CUSP_ADOPTED[1], "CUSP")}
 #: The IPOPT-twin manifests built by stage_SVGD, stage -> the tag family (round token) it carries.
 SVGD_TWIN_STAGES = {"SVGD_R2": "SVGD_R2", "SVGD_R7IPOPT": "SVGD_R7"}
 #: Each context's IPOPT twin: (robot, rung, seed) -> the stage whose items are those rows under
@@ -3070,7 +3073,8 @@ SVGD_TWIN_STAGES = {"SVGD_R2": "SVGD_R2", "SVGD_R7IPOPT": "SVGD_R7"}
 #: its iiwa IPOPT items out of stage_PAPER.
 SVGD_TWIN_OF = {("panda", "n6", 1): "SVGD_R2", ("panda", "n6", 2): "SVGD_R7IPOPT",
                 ("iiwa", "n4", 1): "PAPER", (SCREW_PRIMARY, SCREW_ADOPTED[0], 1): "PAPER",
-                ("soft12", SOFT_ADOPTED["soft12"][0], 1): "PAPER"}
+                ("soft12", SOFT_ADOPTED["soft12"][0], 1): "PAPER",
+                (CUSP_PRIMARY, CUSP_ADOPTED[0], 1): "CUSP"}
 #: Contexts an svgd row may run on WITHOUT an IPOPT twin, declared rather than assumed (every other
 #: context names one in SVGD_TWIN_OF; the selftest refuses a round context in neither): the seed-2
 #: record contexts but the Panda's, which R30's `pin4s2` runs on (2026-10-16). Their rows replicate the
@@ -3171,7 +3175,7 @@ SVGD_CLEARANCE_STAGES = ("SVGD_R11", "SVGD_R12", "SVGD_SMOKE_IIWA", "SVGD_R7",
                          "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
                          "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23",
                          "SVGD_R24", "SVGD_R26", "SVGD_R27", "SVGD_R28", "SVGD_R29", "SVGD_R30",
-                         "SVGD_R31", "SVGD_R31B")
+                         "SVGD_R31", "SVGD_R31B", "SVGD_CUSP")
 #: (b): the lifted step budget. ONE knob; the IPOPT `max_iter` is removed from svgd items.
 SVGD_STEP_CAP = 1000000
 SVGD_BUDGET = ["--set", f"svgd_outer_iters={SVGD_STEP_CAP}"]
@@ -3376,6 +3380,11 @@ SVGD_ROUNDS = {
     ## `polkq` (declared two-factor, joint space) on the screw and soft12 contexts only. 12 logical runs.
     "SVGD_R31B": {"pol": (["svgd_polish=newton"], 24, SVGD_BOTH),
                   "polkq": (["svgd_kernel=q", "svgd_polish=newton"], 24, SVGD_BOTH)},
+    ## The cuspidal arm (branch cuspidal-arm, 2026-11-25) at the V4 pin, exactly the record's two
+    ## AL-SVGD columns: R29's `pin4` (learned, zero overrides) and R30's `pin4kq` (joint space,
+    ## kernel q, `--arms numerical`, its own items) on cusp7 n6. Twinned with stage CUSP's IPOPT rows.
+    "SVGD_CUSP": {"pin4": ([], 24, SVGD_BOTH),
+                  "pin4kq": (["svgd_kernel=q"], 24, SVGD_BOTH)},
 }
 #: Variants allowed MORE than one factor: round -> {variant: its factors}, each factor the overrides
 #: that make it up, so a variant's factor count is the length of its declaration. The selftest holds
@@ -3427,6 +3436,7 @@ SVGD_DECLARED_FACTORS = {
                  "polkq": (("svgd_kernel=q",), ("svgd_polish=newton",))},
     "SVGD_R31B": {"pol": (("svgd_polish=newton",),),
                   "polkq": (("svgd_kernel=q",), ("svgd_polish=newton",))},
+    "SVGD_CUSP": {"pin4": (), "pin4kq": (("svgd_kernel=q",),)},
 }
 #: The rounds' allotment base, (learned, joint space) seconds per cell -- an ASSUMPTION from the
 #: cluster smoke (pose paired, 4 cells, 60 s: learned 4-7 s, joint space 9-42 s), not a measurement.
@@ -3452,7 +3462,8 @@ SVGD_VARIANT_SCOPE = {"SVGD_R20": {"pin2kq": dict(arms="numerical",
                       "SVGD_R31B": {"pol": dict(contexts=(SVGD_RECORD_CONTEXTS[3],)),
                                     "polkq": dict(arms="numerical",
                                                   contexts=(SVGD_RECORD_CONTEXTS[2],
-                                                            SVGD_RECORD_CONTEXTS[3]))}}
+                                                            SVGD_RECORD_CONTEXTS[3]))},
+                      "SVGD_CUSP": {"pin4kq": dict(arms="numerical")}}
 
 
 def svgd_variant_arms(stage, variant):
@@ -3568,6 +3579,11 @@ SVGD_ALLOWED_SETS = {
                   "svgd_outer_iters", "svgd_kernel", "svgd_rho",
                   "svgd_paired_init", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend",
                   "svgd_stop_patience", "svgd_polish"},
+    ## SVGD_CUSP (v4): R30's set -- its two variants are R29's `pin4` and R30's `pin4kq`.
+    "SVGD_CUSP": {"correction_cost_weight", "flow_cuda_graph", "svgd_compile", "svgd_cuda_graph",
+                  "svgd_outer_iters", "svgd_kernel", "svgd_rho",
+                  "svgd_paired_init", "svgd_gn_lm", "svgd_lr", "svgd_collision_backend",
+                  "svgd_stop_patience"},
 }
 #: ProgramOptions defaults, as source text, that the manifests RELY ON rather than set (checked from
 #: src/generic_program.py's text, torch-free). The current defaults, the 2026-10-12 pin's; the four
@@ -3664,6 +3680,9 @@ def _svgd_rows(targets, guesses, shards, tag, starts="paired,native", robot=SVGD
         rows = stage_STATUSQUO(STATUSQUO_WALL, targets, guesses, shards, only=f"{robot}:{rung}", **kw)
     elif builder == "SCREW":
         rows = stage_SCREW(STATUSQUO_WALL, targets, guesses, shards, only=robot, **kw)
+    elif builder == "CUSP":
+        rows = stage_SCREW(STATUSQUO_WALL, targets, guesses, shards, only=robot,
+                           primary=CUSP_PRIMARY, adopted=CUSP_ADOPTED, **kw)
     else:
         rows = stage_SOFT12(STATUSQUO_WALL, targets, guesses, shards, only=robot, **kw)
     return [dict(it, args=list(it["args"]) + REMEASURE_GRAPH + _itcap_extra("ipopt")[1])
@@ -3680,6 +3699,8 @@ def _svgd_stage_rows(stage, targets, guesses, shards, tag, starts="paired,native
 def svgd_twin_items(stage):
     """The items of an IPOPT-twin stage named in SVGD_TWIN_OF: stage_SVGD's own, or, for `PAPER`,
     stage_PAPER's IPOPT items on the contexts whose twin it is."""
+    if stage == "CUSP":
+        return [it for it in stage_CUSP() if _svgd_flag(it["args"], "--solver") == "ipopt"]
     if stage != "PAPER":
         return stage_SVGD(stage)
     want = {(r, g) for (r, g, s), st in SVGD_TWIN_OF.items() if st == "PAPER"}
@@ -3782,7 +3803,7 @@ def _svgd_seconds(stage, args):
                     SVGD_R20_MEAN_WALL[_svgd_r20_robot(args)][(task, start)])
     elif stage == "SVGD_R21":                     # joint space only, the Panda's R20 measure
         per_cell = SVGD_R21_JS_CELL_S[task]
-    elif stage in ("SVGD_R22", "SVGD_R30", "SVGD_R31", "SVGD_R31B") and _svgd_flag(args, "--arms") == "numerical":
+    elif stage in ("SVGD_R22", "SVGD_R30", "SVGD_R31", "SVGD_R31B", "SVGD_CUSP") and _svgd_flag(args, "--arms") == "numerical":
         per_cell = SVGD_R21_JS_CELL_S[task]       # clipoffjs / pin4kq / polkq: the same joint-space measure as R21
     elif stage in SVGD_ROUNDS:
         per_cell = SVGD_ROUND_CELL_S[0]           # learned arm only
@@ -5254,7 +5275,8 @@ def _ladder_paths_match_export():
                    | {GVS_ADOPTED[r][1] for r in GVS_TRAINED_RUNGS}
                    | {ck for *_, ck in CVAE_RUNGS}
                    | {ck for *_, ck in CVAEF_RUNGS}
-                   | {SCREWREDO_CKPT}) - PRE_EXISTING
+                   | {SCREWREDO_CKPT}
+                   | {CUSP_ADOPTED[1], CUSP_N4[1]}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
         fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt / chart_runs.txt row would export it")
@@ -6761,10 +6783,10 @@ def selftest():
              "SVGD_R23": (48, 1152), "SVGD_R24": (176, 4224), "SVGD_R26": (64, 1536),
              "SVGD_R27": (48, 1152), "SVGD_R28": (48, 1152), "SVGD_R29": (64, 1536),
              "SVGD_R30": (32, 768), "SVGD_R31": (32, 768),
-             "SVGD_R31B": (12, 288)} or \
+             "SVGD_R31B": (12, 288), "SVGD_CUSP": (8, 192)} or \
             sv_expected["SVGD_SMOKE_R20"] != (8, 8):
-        sv_fails.append("rounds R3-R31B are not 8/8/8/12/12/12/2/8/4/4/16/16/4/4/8/8/6/4/8/20/12/68/48/176/64/48/48/64/32/32/12 runs, "
-                        "128/192/160/288/288/288/48/192/96/96/384/384/96/96/192/192/144/96/192/480/288/1632/1152/4224/1536/1152/1152/1536/768/768/288 "
+        sv_fails.append("rounds R3-R31B, CUSP are not 8/8/8/12/12/12/2/8/4/4/16/16/4/4/8/8/6/4/8/20/12/68/48/176/64/48/48/64/32/32/12/8 runs, "
+                        "128/192/160/288/288/288/48/192/96/96/384/384/96/96/192/192/144/96/192/480/288/1632/1152/4224/1536/1152/1152/1536/768/768/288/192 "
                         "items, or SMOKE_R20 is not 8 items")
     ## R20's scope: `pin2` (learned) on exactly the four record contexts, `pin2kq` (joint space) on
     ## the Panda only, as its own items; every other round variant the rounds' learned arm on its
@@ -6779,7 +6801,8 @@ def selftest():
               ("SVGD_R30", "pin4s2"): ("learned", [(r, g, 2) for r, g, _ in SVGD_RECORD_CONTEXTS]),
               ("SVGD_R31", "polkq"): ("numerical", list(SVGD_RECORD_CONTEXTS)),
               ("SVGD_R31B", "pol"): ("learned", [SVGD_RECORD_CONTEXTS[3]]),
-              ("SVGD_R31B", "polkq"): ("numerical", [SVGD_RECORD_CONTEXTS[2], SVGD_RECORD_CONTEXTS[3]])}
+              ("SVGD_R31B", "polkq"): ("numerical", [SVGD_RECORD_CONTEXTS[2], SVGD_RECORD_CONTEXTS[3]]),
+              ("SVGD_CUSP", "pin4kq"): ("numerical", [(CUSP_PRIMARY, CUSP_ADOPTED[0], SVGD_SEED)])}
     for r, variants in SVGD_ROUNDS.items():
         for v in variants:
             want_scope = scoped.get((r, v), (SVGD_ROUND_ARMS, svgd_contexts(r)))
@@ -6788,7 +6811,7 @@ def selftest():
                                 f"{svgd_variant_contexts(r, v)}, expected {want_scope}")
     if set(SVGD_STAGE_CONTEXTS) != {"SVGD_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23", "SVGD_R24",
                                     "SVGD_R26", "SVGD_R27", "SVGD_R28", "SVGD_R29", "SVGD_R30",
-                                    "SVGD_R31", "SVGD_R31B"} or \
+                                    "SVGD_R31", "SVGD_R31B", "SVGD_CUSP"} or \
             sorted(r for r, _, _ in SVGD_RECORD_CONTEXTS) != sorted(
                 ["panda", "iiwa", SCREW_PRIMARY, "soft12"]) or \
             any(c not in SVGD_TWIN_OF for c in SVGD_RECORD_CONTEXTS):
@@ -6827,7 +6850,8 @@ def selftest():
              "SVGD_R27": {"fd0p1": 2, "fd1": 2},
              "SVGD_R29": {"pin4": 0, "lp0p1so": 2, "lp1so": 2},
              "SVGD_R30": {"pin4kq": 1, "pin4s2": 0},
-             "SVGD_R31": {"pol": 1, "polkq": 2}, "SVGD_R31B": {"pol": 1, "polkq": 2}}:
+             "SVGD_R31": {"pol": 1, "polkq": 2}, "SVGD_R31B": {"pol": 1, "polkq": 2},
+             "SVGD_CUSP": {"pin4": 0, "pin4kq": 1}}:
         sv_fails.append("the declared factor counts are not R14's 2/2/2/2, R17 / R17S's 2, "
                         "R18's 3/3, R19 / R17P's 2, R20's 0 / 1, R22's 2, R26's 2, R27's 2/2, "
                         "R29's 0 / 2 / 2, R30's 1 / 0 and R31's and R31B's 1 / 2")
@@ -6869,7 +6893,8 @@ def selftest():
                 sv_fails.append(f"{stage}: context {ctx} has no IPOPT twin in SVGD_TWIN_OF (and is "
                                 f"not declared in SVGD_TWINLESS_CONTEXTS)")
     for ctx, st in SVGD_TWIN_OF.items():
-        if st != "PAPER" and (st not in SVGD_TWIN_STAGES or svgd_context(st) != ctx):
+        ## `PAPER` and `CUSP` are IPOPT stages, not svgd ones; svgd_twin_items reads their IPOPT items.
+        if st not in ("PAPER", "CUSP") and (st not in SVGD_TWIN_STAGES or svgd_context(st) != ctx):
             sv_fails.append(f"SVGD_TWIN_OF[{ctx}] = {st} does not run on {ctx}")
     if svgd_context("SVGD_R7IPOPT")[2] == SVGD_SEED or \
             not svgd_context("SVGD_R7IPOPT") == svgd_context("SVGD_R7") == svgd_context("SVGD_R19"):
@@ -7338,7 +7363,7 @@ def main():
                                  "SVGD_R17", "SVGD_R17S", "SVGD_R18", "SVGD_R19", "SVGD_R17P",
                                  "SVGD_R20", "SVGD_SMOKE_R20", "SVGD_R21", "SVGD_R22", "SVGD_R23",
                                  "SVGD_R24", "SVGD_R26", "SVGD_R27", "SVGD_R28",
-                                 "SVGD_R29", "SVGD_R30", "SVGD_R31", "SVGD_R31B",
+                                 "SVGD_R29", "SVGD_R30", "SVGD_R31", "SVGD_R31B", "SVGD_CUSP",
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD",
