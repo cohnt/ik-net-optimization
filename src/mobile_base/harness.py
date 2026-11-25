@@ -67,6 +67,7 @@ class MobileSetup:
             lambda v: sampler.collision_free_constraint_eval.Eval(sampler.GridToPlantQ(v)) < 1,
             wrist)
         self.start_draws = []
+        self.starts_in_collision = []
         self.Attach(sampler)      # the warm-up solve draws native particles on the sampler
 
     def Draw(self, rng):
@@ -85,9 +86,12 @@ class MobileSetup:
             X_WT = self.sampler.frame.CalcPoseInWorld(ctx)
             row = []
             for j in range(n_guesses):
-                g, draws = self.grid.Start(self.rule, X_WT, CellRng(self.seed, i, j, self.rule))
+                g, draws, free = self.grid.Start(self.rule, X_WT,
+                                                 CellRng(self.seed, i, j, self.rule))
                 row.append(g)
                 self.start_draws.append(draws)
+                if not free:
+                    self.starts_in_collision.append([i, j])
             guesses.append(row)
         return guesses
 
@@ -102,4 +106,5 @@ class MobileSetup:
                     base_limits=[[float(v) for v in b] for b in self.sampler.BaseLimits()],
                     approach_axis_in_target=[float(v) for v in self.grid.approach_T],
                     median_start_draws=float(np.median(self.start_draws))
-                    if self.start_draws else None)
+                    if self.start_draws else None,
+                    starts_in_collision=self.starts_in_collision)

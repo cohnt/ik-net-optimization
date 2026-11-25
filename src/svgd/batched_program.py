@@ -98,7 +98,7 @@ from pydrake.math import RigidTransform, RollPitchYaw, RotationMatrix
 from pydrake.solvers import (BoundingBoxConstraint, LinearConstraint, LinearCost,
                              QuadraticConstraint, QuadraticCost)
 
-from src.svgd.batched_flow import BatchedFlow
+from src.svgd.batched_flow import BatchedFlow, quat_from_rpy_batched
 from src.svgd.collision_backend import collision_row, make_collision_evaluator
 from src.svgd.kinematics_from_plant import (BatchedFK, BodyPoseProvider, KinematicTree,
                                             canonical_quat, rpy_from_quat, wrap_residual)
@@ -223,6 +223,23 @@ def _rigid_to_pose(X: RigidTransform):
     return (tuple(float(v) for v in q), tuple(float(v) for v in X.translation()))
 
 
+def _qmul(a: Tensor, b: Tensor) -> Tensor:
+    """Hamilton product of wxyz quaternions `[N, 4]`."""
+    aw, ax, ay, az = a.unbind(dim=1)
+    bw, bx, by, bz = b.unbind(dim=1)
+    return torch.stack([aw * bw - ax * bx - ay * by - az * bz,
+                        aw * bx + ax * bw + ay * bz - az * by,
+                        aw * by - ax * bz + ay * bw + az * bx,
+                        aw * bz + ax * by - ay * bx + az * bw], dim=1)
+
+
+def _qrot(q: Tensor, v: Tensor) -> Tensor:
+    """Rotate `v [N, 3]` by the unit quaternion `q [N, 4]` (wxyz)."""
+    w, u = q[:, :1], q[:, 1:]
+    t = 2.0 * torch.cross(u, v, dim=1)
+    return v + w * t + torch.cross(u, t, dim=1)
+
+
 def formulation_hint(program):
     """`"learned" | "analytic" | "joint"` by the program's own markers, without raising: a
     latent `z` is the learned arm, a `TorchAnalyticMap` hook the analytic arm, anything else
@@ -248,6 +265,11 @@ def formulation_of(program):
     if q is not None and lumped is not None:
         ids = lambda vs: [v.get_id() for v in np.ravel(np.asarray(vs))]
         if ids(q) == ids(lumped):
+            return "joint"
+        ## A joint-space program on a mobile base decides `[b | q]` (src/mobile_base).
+        b = getattr(program, "b", None)
+        if getattr(program, "MOBILE", False) and b is not None and \
+                ids(lumped) == ids(b) + ids(q):
             return "joint"
     raise NotImplementedError(
         f"{type(program).__name__}: not a formulation BatchedProgram replays (no latent `z`, "
@@ -301,6 +323,14 @@ class BatchedProgram:
         self.amap = None
         self.is_mug = hasattr(program, "target_mug")
         self.ndof = int(program.num_arm_dof)
+        ## A program on a planar mobile base (src/mobile_base): the batched CONFIGURATION is
+        ## the extended `[q_arm (ndof) | b (3)]`, arm FIRST so every `cfg[:, :ndof]` read
+        ## (joint-limit rows, centering, `_q_nominal`) stays the arm. `ndof` keeps meaning the
+        ## ARM (it sizes q_c, the joint limits and the nominal); `ncfg` is the configuration's
+        ## width, which the Jacobians of the configuration and the plant map carry.
+        self.is_mobile = bool(getattr(program, "MOBILE", False))
+        self.ncfg = self.ndof + 3 if self.is_mobile else self.ndof
+        self.base_off = 3 if self.is_mobile else 0     # lumped offset of the first non-base var
         self.num_pos = int(program.num_pos)
         if getattr(self.options, "lift_q", False) or getattr(program, "q_lift", None) is not None:
             raise NotImplementedError("BatchedProgram does not replay the `lift_q` formulation")
@@ -320,11 +350,14 @@ class BatchedProgram:
             self.device = _normalise_device(device)
             self.flow = BatchedFlow.from_program(program, dtype=dtype, device=self.device)
             self.width = self.flow.width
-            if self.nvars != 6 + self.width + self.ndof:
+            if self.nvars != self.base_off + 6 + self.width + self.ndof:
                 raise NotImplementedError(
                     f"{type(program).__name__}: lumped_vars has {self.nvars} entries, expected "
-                    f"6 + {self.width} + {self.ndof} = [c6 | z | q_c]")
+                    f"{self.base_off} + 6 + {self.width} + {self.ndof} = "
+                    f"[{'b | ' if self.is_mobile else ''}c6 | z | q_c]")
         elif self.is_analytic:
+            if self.is_mobile:
+                raise NotImplementedError("the analytic arm has no mobile-base formulation")
             if device is None:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
             self.device = _normalise_device(device)
@@ -344,10 +377,11 @@ class BatchedProgram:
             self.device = _normalise_device(device)
             self.flow = None
             self.width = 0
-            if self.nvars != self.ndof:
+            if self.nvars != self.base_off + self.ndof:
                 raise NotImplementedError(
-                    f"{type(program).__name__}: a joint-space arm's lumped_vars should be q "
-                    f"({self.ndof}), got {self.nvars}")
+                    f"{type(program).__name__}: a joint-space arm's lumped_vars should be "
+                    f"{'[b | q]' if self.is_mobile else 'q'} ({self.base_off + self.ndof}), "
+                    f"got {self.nvars}")
 
         ## -- kinematics: body poses and the configuration -> plant map -----------------
         plant = program.plant
@@ -362,6 +396,15 @@ class BatchedProgram:
             body_pose_provider = BatchedFK(tree, dtype=dtype, device=self.device)
         self.fk: BodyPoseProvider = body_pose_provider
         self.plant_q_is_padded_cfg = False
+        if config_to_plant_q is None and self.is_mobile:
+            ## The extended configuration `[q_arm | b]` -> the plant vector: the program's own
+            ## differentiable map, checked at three draws inside `SvgdConfigLimits()` against
+            ## `SvgdConfigToPlantQ`. Never the padded configuration, so the kinematics take
+            ## the forward-mode `_kinematics_cfg_jacobians` path (w.r.t. the extended cfg).
+            hook = program.TorchMobileConfigToPlantQ
+            self._check_config_to_plant_q(hook(torch.float64, self.device),
+                                          source="TorchMobileConfigToPlantQ")
+            config_to_plant_q = hook(dtype, self.device)
         if config_to_plant_q is None:
             hook = getattr(program, "TorchConfigToPlantQ", None)
             if hook is not None:
@@ -409,6 +452,34 @@ class BatchedProgram:
         self._config_map_key = None if slots is None else (
             str(getattr(getattr(program, "spec", None), "name", "")),
             hashlib.sha1(np.ascontiguousarray(slots, dtype=np.int64).tobytes()).hexdigest())
+        if self.is_mobile:
+            ## The mobile map closes over the arm / base / soft slot permutations and the
+            ## plant's default positions (and the arm base's offset `X_FA`): all of it, hashed.
+            parts = [np.asarray(program.ArmSlots(), dtype=np.int64),
+                     np.asarray(program.BaseSlots(), dtype=np.int64),
+                     np.asarray(getattr(program, "_soft_slots", []), dtype=np.int64),
+                     np.asarray(program.plant.GetDefaultPositions(), dtype=np.float64),
+                     np.asarray(program._mb.X_FA.GetAsMatrix4(), dtype=np.float64)]
+            self._config_map_key = (
+                "mobile", str(getattr(getattr(program, "spec", None), "name", "")),
+                hashlib.sha1(b"|".join(np.ascontiguousarray(a).tobytes() for a in parts)
+                             ).hexdigest())
+        if self.is_mobile:
+            ## `[b | q_arm]` joint space: the configuration `[q | b]` is a fixed permutation of
+            ## the decision vector, so `dcfg/dX` is a constant 0/1 matrix.
+            J = torch.zeros(self.ncfg, self.nvars, dtype=dtype, device=self.device)
+            if not self.has_map:
+                for k in range(self.ndof):
+                    J[k, 3 + k] = 1.0
+                for j in range(3):
+                    J[self.ndof + j, j] = 1.0
+            self._joint_J = J
+            ## The flow's arm-base transform X_FA (constant), for the local conditioning pose.
+            X_FA = program._mb.X_FA
+            self._q_FA = torch.tensor(np.asarray(X_FA.rotation().ToQuaternion().wxyz(), float),
+                                      dtype=dtype, device=self.device)
+            self._p_FA = torch.tensor(np.asarray(X_FA.translation(), float), dtype=dtype,
+                                      device=self.device)
 
         ## -- the task --------------------------------------------------------------------
         if self.is_mug:
@@ -479,16 +550,25 @@ class BatchedProgram:
         uniform draws from `ConfigLimits`), or this is not a robot it serves. `source` None:
         the default pad; else the name of the program's hook that supplied `fn`."""
         rng = np.random.default_rng(0)
-        lower, upper = self.program.ConfigLimits()
-        lower = np.asarray(lower, dtype=float)[:self.ndof]
-        upper = np.asarray(upper, dtype=float)[:self.ndof]
-        if not (np.all(np.isfinite(lower)) and np.all(np.isfinite(upper))):
-            raise NotImplementedError(
-                f"{type(self.program).__name__}: ConfigLimits are not finite; pass "
-                f"config_to_plant_q= (the default pad is for the rigid arms).")
-        cfg = rng.uniform(lower, upper, size=(3, self.ndof))
+        if self.is_mobile:
+            ## The extended `[q_arm | b]`, three draws inside `SvgdConfigLimits()`, against
+            ## the program's own `SvgdConfigToPlantQ`.
+            lower, upper = (np.asarray(v, dtype=float) for v in self.program.SvgdConfigLimits())
+            cfg = rng.uniform(lower, upper, size=(3, self.ncfg))
+            theirs = np.stack([np.asarray(self.program.SvgdConfigToPlantQ(c), dtype=float)
+                               for c in cfg])
+        else:
+            lower, upper = self.program.ConfigLimits()
+            lower = np.asarray(lower, dtype=float)[:self.ndof]
+            upper = np.asarray(upper, dtype=float)[:self.ndof]
+            if not (np.all(np.isfinite(lower)) and np.all(np.isfinite(upper))):
+                raise NotImplementedError(
+                    f"{type(self.program).__name__}: ConfigLimits are not finite; pass "
+                    f"config_to_plant_q= (the default pad is for the rigid arms).")
+            cfg = rng.uniform(lower, upper, size=(3, self.ndof))
+            theirs = np.stack([np.asarray(self.program.ConfigToPlantQ(c), dtype=float)
+                               for c in cfg])
         mine = fn(torch.tensor(cfg, dtype=torch.float64, device=self.device)).detach().cpu().numpy()
-        theirs = np.stack([np.asarray(self.program.ConfigToPlantQ(c), dtype=float) for c in cfg])
         if mine.shape != theirs.shape or np.abs(mine - theirs).max() > 1e-12:
             if source is not None:
                 err = (np.abs(mine - theirs).max() if mine.shape == theirs.shape
@@ -835,21 +915,61 @@ class BatchedProgram:
         return X
 
     def _split(self, X):
-        """`(c6, z, qc)` of a learned batch."""
-        w = self.width
-        return X[:, :6], X[:, 6:6 + w], X[:, 6 + w:6 + w + self.ndof]
+        """`(c6, z, qc)` of a learned batch (after the base block `b` on a mobile program,
+        `base(X)`)."""
+        w, o = self.width, self.base_off
+        return X[:, o:o + 6], X[:, o + 6:o + 6 + w], X[:, o + 6 + w:o + 6 + w + self.ndof]
+
+    def base(self, X):
+        """`b [N, 3]` of a mobile batch (the first three decision variables)."""
+        return X[:, :3]
+
+    def _local_pose7(self, b, c6):
+        """The mobile learned arm's conditioning pose, `X_WA(b)^-1 X(c)` as the chart's
+        `[xyz, wxyz]` [N, 7]: `X_WA = Rz(yaw) X_FA` translated by (x, y, 0), `X(c)` the world
+        pose `(rpy_c, xyz_c)`. The rotation is the quaternion product `conj(q_WA) q_c` (exact,
+        no matrix -> quaternion conversion), canonicalised to `w >= 0` like Drake's
+        `RotationMatrix.ToQuaternion` that `MobileLearnedMixin.TaskVarsToPose7` goes through
+        (the sign is detached, as in `quat_from_rpy_batched`)."""
+        yaw = b[:, 2]
+        half = 0.5 * yaw
+        zero = torch.zeros_like(yaw)
+        q_z = torch.stack([torch.cos(half), zero, zero, torch.sin(half)], dim=1)
+        q_WA = _qmul(q_z, self._q_FA.unsqueeze(0).expand_as(q_z))
+        cy, sy = torch.cos(yaw), torch.sin(yaw)
+        pf = self._p_FA
+        p_WA = torch.stack([b[:, 0] + cy * pf[0] - sy * pf[1],
+                            b[:, 1] + sy * pf[0] + cy * pf[1],
+                            zero + pf[2]], dim=1)
+        q_AW = q_WA * torch.tensor([1.0, -1.0, -1.0, -1.0], dtype=q_WA.dtype, device=q_WA.device)
+        p_loc = _qrot(q_AW, c6[:, :3] - p_WA)
+        q_loc = _qmul(q_AW, quat_from_rpy_batched(c6[:, 3:6]))
+        sign = torch.where(q_loc[:, 0].detach() < 0,
+                           torch.tensor(-1.0, dtype=q_loc.dtype, device=q_loc.device),
+                           torch.tensor(1.0, dtype=q_loc.dtype, device=q_loc.device))
+        return torch.cat([p_loc, q_loc * sign.unsqueeze(1)], dim=1)
 
     def _config_and_logdet(self, X):
-        """`(cfg [N, ndof], log|det dx/dz| [N])` of a learned batch, one network call."""
+        """`(cfg [N, ncfg], log|det dx/dz| [N])` of a learned batch, one network call."""
         c6, z, qc = self._split(X)
+        if self.is_mobile:
+            b = self.base(X)
+            arm, ld = self.flow.q_and_logdet_pose7(self._local_pose7(b, c6), z, qc)
+            return torch.cat([arm, b], dim=1), ld
         return self.flow.q_and_logdet(c6, z, qc)
 
     def _config(self, X) -> Tensor:
         if self.is_learned:
             c6, z, qc = self._split(X)
+            if self.is_mobile:
+                b = self.base(X)
+                arm = self.flow.q_pose7(self._local_pose7(b, c6), z, qc)
+                return torch.cat([arm, b], dim=1)
             return self.flow.q(c6, z, qc)
         if self.is_analytic:
             return self.amap(X)[0]
+        if self.is_mobile:                       # joint space `[b | q]` -> `[q | b]`
+            return torch.cat([X[:, 3:3 + self.ndof], X[:, :3]], dim=1)
         return X[:, :self.ndof]
 
     def native_analytic(self, N) -> Tensor:
@@ -1109,7 +1229,7 @@ class BatchedProgram:
             if term.reported:
                 F_rep = F_rep + val
 
-        extras = {"q_inf": cfg.detach().abs().max(dim=1).values,
+        extras = {"q_inf": cfg.detach()[:, :self.ndof].abs().max(dim=1).values,
                   "collision_grad": col_grad, "frame_jac": frame_jac,
                   "rpy": None if rpy is None else rpy.detach()}
         if self.is_learned:
@@ -1139,8 +1259,8 @@ class BatchedProgram:
         Identical to the matching slices of `evaluate(X)` at `Q = q(X)` (a test pins it).
         Not counted as a map evaluation: the map is not evaluated."""
         Q = torch.as_tensor(Q, dtype=self.dtype, device=self.device)
-        if Q.dim() != 2 or Q.shape[1] != self.ndof:
-            raise ValueError(f"Q must be [N, {self.ndof}], got {tuple(Q.shape)}")
+        if Q.dim() != 2 or Q.shape[1] != self.ncfg:
+            raise ValueError(f"Q must be [N, {self.ncfg}], got {tuple(Q.shape)}")
         N = Q.shape[0]
         cfg = Q
         if row_jacobians and self._cfg_jacobians:
@@ -1185,7 +1305,8 @@ class BatchedProgram:
         h = (V[:, eq_idx] - eq_lb) * eq_s
         g = torch.cat([(lo_lb - V[:, lo_idx]) * lo_s, (V[:, hi_idx] - hi_ub) * hi_s], dim=1)
         F, F_rep, _ = self.cost_cfg_parts(cfg)
-        extras = {"q_inf": cfg.detach().abs().max(dim=1).values, "collision_grad": collision_grad,
+        extras = {"q_inf": cfg.detach()[:, :self.ndof].abs().max(dim=1).values,
+                  "collision_grad": collision_grad,
                   "frame_jac": frame_jac, "rpy": None if rpy is None else rpy.detach()}
         return Evaluation(F=F, F_reported=F_rep, h=h, g=g, q=cfg, q_plant=q_plant,
                           pose_frame=pose_frame, pose_flow=pose_flow, collision_y=collision_y,
@@ -1247,6 +1368,9 @@ class BatchedProgram:
             if term.reported:
                 F_rep = F_rep + val
             grad = grad + self._w_centering * d
+        if self.is_mobile:
+            grad = torch.cat([grad, torch.zeros(N, 3, dtype=grad.dtype, device=grad.device)],
+                             dim=1)
         return F, F_rep, grad
 
     def cost_x_parts(self, X):
@@ -1302,7 +1426,7 @@ class BatchedProgram:
                 and self.plant_q_is_padded_cfg)
 
     def generic_rows_jacobian_cfg(self, ev: Evaluation) -> Tensor:
-        """`d drake_rows / d cfg`, `[N, n_rows, ndof]`, in closed form from an
+        """`d drake_rows / d cfg`, `[N, n_rows, ncfg]`, in closed form from an
         `evaluate(..., row_jacobians=True)` result -- UNSCALED rows, Drake order:
 
           pose_pos     Jp                       (the frame origin's geometric Jacobian)
@@ -1324,7 +1448,7 @@ class BatchedProgram:
             raise NotImplementedError("closed-form row Jacobians need has_analytic_row_jacobians")
         Jp, Jw = ev.extras["frame_jac"][:2]
         N = Jp.shape[0]
-        nd = self.ndof
+        nd = self.ncfg          # the configuration's width: the arm, plus the base if mobile
         J = torch.zeros(N, self._n_drake_rows, nd, dtype=Jp.dtype, device=Jp.device)
         for blk in self._blocks:
             if blk.binding != GENERIC_BINDING:
@@ -1358,7 +1482,7 @@ class BatchedProgram:
         return J
 
     def cost_gradient_parts(self, X, cfg):
-        """`(dF/dcfg [N, ndof], dF/dX|direct [N, nvars])` of the FULL objective in closed
+        """`(dF/dcfg [N, ncfg], dF/dX|direct [N, nvars])` of the FULL objective in closed
         form from the cost inventory: the joint-centering term in the configuration, the
         quadratic / linear bindings directly in the decision variables. The total gradient
         is `J_q^T dF/dcfg + dF/dX|direct` (+ `w * d logdet / dX` where the program carries
@@ -1380,6 +1504,9 @@ class BatchedProgram:
                 g_x[:, term.var_idx] += 0.5 * (xv @ term.Q + xv @ term.Q.transpose(0, 1)) + term.b
             else:
                 g_x[:, term.var_idx] += term.b
+        if self.is_mobile:       # the configuration is `[q_arm | b]`: the base has no centering
+            g_cfg = torch.cat([g_cfg, torch.zeros(N, 3, dtype=g_cfg.dtype, device=g_cfg.device)],
+                              dim=1)
         return g_cfg, g_x
 
     @property
@@ -1442,6 +1569,10 @@ class BatchedProgram:
         the correction box (NaN -> 0, +-inf -> +-bound, as the program does). Joint space:
         `q_init` itself, unprojected -- the program's own `SetStartFromQ` clips it into the
         q box, which `project()` reproduces while returning the distance."""
+        if self.is_mobile:
+            raise NotImplementedError("init_from_q (the paired start) is not defined on a "
+                                      "mobile base: the swarm's start is native "
+                                      "(`SvgdNativeBase`), paired is not fielded")
         q = torch.as_tensor(q_init, dtype=self.dtype, device=self.device)
         if q.dim() != 2 or q.shape[1] < self.ndof:
             raise ValueError(f"q_init must be [N, >= {self.ndof}], got {tuple(q.shape)}")
@@ -1485,7 +1616,8 @@ class BatchedProgram:
         return x[self._lumped_idx].copy()
 
     def jacobian_q(self, X) -> Tensor:
-        """`dq/dX` per particle, `[N, ndof, nvars]` -- the single derivative funnel.
+        """`dq/dX` per particle, `[N, ncfg, nvars]` (ncfg = ndof off a mobile base) -- the
+        single derivative funnel.
 
         Particles are independent through the flow (no cross-sample layer in eval mode),
         so `d(sum_i q_ik)/dX_j = dq_jk/dX_j` and the Jacobian is `ndof` reverse passes with
@@ -1495,14 +1627,16 @@ class BatchedProgram:
         X = self._as_X(X)
         N = X.shape[0]
         if not self.has_map:
+            if self.is_mobile:
+                return self._joint_J.to(X.dtype).unsqueeze(0).expand(N, -1, -1).clone()
             eye = torch.eye(self.ndof, dtype=X.dtype, device=X.device)
             return eye.unsqueeze(0).expand(N, self.ndof, self.nvars).clone()
         Xg = X.detach().requires_grad_(True)
         cfg = self._config(Xg)
         self._count("map_jacobian")
         rows = []
-        for k in range(self.ndof):
-            (gk,) = torch.autograd.grad(cfg[:, k].sum(), Xg, retain_graph=k < self.ndof - 1)
+        for k in range(self.ncfg):
+            (gk,) = torch.autograd.grad(cfg[:, k].sum(), Xg, retain_graph=k < self.ncfg - 1)
             rows.append(gk)
         return torch.stack(rows, dim=1)
 
@@ -1511,6 +1645,8 @@ class BatchedProgram:
         X = self._as_X(X)
         R = torch.as_tensor(R, dtype=self.dtype, device=self.device)
         if not self.has_map:
+            if self.is_mobile:
+                return R @ self._joint_J.to(R.dtype)
             return R[:, :self.nvars].clone()
         Xg = X.detach().requires_grad_(True)
         cfg = self._config(Xg)

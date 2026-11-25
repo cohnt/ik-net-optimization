@@ -108,8 +108,26 @@ ONE GPU type pinned with `--constraint` and the CPU model pinned on Engaging, fo
 and rule. Seconds never sit beside the V100 record. Ask the orchestrator before each submission
 (prefix `mb_`).
 
-## Status
+## Status (2026-11-25)
 
-- Built and locally smoke-tested under IPOPT on all four robots and all three rules (CPU, one core).
-- AL-SVGD support is in progress.
-- Pilot pending: 8 rows x {learned, joint} x {AL-SVGD, IPOPT} x 3 rules x 64 cells.
+- **Built.** All four robots, both arms, all three base-start rules, IPOPT and AL-SVGD.
+  - Local CPU smoke tests ran under IPOPT on every robot.
+  - AL-SVGD ran on Panda and soft PCS; iiwa and screw are covered at the test level.
+- **Tests.**
+  - `tests/test_mobile_base.py` covers files, regions, slots, calibration, gradients and the start
+    rules.
+  - `tests/test_mobile_svgd.py` replays the batched SVGD rows, gradients and kernels against Drake on
+    10 programs, to 1e-13. Its slow tier checks the compiled step against the eager one.
+  - The whole fast tier passes.
+- **One AL-SVGD kernel per run.** `svgd_kernel` is one option, so a mobile run passes `bcz` for the
+  learned arm and `bq` for joint space in SEPARATE runs (`--arms learned` / `--arms numerical`) on
+  the same grid.
+- **Facing starts.** A facing stand-off can admit no collision-free start, for a target over the
+  central table. The last draw is then returned and flagged in `metadata["starts_in_collision"]`
+  (`../codebase`, BG2: 23% of facing starts in collision, and the filter made no difference).
+- **Learned-arm risk, seen in the smoke tests.** Uniform and home bases put the target outside the
+  chart's training distribution in the arm frame. Over 20-40 eager steps, unresampled particles run
+  away (|q| up to 1e30). The solver's resampling clears them every outer check, and facing starts
+  converge.
+- **Pilot pending:** 8 rows x {learned, joint} x {AL-SVGD, IPOPT} x 3 rules x 64 cells, on
+  Engaging / CSAIL once the cluster infra is on main.

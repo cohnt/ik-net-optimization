@@ -38,10 +38,13 @@ FACING_REACH = 1.0
 JITTER_REACH_FRACTION = (0.6, 1.4)
 JITTER_YAW_RADIANS = math.radians(20.0)
 
-#: A bounded redraw: a facing stand-off that puts the platform inside the table, say, admits no
+#: A bounded redraw: a facing stand-off that puts the platform under the central table admits no
 #: collision-free arm at all, so the base is redrawn too (uniform, facing) after this many arms.
+#: If no collision-free start turns up within MAX_START_DRAWS the LAST draw is returned and
+#: flagged (`Start`'s third value). ../codebase measured 23% of its facing starts in collision
+#: and dropped the filter as irrelevant (Verdict BG2); a start in collision is a legal guess.
 ARM_DRAWS_PER_BASE = 50
-MAX_START_DRAWS = 20000
+MAX_START_DRAWS = 2000
 
 _START_STREAM = 0x6d627374   # "mbst"
 
@@ -134,11 +137,13 @@ class MobileGrid:
         return bool(np.all(b >= self.base_lower) and np.all(b <= self.base_upper))
 
     def Start(self, rule, X_WT, rng):
-        """One cell's `q_init` under `rule`, plus how many draws it took."""
+        """One cell's `q_init` under `rule`, how many draws it took, and whether it is
+        collision-free (False only when MAX_START_DRAWS found none; module docstring)."""
         if rule not in BASE_START_RULES:
             raise ValueError(f"base start rule {rule!r} is not one of {BASE_START_RULES}")
         draws = 0
         b = None
+        q = None
         while draws < MAX_START_DRAWS:
             if b is None or (rule != "home" and draws % ARM_DRAWS_PER_BASE == 0):
                 if rule == "uniform":
@@ -154,6 +159,8 @@ class MobileGrid:
             q = self.Assemble(b, rng.uniform(self.arm_lower, self.arm_upper))
             draws += 1
             if self.collision_free(q):
-                return q, draws
-        raise RuntimeError(f"no collision-free start under rule {rule!r} in {MAX_START_DRAWS} "
-                           f"draws")
+                return q, draws, True
+        if q is None:
+            raise RuntimeError(f"rule {rule!r} drew no base inside the box in "
+                               f"{MAX_START_DRAWS} attempts")
+        return q, draws, False

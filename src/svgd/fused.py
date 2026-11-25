@@ -84,14 +84,37 @@ def clear_cache():
 ## (2026-10-11). The ones naming a latent or conditioning block exist only on the learned arm.
 KERNEL_SPACES = ("none", "q", "x", "z", "c", "cz", "qz", "pose")
 LATENT_KERNELS = ("z", "c", "cz", "qz")
+## The mobile base's own spaces (src/mobile_base): `bcz` (learned: the product of the base,
+## conditioning-pose and latent RBFs) and `bq` (joint space: the product of the base RBF and the
+## RBF on the ARM configuration). Kept apart from KERNEL_SPACES, which is the fixed-base set
+## (a test iterates it and demands every member be accepted on a fixed-base learned program).
+MOBILE_KERNEL_SPACES = ("bcz", "bq")
+ALL_KERNEL_SPACES = KERNEL_SPACES + MOBILE_KERNEL_SPACES
+## What a program on a mobile base may name: its own product kernel, the whole normalised
+## decision vector, or no interaction. The fixed-base spaces that measure the configuration
+## (`q`, `qz`, `pose`) or name blocks at fixed-base offsets (`z`, `c`, `cz`) are refused.
+MOBILE_ALLOWED = {"learned": ("bcz", "x", "none"), "joint": ("bq", "x", "none")}
 
 
-def check_kernel_for_arm(kernel, is_learned, arm="", formulation=None):
+def check_kernel_for_arm(kernel, is_learned, arm="", formulation=None, mobile=False):
     """Refuse, at construction, a kernel space the arm has no block for: `z`, `c`, `cz` and
     `qz` name the learned arm's latent / conditioning blocks, which neither joint space nor the
-    analytic arm (`formulation="analytic"`: decision variables `[xyz_rpy | psi]`) has."""
-    if kernel not in KERNEL_SPACES:
-        raise ValueError(f"svgd_kernel={kernel!r} is not one of {KERNEL_SPACES}")
+    analytic arm (`formulation="analytic"`: decision variables `[xyz_rpy | psi]`) has. On a
+    mobile base (`mobile=True`) only `bcz` (learned), `bq` (joint space), `x` and `none` are
+    accepted; `bcz` and `bq` are refused on a fixed base."""
+    if kernel not in ALL_KERNEL_SPACES:
+        raise ValueError(f"svgd_kernel={kernel!r} is not one of {ALL_KERNEL_SPACES}")
+    if mobile:
+        allowed = MOBILE_ALLOWED["learned" if is_learned else "joint"]
+        if kernel not in allowed:
+            raise ValueError(
+                f"svgd_kernel={kernel!r} is refused on the mobile-base {'learned' if is_learned else 'joint-space'} "
+                f"arm {arm}: its decision vector starts with the base b, so it takes only "
+                f"{allowed} ({'bcz = the product of the b, c and z RBFs' if is_learned else 'bq = the product of the b RBF and the RBF on the arm configuration'})")
+        return
+    if kernel in MOBILE_KERNEL_SPACES:
+        raise ValueError(f"svgd_kernel={kernel!r} is the mobile base's kernel; {arm} has a "
+                         f"fixed base (use one of {KERNEL_SPACES})")
     if kernel in LATENT_KERNELS and not is_learned and formulation == "analytic":
         raise ValueError(f"svgd_kernel={kernel!r} needs the learned arm's conditioning-pose / "
                          f"latent blocks; the analytic arm {arm} has neither (its decision "
@@ -268,7 +291,7 @@ def kernel_terms(sc, cfg, finite, X, live=None, tg=None, pose=None, pose_jac=Non
     the block layout) is needed by every space but `q` and `none`; `pose` / `pose_jac` by `pose`."""
     N = X.shape[0]
     dtype, device = X.dtype, X.device
-    n_feat = {"none": 0, "cz": 2, "qz": 2}.get(sc.kernel, 1)
+    n_feat = {"none": 0, "cz": 2, "qz": 2, "bcz": 3, "bq": 2}.get(sc.kernel, 1)
     if sc.kernel == "none" or N < 2:
         bw = torch.full((n_feat,), float(sc.bandwidth_floor) ** 2, dtype=dtype, device=device)
         return (torch.eye(N, dtype=dtype, device=device),
@@ -313,6 +336,11 @@ def kernel_terms(sc, cfg, finite, X, live=None, tg=None, pose=None, pose_jac=Non
         R = (2.0 / h) * (Ksum * u0 - K @ u0)
         R = torch.where(f1, R, torch.zeros_like(R))
         if route == "cfg":
+            if R.shape[1] < cfg.shape[1]:
+                ## A factor on the ARM part of a mobile configuration `[q_arm | b]` (`bq`):
+                ## zero in the base columns, so it pulls back through the full J_q.
+                R = torch.cat([R, torch.zeros(N, cfg.shape[1] - R.shape[1], dtype=dtype,
+                                              device=device)], dim=1)
             R_cfg = R if R_cfg is None else R_cfg + R
         elif route == "pose":
             Jp = torch.where(f1.unsqueeze(2), torch.nan_to_num(pose_jac.detach(), nan=0.0,
@@ -332,8 +360,15 @@ def kernel_terms(sc, cfg, finite, X, live=None, tg=None, pose=None, pose_jac=Non
 
 def kernel_blocks(tg):
     """`{"c": slice, "z": slice}`: the conditioning-pose and latent blocks of the learned arm's
-    lumped decision vector `[c6 | z | q_c]` (`BatchedProgram._split`); {} on joint space."""
+    lumped decision vector `[c6 | z | q_c]` (`BatchedProgram._split`); {} on joint space. On a
+    mobile base the vector is `[b | c6 | z | q_c]`: the blocks are offset by 3 and a `"b"` slice
+    `0:3` is added (joint space on a base has only `"b"`)."""
     bp = tg.bp
+    if getattr(bp, "is_mobile", False):
+        out = {"b": slice(0, 3)}
+        if bp.is_learned:
+            out.update({"c": slice(3, 9), "z": slice(9, 9 + int(bp.width))})
+        return out
     if not bp.is_learned:
         return {}
     return {"c": slice(0, 6), "z": slice(6, 6 + int(bp.width))}
@@ -341,7 +376,9 @@ def kernel_blocks(tg):
 
 def kernel_features(space, tg, X, cfg, pose=None):
     """`[(u [N, d], route, slice)]`, the factor(s) of kernel `space` (every space but `none`):
-    `u` the coordinates the RBF factor measures distance in, `route` how its repulsion reaches
+    `u` the coordinates the RBF factor measures distance in (`bq`'s second factor the ARM
+    columns of a mobile configuration; `kernel_terms` pads its repulsion to the full width),
+    `route` how its repulsion reaches
     y -- "cfg" (through the flow's J_q), "pose" (through d pose / d cfg, then J_q) or "y"
     (directly on the decision-variable `slice`). All y-coordinates are the normalised
     `y = x / s` the step moves in. Also what `feasible_spread_kernel` measures."""
@@ -353,7 +390,17 @@ def kernel_features(space, tg, X, cfg, pose=None):
     if space == "x":
         return [(y, "y", slice(0, y.shape[1]))]
     blk = kernel_blocks(tg)
-    if not blk:
+    if space == "bcz":
+        if not (getattr(tg.bp, "is_mobile", False) and tg.bp.is_learned):
+            raise ValueError("svgd_kernel='bcz' needs the mobile learned arm's blocks")
+        bs, cs, zs = blk["b"], blk["c"], blk["z"]
+        return [(y[:, bs], "y", bs), (y[:, cs], "y", cs), (y[:, zs], "y", zs)]
+    if space == "bq":
+        if not getattr(tg.bp, "is_mobile", False) or tg.bp.is_learned:
+            raise ValueError("svgd_kernel='bq' needs the mobile joint-space arm")
+        bs = blk["b"]
+        return [(y[:, bs], "y", bs), (cfg.detach()[:, :tg.bp.ndof], "cfg", None)]
+    if "z" not in blk or "c" not in blk:
         raise ValueError(f"svgd_kernel={space!r} needs the learned arm's blocks")
     zs, cs = blk["z"], blk["c"]
     if space == "z":
@@ -387,7 +434,7 @@ def pose_and_jacobian(quat, pos, Jp, Jw, ndof):
     return torch.cat([pos, qc], dim=1), J
 
 
-def gn_hessian(s, w_cfg, H_fx, J_q, J_h, J_g, g, mu, rho):
+def gn_hessian(s, w_cfg, H_fx, J_q, J_h, J_g, g, mu, rho, ndof=None):
     """`H_y [N, n, n]`, the Gauss-Newton Hessian of the augmented Lagrangian in the
     normalised coordinates `y = X / s`:
 
@@ -398,6 +445,8 @@ def gn_hessian(s, w_cfg, H_fx, J_q, J_h, J_g, g, mu, rho):
     one, `mu + rho g > 0`. `J_*` are the rows' Jacobians in the AL's units w.r.t. X."""
     sv = s.view(1, 1, -1)
     Jq, Jh, Jg = J_q * sv, J_h * sv, J_g * sv
+    if ndof is not None and ndof < Jq.shape[1]:
+        Jq = Jq[:, :ndof]       # mobile: the centering cost is the ARM's rows `[q_arm | b]`
     act = ((mu + rho * g) > 0).to(Jg.dtype).unsqueeze(2)
     H = (w_cfg * (Jq.transpose(1, 2) @ Jq) + (s.view(-1, 1) * H_fx * s.view(1, -1)).unsqueeze(0)
          + rho * (Jh.transpose(1, 2) @ Jh) + rho * (Jg.transpose(1, 2) @ (act * Jg)))
@@ -455,7 +504,7 @@ def direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R, kern
         rep = rep * avg_scale
     ratio = rep.norm(dim=1) / torch.clamp((phi - rep).norm(dim=1), min=torch.finfo(X.dtype).tiny)
     ratio = torch.nanmedian(torch.where(finite, ratio, torch.full_like(ratio, float("nan"))))
-    H = gn_hessian(tg.s, tg.w_cfg, tg.H_fx, J_q, J_h, J_g, g, S.mu, sc.rho)
+    H = gn_hessian(tg.s, tg.w_cfg, tg.H_fx, J_q, J_h, J_g, g, S.mu, sc.rho, ndof=getattr(tg.bp, "ndof", None))
     eye = torch.eye(n, dtype=X.dtype, device=X.device).unsqueeze(0).expand(N, -1, -1)
     ok = finite & torch.isfinite(H).flatten(1).all(dim=1)
     H = torch.where(ok.view(-1, 1, 1), H, eye)
@@ -529,7 +578,7 @@ def stage1(tg, X):
 
 
 def stage2(tg, X, cfg):
-    """`(J_q [N, ndof, n], kin)`: the flow Jacobian (one `jacrev`, `ndof` reverse passes,
+    """`(J_q [N, ncfg, n], kin)`: the flow Jacobian (one `jacrev`, `ncfg` reverse passes,
     vmapped -- the particles are independent through the flow, so the Jacobian of the
     batch-sum is the per-particle one) and the kinematics with the frame Jacobians at the
     stage-1 configuration. Identity on joint space. On the analytic arm the closed form's
@@ -547,8 +596,8 @@ def stage2(tg, X, cfg):
             cfg_v, ld_v = bp._config_and_logdet(Xv)
             return torch.cat([cfg_v, ld_v.unsqueeze(1)], dim=1).sum(dim=0), ld_v
         J, ld = torch.func.jacrev(f, has_aux=True)(X)                       # [ndof + 1, N, n]
-        J_q = J[:bp.ndof].permute(1, 0, 2).contiguous()
-        flow_ld = (ld.detach(), J[bp.ndof].contiguous())
+        J_q = J[:bp.ncfg].permute(1, 0, 2).contiguous()
+        flow_ld = (ld.detach(), J[bp.ncfg].contiguous())
     elif bp.is_learned:
         J = torch.func.jacrev(lambda Xv: bp._config(Xv).sum(dim=0))(X)     # [ndof, N, n]
         J_q = J.permute(1, 0, 2).contiguous()
@@ -557,6 +606,8 @@ def stage2(tg, X, cfg):
         ## from one vmapped jacrev; `(u, J_u)` rides on `kin` (`BatchedProgram.assemble`).
         J_q, J_u, u = bp.map_jacobians(X)
         aux = (u.detach(), J_u.detach())
+    elif getattr(bp, "is_mobile", False):
+        J_q = bp._joint_J.unsqueeze(0).expand(N, -1, -1).contiguous()
     else:
         eye = torch.eye(bp.ndof, bp.nvars, dtype=X.dtype, device=X.device)
         J_q = eye.unsqueeze(0).expand(N, -1, -1).contiguous()
@@ -605,7 +656,7 @@ def stage3(tg, sc, X, cfg, J_q, kin, col_row, col_grad, S, flow_ld=None):
     pose = pose_jac = None
     if sc.kernel == "pose":
         (quat, pos), (Jp, Jw) = kin[1], kin[3][:2]
-        pose, pose_jac = pose_and_jacobian(quat, pos, Jp, Jw, bp.ndof)
+        pose, pose_jac = pose_and_jacobian(quat, pos, Jp, Jw, bp.ncfg)
     K, R, kernel_on, bw = kernel_terms(sc, cfg, finite, X, live, tg=tg, pose=pose,
                                        pose_jac=pose_jac)
     phi, H, ratio = direction_and_hessian(tg, sc, X, gF, J_q, J_h, J_g, h, g, finite, K, R,

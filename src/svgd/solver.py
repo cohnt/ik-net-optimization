@@ -217,6 +217,11 @@ def region_scale(bp):
         radius = LATENT_BOX if radius is None else float(radius)
         s = ([float(opts.c_position_slack)] * 3 + [math.pi] * 3 + [radius] * bp.width
              + [float(opts.correction_bound)] * bp.ndof)
+        if bp.is_mobile:
+            ## `[b | c6 | z | q_c]`: the base box's half-widths (x, y in metres, yaw in rad;
+            ## a true bounding box, as joint space's) in front of the learned scales.
+            blo, bhi = (b.detach().cpu().double().numpy()[:3] for b in bp.bounds)
+            s = list(0.5 * (bhi - blo)) + s
         s = np.asarray(s, dtype=float)
     else:
         lo, hi = (b.detach().cpu().double().numpy() for b in bp.bounds)
@@ -263,6 +268,7 @@ class _Target:
         self.dtype, self.device = bp.dtype, bp.device
         self.n = bp.nvars
         self.ndof = bp.ndof
+        self.ncfg = bp.ncfg          # the configuration's width (ndof, +3 off a mobile base)
         kw = dict(dtype=self.dtype, device=self.device)
         self.th = torch.full((len(bp.h_spec),), 1.0 / float(tol), **kw)
         self.tg = torch.full((len(bp.g_spec),), 1.0 / float(tol), **kw)
@@ -385,11 +391,14 @@ class _Target:
 
     ## -- derivatives ------------------------------------------------------------------
     def pullback(self, ev, cots):
-        """`[J_q^T v for v in cots]`, each `v [N, ndof]` -> `[N, n]`: ONE vmapped backward
-        through the flow with all of them stacked; the identity on joint space."""
+        """`[J_q^T v for v in cots]`, each `v [N, ncfg]` -> `[N, n]`: ONE vmapped backward
+        through the flow with all of them stacked; the identity on joint space (a fixed
+        permutation on a mobile base)."""
         if not self.bp.has_map:
+            if self.bp.is_mobile:
+                return [v.detach() @ self.bp._joint_J.to(v.dtype) for v in cots]
             return [v.detach().clone() for v in cots]
-        E = torch.stack([v.detach() for v in cots])                   # [k, N, ndof]
+        E = torch.stack([v.detach() for v in cots])                   # [k, N, ncfg]
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*batching rule.*")
             warnings.filterwarnings("ignore", category=UserWarning, module="torch._functorch")
@@ -399,7 +408,7 @@ class _Target:
         return [G[i] for i in range(len(cots))]
 
     def cost_parts(self, ev):
-        """`(dF/dcfg [N, ndof], dF/dx|direct [N, n])`: closed form in analytic mode; in
+        """`(dF/dcfg [N, ncfg], dF/dx|direct [N, n])`: closed form in analytic mode; in
         autograd mode the whole gradient lands in the direct part."""
         if self.analytic:
             dFc, dFx = self.bp.cost_gradient_parts(ev.Xg, ev.cfg)
@@ -412,18 +421,18 @@ class _Target:
         return torch.zeros_like(ev.cfg), g
 
     def jacobian_q(self, ev):
-        """`dq/dx [N, ndof, n]` from the live graph (identity on joint space)."""
+        """`dq/dx [N, ncfg, n]` from the live graph (identity on joint space)."""
         bp = self.bp
         N = ev.Xg.shape[0]
         if not bp.has_map:
             return bp.jacobian_q(ev.Xg.detach())
-        E = torch.eye(self.ndof, dtype=self.dtype, device=self.device).unsqueeze(1)
+        E = torch.eye(self.ncfg, dtype=self.dtype, device=self.device).unsqueeze(1)
         J = self._batched_grad(ev.cfg, ev.Xg, E, N)
         self._count("map_jacobian")
         return J
 
     def generic_jacobian_cfg(self, ev):
-        """`d drake_rows / d cfg`, `[N, nr, ndof]`. Analytic mode: the batched program's
+        """`d drake_rows / d cfg`, `[N, nr, ncfg]`. Analytic mode: the batched program's
         closed form. Autograd mode: routed by row kind -- the task rows by one vmapped
         backward through the kinematics, the collision row from the evaluator's stored
         `d row / d q_plant` through `config_to_plant_q`, the joint-limit rows the identity."""
@@ -433,18 +442,18 @@ class _Target:
                                     posinf=0.0, neginf=0.0)
         D = out.drake_rows
         N, nr = D.shape
-        Dq = torch.zeros(N, nr, self.ndof, dtype=D.dtype, device=D.device)
+        Dq = torch.zeros(N, nr, self.ncfg, dtype=D.dtype, device=D.device)
         if self._task_rows.numel():
             Dq[:, self._task_rows] = self._batched_grad(D[:, self._task_rows], ev.cfg, self._E_task, N)
         if self._jl_rows.numel():
-            Dq[:, self._jl_rows] = torch.eye(self.ndof, dtype=D.dtype, device=D.device)[
+            Dq[:, self._jl_rows] = torch.eye(self.ncfg, dtype=D.dtype, device=D.device)[
                 :self._jl_rows.numel()].unsqueeze(0).expand(N, -1, -1)
         if self._col_rows.numel():
             cg = out.extras.get("collision_grad")
             if cg is None:                          # evaluated without a graph: no row grad
                 cg = torch.zeros(N, out.q_plant.shape[1], dtype=D.dtype, device=D.device)
             if self.bp.plant_q_is_padded_cfg:
-                gcol = cg[:, :self.ndof]
+                gcol = cg[:, :self.ncfg]
             else:
                 (gcol,) = torch.autograd.grad((out.q_plant * cg).sum(), ev.cfg, retain_graph=True)
             Dq[:, self._col_rows[0]] = gcol
@@ -601,7 +610,8 @@ class SvgdSolver:
         ## construction (WarmUpSvgdStep builds a solver before the first cell), never in the step.
         fused.check_kernel_for_arm(str(opts.svgd_kernel), hasattr(program, "z"),
                                    arm=type(program).__name__,
-                                   formulation=formulation_hint(program))
+                                   formulation=formulation_hint(program),
+                                   mobile=bool(getattr(program, "MOBILE", False)))
         self._sc = fused.StepConfig.from_options(opts)
         self._runner = None
         self.N = int(opts.svgd_n)
@@ -625,7 +635,7 @@ class SvgdSolver:
             return
         bp = BatchedProgram.from_program(self.program, dtype=self.dtype)
         fused.check_kernel_for_arm(self._sc.kernel, bp.is_learned, arm=type(self.program).__name__,
-                                   formulation=bp.formulation)
+                                   formulation=bp.formulation, mobile=bp.is_mobile)
         if bp.device.type == "cuda":
             ## cuSOLVER for the GN metric's batched `solve_ex`. PROCESS-WIDE, and deliberate:
             ## torch's default heuristic routes the [N, 20, 20] batches to MAGMA, whose
@@ -666,6 +676,11 @@ class SvgdSolver:
             z = torch.randn(N, bp.width, generator=gen, dtype=self.dtype, device=self.device)
             c = bp.native_c().unsqueeze(0).expand(N, 6)
             qc = torch.zeros(N, bp.ndof, dtype=self.dtype, device=self.device)
+            if bp.is_mobile:
+                ## The base from the cell's base-start rule (`MobileSetup.Attach`), through a
+                ## numpy generator seeded from the torch one, so the swarm is reproducible.
+                b = self._native_base(N, gen)
+                return torch.cat([b, c, z, qc], dim=1), stats
             return torch.cat([c, z, qc], dim=1), stats
         lower, upper = bp.program.ConfigLimits()
         lo = torch.tensor(np.asarray(lower, dtype=float)[:bp.ndof], dtype=self.dtype, device=self.device)
@@ -675,21 +690,46 @@ class SvgdSolver:
         checker = shared_checker(self._spec)
         out = torch.empty(0, self.n, dtype=self.dtype, device=self.device)
         rounds = 0
+        mobile = bp.is_mobile
+        n_arm = bp.ndof
         while out.shape[0] < N and rounds < NATIVE_DRAW_ROUNDS:
-            u = torch.rand(N, self.n, generator=gen, dtype=self.dtype, device=self.device)
-            q = lo + u * (hi - lo)
+            if mobile:
+                ## `[b | q]`: the arm uniform in its limits, the base from the base-start
+                ## rule; collision-filtered together on the full plant vector.
+                u = torch.rand(N, n_arm, generator=gen, dtype=self.dtype, device=self.device)
+                q = lo + u * (hi - lo)
+                b = self._native_base(N, gen)
+                cand = torch.cat([b, q], dim=1)
+                plant_in = torch.cat([q, b], dim=1)
+            else:
+                u = torch.rand(N, self.n, generator=gen, dtype=self.dtype, device=self.device)
+                q = lo + u * (hi - lo)
+                cand, plant_in = q, q
             with torch.no_grad():
-                qp = bp.config_to_plant_q(q).to(device="cpu", dtype=torch.float64).numpy()
+                qp = bp.config_to_plant_q(plant_in).to(device="cpu", dtype=torch.float64).numpy()
             ok = torch.as_tensor(checker.collision_free(qp), device=self.device)
-            out = torch.cat([out, q[ok]], dim=0)
+            out = torch.cat([out, cand[ok]], dim=0)
             rounds += 1
         if out.shape[0] < N:
             ## Documented fallback: fill with uniform draws regardless of collision.
-            u = torch.rand(N - out.shape[0], self.n, generator=gen, dtype=self.dtype, device=self.device)
-            stats["native_fallback"] = int(N - out.shape[0])
-            out = torch.cat([out, lo + u * (hi - lo)], dim=0)
+            k = N - out.shape[0]
+            if mobile:
+                u = torch.rand(k, n_arm, generator=gen, dtype=self.dtype, device=self.device)
+                fill = torch.cat([self._native_base(k, gen), lo + u * (hi - lo)], dim=1)
+            else:
+                u = torch.rand(k, self.n, generator=gen, dtype=self.dtype, device=self.device)
+                fill = lo + u * (hi - lo)
+            stats["native_fallback"] = int(k)
+            out = torch.cat([out, fill], dim=0)
         stats["native_rounds"] = rounds
         return out[:N], stats
+
+    def _native_base(self, N, gen):
+        """`[N, 3]` native base draws of a mobile program (`SvgdNativeBase`, the cell's
+        base-start rule), from a numpy generator seeded off the torch generator `gen`."""
+        seed = int(torch.randint(2 ** 31 - 1, (1,), generator=gen, device=self.device).item())
+        b = self._tg.bp.program.SvgdNativeBase(N, np.random.default_rng(seed))
+        return torch.as_tensor(np.asarray(b, dtype=float), dtype=self.dtype, device=self.device)
 
     def _draw(self, N, x0, gen):
         """N fresh particles from the init distribution (unprojected); `(X, stats)`."""
@@ -1310,7 +1350,8 @@ class SvgdSolver:
         selected, drake_viol, cands = sel.selected, sel.drake_viol, sel.cands
         extras["bound_rounding"] = sel.bound_rounding
         cfg_np = evf.cfg.detach().cpu().double().numpy()
-        spread = _median_pairwise_distance(cfg_np[feas]) if n_feasible >= 2 else None
+        spread = (_median_pairwise_distance(cfg_np[:, :bp.ndof][feas])
+                  if n_feasible >= 2 else None)
         spread_kernel = self._kernel_spread(X, evf, feas) if n_feasible >= 2 else None
         phase["select"] = sel.seconds + (time.perf_counter() - t)
 

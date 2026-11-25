@@ -229,7 +229,7 @@ SVGD_ENUM_FIELDS = {
     "svgd_method": ("al_svgd",),
     "svgd_dtype": ("float32", "float64"),
     "svgd_paired_init": ("jitter", "native"),
-    "svgd_kernel": ("q", "none", "x", "z", "c", "cz", "qz", "pose"),
+    "svgd_kernel": ("q", "none", "x", "z", "c", "cz", "qz", "pose", "bcz", "bq"),
     "svgd_warmup": ("none", "cem"),
     "svgd_metric": ("gn", "identity"),
     "svgd_row_units": ("natural", "tolerance"),
@@ -717,7 +717,7 @@ class ProgramOptions:
     svgd_gn_lm: float = field(default=10.0, metadata={"help": "svgd: delta, the Levenberg damping added to the GN Hessian under svgd_metric=gn (10: the 2026-10-10 probe, most feasible of {1e-2, 1, 10} on 12 Panda cells)"})
     svgd_row_units: str = field(default="natural", metadata={"help": "svgd: 'natural' -- the AL is formed on the rows exactly as the program's bindings evaluate them (orientation-type rows times svgd_row_length_scale); 'tolerance' -- every row divided by acceptable_constr_viol_tol (the pre-2026-10-09 path, a control). Feasibility is per row against the tolerance either way"})
     svgd_row_length_scale: float = field(default=1.0, metadata={"help": "svgd: metres per radian on the orientation-type rows (rpy residuals, the c box's rpy rows; NOT joint limits) under svgd_row_units=natural"})
-    svgd_kernel: str = field(default="cz", metadata={"help": "svgd: the space of the RBF kernel, median bandwidth per factor (floored by svgd_bandwidth_floor in that factor's units; fielded 2026-10-12: 'cz', was 'q') -- 'q' (the configuration; repulsion pulled back to y through the flow's VJP; every svgd round through R19 that does not name a kernel ran it); 'x' (all of the normalised decision vector y = x / s, repulsion directly in y; on joint space this is q divided by its half-range); 'z' / 'c' (the latent / conditioning-pose block of y alone, repulsion on that block only; learned arm only); 'cz' (fielded: the product of the c and z RBFs, each its own bandwidth; learned only -- the joint-space arm must name another space, e.g. 'q'); 'qz' (the product of the q RBF, pulled back, and the z RBF, direct; learned only); 'pose' (the task frame's [position; canonical quaternion wxyz], pulled back through d pose / d q and the VJP); 'none' (no interaction: both kernel terms dropped, the batched-AL control). z / c / cz / qz are refused on the joint-space arm at solver construction"})
+    svgd_kernel: str = field(default="cz", metadata={"help": "svgd: the space of the RBF kernel, median bandwidth per factor (floored by svgd_bandwidth_floor in that factor's units; fielded 2026-10-12: 'cz', was 'q') -- 'q' (the configuration; repulsion pulled back to y through the flow's VJP; every svgd round through R19 that does not name a kernel ran it); 'x' (all of the normalised decision vector y = x / s, repulsion directly in y; on joint space this is q divided by its half-range); 'z' / 'c' (the latent / conditioning-pose block of y alone, repulsion on that block only; learned arm only); 'cz' (fielded: the product of the c and z RBFs, each its own bandwidth; learned only -- the joint-space arm must name another space, e.g. 'q'); 'qz' (the product of the q RBF, pulled back, and the z RBF, direct; learned only); 'pose' (the task frame's [position; canonical quaternion wxyz], pulled back through d pose / d q and the VJP); 'none' (no interaction: both kernel terms dropped, the batched-AL control). z / c / cz / qz are refused on the joint-space arm at solver construction. On a MOBILE base (--scene mobile) only 'bcz' (learned: the product of the base b, conditioning-pose c and latent z RBFs, each its own bandwidth), 'bq' (joint space: the product of the base RBF and the RBF on the arm configuration, pulled back), 'x' and 'none' are accepted; bcz / bq are refused on a fixed base"})
     svgd_bandwidth_floor: float = field(default=0.05, metadata={"help": "svgd: floor on the median-heuristic kernel bandwidth"})
     svgd_constraint_inside_kernel: bool = field(default=False, metadata={"help": "svgd: False is the Tabor-Hermans form (each particle's own constraint gradient outside the kernel average); True the literal SVGD on exp(-L_rho), the whole AL gradient inside it -- an A/B"})
     svgd_rho: float = field(default=100000.0, metadata={"help": "svgd: the penalty rho of the augmented Lagrangian -- ONE scalar, fixed for the whole solve, shared by every particle (1e5: fielded 2026-10-12 with svgd_kernel=cz, rounds R14/R17/R17S/R17P/R18/R19; was 1000, the 2026-10-10 screen -- 10/1e3/1e4/1e5 solved 5/12/12/12 learned and 0/10/9/11 joint space of 12 Panda cells, 1e3 the smallest that works with the least resampling)"})
@@ -1501,6 +1501,17 @@ class IKFlowProgram:
         does not carry the compile.
         """
         from src.svgd.solver import SvgdSolver
+        if getattr(self, "MOBILE", False):
+            ## On a mobile base the product kernels are per formulation (`bcz` learned, `bq`
+            ## joint space). A joint-space-only run still builds a LEARNED sampler, which
+            ## refuses `bq`: there is nothing of the sampler's structure to warm then (every
+            ## arm's own first-cell program is warmed by `_warm_up_svgd_arms`).
+            from src.svgd import fused
+            try:
+                fused.check_kernel_for_arm(str(self.options.svgd_kernel), hasattr(self, "z"),
+                                           arm=type(self).__name__, mobile=True)
+            except ValueError:
+                return 0.0
         return SvgdSolver(self).warm_up()
 
     def PrepareSvgdSolve(self):

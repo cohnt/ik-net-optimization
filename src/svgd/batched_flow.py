@@ -170,7 +170,12 @@ class BatchedFlow:
 
     def q(self, c6: Tensor, z: Tensor, qc: Tensor) -> Tensor:
         """`chart(c, z)[:, :ndof] + q_c`, [B, ndof]. Differentiable in all three arguments."""
-        pose7 = self.pose7(c6)
+        return self.q_pose7(self.pose7(c6), z, qc)
+
+    def q_pose7(self, pose7: Tensor, z: Tensor, qc: Tensor) -> Tensor:
+        """`q` for a conditioning pose already in the chart's `[xyz, wxyz]` form [B, 7] (the
+        mobile base's arm-frame pose, `BatchedProgram._local_pose7`). `q` is exactly this
+        applied to `pose7(c6)`."""
         output, _ = self.chart.decode(self.model, z, pose7)
         q = output[:, :self.ndof] + qc
         if self.chart_error_scale:
@@ -186,11 +191,15 @@ class BatchedFlow:
         expression; the program's `flow_logdet_weight` term is refused with
         `chart_error_scale`, so the perturbation is not carried here. A chart without a
         density (`has_density`) has no log-det, and the program refuses the term for it."""
+        return self.q_and_logdet_pose7(self.pose7(c6), z, qc)
+
+    def q_and_logdet_pose7(self, pose7: Tensor, z: Tensor, qc: Tensor):
+        """`q_and_logdet` for a conditioning pose already in `[xyz, wxyz]` form [B, 7]."""
         if self.chart_error_scale:
             raise NotImplementedError("the flow log-det is not defined under chart_error_scale")
         if not self.chart.has_density:
             raise NotImplementedError(f"the {self.chart.family!r} chart has no log-det")
-        output, logdet = self.chart.decode(self.model, z, self.pose7(c6))
+        output, logdet = self.chart.decode(self.model, z, pose7)
         q = output[:, :self.ndof] + qc
         return q, logdet.reshape(-1).to(q.dtype)
 
