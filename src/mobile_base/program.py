@@ -154,9 +154,21 @@ class MobileBaseMixin:
         also proves the offset does not depend on where the base is."""
         return self.ConfigToPlantQ(q_arm, rng.uniform(*self.BaseLimits()))
 
+    ## A GRID VECTOR is what the benchmark's targets and starts are: on the rigid arms the
+    ## full plant vector (base in its slots), on the soft PCS arm `[b | strain]`, because its
+    ## grid is drawn in configuration space (src/mobile_base/soft.py overrides these three).
     def SplitPlantQ(self, q_full):
         q_full = np.asarray(q_full, dtype=float)
         return q_full[self.BaseSlots()], q_full[self.ArmSlots()]
+
+    def GridVector(self, b, q_arm):
+        q = np.asarray(self.plant.GetDefaultPositions(), dtype=float).copy()
+        q[self.BaseSlots()] = b
+        q[self.ArmSlots()] = q_arm
+        return q
+
+    def GridToPlantQ(self, v):
+        return np.asarray(v, dtype=float)
 
     def _Assemble(self, b, q_fixed):
         """`b` and the robot class's fixed-base vector (arm in `[:ndof]`) -> plant vector."""
@@ -238,7 +250,7 @@ class MobileLearnedMixin(MobileBaseMixin):
     def SetStartFromQ(self, q_full):
         """The paired start on a base: invert at the arm-frame pose, then clip (not fielded)."""
         b, q_arm = self.SplitPlantQ(q_full)
-        self.plant.SetPositions(self.plant_context, np.asarray(q_full, dtype=float))
+        self.plant.SetPositions(self.plant_context, self.GridToPlantQ(q_full))
         pose = self.FlowPoseInWorld()
         c = np.concatenate([pose.translation(), pose.rotation().ToRollPitchYaw().vector()])
         X_AC = self.X_WA(b).inverse() @ pose

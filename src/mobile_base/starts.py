@@ -59,11 +59,8 @@ class MobileGrid:
     def __init__(self, program, collision_free, wrist_frame, fingertip_frame="between_fingers"):
         self.program = program
         self.collision_free = collision_free
-        self.base_slots = program.BaseSlots()
-        self.arm_slots = program.ArmSlots()
         self.base_lower, self.base_upper = program.BaseLimits()
         self.arm_lower, self.arm_upper = program.ConfigLimits()
-        self.default = np.asarray(program.plant.GetDefaultPositions(), dtype=float)
         self.approach_T = self._ApproachAxis(wrist_frame, fingertip_frame)
 
     ## ------------------------------- draws ---------------------------------- ##
@@ -74,10 +71,9 @@ class MobileGrid:
                          rng.uniform(-math.pi, math.pi)])
 
     def Assemble(self, b, q_arm):
-        q = self.default.copy()
-        q[self.base_slots] = b
-        q[self.arm_slots] = q_arm
-        return q
+        """A grid vector (`program.GridVector`): the full plant vector on the rigid arms,
+        `[b | strain]` on the soft PCS arm."""
+        return self.program.GridVector(b, q_arm)
 
     def Draw(self, rng):
         """A uniform full configuration -- the TARGET draw: base uniform in its box (yaw in
@@ -94,7 +90,7 @@ class MobileGrid:
         axes = []
         for seed in (0, 1):
             q = self.Draw(np.random.default_rng(seed))
-            plant.SetPositions(ctx, q)
+            plant.SetPositions(ctx, self.program.GridToPlantQ(q))
             X_WT = self.program.frame.CalcPoseInWorld(ctx)
             p_w = plant.GetFrameByName(wrist).CalcPoseInWorld(ctx).translation()
             p_f = plant.GetFrameByName(fingertip).CalcPoseInWorld(ctx).translation()

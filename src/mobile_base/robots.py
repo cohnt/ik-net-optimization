@@ -31,7 +31,8 @@ def _Joint(base):
     return Mobile
 
 
-MOBILE_CLASSES = {
+MOBILE_CLASSES = {}
+MOBILE_CLASSES.update({
     ("panda", "pose", "learned"): _Learned(PandaIKProgram),
     ("panda", "mug", "learned"): _Learned(PandaMugProgram),
     ("panda", "pose", "numerical"): _Joint(PandaIKProgramNumerical),
@@ -44,4 +45,12 @@ MOBILE_CLASSES = {
     ("screw", "mug", "learned"): _Learned(ScrewArmMugProgram),
     ("screw", "pose", "numerical"): _Joint(ScrewArmIKProgramNumerical),
     ("screw", "mug", "numerical"): _Joint(ScrewArmMugProgramNumerical),
-}
+})
+
+
+def _SoftClasses():
+    from src.mobile_base.soft import MOBILE_SOFT_CLASSES
+    return MOBILE_SOFT_CLASSES
+
+
+MOBILE_CLASSES.update(_SoftClasses())

@@ -30,6 +30,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from src.utils import RepoDir, BuildEnv, GenerateDiagramWithMug, HiddenPrints
 from src import benchmark as bm
 from src.shelf_regions import DEFAULT_SHELF_DEPTH_INSET, ShelfCompartmentRegions
+from src.mobile_base.harness import (AddMobileArgs, CheckMobileArgs, MobileClass,
+                                     MobileSetup, MobileTagTokens)
+from src.target_screening import RobotInstances
 from src.target_screening import (MAX_CONSECUTIVE_REJECTIONS, SCENES, ContainmentPose,
                                   FloatingMugScreen, FormatTargetStats,
                                   SampleShelfTargets, SceneFile)
@@ -112,11 +115,13 @@ def parse_args():
                         "same way. The map's compiled forward-mode Jacobian is worth 68x.")
     p.add_argument("--set", dest="overrides", action="append", default=[],
                    metavar="NAME=VALUE")
-    p.add_argument("--scene", choices=("hardened", "nobin", "legacy"), default="hardened")
+    p.add_argument("--scene", choices=("hardened", "nobin", "legacy", "mobile"),
+                   default="hardened")
     p.add_argument("--target-placement", choices=("shelf", "free", "auto"), default="auto")
     p.add_argument("--placement-point", choices=("wrist", "fingertips"), default="fingertips")
     p.add_argument("--shelf-inset", type=float, default=DEFAULT_SHELF_DEPTH_INSET)
     p.add_argument("--max-target-rejections", type=int, default=MAX_CONSECUTIVE_REJECTIONS)
+    AddMobileArgs(p)
     return p.parse_args()
 
 
@@ -145,6 +150,9 @@ def main():
             f"Train one with cluster/submit_train.sh and point at the exported .pkl.")
 
     shard = bm.parse_shard(args.shard) if args.shard else None
+    mobile = CheckMobileArgs(args)
+    if mobile and args.fk != "analytic":
+        raise SystemExit("--scene mobile: the learned forward model is closed (analytic only)")
     if shard is not None and args.cells:
         raise SystemExit("--shard and --cells are mutually exclusive")
 
@@ -160,7 +168,7 @@ def main():
         [args.rung, args.task, args.config, args.solver, args.start]
         + ([] if args.fk == "analytic" else [f"fk{args.fk}"]) + ckpt_tok
         + [f"{k}{v}" for k, v in (i.split("=", 1) for i in args.overrides)]
-        + (["compiled"] if args.compile else []) + [scene_fp[:8]])
+        + (["compiled"] if args.compile else []) + MobileTagTokens(args) + [scene_fp[:8]])
     if shard is not None:
         tag = f"{tag}_shard{shard[0]}of{shard[1]}"
     log_dir = os.path.join(RepoDir(), f"results/{args.rung}/benchmark", tag)
@@ -185,10 +193,13 @@ def main():
     with HiddenPrints():
         diagram = BuildEnv(meshcat=meshcat, directives_file=yaml_file)
         sampler_cls = SoftArmMugProgram if args.task == "mug" else SoftArmIKProgram
+        if mobile:
+            sampler_cls = MobileClass(args.rung, args.task, "learned")
         sampler = sampler_cls(diagram, options=base_options, rung=args.rung,
                               checkpoint=args.checkpoint, fk=args.fk)
         sampler.create_prog()
     ik_solver = sampler.ik_solver
+    mobile_setup = MobileSetup(args.rung, sampler, args) if mobile else None
 
     ## THE SAMPLER, in configuration space. `draw` returns a CONFIGURATION; everything that
     ## wants a plant vector maps it. On the rigid arms these two are the same object and
@@ -197,6 +208,9 @@ def main():
         ## EXACT, always. The grid is a property of the robot, not of whichever forward
         ## model the program carries -- drawing targets through a surrogate would make the
         ## analytic and learned columns un-pairable, which is the one thing this axis needs.
+        ## On a mobile base a grid vector is `[b | strain]` (src/mobile_base/soft.py).
+        if mobile:
+            return sampler.GridToPlantQ(cfg)
         return sampler.ExactConfigToPlantQ(cfg)
 
     def sample_collision_free():
@@ -211,16 +225,19 @@ def main():
     if placement == "auto":
         placement = "shelf"
     regions = (ShelfCompartmentRegions(args.shelf_inset) if placement == "shelf" else None)
+    if mobile and regions is not None:
+        regions = mobile_setup.Regions(args.shelf_inset)
     pose_of_plant_q, placement_point = ContainmentPose(
         sampler.plant, sampler.plant_context, scene_spec, args.placement_point)
     mug_screen = None
     if regions is not None and args.task == "mug":
         with HiddenPrints():
-            mug_screen = FloatingMugScreen(yaml_file, scene_spec.robot_instances)
+            mug_screen = FloatingMugScreen(yaml_file, RobotInstances(args.rung, args.task, args.scene))
 
     target_cfgs, target_stats = SampleShelfTargets(
         args.targets,
-        draw=lambda: sampler.SampleConfiguration(rng),
+        draw=((lambda: mobile_setup.Draw(rng)) if mobile
+              else (lambda: sampler.SampleConfiguration(rng))),
         collision_free=lambda cfg: sampler.collision_free_constraint_eval.Eval(
             to_plant(cfg)) < 1,
         target_pose=lambda cfg: pose_of_plant_q(to_plant(cfg)),
@@ -231,8 +248,11 @@ def main():
         progress=tqdm(total=args.targets, desc="targets"))
     print(FormatTargetStats(f"{args.rung}/{args.task}", target_stats))
 
-    guesses = [[sample_collision_free() for _ in range(args.guesses)]
-               for _ in range(args.targets)]
+    if mobile:
+        guesses = mobile_setup.Guesses(target_cfgs, args.guesses)
+    else:
+        guesses = [[sample_collision_free() for _ in range(args.guesses)]
+                   for _ in range(args.targets)]
     ## The task is a SUFFIX, following the iiwa: the two tasks draw from the same seed over
     ## the same box and would otherwise hash identically, so `collate.py --pair` would
     ## happily compare a grasp run against a pose one.
@@ -323,6 +343,9 @@ def main():
 
     learned_cls = SoftArmMugProgram if mug else SoftArmIKProgram
     numerical_cls = SoftArmMugProgramNumerical if mug else SoftArmIKProgramNumerical
+    if mobile:
+        learned_cls = MobileClass(args.rung, args.task, "learned")
+        numerical_cls = MobileClass(args.rung, args.task, "numerical")
     all_arms = {
         "learned": bm.Arm("learned",
                           lambda t, g, c: build(learned_cls, base_options, t, g, c),
@@ -367,6 +390,7 @@ def main():
                       # The chart actually loaded (its resolved sidecar, with `family`), so a
                       # run records which network it solved through, not only a path.
                       chart_arch=ik_solver.arch,
+                      **(mobile_setup.Metadata() if mobile else {}),
                       **bm.provenance()))
     bar.close()
     print()

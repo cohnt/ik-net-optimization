@@ -51,7 +51,8 @@ def MobileTagTokens(args):
 
 def MobileClass(robot, task, arm):
     from src.mobile_base.robots import MOBILE_CLASSES
-    key = "screw" if robot.startswith("screw") else robot
+    key = ("screw" if robot.startswith("screw") else "soft" if robot.startswith("soft")
+           else robot)
     return MOBILE_CLASSES[(key, task, arm)]
 
 
@@ -62,7 +63,9 @@ class MobileSetup:
         self.seed = args.seed
         wrist = SCENES[(robot, "pose")].wrist_frame
         self.grid = MobileGrid(
-            sampler, lambda q: sampler.collision_free_constraint_eval.Eval(q) < 1, wrist)
+            sampler,
+            lambda v: sampler.collision_free_constraint_eval.Eval(sampler.GridToPlantQ(v)) < 1,
+            wrist)
         self.start_draws = []
 
     def Draw(self, rng):
@@ -77,7 +80,7 @@ class MobileSetup:
         plant, ctx = self.sampler.plant, self.sampler.plant_context
         guesses = []
         for i, q in enumerate(target_qs):
-            plant.SetPositions(ctx, np.asarray(q, dtype=float))
+            plant.SetPositions(ctx, self.sampler.GridToPlantQ(q))
             X_WT = self.sampler.frame.CalcPoseInWorld(ctx)
             row = []
             for j in range(n_guesses):

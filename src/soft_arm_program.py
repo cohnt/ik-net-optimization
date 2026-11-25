@@ -69,7 +69,9 @@ class SoftArmIKProgram(IKFlowProgram):
         self.num_arm_dof = self.spec.ndof
         self.num_task_vars = 6
 
-        if self.num_pos != self.spec.num_plant_positions:
+        ## A mobile base (src/mobile_base/soft.py) adds its own three positions.
+        if self.num_pos != self.spec.num_plant_positions + getattr(
+                self, "EXTRA_PLANT_POSITIONS", 0):
             raise RuntimeError(
                 f"the scene's plant has {self.num_pos} positions but {self.spec.name} "
                 f"declares {self.spec.num_plant_positions}; the model and the spec have "
