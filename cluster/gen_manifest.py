@@ -5115,6 +5115,77 @@ def stage_OVR(which):
     return retag(items, "OVR")
 
 
+## ---------------------------------------------------------------------------------------------
+## The obstacle campaign (branch `obstacles`, docs/notes-obstacles.md): stages OBST and PILLAR.
+## Each item is the record's NATIVE-start item for the same row and arm/solver, VERBATIM, with only
+## the obstacle arguments appended (OBST) or the `--scene` value swapped (PILLAR) and the tag/id
+## prefix changed. IPOPT rows: stage PAPER (iiwa, screw, soft PCS) and SVGD_R2 (Panda); AL-SVGD
+## rows: SVGD_R29 `pin4` (learned) and SVGD_R30 `pin4kq` (joint space). NOT the seed-2 `pin4s2`
+## items, NOT the paired protocol, NOT SNOPT/NLopt. `seconds` is the RECORD item's estimate, a
+## record-difficulty LOWER bound (obstacles add collision rows and rejected candidates).
+OBST_RUNGS = (0, 8, 16, 32, 64)
+PILLAR_RUNGS = (("000", None), ("040", "pillars_r040"), ("080", "pillars_r080"),
+                ("120", "pillars_r120"))
+OBST_SOURCES = (("PAPER", "ipopt", None), ("SVGD_R2", "ipopt", None),
+                ("SVGD_R29", "svgd", "pin4"), ("SVGD_R30", "svgd", "pin4kq"))
+
+
+def _obst_source_items():
+    """[(record item, record tag token, solver kind)] for the 24 native-start logical runs."""
+    out = []
+    for stage, kind, suffix in OBST_SOURCES:
+        items = stage_PAPER() if stage == "PAPER" else stage_SVGD(stage)
+        for it in items:
+            a = it["args"]
+            tag = a[a.index("--tag") + 1]
+            if _svgd_flag(a, "--start") != "native" or _svgd_flag(a, "--solver") != kind:
+                continue
+            if stage == "PAPER" and it["robot"] == "panda":
+                continue
+            if suffix is not None and not tag.endswith("_native_" + suffix):
+                continue
+            out.append((it, stage, kind))
+    return out
+
+
+def _obst_swap(it, stage, new_stage_token, extra, scene, order):
+    a = list(it["args"])
+    i = a.index("--tag")
+    old = a[i + 1]
+    assert old.startswith(f"sc_{stage}_"), (old, stage)
+    new = "sc_" + new_stage_token + "_" + old[len(f"sc_{stage}_"):]
+    a[i + 1] = new
+    if scene is not None:
+        j = a.index("--scene")
+        assert a[j + 1] == "hardened", a[j + 1]
+        a[j + 1] = scene
+    a += extra
+    return dict(it, args=a, id=it["id"].replace(old, new, 1), order=order)
+
+
+def stage_OBST():
+    """Per-target sphere obstacles, rungs 0/8/16/32/64 x the 24 native-start record runs."""
+    items = []
+    src = _obst_source_items()
+    for ri, n in enumerate(OBST_RUNGS):
+        extra = [] if n == 0 else ["--obstacles", "per_target", "--obstacle-count", str(n)]
+        for it, stage, kind in src:
+            items.append(_obst_swap(it, stage, f"OBST{n}", extra, None,
+                                    2 * ri + (0 if kind == "ipopt" else 1)))
+    return items
+
+
+def stage_PILLAR():
+    """Pillar scenes (radius 0 = the record's scene, 0.04 / 0.08 / 0.12 m) x the same 24 runs."""
+    items = []
+    src = _obst_source_items()
+    for ri, (label, scene) in enumerate(PILLAR_RUNGS):
+        for it, stage, kind in src:
+            items.append(_obst_swap(it, stage, f"PILLAR{label}", [], scene,
+                                    2 * ri + (0 if kind == "ipopt" else 1)))
+    return items
+
+
 def retag(items, prefix):
     """Rewrite every item's tag and id with `prefix`, leaving the grid untouched.
 
@@ -7306,7 +7377,7 @@ def main():
                                  "ANALYTIC", "ANALYTIC_NLOPT", "ANALYTIC_CPP", "ANALYTIC_SMOKE",
                                  "ANALYTIC_SVGD", "ANALYTIC_SVGD_SMOKE",
                                  "CVAE", "CVAE_SVGD", "CVAESMOKE", "CVAESMOKE_SVGD",
-                                 "CVAEF", "CVAEF_SVGD",
+                                 "CVAEF", "CVAEF_SVGD", "OBST", "PILLAR",
                                  "SCREWREDO", "SCREWREDO_NLOPT", "SCREWREDO_SVGD",
                                  "A", "B", "B2", "B3",
                                    "C", "D", "Dbase", "E", "F", "F2", "F3", "G", "H", "FIN"])
@@ -7464,6 +7535,8 @@ def main():
              ## rows in their SVGD_STAGE_CONTEXT, and the smokes' shape is SVGD_SMOKE_SHAPE.
              **{s: (lambda s=s: stage_SVGD(s)) for s in SVGD_STAGES},
              "PAPER": lambda: stage_PAPER(),
+             "OBST": lambda: stage_OBST(),
+             "PILLAR": lambda: stage_PILLAR(),
              "ANALYTIC": lambda: stage_ANALYTIC("ANALYTIC"),
              "ANALYTIC_NLOPT": lambda: stage_ANALYTIC("ANALYTIC_NLOPT"),
              "ANALYTIC_CPP": lambda: stage_ANALYTIC_CPP(),
