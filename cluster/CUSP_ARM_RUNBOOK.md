@@ -1,0 +1,49 @@
+# Cuspidal arm (`cusp7`) runbook
+
+Branch `cuspidal-arm`. Robot and rulings: `docs/notes-robots.md` ("The cuspidal arm"). Every
+SuperCloud submission is cleared first with the peer session **learned-ik-orchestrator** (which
+clears it with diffik-orchestrator): partition, node count, duration; whole nodes; never touch
+`dfk_*`; report each job's start and end to it. Load the `supercloud` skill before any cluster
+action. Merging to main is the orchestrator's / Tommy's gate.
+
+## The tree
+
+`~/learned-ik-cusp` (made by `bash cluster/make_tree.sh learned-ik-cusp`, 2026-11-25): its own
+`repo/`, `home/` (its own ikflow dataset cache), `state/`, `results/`; `venv/ drake/ sysdeps/`
+symlinked read-only into `~/learned-ik`. Job prefix `cusp` (derived from the tree name), except
+`chain_datasets.sh`, which names its jobs `lik_ds_<robot>`.
+
+**Drake:** the tree runs on whatever `~/learned-ik` carries (the 09-18 nightly until the
+orchestrator moves SuperCloud to 1.58.0, coordinated so it never happens under a running cusp job).
+Datagen and training use torch FK only. Benchmarks wait for the 1.58.0 move, so all cusp7 rows
+sit on one Drake.
+
+Stage (clean committed tree only): `SC_ROOT=learned-ik-cusp bash cluster/stage_code.sh`, then
+`SC_ROOT=learned-ik-cusp bash cluster/verify_staged_tree.sh` prints `EXPECT_MANIFEST_SHA`.
+stage_code's "ERROR: iiwa checkpoint did not arrive" is expected here (no iiwa arm in this tree).
+
+## Datagen (xeon-p8, 1 node, 2 h)
+
+On the login node, in `~/learned-ik-cusp/repo`:
+
+    EXPECT_MANIFEST_SHA=<sha> LEARNED_IK_ROOT=$HOME/learned-ik-cusp WALL=02:00:00 CPUS=48 \
+        bash cluster/chain_datasets.sh cusp7
+
+Sentinel: `~/learned-ik-cusp/home/.cache/ikflow/datasets/cusp7/.DONE`.
+
+## Charts (volta)
+
+1. Smoke, 1 node, 20 min: `SC_ROOT=learned-ik-cusp bash cluster/submit_ladder.sh --smoke cusp7`.
+2. Ladder, chained, 4 nodes each: `SC_ROOT=learned-ik-cusp WALL=20:00:00 bash
+   cluster/chain_ladder.sh <smoke_jobid> cusp7_n6 cusp7_n4` (n6 ~15 h, n4 ~11 h by the screw
+   arm's timings). **Never `submit_ladder.sh --next` in this tree**: it picks the first incomplete
+   rung of the whole `ladder_runs.txt`, which is not a cusp rung.
+3. After a chain: `SC_ROOT=learned-ik-cusp bash cluster/submit_ladder.sh --status`; a rung short
+   of 620000 steps was not trained, whatever the queue says (resubmitting resumes it).
+4. Record the GPU type and cluster with each checkpoint (development charts may be retrained).
+
+## Log
+
+| when | job | what | state |
+| --- | --- | --- | --- |
+| 2026-11-25 17:59 | 6330999 | `lik_ds_cusp7`, 25M dataset, staged commit 3794fd7 | running |

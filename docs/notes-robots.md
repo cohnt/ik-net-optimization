@@ -531,3 +531,51 @@ circular arc is a revolute joint about the arc centre, relabelled), so the non-a
 global rather than pointwise; and Drake's trajectory is planar and piecewise line-and-arc only,
 which matches every real curved track and admits no clothoid or spline.
 
+
+## The cuspidal arm (`cusp7`, branch `cuspidal-arm`, started 2026-11-25)
+
+**The question.** On a cuspidal arm one aspect (a singularity-free region of joint space) holds
+several IK solutions of the same pose, and they swap around cusp points of the workspace, so no
+branch label is global: any label jumps somewhere the arm is regular. Having a closed form does not
+help (Wenger's orthogonal 3R arms are quartic-solvable and cuspidal: the quartic's root labels jump
+at its radicals' branch cuts). The 7/21 notes asked whether the learned latent, which never
+separates branches, does better there. Tommy (2026-11-25): **no analytic arm** -- "the whole point
+is we can't trust the branch tracking of an analytic baseline". Arms are learned and joint space.
+
+**The robot** (`src/cusp_arm/params.py` is the robot, rendered as SDF and torch FK):
+- **6R: published, not invented** (Tommy asked for a known cuspidal 6R with 16 solutions). The
+  simplified KUKA Transpressor class of Feeß & Weiß, *arXiv 2602.14794* (2026): a KR100P with axis
+  6 shifted off the wrist centre, simplified so axes 1/2 and 3/4 intersect. Standard DH
+  `(d, a, alpha)`: `(d1, 0, pi/2) (0, a2, 0) (0, 0, -pi/2) (d4, 0, pi/2) (0, a5, -pi/2) (0, 0, 0)`,
+  example values `a2, d4, a5 = 3, 2, 0.5`, scaled x0.16 (a2 0.48, d4 0.32, a5 0.08 m; reach
+  matches the screw arm's), `d1 = 0.22` on a 0.20 m pedestal. IK: 0/4/8/12/16 solutions.
+- **Cuspidality is taken as known** (Tommy: no re-proof). The paper proves it by a straight joint
+  path between two solutions of a pose on axis 1 along which `det J` keeps its sign; its sufficient
+  condition `a2 > 2 d4` is not met by the example values, but it reports the sign holds anyway. A
+  side numerical check (2026-11-25, code deleted) confirmed: 16 real solutions at that pose (8 per
+  sign of `det J`), the straight path keeps one sign (scaled: `det J` in [-0.0108, -0.0065]).
+  Straight segments alone join 12 of 56 same-sign pairs, not the paper's "4 classes of 4" (which
+  needs non-straight paths); inside the iiwa-like limits, 7 of the 16 survive and 5 same-sign
+  pairs are joined by an in-limit straight line at that pose.
+- **The paper's printed `det J` does not match its own table** (as read from the HTML version):
+  `-a2 d4 c3 (((s3 + s2 c3) d4 - a2) s5 + a5 sin(t2+t3))`. Derived from the table and checked
+  against Drake to 1e-9: `-a2 c3 [-a2 a5 c2 s4^2 - a2 d4 c2 s5 + a5 d4 sin(t2+t3) + d4^2 s5
+  sin(t2+t3)]` (`kinematics.det_j_6r`). The `s4^2` term vanishes on the paper's path (`t4 = 0`).
+- **The added joint**: a tool pitch at the wrist END, 0.06 m up a flange barrel along axis 6,
+  perpendicular to it (Tommy: adding a joint at either end keeps cuspidality; every locked slice is
+  the 6R with a fixed tool). Not at the base: a joint perpendicular to axis 1 there tilts the
+  whole arm about table height. Gripper mounted 0.10 m along the tool link (finray, iiwa weld).
+- **Limits: the iiwa's ranges by joint role** (Tommy: "more like the range achieved by the
+  iiwa"): +-170 deg on the rolls (1, 4, 6), +-120 deg on the pitches (2, 3, 5, 7). For those to
+  mean what they do on the iiwa the zero is the arm straight up, via constant DH theta offsets
+  `(0, +pi/2, -pi/2, 0, 0, 0)` (joint 5 needs none: axis 6 already continues the forearm). Nominal
+  `(0, -0.6, -1.5, 0, 1.2, 0, 0)`, sigma_min 0.241.
+- Self-collision: sphere union, links three or more apart checked (15 pairs), 26.6% of the box
+  collision-free in the hardened scene (screw7 54.7%). Shelf acceptance at inset 0.10: mug 0.34%,
+  pose 0.15% of collision-free draws (screw7 0.36 / 0.33%); P(trip) at the 50000 guard 1e-7.
+
+**Implementation.** The torch chain, SDF blocks, jrl shim, scene generator and the four programs
+are the screw arm's, pointed at this spec (`ScrewArmIKProgram.ResolveSpec`); the screw-limit repair
+is a no-op on an all-revolute chain. Tests: `tests/test_cusp_arm_kinematics.py` (fidelity to the
+paper's DH product, torch == Drake, `det J`), `tests/test_cusp_arm_program.py`. Charts:
+`cusp7_n6` pre-registered and fielded, `cusp7_n4` measured, no n8 (gain-ceiling rule).

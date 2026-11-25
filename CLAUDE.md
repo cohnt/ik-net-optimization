@@ -393,26 +393,17 @@ measure and report as a stated deviation, not adopt. **Damping an exact Jacobian
 inconsistent**; damping belongs on the Newton step, which Drake's IPOPT does not expose. **Suppressing
 the runaway does not buy success.**
 
-**Chart ablation, rung one CLOSED (branch `chart-cvae`, merged to main 2026-10-21).** The
-program reaches its network only through `src/charts/` (`LoadChart`; `FlowChart` bit-identical to the
-old calls), built so later families plug in. Rung: a standard cVAE decoder as the chart, learned
-and fixed decoder variance x K = flow width / redundancy, IPOPT + AL-SVGD. **Verdict: a loss.**
-Every rigid native row loses to the flow and to joint space under both solvers; screw 0 on every
-probe; paired start 0/480 everywhere; iiwa K=8 learned variance diverged (recorded, not
-benchmarked). Soft PCS ties the flow with cheaper cells only because the decoder returns a
-low-strain configuration. **Mechanism: every chart's latent is collapsed** (active-unit screen):
-the decoder returns E[q | pose], unusable where the IK fibre is disconnected branches. Long form
-`docs/notes-chart.md`; ops `cluster/CVAE_RUNBOOK.md`.
+**Chart ablation, rung one CLOSED (branch `chart-cvae`, merged 2026-10-21).** The program reaches
+its network only through `src/charts/` (`LoadChart`; `FlowChart` bit-identical). A cVAE decoder as
+the chart (learned/fixed variance x K), IPOPT + AL-SVGD: **a loss** -- every rigid native row loses
+to the flow and joint space, screw 0, paired 0/480; soft PCS ties only via low-strain decodes.
+**Mechanism: the latent collapses** (decoder returns E[q | pose], useless across disconnected
+branches). Long form `docs/notes-chart.md`; ops `cluster/CVAE_RUNBOOK.md`.
 
-**Chart rung two: LOInK (branch `chart-loink`, 2026-10-22), not an ablation**: a bi-Lipschitz
-network designed for a structured latent (`G(q) = [task; z]`, the chart `G^{-1}`): does a latent structured for ONE cost help under OUR objective? **Rigid arms: no
-chart fits at LOInK's own `K = n - 6 = 1`** (the latent width is why), **and retraining
-on ONE IK branch (phase 2, 24 `loinkB*` charts, 2026-10-25) changed nothing**: 0.5-0.7 m median
-task error on the branch itself, so topology was not the binding constraint. **Soft12 (`K = 6`)
-learns but no chart fits** (0.18-0.29 m, `z = 0` a metre off, cost head R^2 < 0; cells 0/20 under
-IPOPT and AL-SVGD); real latents lie OUTSIDE the +-5 box (paired starts clip). **DISMISSED (Thomas, 2026-10-26)**: a decode is 155-1840
-network passes, 1-9 s per IPOPT iteration, ~100x the flow. Tag `archive/chart-loink`.
-Long form `docs/notes-chart.md`; replication `docs/loink-replication.md`.
+**Chart rung two: LOInK (2026-10-22), DISMISSED (Thomas, 2026-10-26)**: a bi-Lipschitz chart
+`G^{-1}` with a structured latent. No rigid-arm chart fits at `K = 1` (one-branch retraining changed
+nothing); soft12 learns but no chart fits (0/20 cells); a decode is ~100x the flow per iteration.
+Tag `archive/chart-loink`; long form `docs/notes-chart.md`, `docs/loink-replication.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
 
@@ -461,6 +452,15 @@ plant without a program must repair it too. **TRAP: set `ee_frame` BEFORE `Calib
 Measured: chart ladder `n6` stands; `p025_n6` shows the gain-ceiling runaway (a property of the trained
 chart). `p050`'s dataset is rebuilt (bit-identical); the other rungs' are still gone. Ops and screens
 `cluster/SCREW_ARM_RUNBOOK.md`; `python scripts/report_screw.py`. The curvilinear rail is deferred.
+
+**The cuspidal arm** (`cusp7`, `src/cusp_arm/`, branch `cuspidal-arm`, started 2026-11-25): no IK
+branch label is global on a cuspidal arm, so does the learned latent beat an analytic chart? The
+6R is **published, not ours** (Tommy): the simplified KUKA Transpressor of Feeß & Weiß (arXiv
+2602.14794; up to 16 IK solutions, cuspidality proven) at its example values x0.16 m, plus a tool
+pitch at the wrist end (every locked slice is the 6R); iiwa-like limits about an arm-up zero (DH
+theta offsets). **No analytic arm** (its branch tracking cannot be trusted), **one rung**, the
+arm's cuspidality taken as known. The paper's printed `det J` does not match its own table
+(`kinematics.det_j_6r` is derived). Notes `docs/notes-robots.md`; ops `cluster/CUSP_ARM_RUNBOOK.md`.
 
 ## Running on MIT SuperCloud (long form: `docs/notes-cluster.md`; playbook `cluster/README.md`)
 
