@@ -70,16 +70,18 @@ From: {{ BASE }}
         libfmt9 libspdlog1.12 libgl1 libegl1 $DRAKE_PKGS
     $APT clean && rm -rf /var/lib/apt/lists/*
 
-    echo "===== [3/6] venv + torch ====="
+    echo "===== [3/6] venv + the small pinned deps, FAIL-FAST import check (a missing system library shows here) ====="
     python3 -m venv /opt/lik/venv
     PIP="/opt/lik/venv/bin/pip --disable-pip-version-check --no-cache-dir"
     $PIP install --quiet --upgrade pip
-    $PIP install --quiet --index-url https://download.pytorch.org/whl/cu126 "{{ TORCH_SPEC }}"
-
-    echo "===== [4/6] pinned python deps (setup_supercloud.sh step 5) ====="
     $PIP install --quiet numpy==2.5.2 klampt==0.10.1.post1 roma==1.6.1 \
         more-itertools==11.1.0 FrEIA==0.2 tqdm==4.70.0 pyyaml==6.0.3 \
         matplotlib==3.11.1 meshcat==0.3.2 PyOpenGL==3.1.10 nvidia-ml-py
+    PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages /opt/lik/venv/bin/python -c \
+        "import klampt, pydrake.all, pydrake.planning, pydrake.solvers, roma, FrEIA; print('fail-fast imports ok (klampt, pydrake)')"
+
+    echo "===== [4/6] torch, then the rest of setup_supercloud.sh step 5 ====="
+    $PIP install --quiet --index-url https://download.pytorch.org/whl/cu126 "{{ TORCH_SPEC }}"
     # CPU jaxlib only: the flow owns the GPU.
     $PIP install --quiet "jax[cpu]==0.11.2" soromox==0.5.0 optimistix==0.1.0 \
         equinox==0.13.8 diffrax==0.7.2 lineax==0.1.1
@@ -91,6 +93,9 @@ From: {{ BASE }}
         [ "$TRY" -lt 5 ] && { echo "jrl install failed (try $TRY); retrying"; sleep $((TRY * 20)); } || { echo "jrl install failed 5 times"; exit 1; }
     done
     $PIP install --quiet --no-deps -e /opt/lik/ikflow
+    # Everything the cache-warm and verification steps import, before any download: fails in seconds.
+    PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages CUDA_VISIBLE_DEVICES= /opt/lik/venv/bin/python -c \
+        "import klampt, pydrake.all, torch, jrl, jrl.robots, ikflow, ikflow.model_loading, FrEIA, jax, soromox, optimistix, pytorch_lightning; print('all imports ok')"
 
     echo "===== [5/6] caches (compute nodes' HOME is per job; the runner links these in) ====="
     export HOME=/opt/lik/home
