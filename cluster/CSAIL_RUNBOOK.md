@@ -52,7 +52,7 @@ bash cluster/csail/build_image.sh record <image name>     # anchors the sha256 O
 `FAKEROOT=auto|yes|no` (default auto: `--fakeroot` only if `/etc/subuid` lists the user). **Not yet known**: whether an
 unprivileged build (no subuid entry was visible on the login node) can run `apt` in `%post`; the build log records
 the mode and the userns probe. If it fails there, the fix is committed to the `.def`, never patched on the cluster.
-`APPTAINER_CACHEDIR` / `APPTAINER_TMPDIR` are pointed at `/data` scratch unless `/tmp` has >= 40 GB free.
+`APPTAINER_CACHEDIR` / `APPTAINER_TMPDIR` are pointed at `/data` scratch always (tig-cpu `/tmp` is tiny).
 
 ## The GPU plumbing check
 

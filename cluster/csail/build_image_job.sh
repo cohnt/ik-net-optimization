@@ -6,7 +6,7 @@
 #
 # Outputs under $LIK_CS_ROOT/images/: <name>.sif, <name>.sif.sha256 (checked by EVERY job), <name>.freeze.txt,
 # <name>.DONE ("OK <sha256>" or "FAIL ..."), <name>.build.log. Nothing outside $LIK_CS_ROOT is written; caches go
-# to $LIK_CS_ROOT/cache (TIG's /tmp can be nearly full on a tig-cpu node: df is logged, and /tmp is used only
+# to $LIK_CS_ROOT/cache (always: TIG tig-cpu /tmp is tiny; df is logged).
 # when it has room).
 #
 # THE DRAKE PIN: release 1.58.0's noble tarball (Thomas, 2026-11-25). URL, sha256 and commit are the .def's
@@ -53,9 +53,8 @@ have_pin || Fail "tarball sha256 is not the pin's ($DRAKE_SHA256)" 20
 echo "drake tarball verified: $TAR"
 
 if [ -z "${APPTAINER_TMPDIR:-}" ]; then
-    FREE=$(df --output=avail -BG /tmp 2>/dev/null | tail -1 | tr -dc '0-9')
-    if [ "${FREE:-0}" -ge 40 ]; then export APPTAINER_TMPDIR="/tmp/lik_build_${SLURM_JOB_ID:-$$}"
-    else export APPTAINER_TMPDIR="$CACHE/apptainer-tmp-${SLURM_JOB_ID:-$$}"; fi
+    ## Always under /data (Thomas, 2026-11-25): tig-cpu's /tmp is tiny (2.1 GB on groenig-4).
+    export APPTAINER_TMPDIR="$CACHE/apptainer-tmp-${SLURM_JOB_ID:-$$}"
 fi
 export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$CACHE/apptainer}"
 mkdir -p "$APPTAINER_TMPDIR" "$APPTAINER_CACHEDIR"
