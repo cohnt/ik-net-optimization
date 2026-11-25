@@ -15,7 +15,9 @@
 #
 # Env (set by submit.sh): LIK_CROOT MANIFEST EXPECT_MANIFEST_SHA EXPECT_SIF_SHA ITEM_TIMEOUT
 #                         LIK_EXPECT_GPU LIK_EXPECT_CPU
-source "${LIK_CROOT:?LIK_CROOT unset}/repo/cluster/engaging/job_lib.sh" || exit 2
+# submit.sh passes LIK_CROOT relative to the cluster home.
+case "${LIK_CROOT:?LIK_CROOT unset}" in /*) ;; *) LIK_CROOT="$HOME/$LIK_CROOT" ;; esac; export LIK_CROOT
+source "$LIK_CROOT/repo/cluster/engaging/job_lib.sh" || exit 2
 eg_job_init
 
 [ -n "${MANIFEST:-}" ] && [ -f "$REPO/$MANIFEST" ] || { echo "bench_job.sh: no manifest $REPO/${MANIFEST:-?}" >&2; exit 2; }

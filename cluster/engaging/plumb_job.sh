@@ -4,7 +4,9 @@
 #   fork, Panda weights and the scenes' Drake models cached under ~/lik-engaging/home-cache (internet is
 #   used HERE, once; benchmark jobs run from the warm cache).
 # Sentinel ~/lik-engaging/plumb.DONE (OK / FAIL). Env as bench_job.sh, no MANIFEST.
-source "${LIK_CROOT:?LIK_CROOT unset}/repo/cluster/engaging/job_lib.sh" || exit 2
+# submit.sh passes LIK_CROOT relative to the cluster home.
+case "${LIK_CROOT:?LIK_CROOT unset}" in /*) ;; *) LIK_CROOT="$HOME/$LIK_CROOT" ;; esac; export LIK_CROOT
+source "$LIK_CROOT/repo/cluster/engaging/job_lib.sh" || exit 2
 eg_job_init
 DONE="$EB/plumb.DONE"; rm -f "$DONE"
 echo "===== nvidia-smi ====="; nvidia-smi

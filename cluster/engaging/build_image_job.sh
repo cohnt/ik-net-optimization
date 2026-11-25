@@ -13,7 +13,9 @@
 # another Drake; DRAKE_TARBALL names a tarball already on the cluster, bind-mounted into the build and
 # verified against the same hash.
 LIK_NEED_IMAGE=0
-source "${LIK_CROOT:?LIK_CROOT unset}/repo/cluster/engaging/job_lib.sh" || exit 2
+# submit.sh passes LIK_CROOT relative to the cluster home.
+case "${LIK_CROOT:?LIK_CROOT unset}" in /*) ;; *) LIK_CROOT="$HOME/$LIK_CROOT" ;; esac; export LIK_CROOT
+source "$LIK_CROOT/repo/cluster/engaging/job_lib.sh" || exit 2
 eg_job_init
 DONE="$EB/build.DONE"; rm -f "$DONE"
 Fail() { echo "BUILD FAILED: $*"; echo "FAIL $*" > "$DONE"; exit 1; }

@@ -97,6 +97,10 @@ def t_syntax_and_pin():
         if f.endswith(".sh"):
             r = subprocess.run(["bash", "-n", os.path.join(REPO, "cluster", "engaging", f)], capture_output=True, text=True)
             check(r.returncode == 0, f"bash -n {f}", r.stderr)
+    for f in ("build_image_job.sh", "plumb_job.sh", "bench_job.sh"):
+        t = open(os.path.join(REPO, "cluster", "engaging", f)).read()
+        check('*) LIK_CROOT="$HOME/$LIK_CROOT" ;; esac' in t and t.index("LIK_CROOT=\"$HOME") < t.index("job_lib.sh\" ||"),
+              f"{f} makes the (cluster-home-relative) LIK_CROOT absolute before sourcing job_lib.sh (first real submit died on this)")
     d = open(os.path.join(REPO, "cluster", "engaging", "lik.def")).read()
     sc = open(os.path.join(REPO, "cluster", "setup_supercloud.sh")).read()
     check(re.search(r'^\s*DRAKE_VERSION="1\.58\.0"', d, re.M) and re.search(r'DRAKE_SHA256="[0-9a-f]{64}"', d),
