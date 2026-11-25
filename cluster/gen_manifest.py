@@ -77,6 +77,14 @@ SCREW_TRAINED_ROBOTS = tuple(r for r in SCREW_ROBOTS if r not in SCREW_UNTRAINED
 SCRIPTS.update({r: "scripts/screw_arm/screw_arm_benchmark.py" for r in SCREW_ROBOTS})
 ALL_ARMS.update({r: "learned,numerical" for r in SCREW_ROBOTS})
 
+## The cuspidal arm (branch cuspidal-arm, 2026-11-25). TWO ARMS: on a cuspidal arm no IK branch
+## label is global, so an analytic formulation's branch tracking cannot be trusted (Tommy).
+from src.cusp_arm.params import SPECS as _CUSP_SPECS  # noqa: E402
+
+CUSP_ROBOTS = tuple(sorted(_CUSP_SPECS))
+SCRIPTS.update({r: "scripts/cusp_arm/cusp_arm_benchmark.py" for r in CUSP_ROBOTS})
+ALL_ARMS.update({r: "learned,numerical" for r in CUSP_ROBOTS})
+
 # Seconds per (cell x arm), used only for the LPT ordering and the --summary
 # estimate. Deliberately pessimistic: the learned arm is the one that can sit at
 # the cap, so a cell costs about the cap when it is binding and much less when not.
@@ -2303,7 +2311,8 @@ def _screw_require_statusquo_wall(wall, stage):
 
 
 def stage_SCREW(wall, targets, guesses, shards, only=None, tag="SCREW", seed=1,
-                solvers="ipopt,snopt,nlopt", starts="paired,native"):
+                solvers="ipopt,snopt,nlopt", starts="paired,native", primary=SCREW_PRIMARY,
+                adopted=SCREW_ADOPTED):
     """The screw arm's status-quo-shaped rows: 2 experiments x 2 protocols x 3 solvers.
 
     Twelve logical runs on the primary rung at its adopted chart, deliberately the same
@@ -2318,23 +2327,24 @@ def stage_SCREW(wall, targets, guesses, shards, only=None, tag="SCREW", seed=1,
             raise SystemExit(f"--solvers: {name!r} is not one of the three method classes "
                              f"{sorted(SOLVER_CLASSES)}")
     want_starts = [x.strip() for x in starts.split(",") if x.strip()]
-    wall = _screw_require_statusquo_wall(wall, "stage SCREW")
+    wall = _screw_require_statusquo_wall(wall, f"stage {tag}")
 
-    if wanted is not None and SCREW_PRIMARY not in wanted:
+    ## `primary` / `adopted`: the cuspidal arm's stage builds its rows through this same function.
+    if wanted is not None and primary not in wanted:
         return []
-    label, ckpt = SCREW_ADOPTED
-    base = _screw_base(SCREW_PRIMARY, ckpt)
+    label, ckpt = adopted
+    base = _screw_base(primary, ckpt)
     items = []
     for solver in want_solvers:
         item_shards = shards * STATUSQUO_SHARD_SCALE[solver]
         for task, token, placement in STATUSQUO_ROWS:
             for start in want_starts:
-                items += item(SCREW_PRIMARY,
-                              f"sc_{tag}_{SCREW_PRIMARY}_{label}_{solver}_{token}"
+                items += item(primary,
+                              f"sc_{tag}_{primary}_{label}_{solver}_{token}"
                               f"_{targets * guesses}_{int(wall)}_{start}",
                               ["--task", task, "--start", start, "--solver", solver]
                               + placement + base,
-                              targets, guesses, ALL_ARMS[SCREW_PRIMARY], wall, item_shards,
+                              targets, guesses, ALL_ARMS[primary], wall, item_shards,
                               seed=seed)
     return items
 
@@ -2664,6 +2674,32 @@ def stage_GVSO2():
     return [_remeasure_item(it, GVSO2_RUNG, True, seconds_robot=GVS_PRIMARY)
             for it in _REMEASURE_BUILDERS["GVS"](only=GVSO2_RUNG, solvers=GVS_SOLVERS,
                                                  tag="GVSO2")]
+
+
+#: The cuspidal arm (`cusp7`, branch cuspidal-arm, 2026-11-25) at record conditions: stage SCREW's
+#: rows (2 tasks x 2 starts, 180 s, 60 x 8, seed 1, hardened, shelf-contained, correction weight 10)
+#: through REMEASURE's transform (CUDA graphs, lifted budgets), IPOPT and SNOPT only (no NLopt on new
+#: robots). Outside the record until Tommy accepts the robot. The fielded chart is PRE-REGISTERED at
+#: n6; CUSPCHART is the n4 rung, reported, never selected from. Allotment estimate borrows the screw
+#: arm's record walls (cusp7 has none yet).
+CUSP_PRIMARY = "cusp7"
+CUSP_ADOPTED = ("n6", f"models/{CUSP_PRIMARY}/{CUSP_PRIMARY}__n6__step620000.pkl")
+CUSP_N4 = ("n4", f"models/{CUSP_PRIMARY}/{CUSP_PRIMARY}__n4__step620000.pkl")
+CUSP_SOLVERS = "ipopt,snopt"
+
+
+def _stage_cusp(tag, adopted):
+    return [_remeasure_item(it, CUSP_PRIMARY, True, seconds_robot=SCREW_PRIMARY)
+            for it in stage_SCREW(180, 60, 8, 8, solvers=CUSP_SOLVERS, tag=tag,
+                                  primary=CUSP_PRIMARY, adopted=adopted)]
+
+
+def stage_CUSP():
+    return _stage_cusp("CUSP", CUSP_ADOPTED)
+
+
+def stage_CUSPCHART():
+    return _stage_cusp("CUSPCHART", CUSP_N4)
 
 
 #: Table 3 of docs/status-quo-tables.md (mean wall over ALL cells, each clamped at the 180 s
@@ -7293,7 +7329,7 @@ def main():
                         "formulation cannot be paired against an archived one by accident")
     p.add_argument("--reg", default=None,
                    help="Stage H only: the G_SETTINGS name to cross-test")
-    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "WATCHCHK", "OVR_REMEASURE", "OVR_PAPER", "OVR_ANALYTIC", "OVR_ANALYTIC_CPP", "GVSO2", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
+    p.add_argument("--stage", choices=["SOLVER", "SOLVER2", "SWEEP", "STEP", "SNOPTTUNE", "SNOPTCOMBO", "NLOPTTUNE", "STATUSQUO", "SCREW", "SCREWCHART", "SCREWPITCH", "SCREWCAP", "CKPT", "LADDER", "LADDERTRI", "TRAJ", "HARD", "HARDTRI", "HARDMUG", "POSE2", "FINGER", "GRASPFREE", "INSET", "CAP", "SOFT12", "SOFTDOF", "SOFTCHART", "SOFTCAP", "SOFTFK", "GVS", "GVSJS", "GVSL", "GVSPREM", "GVSPREM2", "MERGECHKGVS", "MERGECHKREC", "MERGECHKSCREW", "SEGVREP", "SEGVFIX", "WATCHCHK", "OVR_REMEASURE", "OVR_PAPER", "OVR_ANALYTIC", "OVR_ANALYTIC_CPP", "GVSO2", "CUSP", "CUSPCHART", "ITCAP", "CUDAGRAPH", "CUDAGRAPHP2", "CUDAGRAPHMPS", "REMEASURE", "REMEASURE_LEGACY", "REMEASURE_RULE", "REMEASURE_NLOPT",
                                  "SVGD_SMOKE", "SVGD_R2", "SVGD_R1", "SVGD_R1K", "PAPER",
                                  "SVGD_R3", "SVGD_R4", "SVGD_R5", "SVGD_R6", "SVGD_R8",
                                  "SVGD_R9", "SVGD_R10", "SVGD_R11", "SVGD_R12", "SVGD_R7",
@@ -7449,6 +7485,8 @@ def main():
              "SEGVFIX": lambda: stage_SEGVFIX(),
              "WATCHCHK": lambda: stage_WATCHCHK(),
              "GVSO2": lambda: stage_GVSO2(),
+             "CUSP": lambda: stage_CUSP(),
+             "CUSPCHART": lambda: stage_CUSPCHART(),
              **{name: (lambda name=name: stage_OVR(name)) for name in OVR_STAGES},
              "ITCAP": lambda: stage_ITCAP(),
              "CUDAGRAPH": lambda: stage_CUDAGRAPH(),
