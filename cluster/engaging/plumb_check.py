@@ -14,21 +14,28 @@ import sys
 
 expect_version, expect_commit = sys.argv[1], sys.argv[2]
 warm = "--warm" in sys.argv
+cpu_only = "--cpu" in sys.argv     # a CPU node (mit_quicktest): everything but the GPU block
 print("HOME", os.environ.get("HOME"), "expanduser", os.path.expanduser("~"))
-print(subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True).stdout.strip())
+try:
+    print(subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True).stdout.strip())
+except FileNotFoundError:
+    print("(no nvidia-smi in this container: no GPU requested)")
 
 import torch  # noqa: E402
 
-assert torch.cuda.is_available(), "torch.cuda is not available"
-dev = torch.device("cuda:0")
-cap = torch.cuda.get_device_capability(0)
-print("torch", torch.__version__, "cuda", torch.version.cuda, "device", torch.cuda.get_device_name(0), "capability", cap,
-      "arch list", torch.cuda.get_arch_list())
-a = torch.randn(512, 512, device=dev, dtype=torch.float64)
-b = (a @ a).sum().item()           # one real kernel launch, float64 as the project runs
-torch.cuda.synchronize()
-assert b == b, "kernel returned NaN"
-print("kernel ok:", b)
+if cpu_only:
+    print("torch", torch.__version__, "cuda", torch.version.cuda, "arch list", torch.cuda.get_arch_list(), "(--cpu: no GPU check)")
+else:
+    assert torch.cuda.is_available(), "torch.cuda is not available"
+    dev = torch.device("cuda:0")
+    cap = torch.cuda.get_device_capability(0)
+    print("torch", torch.__version__, "cuda", torch.version.cuda, "device", torch.cuda.get_device_name(0), "capability", cap,
+          "arch list", torch.cuda.get_arch_list())
+    a = torch.randn(512, 512, device=dev, dtype=torch.float64)
+    b = (a @ a).sum().item()           # one real kernel launch, float64 as the project runs
+    torch.cuda.synchronize()
+    assert b == b, "kernel returned NaN"
+    print("kernel ok:", b)
 
 import pydrake  # noqa: E402
 from pydrake.solvers import IpoptSolver, SnoptSolver  # noqa: E402
@@ -61,4 +68,4 @@ if warm:
                   "models/iiwa14/iiwa14_collision_hardened.yaml"):
         BuildEnv(meshcat=None, directives_file=os.path.join(RepoDir(), scene))
         print("scene builds:", scene)
-print("PLUMB OK")
+print("PLUMB OK" + (" (cpu only)" if cpu_only else ""))

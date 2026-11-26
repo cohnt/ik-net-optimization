@@ -4,6 +4,7 @@
 #   bash cluster/engaging/submit.sh build                 the image, on mit_normal (CPU), from the committed lik.def
 #   bash cluster/engaging/submit.sh record-sif            read the built image's sha256 into the laptop's anchor file
 #   bash cluster/engaging/submit.sh plumb                 GPU plumbing check + cache warm-up (1 GPU)
+#   bash cluster/engaging/submit.sh plumbcpu              the same without the GPU block, on mit_quicktest (CPU, 15 min)
 #   bash cluster/engaging/submit.sh bench <manifest>      a manifest of benchmark items, one array task per GPU
 #   bash cluster/engaging/submit.sh survey                read-only: GPU nodes per type, what is queued (mine)
 #
@@ -76,7 +77,7 @@ record-sif)
     [ -n "$SHA" ] || die "build.DONE does not read 'OK <sha256>' (got: $(printf '%s' "$OUT" | head -c 200))"
     mkdir -p "$SDIR"; echo "$SHA" > "$SDIR/engaging-sif.sha256"
     echo "anchored image sha256 $SHA in $SDIR/engaging-sif.sha256"; exit 0 ;;
-build|plumb|bench) ;;
+build|plumb|plumbcpu|bench) ;;
 *) die "unknown subcommand '$KIND'" ;;
 esac
 
@@ -97,6 +98,10 @@ build)
     case "$BUILD_PARTITION" in mit_normal|mit_preemptable) ;; *) die "BUILD_PARTITION='$BUILD_PARTITION' is not mit_normal or mit_preemptable" ;; esac
     WALL=01:00:00; GPU_NAME=""; JOB=lik_build; SB=(-p "$BUILD_PARTITION" -c 8 --mem=32G -t "$WALL"); NEEDIMG=0; SCRIPT=build_image_job.sh; ARRAY=()
     [ "$BUILD_PARTITION" != mit_preemptable ] || SB+=(--requeue) ;;
+plumbcpu)
+    ## No GPU: validates the image, the bind/home mounts, the staged tree inside the container and warms the caches.
+    WALL=00:15:00; GPU_NAME=""; JOB=lik_plumbcpu; SB=(-p mit_quicktest -c 4 --mem=16G -t "$WALL"); NEEDIMG=1
+    SCRIPT=plumb_job.sh; ARRAY=() ;;
 plumb|bench)
     case "$PARTITION" in
         mit_normal_gpu)  CAP=2; DEFWALL=06:00:00; REQ=() ;;
@@ -136,6 +141,7 @@ ENV=(LIK_CROOT="$CROOT" EXPECT_MANIFEST_SHA="$EXPECT_MANIFEST_SHA" ITEM_TIMEOUT=
     [ -s "$SDIR/engaging-sif.sha256" ] || die "no anchored image hash: build, then submit.sh record-sif"
     ENV+=(EXPECT_SIF_SHA="$(cat "$SDIR/engaging-sif.sha256")"); }
 [ "$KIND" != bench ] || ENV+=(MANIFEST="$MANIFEST")
+[ "$KIND" != plumbcpu ] || ENV+=(PLUMB_CPU=1)
 [ -z "${DRAKE_TARBALL:-}" ] || ENV+=(DRAKE_TARBALL="$DRAKE_TARBALL")
 ENVSTR=$(printf '%q ' "${ENV[@]}")
 

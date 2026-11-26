@@ -183,6 +183,11 @@ def t_stage_and_submit():
         r = fx.script("submit.sh", "build", extra={"BUILD_PARTITION": "mit_preemptable"})
         log = open(sb).read()
         check("-p mit_preemptable" in log and "--requeue" in log, "build on mit_preemptable carries --requeue", log + r.stderr)
+        os.remove(sb)
+        r = fx.script("submit.sh", "plumbcpu")
+        log = open(sb).read()
+        check("-p mit_quicktest" in log and "-t 00:15:00" in log and "--requeue" not in log and "-G" not in log and "-J lik_plumbcpu" in log,
+              "plumbcpu: a 15-minute CPU job on mit_quicktest, no GPU", log + r.stderr)
         # ---- a tampered tree is STOP before any submit
         open(croot + "/repo/cluster/engaging/py_in_image.sh", "a").write("\necho owned\n")
         os.remove(sb)
@@ -290,6 +295,14 @@ def t_job_dryrun():
                            ("bench_job.sh", {"MANIFEST": "cluster/engaging/manifest_engaging_smoke.txt"})):
             r = subprocess.run(["bash", "-n", f"{croot}/repo/cluster/engaging/{job}"], capture_output=True, text=True)
             check(r.returncode == 0, f"dry run: bash -n {job}", r.stderr)
+        r = fx.sh(f"bash {croot}/repo/cluster/engaging/plumb_job.sh", dict(env, PLUMB_CPU="1", LIK_EXPECT_GPU=""), cwd=croot)
+        done = os.path.join(eb, "plumb-cpu.DONE")
+        check(r.returncode == 0 and os.path.exists(done) and open(done).read().startswith("OK "),
+              "dry run: plumb_job.sh with PLUMB_CPU=1 (mit_quicktest) reaches its end and writes plumb-cpu.DONE", r.stdout[-600:] + r.stderr[-800:])
+        alog = open(os.path.join(fx.S, "apptainer.log")).read()
+        check("--nv" not in alog.splitlines()[-1] and "--cpu" in alog.splitlines()[-1], "dry run: the CPU plumb drops --nv and passes --cpu", alog[-600:])
+        check('--home "$HOME:/lik-home"' in open(os.path.join(REPO, "cluster", "engaging", "py_in_image.sh")).read(),
+              "py_in_image.sh mounts HOME at /lik-home (a bare --home would hide the project tree)")
         # a stale claim of THIS job's previous attempt (the requeue trap), seen by the bench dry run
         st = os.path.join(croot, "state", "manifest_engaging_smoke", "eg_SMOKE_panda_mug_ipopt.claim")
         os.makedirs(st)
