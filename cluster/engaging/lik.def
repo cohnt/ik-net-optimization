@@ -35,7 +35,7 @@ From: ubuntu:24.04
 
     apt-get update
     apt-get install -y --no-install-recommends ca-certificates wget python3 python3-venv python3-dev \
-        libx11-6 libsm6 libglib2.0-0t64 libgl1 libglu1-mesa libegl1
+        libx11-6 libsm6 libglib2.0-0t64 libgl1 libglu1-mesa libegl1 libopengl0
 
     # ---- Drake: the tarball must hash to DRAKE_SHA256 AND to the release's published .sha256 (fetched now);
     # a tarball may be supplied as /drake.tar.gz (bound in by the build job) and gets the same checks.
