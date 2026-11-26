@@ -108,6 +108,9 @@ plumb|bench)
         mit_preemptable) CAP=4; DEFWALL=48:00:00; REQ=(--requeue) ;;
         *) die "PARTITION='$PARTITION' is not mit_normal_gpu or mit_preemptable" ;;
     esac
+    ## REQUEUE=1 adds --requeue on mit_normal_gpu (a manual `scontrol requeue` test of the claim release; it does NOT
+    ## exercise a real mit_preemptable preemption, whose signal/grace timing only a campaign task there shows).
+    [ "${REQUEUE:-0}" != 1 ] || [ "$PARTITION" = mit_preemptable ] || REQ=(--requeue)
     WALL="${WALL:-$DEFWALL}"; NTASKS="${NTASKS:-$CAP}"
     [ "$KIND" = plumb ] && NTASKS=1
     [ "$NTASKS" -le "$CAP" ] || die "NTASKS=$NTASKS exceeds $PARTITION's per-user GPU limit $CAP (one solve per GPU)"

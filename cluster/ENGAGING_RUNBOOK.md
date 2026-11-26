@@ -92,7 +92,10 @@ that lack `.done`, never another job's. The item then resumes from its per-cell 
 (`LEARNED_IK_RESUME=1`). A job that died without a requeue (walltime, node failure, `scancel`) leaves
 claims that nothing releases: `collect.sh --reclaim <manifest>` (refuses while any `lik_bench_*` job is
 queued or running). Pending mop-up: resubmit the same manifest.
-Test your own requeue only with `scontrol requeue <your job id>` on your own `lik_*` job.
+Test your own requeue only with `scontrol requeue <your job id>` on your own `lik_*` job. The 2026-11-26
+requeue test ran on `mit_normal_gpu` with `REQUEUE=1` (the preemptable queue was ~1 h+ pending): it proves the
+claim release and the per-cell resume, but **not a real `mit_preemptable` preemption** (its signal and grace
+timing). The first real campaign task on `mit_preemptable` is that check: read its log early.
 
 ## Rules in force
 

@@ -191,6 +191,10 @@ def t_stage_and_submit():
         log = open(sb).read()
         check("-p mit_quicktest" in log and "-t 00:15:00" in log and "--requeue" not in log and "-G" not in log and "-J lik_plumbcpu" in log,
               "plumbcpu: a 15-minute CPU job on mit_quicktest, no GPU", log + r.stderr)
+        os.remove(sb)
+        r = fx.script("submit.sh", "plumb", extra={"ANY_CPU": "1", "REQUEUE": "1"})
+        log = open(sb).read()
+        check("-p mit_normal_gpu" in log and "--requeue" in log, "REQUEUE=1 adds --requeue on mit_normal_gpu (manual requeue test)", log + r.stderr)
         # ---- a tampered tree is STOP before any submit
         open(croot + "/repo/cluster/engaging/py_in_image.sh", "a").write("\necho owned\n")
         os.remove(sb)
