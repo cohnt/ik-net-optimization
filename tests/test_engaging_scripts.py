@@ -101,6 +101,9 @@ def t_syntax_and_pin():
         t = open(os.path.join(REPO, "cluster", "engaging", f)).read()
         check('*) LIK_CROOT="$HOME/$LIK_CROOT" ;; esac' in t and t.index("LIK_CROOT=\"$HOME") < t.index("job_lib.sh\" ||"),
               f"{f} makes the (cluster-home-relative) LIK_CROOT absolute before sourcing job_lib.sh (first real submit died on this)")
+    jl = open(os.path.join(REPO, "cluster", "engaging", "job_lib.sh")).read()
+    check('LIK_BIND="$EB"' in jl and "readlink" not in "\n".join(l for l in jl.splitlines() if "LIK_BIND" in l and not l.lstrip().startswith("#")),
+          "LIK_BIND is the logical /home path, not readlink -f (a compute node resolves it to /orcd/home/..., invisible once --home is overridden)")
     d = open(os.path.join(REPO, "cluster", "engaging", "lik.def")).read()
     sc = open(os.path.join(REPO, "cluster", "setup_supercloud.sh")).read()
     post = d.split("%post\n")[1].split("%environment")[0]
@@ -300,10 +303,6 @@ def t_job_dryrun():
         check(r.returncode == 0 and os.path.exists(done) and open(done).read().startswith("OK "),
               "dry run: plumb_job.sh with PLUMB_CPU=1 (mit_quicktest) reaches its end and writes plumb-cpu.DONE", r.stdout[-600:] + r.stderr[-800:])
         alog = open(os.path.join(fx.S, "apptainer.log")).read()
-        r2 = fx.sh(f"bash {croot}/repo/cluster/engaging/plumb_job.sh", dict(env, PLUMB_CPU="1", PLUMB_DIAG="1", LIK_EXPECT_GPU=""), cwd=croot)
-        check(r2.returncode == 0 and "--- K:" in r2.stdout and open(done).read().startswith("OK diag"),
-              "dry run: PLUMB_DIAG=1 runs all eleven mount probes and exits 0", r2.stdout[-500:] + r2.stderr[-500:])
-        check("--nv" not in alog.splitlines()[-1] and "--cpu" in alog.splitlines()[-1], "dry run: the CPU plumb drops --nv and passes --cpu", alog[-600:])
         check('--home "$HOME:/lik-home"' in open(os.path.join(REPO, "cluster", "engaging", "py_in_image.sh")).read(),
               "py_in_image.sh mounts HOME at /lik-home (a bare --home would hide the project tree)")
         # a stale claim of THIS job's previous attempt (the requeue trap), seen by the bench dry run

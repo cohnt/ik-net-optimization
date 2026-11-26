@@ -43,7 +43,10 @@ eg_job_init() {
         [ "$have" = "$EXPECT_SIF_SHA" ] || { echo "STOP: image $LIK_SIF is $have, expected $EXPECT_SIF_SHA -- tell Thomas" >&2; exit 1; }
         echo "image verified: $have"
     fi
-    export LIK_SIF LIK_BIND="$(readlink -f "$EB")" LIK_REPO="$REPO"
+    ## LIK_BIND is the LOGICAL path (/home/tcohn/...), never `readlink -f`: on a compute node that resolves to
+    ## /orcd/home/002/tcohn/..., and since py_in_image.sh overrides --home (so apptainer no longer auto-binds
+    ## /home/tcohn), binding the real path leaves every logical path we use invisible (2026-11-26 diagnostic).
+    export LIK_SIF LIK_BIND="$EB" LIK_REPO="$REPO"
 
     eg_hardware_check
 }

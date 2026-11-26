@@ -68,6 +68,13 @@ constraint longer than about 1 KB, which limits a node-name OR list to roughly 1
 cost: on 2026-11-25 a 1 x L40S `mit_preemptable` job sat PENDING (Priority) for over 3 h behind ~4,000
 queued jobs, while a `mit_preemptable` image build (CPU) started within seconds.
 
+**Apptainer bind trap (found 2026-11-26, two failed plumb jobs and a diagnostic).** The image runs with
+`--home "$HOME:/lik-home"`, which replaces apptainer's automatic bind of `/home/tcohn`; everything else must
+be bound explicitly, **by the logical path** (`-B /home/tcohn/lik-engaging`). Binding `readlink -f` of it fails
+silently: on a compute node `/home/tcohn` resolves to `/orcd/home/002/tcohn`, so the bind exists but the
+logical paths the scripts use are not visible (python: "can't open file ... No such file"). The login node
+does not show this (its `readlink` returns the same path), and stub dry runs cannot either.
+
 ## Long campaigns on `mit_preemptable`
 
 `PARTITION=mit_preemptable` (4 GPUs per user, 48 h, `--requeue`, `--array=0-3%4`) or the default

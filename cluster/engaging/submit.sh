@@ -142,7 +142,6 @@ ENV=(LIK_CROOT="$CROOT" EXPECT_MANIFEST_SHA="$EXPECT_MANIFEST_SHA" ITEM_TIMEOUT=
     ENV+=(EXPECT_SIF_SHA="$(cat "$SDIR/engaging-sif.sha256")"); }
 [ "$KIND" != bench ] || ENV+=(MANIFEST="$MANIFEST")
 [ "$KIND" != plumbcpu ] || ENV+=(PLUMB_CPU=1)
-[ "${PLUMB_DIAG:-0}" != 1 ] || ENV+=(PLUMB_DIAG=1)   # plumbcpu only: probe the apptainer mount spellings, then exit
 [ -z "${DRAKE_TARBALL:-}" ] || ENV+=(DRAKE_TARBALL="$DRAKE_TARBALL")
 ENVSTR=$(printf '%q ' "${ENV[@]}")
 
