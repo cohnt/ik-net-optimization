@@ -49,10 +49,16 @@ echo "sbatch $* | LIK_ROOT=${LIK_ROOT:-} EXPECT_MANIFEST_SHA=${EXPECT_MANIFEST_S
 echo 4242
 ''',
     "squeue": r'''#!/bin/bash
-# `-o %L`: time left; `-j N -o %T`: the state recorded in $S/jobstate/N (none: not in the queue)
-case "$*" in
-  *%L*) echo 10:00:00 ;;
-  *%T*) j=; while [ $# -gt 0 ]; do [ "$1" = -j ] && j=$2; shift; done; cat $S/jobstate/$j 2>/dev/null ;;
+# `-o %L`: time left ($S/timeleft, default 10:00:00). Like Slurm, `-j <array master id>` ($S/array_master) lists
+# EVERY task of the array (two lines here), while `-j <array>_<task>` or a per-task id gives one; $S/squeue_L_empty
+# makes it answer nothing. `-j N -o %T`: the state recorded in $S/jobstate/N (none: not in the queue).
+args="$*"; j=; while [ $# -gt 0 ]; do [ "$1" = -j ] && j=$2; shift; done
+echo "$j | $args" >> $S/squeue.log
+case "$args" in
+  *%L*) [ -f $S/squeue_L_empty ] && exit 0
+        tl=$(cat $S/timeleft 2>/dev/null || echo 10:00:00)
+        echo "$tl"; [ -f $S/array_master ] && [ "$j" = "$(cat $S/array_master)" ] && echo "$tl" ;;
+  *%T*) cat $S/jobstate/$j 2>/dev/null ;;
 esac
 exit 0
 ''',
@@ -327,7 +333,7 @@ def t_job():
         env = job_env(fx, 500, 1, EXPECT_MANIFEST_SHA=sha)
         p = subprocess.run(["bash", spool(fx, "job.sh")], env=fx.env(**env), capture_output=True, text=True, timeout=120)
         out = p.stdout + p.stderr
-        check(p.returncode == 0, "job.sh exits 0", out)
+        check(p.returncode == 0 and "NOTHING CLAIMED" not in out, "job.sh exits 0, no NOTHING CLAIMED marker", out)
         ran = [ln.split()[1] for ln in fx.log("ran.log") if ln.startswith("start")]
         check(sorted(ran) == ["i1", "i3", "i5"], "ran exactly i1 (dead PENDING owner), i3 (own stale claim), i5 (free)", str(ran) + out[-1500:])
         check(all(os.path.exists(f"{st}/{i}.done") for i in ("i1", "i3", "i5")), "those are marked done")
@@ -497,7 +503,80 @@ def t_dry_runs():
         fx.close()
 
 
-GROUPS = {"fast": [t_stage, t_submit, t_job, t_preempt, t_collect, t_dry_runs]}
+def t_guards():
+    """The three guards of 2026-11-26: submit.sh refuses a walltime that cannot fit ITEM_TIMEOUT + 300; every array
+    task reads ITS end time (the master-id task once read none and claimed without limit); a task that claims
+    nothing while items remain exits 4 loudly and poll.sh flags it, while an empty tail stays quiet."""
+    fx = Fx()
+    try:
+        r = staged(fx)
+        sha = [ln for ln in r[1].splitlines() if ln.startswith("EXPECT_MANIFEST_SHA=")][0].split("=")[1]
+        st = f"{fx.root()}/state/m_six"
+        sb = lambda: fx.log("sbatch.log")  # noqa: E731
+        # (1) walltime vs ITEM_TIMEOUT, every Slurm --time form
+        for t, it, ok in (("02:00:00", None, False), ("120", "6900", False), ("1:59:00", "6840", False),
+                          ("02:00:00", "3600", True), ("1-00", None, True), ("1-0:30", "60", True), ("90:00", "3600", True)):
+            n = len(sb())
+            kw = dict(GPU="l40s", TIME=t, **({"ITEM_TIMEOUT": it} if it else {}))
+            res = fx.script("submit.sh", "cluster/m_six.txt", "img", "1", **kw)
+            need = int(it or 28800) + 300
+            if ok:
+                check(res[0] == 0 and len(sb()) == n + 1, f"TIME={t} ITEM_TIMEOUT={it or 28800}: submitted", res[1])
+            else:
+                expect(f"TIME={t} ITEM_TIMEOUT={it or 28800}: refused, naming both numbers", res, 2, "REFUSING", str(need), "s >= TIME")
+                check(len(sb()) == n, f"  ... and no sbatch for TIME={t}")
+        expect("a malformed TIME is refused", fx.script("submit.sh", "cluster/m_six.txt", "img", "1", GPU="l40s", TIME="1:2:3:4"), 2, "bad TIME")
+
+        def job(sid, **kw):
+            for f in ("ran.log", "squeue.log"):
+                fx.clear(f)
+            shutil.rmtree(st, ignore_errors=True)
+            p = subprocess.run(["bash", spool(fx, "job.sh")], env=fx.env(**job_env(fx, sid, 0, EXPECT_MANIFEST_SHA=sha, LIK_END_RETRY_S="0", **kw)),
+                               capture_output=True, text=True, timeout=120)
+            return p.returncode, p.stdout + p.stderr, [ln.split()[1] for ln in fx.log("ran.log") if ln.startswith("start")]
+
+        # (2) end time: the array master-id task and a per-task-id task both ask squeue for <array>_<task>
+        open(fx.S + "/array_master", "w").write("900")
+        for sid, task in ((900, 1), (901, 0)):
+            rc, out, ran = job(sid, SLURM_ARRAY_JOB_ID="900", SLURM_ARRAY_TASK_ID=str(task))
+            asked = [ln.split(" | ")[0] for ln in fx.log("squeue.log") if "%L" in ln]
+            check(rc == 0 and sorted(ran) == [f"i{k}" for k in range(1, 7)] and asked == [f"900_{task}"] and "job end:" in out,
+                  f"array task _{task} (SLURM_JOB_ID {sid}) reads its own end time via 900_{task} and runs", f"rc={rc} asked={asked}\n{out[-1200:]}")
+        rc, out, ran = job(900)    # the old query: the master id alone answers one line per task
+        check(rc == 5 and "CANNOT DETERMINE JOB END TIME" in out and "2 line(s)" in out and not ran,
+              "the master id without the array form (2 lines) is fatal, rc 5, nothing claimed", f"rc={rc}\n{out[-800:]}")
+        os.remove(fx.S + "/array_master")
+        open(fx.S + "/squeue_L_empty", "w").close()
+        rc, out, ran = job(902, SLURM_ARRAY_JOB_ID="902", SLURM_ARRAY_TASK_ID="0")
+        check(rc == 5 and "CANNOT DETERMINE JOB END TIME" in out and not ran, "no answer from squeue is fatal, never 'no limit'", f"rc={rc}\n{out[-800:]}")
+        os.remove(fx.S + "/squeue_L_empty")
+        shim = f"{fx.root()}/repo/cluster/csail/shim/squeue"
+        p = subprocess.run(["bash", shim, "-h", "-j", "1", "-o", "%L"], env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+        check(p.stdout.strip() == "0:00:00", "the in-image shim fails closed without JOB_END_EPOCH (0 s left)", p.stdout + p.stderr)
+        # (3) NOTHING CLAIMED: 5 min left, an item needs 60 + 300 s
+        open(fx.S + "/timeleft", "w").write("00:05:00\n")
+        rc, out, ran = job(903, SLURM_ARRAY_JOB_ID="903", SLURM_ARRAY_TASK_ID="0")
+        check(rc == 4 and "NOTHING CLAIMED" in out and "6 remain unclaimed" in out and not ran,
+              "a task that claims nothing while items remain exits 4 with the marker", f"rc={rc}\n{out[-1200:]}")
+        os.makedirs(f"{fx.root()}/logs", exist_ok=True)
+        open(f"{fx.root()}/logs/lik_m_six_1-903_0.out", "w").write(out)
+        r = fx.script("poll.sh", fx.c12())
+        check(r[0] == 0 and "!! logs/lik_m_six_1-903_0.out:NOTHING CLAIMED" in r[1], "poll.sh flags it", r[1][-1500:])
+        # ... while the normal tail (everything done or claimed) stays rc 0 and quiet
+        os.remove(fx.S + "/timeleft")
+        shutil.rmtree(st, ignore_errors=True)
+        os.makedirs(st)
+        for k in range(1, 7):
+            open(f"{st}/i{k}.done", "w").close()
+        p = subprocess.run(["bash", spool(fx, "job.sh")], env=fx.env(**job_env(fx, 904, 0, EXPECT_MANIFEST_SHA=sha)),
+                           capture_output=True, text=True, timeout=120)
+        o = p.stdout + p.stderr
+        check(p.returncode == 0 and "NOTHING CLAIMED" not in o, "an array's empty tail exits 0, quietly", o[-800:])
+    finally:
+        fx.close()
+
+
+GROUPS = {"fast": [t_stage, t_submit, t_job, t_preempt, t_collect, t_dry_runs, t_guards]}
 
 
 def main():

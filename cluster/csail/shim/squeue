@@ -3,6 +3,9 @@
 # JobSecondsLeft() calls exactly that to refuse an item the job cannot finish. cluster/csail/job.sh puts this
 # directory first on the container's PATH and exports JOB_END_EPOCH (from the host's squeue, read at attempt start).
 # It answers every call with the time left; the caller only ever asks that one question.
-[ -n "${JOB_END_EPOCH:-}" ] || exit 0
-left=$(( JOB_END_EPOCH - $(date +%s) )); [ "$left" -gt 0 ] || left=0
+# FAIL CLOSED: without JOB_END_EPOCH it answers 0:00:00 (claim nothing), never an empty line, which run_items.sh
+# reads as "no limit" (job.sh refuses to start without an end time, so this is a second line of defence).
+end="${JOB_END_EPOCH:-}"
+[[ "$end" =~ ^[0-9]+$ ]] || { echo "squeue shim: JOB_END_EPOCH unset or malformed ('$end'): answering 0 s left" >&2; end=0; }
+left=$(( end - $(date +%s) )); [ "$left" -gt 0 ] || left=0
 printf '%d:%02d:%02d\n' $((left / 3600)) $((left % 3600 / 60)) $((left % 60))
