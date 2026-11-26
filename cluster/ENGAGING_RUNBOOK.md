@@ -59,6 +59,15 @@ Both are recorded in `state/submissions.log` (every submit, with commit, partiti
 every part of a campaign with the same `GPU`, `NODES`, `CPU_MODEL`, `PARTITION` class and `COMMIT`.
 (src/benchmark.py's own machine metadata is added on main separately.)
 
+**One GPU type per job; there is no way to widen it.** GPU types on Engaging are Slurm gres types, not node
+features, and gres has no OR over types. A type-less `--gres=gpu:1` is not "any GPU": the cluster's submit
+plugin fills in `l40s` (`scontrol show job` reads `TresPerNode=gres/gpu:l40s:1`), so a node-name constraint
+over A100/H100/H200 nodes only narrows the job to the L40S nodes inside it. To run on another type, submit
+with that type (`GPU=h200`, `-G h200:1`) as a separate campaign pinned to it. Slurm also rejects a
+constraint longer than about 1 KB, which limits a node-name OR list to roughly 100 nodes. The queue is the
+cost: on 2026-11-25 a 1 x L40S `mit_preemptable` job sat PENDING (Priority) for over 3 h behind ~4,000
+queued jobs, while a `mit_preemptable` image build (CPU) started within seconds.
+
 ## Long campaigns on `mit_preemptable`
 
 `PARTITION=mit_preemptable` (4 GPUs per user, 48 h, `--requeue`, `--array=0-3%4`) or the default
