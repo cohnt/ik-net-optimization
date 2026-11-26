@@ -28,6 +28,7 @@ import torch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 
 from src.flow_loading import ARCH_FIELDS, LoadFlowSolver, SidecarPath, WriteArch  # noqa: E402
+from src.weights_io import SaveStateDictNpz  # noqa: E402
 
 
 def _provenance_commit():
@@ -66,7 +67,9 @@ def _provenance_commit():
         return {"commit": None}
 
 
-def export(ckpt_path: str, out_path: str, robot_name: str = None) -> dict:
+def export(ckpt_path: str, out_path: str, robot_name: str = None, fmt: str = "pkl") -> dict:
+    """`fmt` is "pkl" (the default, unchanged), "npz" (pickle-free, `src/weights_io.py`) or
+    "both". `out_path` names the `.pkl`; the `.npz` is its stem + ".npz" and shares its sidecar."""
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     hp = ckpt["hyper_parameters"]["base_hparams"]
     arch = dict(vars(hp))
@@ -87,9 +90,14 @@ def export(ckpt_path: str, out_path: str, robot_name: str = None) -> dict:
     print(f"global_step: {ckpt['global_step']}, tensors: {len(state_dict)}")
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    with open(out_path, "wb") as f:
-        pickle.dump(state_dict, f)
-    print(f"wrote {out_path} ({os.path.getsize(out_path) / 1e6:.1f} MB)")
+    if fmt in ("pkl", "both"):
+        with open(out_path, "wb") as f:
+            pickle.dump(state_dict, f)
+        print(f"wrote {out_path} ({os.path.getsize(out_path) / 1e6:.1f} MB)")
+    if fmt in ("npz", "both"):
+        npz_path = os.path.splitext(out_path)[0] + ".npz"
+        SaveStateDictNpz(npz_path, state_dict)
+        print(f"wrote {npz_path} ({os.path.getsize(npz_path) / 1e6:.1f} MB)")
 
     sidecar = WriteArch(out_path, arch, provenance={
         "source_checkpoint": os.path.abspath(ckpt_path),
@@ -126,9 +134,13 @@ if __name__ == "__main__":
     parser.add_argument("out_path", type=str)
     parser.add_argument("--robot_name", type=str, default=None,
                         help="Override/supply the robot the checkpoint was trained for")
+    parser.add_argument("--format", choices=("pkl", "npz", "both"), default="pkl",
+                        help="weights file(s) to write; out_path still names the .pkl, the .npz "
+                             "is beside it with the same stem (default pkl)")
     parser.add_argument("--skip_roundtrip", action="store_true")
     args = parser.parse_args()
 
-    arch = export(args.ckpt_path, args.out_path, robot_name=args.robot_name)
+    arch = export(args.ckpt_path, args.out_path, robot_name=args.robot_name, fmt=args.format)
     if not args.skip_roundtrip:
-        roundtrip(args.out_path, arch["robot_name"])
+        loaded = args.out_path if args.format != "npz" else os.path.splitext(args.out_path)[0] + ".npz"
+        roundtrip(loaded, arch["robot_name"])
