@@ -56,7 +56,6 @@ pre-sidecar cVAE checkpoints to be backwards-compatible with).
 
 import json
 import os
-import pickle
 import re
 
 import torch
@@ -64,6 +63,7 @@ from torch import nn
 
 from src.charts.base import Chart
 from src.flow_loading import SidecarPath, WriteArch
+from src.weights_io import LoadStateDict
 
 FAMILY = "cvae"
 POSE_DIM = 7
@@ -331,8 +331,7 @@ def LoadCVAEChart(robot_name, checkpoint, compile_model=None):
                          f"not {robot_name!r}")
     arch = {k: payload[k] for k in ARCH_FIELDS}
 
-    with open(checkpoint, "rb") as f:
-        state_dict = pickle.load(f)
+    state_dict = LoadStateDict(checkpoint)
     VerifyCVAEArch(arch, state_dict, source)
 
     robot = get_robot(robot_name)
