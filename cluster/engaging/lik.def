@@ -1,0 +1,121 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# learned-ik GPU image for MIT ORCD Engaging (Rocky 8, glibc 2.28: too old for Drake, hence a container).
+# Built ON Engaging, as a job, from this committed file (cluster/engaging/build_image_job.sh).
+#
+# DRAKE: the project's pin as of 2026-11-25 (Thomas): RELEASE 1.58.0, the noble install TARBALL (Drake on
+# PYTHONPATH, the layout SuperCloud's setup uses), verified against its published .sha256. Not the PyPI
+# wheel, and not a nightly (the 2026-09-18 nightly is gone: archived in cold storage, GET returns 403).
+# 1.58.0 carries PR 25002 (the NLopt options) and #25073 (CollisionChecker.CalcRobotClearances, which
+# AL-SVGD's svgd_collision_backend=clearances needs), so no separate crc venv exists here.
+# To move the pin, change ONLY the DRAKE_* variables below (cluster/engaging/plumb_check.py reads the
+# version and commit the image carries from /opt/lik/PIN.txt, written from them).
+#
+# The rest follows cluster/setup_supercloud.sh:
+#   * torch 2.14.0+cu126 (the build setup_supercloud.sh measured on SuperCloud). cu126, not cu128:
+#     cu128 has no sm_70, and cu126 lacks sm_100, so NO B200s. L40S (sm_89) and H200 (sm_90) run it.
+#   * the same pip pins as setup_supercloud.sh section 5; jrl from GitHub --no-deps (pinned to a commit
+#     here so a rebuild cannot drift); ikflow is the VENDORED FORK (third_party/ikflow of the staged
+#     tree), put on PYTHONPATH at run time, not installed in the image (as in fibre_array.sh).
+#   * the CPU jax/soromox stack for the GVS arm (jaxlib CPU only: the flow owns the GPU).
+# Nothing here is a credential; wandb is only the package (jobs run it offline).
+
+%files
+    constraints.txt /opt/lik/constraints.txt
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    # ---- THE DRAKE PIN: the only lines to change to move it ----
+    DRAKE_VERSION="1.58.0"
+    DRAKE_URL="https://github.com/RobotLocomotion/drake/releases/download/v${DRAKE_VERSION}/drake-${DRAKE_VERSION}-noble.tar.gz"
+    DRAKE_SHA256="91f5e2807b10b1ec117cf2037419d3dc50b8ba8a341f509f2d4696a9e27c63b9"
+    DRAKE_VERSION_TXT_COMMIT="09bc913cf1af0cdde31073d5f1f7f66ca35ee0d8"   # share/doc/drake/VERSION.TXT: "1.58.0 <commit>"
+
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates wget python3 python3-venv python3-dev \
+        libx11-6 libsm6 libglib2.0-0t64 libgl1 libglu1-mesa libegl1 libopengl0
+
+    # ---- Drake: the tarball must hash to DRAKE_SHA256 AND to the release's published .sha256 (fetched now);
+    # a tarball may be supplied as /drake.tar.gz (bound in by the build job) and gets the same checks.
+    mkdir -p /opt/lik && cd /opt/lik
+    if [ -f /drake.tar.gz ]; then
+        cp /drake.tar.gz drake.tar.gz
+    else
+        wget -q -O drake.tar.gz "$DRAKE_URL" || { echo "DRAKE DOWNLOAD FAILED: $DRAKE_URL"; exit 1; }
+    fi
+    ACTUAL=$(sha256sum drake.tar.gz | cut -d' ' -f1)
+    [ "$ACTUAL" = "$DRAKE_SHA256" ] || { echo "DRAKE CHECKSUM MISMATCH: want $DRAKE_SHA256 got $ACTUAL"; exit 1; }
+    PUBLISHED=$(wget -q -O - "$DRAKE_URL.sha256" | cut -d' ' -f1)
+    [ "$PUBLISHED" = "$DRAKE_SHA256" ] || { echo "PUBLISHED .sha256 '$PUBLISHED' != pinned $DRAKE_SHA256"; exit 1; }
+    tar xzf drake.tar.gz && rm -f drake.tar.gz
+    read -r GOT_VER GOT_COMMIT < /opt/lik/drake/share/doc/drake/VERSION.TXT
+    [ "$GOT_VER" = "$DRAKE_VERSION" ] && [ "$GOT_COMMIT" = "$DRAKE_VERSION_TXT_COMMIT" ] \
+        || { echo "VERSION.TXT says '$GOT_VER $GOT_COMMIT', pin is '$DRAKE_VERSION $DRAKE_VERSION_TXT_COMMIT'"; exit 1; }
+    # Drake's own runtime package list for noble (libfmt9, libspdlog1.12, ... come from here).
+    PKGS=$(find /opt/lik/drake/share/drake/setup -name 'packages-noble-binary.txt' | head -1)
+    [ -n "$PKGS" ] || { echo "no packages-noble-binary.txt in the tarball"; exit 1; }
+    grep -vE '^\s*(#|$)' "$PKGS" | xargs apt-get install -y --no-install-recommends
+
+    # ---- python venv, in setup_supercloud.sh's order
+    python3 -m venv /opt/lik/venv
+    P=/opt/lik/venv/bin/pip
+    # EVERY install runs under the constraints file (the workstation venv's pip freeze, see
+    # constraints.txt): nothing moves to a new release behind our back (setuptools 82 dropped pkg_resources,
+    # which ikflow imports). Each import check runs right after its own install step.
+    PY=/opt/lik/venv/bin/python
+    PI="$P install --no-cache-dir -c /opt/lik/constraints.txt"
+    $PI --index-url https://download.pytorch.org/whl/cu126 torch==2.14.0
+    $PY -c "import torch; assert torch.__version__ == '2.14.0+cu126', torch.__version__; print('torch ok', torch.version.cuda, torch.cuda.get_arch_list())"
+    $PY -c "import setuptools, pkg_resources; assert setuptools.__version__ == '78.1.0', setuptools.__version__; print('setuptools', setuptools.__version__, '+ pkg_resources ok')"
+    $PI numpy==2.5.2 klampt==0.10.1.post1 roma==1.6.1 \
+        more-itertools==11.1.0 FrEIA==0.2 tqdm==4.70.0 pyyaml==6.0.3 \
+        matplotlib==3.11.1 meshcat==0.3.2 PyOpenGL==3.1.10
+    $PY -c "import numpy, klampt, roma, FrEIA, tqdm, yaml, matplotlib, meshcat, OpenGL, pkg_resources; assert numpy.__version__ == '2.5.2'; print('base deps ok')"
+    $PI nvidia-ml-py
+    $PY -c "import pynvml; print('nvidia-ml-py ok')"
+    $PI "jax[cpu]==0.11.2" soromox==0.5.0 optimistix==0.1.0 \
+        equinox==0.13.8 diffrax==0.7.2 lineax==0.1.1
+    $PY -c "import jax, soromox, optimistix, equinox, diffrax, lineax; assert jax.default_backend() == 'cpu'; print('jax stack ok', jax.__version__)"
+    $PI pytorch-lightning==2.6.5 wandb==0.29.0
+    $PY -c "import pytorch_lightning, wandb; print('lightning', pytorch_lightning.__version__, 'wandb', wandb.__version__)"
+    # jrl: --no-deps (its metadata pins torch==2.0.1); pinned to the workstation's commit.
+    # (github.com timed out from one compute node on 2026-11-25: retry the fetch, with a long timeout.)
+    n=0
+    until $PI --no-deps --retries 10 --timeout 60 \
+        "jrl @ https://github.com/jstmn/Jrl/archive/5032d22db0608d36729c41d974d6bc8f9c5b41cf.tar.gz"; do
+        n=$((n + 1)); [ "$n" -lt 4 ] || { echo "jrl fetch failed 4 times"; exit 1; }
+        echo "jrl fetch failed, retrying in 60 s"; sleep 60
+    done
+    $PY -c "import jrl, jrl.robots; print('jrl ok', jrl.__file__)"
+    # Drift guard: every package pinned by the constraints file that got installed has the pinned version.
+    $PY - <<'PYGUARD'
+import re
+from importlib import metadata
+bad = []
+for line in open("/opt/lik/constraints.txt"):
+    m = re.match(r"^([A-Za-z0-9_.-]+)==(\S+)$", line.strip())
+    if not m:
+        continue
+    try:
+        have = metadata.version(m.group(1))
+    except metadata.PackageNotFoundError:
+        continue
+    if have != m.group(2):
+        bad.append((m.group(1), have, m.group(2)))
+assert not bad, f"installed != constrained: {bad}"
+print("every installed package matches the constraints file")
+PYGUARD
+    PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages /opt/lik/venv/bin/python -c "import pydrake; from pydrake.solvers import IpoptSolver; from pydrake.planning import CollisionChecker; assert IpoptSolver().available(); assert hasattr(CollisionChecker, 'CalcRobotClearances'); print('pydrake ok', pydrake.__file__)"
+    /opt/lik/venv/bin/pip freeze > /opt/lik/pip-freeze.txt
+    echo "drake $DRAKE_VERSION $DRAKE_VERSION_TXT_COMMIT $DRAKE_SHA256" > /opt/lik/PIN.txt
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+%environment
+    export PATH=/opt/lik/venv/bin:$PATH
+    export PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages
+
+%labels
+    Project learned-ik
+    DrakePin 1.58.0 09bc913cf1af0cdde31073d5f1f7f66ca35ee0d8

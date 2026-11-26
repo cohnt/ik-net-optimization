@@ -1,0 +1,6 @@
+# Engaging requeue test (mit_preemptable): three items, each 4 targets x 2 guesses, so a `scontrol requeue` of
+# the running task lands mid-item. Expect after the requeue: the stale claim released (job_lib.sh), the item
+# relaunched, "resuming" from its per-cell JSONL, and all three items .done. Plumbing, not a measurement.
+eg_RQ_a|-|scripts/panda/panda_benchmark.py|--targets 4 --guesses 2 --wall-time 45.0 --arms learned,numerical --seed 11 --compile --tag eg_RQ_a --task mug --start paired --solver ipopt --target-placement shelf --config latent --set correction_cost_weight=10.0 --scene hardened --shelf-inset 0.1 --set flow_cuda_graph=True --set max_iter=1000000
+eg_RQ_b|-|scripts/panda/panda_benchmark.py|--targets 4 --guesses 2 --wall-time 45.0 --arms learned,numerical --seed 12 --compile --tag eg_RQ_b --task mug --start paired --solver ipopt --target-placement shelf --config latent --set correction_cost_weight=10.0 --scene hardened --shelf-inset 0.1 --set flow_cuda_graph=True --set max_iter=1000000
+eg_RQ_c|-|scripts/panda/panda_benchmark.py|--targets 4 --guesses 2 --wall-time 45.0 --arms learned,numerical --seed 13 --compile --tag eg_RQ_c --task mug --start paired --solver ipopt --target-placement shelf --config latent --set correction_cost_weight=10.0 --scene hardened --shelf-inset 0.1 --set flow_cuda_graph=True --set max_iter=1000000
