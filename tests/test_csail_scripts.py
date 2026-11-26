@@ -259,7 +259,8 @@ def t_submit():
         expect("a second GPU kind for the same campaign is refused", r, 5, "never mixes GPU types")
         check(len(sb()) == 1, "and makes no sbatch call")
         # h200: the lab node is excluded; recorded bad nodes and EXCLUDE_NODES join the one --exclude
-        open(fx.CSR + "/bad_nodes.log", "w").write("2026-11-26 node-bad job 9: nvidia-smi failed\n")
+        # jobs before the hostname -s fix logged the FQDN (torralba-3090-1.csail.mit.edu): it must still be excluded
+        open(fx.CSR + "/bad_nodes.log", "w").write("2026-11-26 node-bad.csail.mit.edu job 9: nvidia-smi failed\n")
         r = fx.script("submit.sh", "cluster/m_two.txt", "img", "1", GPU="h200", EXCLUDE_NODES="nodeX")
         expect("h200 submit succeeds", r, 0, "JOB=4242")
         line = sb()[1]

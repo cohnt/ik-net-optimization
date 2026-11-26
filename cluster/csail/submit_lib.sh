@@ -11,7 +11,8 @@ csail_resolve_gpu() {
     EXPECT_GPU=$(csail_gpu_regex "$kind") || return 2
     ex=$(printf '%s\n' "$words" | tr ' ' '\n' | sed -n 's/^--exclude=//p' | tr '\n' ',')
     GPU_OPTS=$(printf '%s\n' "$words" | tr ' ' '\n' | grep -v '^--exclude=' | tr '\n' ' ')
-    bad=$(cs_run "awk '{print \$2}' $CS_ROOT/bad_nodes.log 2>/dev/null | sort -u" 2>/dev/null | grep -E '^[a-z0-9-]+$' | tr '\n' ',')
+    # hostname may be the FQDN (torralba-3090-1.csail.mit.edu); Slurm's node name is the part before the first dot
+    bad=$(cs_run "awk '{print \$2}' $CS_ROOT/bad_nodes.log 2>/dev/null" 2>/dev/null | sed 's/\..*//' | grep -E '^[a-z0-9-]+$' | sort -u | tr '\n' ',')
     ex="$ex$bad${EXCLUDE_NODES:+$EXCLUDE_NODES,}"
     ex="${ex%,}"
     [ -z "$ex" ] || GPU_OPTS="$GPU_OPTS --exclude=$ex"
