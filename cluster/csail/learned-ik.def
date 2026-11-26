@@ -77,25 +77,25 @@ From: {{ BASE }}
     # import check of what it installed, so a missing package or system library fails within minutes, not after an hour.
     python3 -m venv /opt/lik/venv
     PIP="/opt/lik/venv/bin/pip --disable-pip-version-check --no-cache-dir"
-    PIPC="$PIP -c /opt/lik/constraints.txt"
+    pipc() { $PIP install -c /opt/lik/constraints.txt "$@"; }   # `-c` is an option of `pip install`, not of pip
     PY=/opt/lik/venv/bin/python
     export PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages CUDA_VISIBLE_DEVICES=
     $PIP install --quiet --upgrade pip
     # setuptools==78.1.0 (the laptop venv's): ikflow does `import pkg_resources`, which setuptools >= 81 no longer ships.
-    $PIPC install --quiet setuptools==78.1.0 numpy==2.5.2 klampt==0.10.1.post1 roma==1.6.1 \
+    pipc --quiet setuptools==78.1.0 numpy==2.5.2 klampt==0.10.1.post1 roma==1.6.1 \
         more-itertools==11.1.0 FrEIA==0.2 tqdm==4.70.0 pyyaml==6.0.3 \
         matplotlib==3.11.1 meshcat==0.3.2 PyOpenGL==3.1.10 nvidia-ml-py
     $PY -c "import pkg_resources, numpy, yaml, tqdm, more_itertools, meshcat, OpenGL, matplotlib, pynvml, klampt, roma, FrEIA; \
 import pydrake.all, pydrake.planning, pydrake.solvers; print('fail-fast imports ok (klampt, pydrake, small deps)')"
 
     echo "===== [4/6] torch, then the rest of setup_supercloud.sh step 5 ====="
-    $PIPC install --quiet --index-url https://download.pytorch.org/whl/cu126 "{{ TORCH_SPEC }}"
+    pipc --quiet --index-url https://download.pytorch.org/whl/cu126 "{{ TORCH_SPEC }}"
     $PY -c "import torch; print('torch', torch.__version__, torch.version.cuda); assert torch.__version__ == '2.14.0+cu126', torch.__version__"
     # CPU jaxlib only: the flow owns the GPU.
-    $PIPC install --quiet "jax[cpu]==0.11.2" soromox==0.5.0 optimistix==0.1.0 \
+    pipc --quiet "jax[cpu]==0.11.2" soromox==0.5.0 optimistix==0.1.0 \
         equinox==0.13.8 diffrax==0.7.2 lineax==0.1.1
     $PY -c "import jax, soromox, optimistix, equinox, diffrax, lineax; assert jax.default_backend() == 'cpu'; print('jax stack ok')"
-    $PIPC install --quiet pytorch-lightning==2.6.5 wandb==0.29.0
+    pipc --quiet pytorch-lightning==2.6.5 wandb==0.29.0
     $PY -c "import pytorch_lightning, wandb; import torch; assert torch.__version__ == '2.14.0+cu126'; print('lightning/wandb ok, torch unchanged')"
     # --no-deps on jrl and ikflow: their metadata pins torch==2.0.1 and would replace the cu126 build.
     # GitHub is reachable but flaky from compute nodes (the Engaging build saw connect timeouts): bounded retry, same pin.

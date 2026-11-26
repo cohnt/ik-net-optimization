@@ -421,6 +421,12 @@ def t_dry_runs():
         used = set(re.findall(r"\{\{ (\w+) \}\}", text))
         check(used <= set(dargs), "every {{ VAR }} of the .def has a %arguments default", str(used - set(dargs)))
         post = re.sub(r"\{\{ (\w+) \}\}", lambda m: dargs.get(m.group(1), ""), text.split("%post\n")[1].split("\n%environment")[0])
+        # build 4 died on `pip -c ...` ("no such option: -c": -c belongs to `pip install`): pip's own parser decides
+        check(not re.search(r"\$PIP\w* +-c |PIPC", post) and re.search(r'pipc\(\) \{ \$PIP install -c /opt/lik/constraints.txt "\$@"; \}', post),
+              "the constraints option is passed to `pip install` (function pipc), never to bare pip")
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-c", f"{REPO}/cluster/csail/constraints.txt", "--help"],
+                           capture_output=True, text=True)
+        check(r.returncode == 0 or "No module named pip" in r.stderr, "pip install -c <constraints> parses", r.stderr[-300:])
         pf = fx.S + "/post.sh"
         open(pf, "w").write(post)
         r = subprocess.run(["bash", "-n", pf], capture_output=True, text=True)
