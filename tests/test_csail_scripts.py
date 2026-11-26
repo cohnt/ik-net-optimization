@@ -62,7 +62,19 @@ case "$args" in
 esac
 exit 0
 ''',
-    "nvidia-smi": '#!/bin/bash\necho "NVIDIA L40S, 580.0, 00000000:01:00.0"\n',
+    "nvidia-smi": '#!/bin/bash\n[ -f $S/gpu_broken ] && { echo "Failed to initialize NVML: Driver/library version mismatch"; exit 9; }\n'
+                  'echo "NVIDIA L40S, 580.0, 00000000:01:00.0"\n',
+    "scontrol": r'''#!/bin/bash
+# `show job -o <id>`: one record whose ExcNodeList is $S/excnodes ((null) without it); `show hostnames <list>`:
+# a plain comma list, one per line; `update ... ExcNodeList=X`: stores X, or fails if $S/scontrol_update_fail exists.
+echo "scontrol $*" >> $S/scontrol.log
+case "$1 $2" in
+  "show job") echo "JobId=$4 ArrayJobId=$4 ExcNodeList=$(cat $S/excnodes 2>/dev/null || echo '(null)') Partition=p" ;;
+  "show hostnames") echo "$3" | tr ',' '\n' ;;
+  update*) [ -f $S/scontrol_update_fail ] && { echo "slurm_update error: Job is no longer pending execution"; exit 1; }
+           for a; do case "$a" in ExcNodeList=*) echo "${a#ExcNodeList=}" > $S/excnodes ;; esac; done ;;
+esac
+''',
     "apptainer": r'''#!/bin/bash
 echo "apptainer $*" >> $S/apptainer.log
 [ "$1" = --version ] && { echo "apptainer version 1.5.3"; exit 0; }
@@ -577,7 +589,64 @@ def t_guards():
         fx.close()
 
 
-GROUPS = {"fast": [t_stage, t_submit, t_job, t_preempt, t_collect, t_dry_runs, t_guards]}
+def t_blackhole():
+    """A GPU fault adds the node to the task's OWN array's ExcNodeList (OBST 3212436 drained 46 of 48 tasks onto
+    torralba-3090-3 in a minute), never twice, fail-safe when scontrol refuses, and not at all outside an array."""
+    fx = Fx()
+    try:
+        r = staged(fx)
+        sha = [ln for ln in r[1].splitlines() if ln.startswith("EXPECT_MANIFEST_SHA=")][0].split("=")[1]
+        open(fx.S + "/gpu_broken", "w").close()
+        hn = f"{fx.bin}/hostname"
+        open(hn, "w").write('#!/bin/bash\n[ "$1" = -s ] && echo node-x || echo node-x.csail.mit.edu\n')
+        os.chmod(hn, 0o755)
+        bad = f"{fx.CSR}/bad_nodes.log"
+        exc = fx.S + "/excnodes"
+
+        def job(sid, **kw):
+            fx.clear("scontrol.log")
+            p = subprocess.run(["bash", spool(fx, "job.sh")], env=fx.env(**job_env(fx, sid, 0, EXPECT_MANIFEST_SHA=sha, **kw)),
+                               capture_output=True, text=True, timeout=120)
+            return p.returncode, p.stdout + p.stderr, [ln for ln in fx.log("scontrol.log") if ln.startswith("scontrol update")]
+
+        arr = dict(SLURM_ARRAY_JOB_ID="950", SLURM_ARRAY_TASK_ID="1")
+        open(exc, "w").write("improbablex001,torralba-3090-1\n")
+        rc, out, upd = job(951, **arr)
+        check(rc == 3 and "GPU FAULT" in out and "excluded node-x from array 950" in out
+              and upd == ["scontrol update JobId=950 ExcNodeList=improbablex001,torralba-3090-1,node-x"]
+              and open(exc).read().strip() == "improbablex001,torralba-3090-1,node-x",
+              "a GPU fault appends its node to its own array's ExcNodeList and exits 3", f"rc={rc} upd={upd}\n{out[-1000:]}")
+        check(open(bad).read().splitlines()[-1].split()[1] == "node-x", "... and still records the node in bad_nodes.log")
+        check(not fx.log("ran.log"), "... and runs no item")
+        rc, out, upd = job(952, **dict(arr, SLURM_ARRAY_TASK_ID="2"))
+        check(rc == 3 and "already excludes node-x" in out and not upd, "a second fault on the same node updates nothing", out[-800:])
+        os.remove(exc)
+        open(fx.S + "/scontrol_update_fail", "w").close()
+        n = len(open(bad).read().splitlines())
+        rc, out, upd = job(953, **dict(arr, SLURM_ARRAY_TASK_ID="3"))
+        check(rc == 3 and upd == ["scontrol update JobId=950 ExcNodeList=node-x"] and "returned nonzero (logged only" in out
+              and len(open(bad).read().splitlines()) == n + 1,
+              "a refused update is only logged: exit 3, bad_nodes.log appended", f"rc={rc} upd={upd}\n{out[-800:]}")
+        os.remove(fx.S + "/scontrol_update_fail")
+        rc, out, upd = job(954)
+        check(rc == 3 and "not an array job" in out and not upd, "outside an array no ExcNodeList update is tried", out[-800:])
+        # a follow-on array chained to the one it continues: DEPENDENCY passes through to sbatch, validated
+        sb = lambda: fx.log("sbatch.log")  # noqa: E731
+        r = fx.script("submit.sh", "cluster/m_six.txt", "img", "4", GPU="l40s", MAX_RUNNING="2", DEPENDENCY="afterany:3212436")
+        check(r[0] == 0 and "--array=0-3%2 --dependency=afterany:3212436" in sb()[-1] and "--dependency=afterany:3212436" in r[1],
+              "DEPENDENCY=afterany:<id> reaches sbatch and the PLAN line", r[1][-600:] + (sb() or [""])[-1])
+        n = len(sb())
+        for badd in ("afterany:abc", "afterany", "afterany:1;rm", "--wrap=x"):
+            expect(f"DEPENDENCY={badd!r} is refused", fx.script("submit.sh", "cluster/m_six.txt", "img", "1", GPU="l40s", DEPENDENCY=badd),
+                   2, "bad DEPENDENCY")
+        check(len(sb()) == n, "... with no sbatch call")
+        r = fx.script("submit.sh", "cluster/m_six.txt", "img", "1", GPU="l40s")
+        check(r[0] == 0 and "--dependency" not in sb()[-1], "no DEPENDENCY, no --dependency", sb()[-1])
+    finally:
+        fx.close()
+
+
+GROUPS = {"fast": [t_stage, t_submit, t_job, t_preempt, t_collect, t_dry_runs, t_guards, t_blackhole]}
 
 
 def main():
