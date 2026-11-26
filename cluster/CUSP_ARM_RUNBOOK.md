@@ -63,3 +63,9 @@ status-quo-style table and the time-matched report.
 | when | job | what | state |
 | --- | --- | --- | --- |
 | 2026-11-25 17:59 | 6330999 | `lik_ds_cusp7`, 25M dataset, staged commit 3794fd7 | COMPLETED 18:06:49, 6m57s, .DONE present |
+| 2026-11-25 18:10 | 6331107 | `cusp_train_smoke_cusp7_n4`, 200 steps, 1 volta node | ran 20:02-20:11 (Priority wait ~2 h); 200 steps, ckpts 100/200, both V100s, val_l2 0.44, pole_gt1000 0 |
+| 2026-11-25 20:22 | 6332384 | `cusp_train_cusp7_n6`, 620k steps, 4 volta nodes, 20 h wall, after 6331107 | PENDING (Priority) |
+| 2026-11-25 20:22 | 6332385 | `cusp_train_cusp7_n4`, as above, afterany 6332384 | PENDING (Dependency) |
+
+ikflow comes from `~/learned-ik/repo/third_party/ikflow` (the symlinked venv's editable install),
+not from this tree's staged copy; byte-identical at 20:21 on 2026-11-25. Re-check before n4 starts.
