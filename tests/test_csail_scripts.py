@@ -174,6 +174,14 @@ class Fx:
         shutil.rmtree(self.S, ignore_errors=True)
 
 
+def spool(fx, name):
+    """Slurm runs a COPY of the batch script from its spool dir (a bug that cost job 3204676: BASH_SOURCE-relative
+    paths break). Every job payload is run from such a copy here, never in place."""
+    d = tempfile.mkdtemp(dir=fx.S, prefix="spool_")
+    shutil.copy(f"{fx.root()}/repo/cluster/csail/{name}", d + "/slurm_script")
+    return d + "/slurm_script"
+
+
 def expect(name, res, rc, *msgs, absent=()):
     got, out = res
     check(got == rc and all(m in out for m in msgs) and not any(a in out for a in absent), name,
@@ -307,7 +315,7 @@ def t_job():
         open(st + "/i6.done", "w").close()
         os.makedirs(st + "/i6.claim")
         env = job_env(fx, 500, 1, EXPECT_MANIFEST_SHA=sha)
-        p = subprocess.run(["bash", f"{fx.root()}/repo/cluster/csail/job.sh"], env=fx.env(**env), capture_output=True, text=True, timeout=120)
+        p = subprocess.run(["bash", spool(fx, "job.sh")], env=fx.env(**env), capture_output=True, text=True, timeout=120)
         out = p.stdout + p.stderr
         check(p.returncode == 0, "job.sh exits 0", out)
         ran = [ln.split()[1] for ln in fx.log("ran.log") if ln.startswith("start")]
@@ -321,10 +329,10 @@ def t_job():
         check("gpu: NVIDIA L40S" in mr and "cpu:" in mr and "host " in mr, "the machine record names node, GPU and CPU model", mr)
         check(os.path.exists(f"{fx.root()}/logs/500/a1.worker_0.log"), "the worker log is copied next to the results")
         # a GPU of the wrong kind fails closed
-        r = subprocess.run(["bash", f"{fx.root()}/repo/cluster/csail/job.sh"], env=fx.env(**dict(env, EXPECT_MANIFEST_SHA="0" * 64)),
+        r = subprocess.run(["bash", spool(fx, "job.sh")], env=fx.env(**dict(env, EXPECT_MANIFEST_SHA="0" * 64)),
                            capture_output=True, text=True)
         check(r.returncode == 1 and STOP in r.stdout + r.stderr, "a job whose manifest hash is not the anchored one is STOP")
-        r = subprocess.run(["bash", f"{fx.root()}/repo/cluster/csail/job.sh"], env=fx.env(**dict(env, IMAGE_SHA256="1" * 64)),
+        r = subprocess.run(["bash", spool(fx, "job.sh")], env=fx.env(**dict(env, IMAGE_SHA256="1" * 64)),
                            capture_output=True, text=True)
         check(r.returncode == 1 and "the image" in r.stdout + r.stderr and "STOP" in r.stdout + r.stderr, "an image that hashes otherwise is STOP")
     finally:
@@ -338,7 +346,7 @@ def t_preempt():
         r = staged(fx)
         sha = [ln for ln in r[1].splitlines() if ln.startswith("EXPECT_MANIFEST_SHA=")][0].split("=")[1]
         env = fx.env(**job_env(fx, 600, 0, EXPECT_MANIFEST_SHA=sha, SLOW_ITEM="i2"))
-        p = subprocess.Popen(["bash", f"{fx.root()}/repo/cluster/csail/job.sh"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        p = subprocess.Popen(["bash", spool(fx, "job.sh")], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(300):
             if os.path.exists(fx.S + "/slow.started"):
                 break
@@ -354,7 +362,7 @@ def t_preempt():
         subprocess.run(["pkill", "-f", "sleep 25"], capture_output=True)
         fx.clear("ran.log")
         env2 = fx.env(**job_env(fx, 600, 1, EXPECT_MANIFEST_SHA=sha))      # requeued: same id, RESTART_COUNT 1
-        p2 = subprocess.run(["bash", f"{fx.root()}/repo/cluster/csail/job.sh"], env=env2, capture_output=True, text=True, timeout=120)
+        p2 = subprocess.run(["bash", spool(fx, "job.sh")], env=env2, capture_output=True, text=True, timeout=120)
         o2 = p2.stdout + p2.stderr
         ran = [ln.split()[1] for ln in fx.log("ran.log") if ln.startswith("start")]
         check(p2.returncode == 0 and "released stale claim i2" in o2 and "i2" in ran, "the requeued attempt releases i2 and re-runs it", o2[-1500:])
@@ -438,7 +446,7 @@ def t_dry_runs():
         sha = [ln for ln in r[1].splitlines() if ln.startswith("EXPECT_MANIFEST_SHA=")][0].split("=")[1]
         root = fx.root()
         env = job_env(fx, 700, 0, EXPECT_MANIFEST_SHA=sha)
-        p = subprocess.run(["bash", f"{root}/repo/cluster/csail/check_job.sh"], env=fx.env(**env), cwd=root,
+        p = subprocess.run(["bash", spool(fx, "check_job.sh")], env=fx.env(**env), cwd=root,
                            capture_output=True, text=True, timeout=120)
         check(p.returncode == 0 and "check OK" in p.stdout, "check_job.sh dry run reaches its end", p.stdout[-1200:] + p.stderr[-600:])
         check(open(f"{root}/check.700.DONE").read().strip() == "OK", "check sentinel says OK")
@@ -457,7 +465,7 @@ def t_dry_runs():
         os.makedirs(fx.CSR + "/cache", exist_ok=True)
         shutil.copy(fake_tar, f"{fx.CSR}/cache/drake-1.58.0-noble.tar.gz")
         benv = fx.env(LIK_ROOT=root, LIK_CS_ROOT=fx.CSR, EXPECT_MANIFEST_SHA=sha2, SLURM_JOB_ID="701")
-        p = subprocess.run(["bash", f"{root}/repo/cluster/csail/build_image_job.sh"], env=benv, cwd=root,
+        p = subprocess.run(["bash", spool(fx, "build_image_job.sh")], env=benv, cwd=root,
                            capture_output=True, text=True, timeout=120)
         out = p.stdout + p.stderr
         done = [f for f in os.listdir(fx.CSR + "/images") if f.endswith(".DONE")]
@@ -472,7 +480,7 @@ def t_dry_runs():
         os.remove(f"{fx.CSR}/cache/drake-1.58.0-noble.tar.gz")
         open(f"{fx.bin}/curl", "w").write("#!/bin/bash\nexit 22\n")
         os.chmod(f"{fx.bin}/curl", 0o755)
-        p = subprocess.run(["bash", f"{root}/repo/cluster/csail/build_image_job.sh"], env=dict(benv, SLURM_JOB_ID="702"), cwd=root,
+        p = subprocess.run(["bash", spool(fx, "build_image_job.sh")], env=dict(benv, SLURM_JOB_ID="702"), cwd=root,
                            capture_output=True, text=True, timeout=120)
         check(p.returncode == 20 and "BUILD FAILED" in p.stdout + p.stderr, "an unfetchable pin fails with exit 20", p.stdout[-600:])
     finally:

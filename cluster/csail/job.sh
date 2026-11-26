@@ -27,7 +27,8 @@
 # Exit: 0 when no item of the manifest is left unclaimed-and-unfinished by this task; 1 if run_items reported a
 # failed item; 3 GPU fault; 1 on an integrity STOP.
 set -uo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Slurm runs a COPY of this script from its spool directory, so BASH_SOURCE says nothing about the tree: use the root.
+HERE="${LIK_ROOT:?LIK_ROOT unset}/repo/cluster/csail"
 . "$HERE/job_lib.sh"
 lik_start
 lik_need MANIFEST

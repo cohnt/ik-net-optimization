@@ -7,7 +7,8 @@
 # (ikflow is the vendored fork); the hardened Panda scene builds with the image's warmed drake_models cache.
 # The sentinel $LIK_ROOT/check.<jobid>.DONE says "OK" only if everything passed.
 set -uo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Slurm runs a COPY of this script from its spool directory, so BASH_SOURCE says nothing about the tree: use the root.
+HERE="${LIK_ROOT:?LIK_ROOT unset}/repo/cluster/csail"
 . "$HERE/job_lib.sh"
 lik_start
 lik_end_epoch
