@@ -140,3 +140,15 @@ Manifest or image hash mismatch; an unlisted code file or symlink in the tree; a
 unexpected job, file or notice under the account; a `collect.sh` archive with links. Read what the check lists, fix the
 script (committed), restage, and tell Thomas. The integrity checks of 2026-11-13 had only been tested against a stub:
 expect a false STOP the first time and fix the script, do not loosen the check.
+
+## Verified end to end (2026-11-26, branch cluster-csail)
+
+Image build job 3203882 (tig-cpu, 1 h 56 min: apt ~25 min and pip ~40 min on NFS, mksquashfs ~2 h of that is the 4.5 GB SIF
+write; allow 3 h): unprivileged, no `--fakeroot` (no `/etc/subuid` entry; apptainer 1.5.5 falls back to a root-mapped
+namespace and runs `%post` under fakeroot). Check job 3204758 (RTX 3090, EPYC 7773X): torch 2.14.0+cu126, Drake 1.58.0
+`09bc913c`, `CalcRobotClearances`, vendored ikflow, hardened Panda scene. Smoke 3204770 (2 items) and a `scontrol requeue`
+of that same job: attempt 0 was SIGTERMed mid-item (logs saved), attempt 1 (same job id, ~9 min later on the 3090
+queue) released the stale claim, resumed `csail_smoke_a` from its cell JSONL (`metadata.resume`: `records_loaded` 2,
+`killed_cell` null) and finished both items. Lessons that shaped the scripts, so they are not repeated: Slurm runs a COPY
+of the batch script (never locate the tree from `BASH_SOURCE`); `pip -c` belongs to `pip install`; roma/FrEIA need torch
+installed first; ikflow is a namespace package; run the `%post` in docker (`--cpus=1 --memory=3g`) before any build.
