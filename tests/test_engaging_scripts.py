@@ -267,7 +267,7 @@ def t_hardware_pin():
 STUBS = {
     "apptainer": '#!/bin/bash\necho "apptainer $*" >> "$S/apptainer.log"\nif [ "$1" = build ]; then\n  args=("$@"); out="${args[$(( $# - 2 ))]}"; echo sif > "$out"\nfi\nexit 0\n',
     "nvidia-smi": "#!/bin/bash\n[ \"$1\" = -L ] && echo 'GPU 0: NVIDIA L40S' || echo 'NVIDIA L40S'\n",
-    "squeue": "#!/bin/bash\nexit 0\n",
+    "squeue": "#!/bin/bash\necho \"squeue $*\" >> \"$S/squeue.log\"\n[[ \"$*\" == *%L* ]] && echo \"${SQ_OUT-00:59:00}\"\nexit 0\n",
     "scontrol": "#!/bin/bash\necho scontrol \"$@\"\n",
 }
 
@@ -292,8 +292,8 @@ def t_job_dryrun():
         man_sha = subprocess.run(f"sha256sum < {croot}/repo/.staged-manifest.sha256", shell=True, capture_output=True, text=True).stdout.split()[0]
         os.makedirs(os.path.join(eb, "home-cache", ".cache", "ikflow"))
         env = dict(LIK_CROOT="lik-engaging/c-" + fx.commit[:12], EXPECT_MANIFEST_SHA=man_sha, EXPECT_SIF_SHA=sif_sha,
-                   SLURM_JOB_ID="900", SLURM_ARRAY_TASK_ID="0", SLURM_RESTART_COUNT="1", SLURM_JOB_NAME="lik_test",
-                   LIK_EXPECT_GPU="L40S", LIK_EXPECT_CPU="", ITEM_TIMEOUT="3600", USER="tcohn", EXPECT_X="1")
+                   SLURM_JOB_ID="900", SLURM_ARRAY_JOB_ID="900", SLURM_ARRAY_TASK_ID="0", SLURM_RESTART_COUNT="1", SLURM_JOB_NAME="lik_test",
+                   LIK_EXPECT_GPU="L40S", LIK_EXPECT_CPU="", ITEM_TIMEOUT="1200", USER="tcohn", EXPECT_X="1")
         for job, extra in (("build_image_job.sh", {}), ("plumb_job.sh", {}),
                            ("bench_job.sh", {"MANIFEST": "cluster/engaging/manifest_engaging_smoke.txt"})):
             r = subprocess.run(["bash", "-n", f"{croot}/repo/cluster/engaging/{job}"], capture_output=True, text=True)
@@ -322,6 +322,12 @@ def t_job_dryrun():
                 check(open(os.path.join(eb, "plumb.DONE")).read().startswith("OK "), "dry run: plumb wrote its OK sentinel")
             if job == "bench_job.sh":
                 check("released stale claim" in r.stdout, "dry run: the requeued job released its own stale claim", r.stdout[-800:])
+                sq = open(os.path.join(fx.S, "squeue.log")).read()
+                check("-j 900_0 -o %L" in sq and "job wall left at start: 00:59:00 (squeue -j 900_0)" in r.stdout,
+                      "dry run: an array task reads its wall with squeue -j <array>_<task> (not the array id, which lists every task) and logs it", sq + r.stdout[-600:])
+                r3 = fx.sh(f"bash {croot}/repo/cluster/engaging/bench_job.sh", dict(env, MANIFEST="cluster/engaging/manifest_engaging_smoke.txt", SQ_OUT="00:59:0001:00:00"), cwd=croot)
+                check(r3.returncode == 3 and "FATAL: cannot read this job's remaining wall" in r3.stderr,
+                      "dry run: an unreadable remaining wall (garbage squeue output) fails loudly, rc 3, instead of meaning unlimited", r3.stdout[-300:] + r3.stderr[-400:])
                 check(os.path.exists(os.path.join(croot, "state", "manifest_engaging_smoke", "eg_SMOKE_panda_mug_ipopt.done")),
                       "dry run: the item ran through the worker and is .done")
                 own = open(os.path.join(croot, "state", "manifest_engaging_smoke", "eg_SMOKE_panda_mug_ipopt.claim", "owner")).read()

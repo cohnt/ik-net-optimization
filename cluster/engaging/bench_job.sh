@@ -32,6 +32,17 @@ ln -sfn "$EB/home-cache" "$LIK_CROOT/home"
 
 export LEARNED_IK_ROOT="$LIK_CROOT" TEST_PYTHON="$REPO/cluster/engaging/py_in_image.sh" PROCS=1 MPS=0
 export LIK_TAG_SUFFIX="_j${SLURM_JOB_ID:-0}"
+## run_items.sh refuses to claim an item the job's remaining wall cannot cover, and reads that wall with
+## `squeue -j`. For an array task the spec must be <array id>_<task> (the first task's SLURM_JOB_ID is the array
+## id, and `squeue -j <array id>` lists every task, concatenating their %L into garbage); and an unreadable
+## remaining wall must FAIL LOUDLY here, never silently mean "unlimited".
+[ -z "${SLURM_ARRAY_JOB_ID:-}" ] || export LIK_SQUEUE_JOB="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+WALL_LEFT="$(squeue -h -j "${LIK_SQUEUE_JOB:-${SLURM_JOB_ID:-}}" -o %L 2>/dev/null | tr -d '[:space:]')"
+if ! [[ "$WALL_LEFT" =~ ^([0-9]+-)?([0-9]+:)?[0-9]+:[0-9]+$ ]]; then
+    echo "FATAL: cannot read this job's remaining wall (squeue -j ${LIK_SQUEUE_JOB:-${SLURM_JOB_ID:-}} -o %L gave '${WALL_LEFT}'); run_items.sh would treat it as unlimited" >&2
+    exit 3
+fi
+echo "job wall left at start: $WALL_LEFT (squeue -j ${LIK_SQUEUE_JOB:-$SLURM_JOB_ID})"
 export ITEM_TIMEOUT="${ITEM_TIMEOUT:-28800}"
 cd "$REPO" || exit 2
 bash "$REPO/cluster/run_items.sh"

@@ -75,7 +75,10 @@ PinGpu() {   ## $1 = worker index; empty $SLURM_GPUS means "no GPU was allocated
 JobSecondsLeft() {
     [ -n "${SLURM_JOB_ID:-}" ] || return 0
     command -v squeue >/dev/null 2>&1 || return 0
-    local L; L="$(squeue -h -j "$SLURM_JOB_ID" -o %L 2>/dev/null | tr -d '[:space:]')"
+    ## LIK_SQUEUE_JOB (unset on SuperCloud): the squeue job spec of THIS task. For an array task it must be
+    ## <array id>_<task>: `squeue -j <the array's id>` lists EVERY task of the array (the first task's
+    ## SLURM_JOB_ID IS the array id), whose %L values concatenate into garbage (cluster/engaging/bench_job.sh).
+    local L; L="$(squeue -h -j "${LIK_SQUEUE_JOB:-$SLURM_JOB_ID}" -o %L 2>/dev/null | tr -d '[:space:]')"
     case "$L" in
         ""|UNLIMITED|NOT_SET|INVALID) return 0 ;;
     esac
