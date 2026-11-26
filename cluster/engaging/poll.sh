@@ -28,7 +28,9 @@ if [ "${1:-}" = "wait" ]; then
     J="${2:?usage: poll.sh wait <jobid>}"
     while eg_status; do
         ## A failed squeue (slurmctld socket timeouts happen) is NOT "left the queue": only an OK, empty answer is.
-        out=$(eg_run "squeue -h -j $J -o '%i %t %M %R' 2>&1; test \${PIPESTATUS[0]} -eq 0") || { echo "$(date -Is) squeue failed ($out); retrying"; sleep 60; continue; }
+        out=$(eg_run "squeue -h -j $J -o '%i %t %M %R' 2>&1; test \${PIPESTATUS[0]} -eq 0") || {
+            case "$out" in *"Invalid job id"*) echo "job $J has left the queue (purged: Invalid job id)"; break ;; esac
+            echo "$(date -Is) squeue failed ($out); retrying"; sleep 60; continue; }
         [ -n "$out" ] || { echo "job $J has left the queue"; break; }
         printf '%s\n%s\n' "$(date -Is)" "$out"
         sleep 300
