@@ -596,11 +596,38 @@ def test_compiled_step_matches_eager():
         attach(p, "panda", "uniform")
 
 
+def test_clearances_backend_covers_the_platform():
+    """The record's AL-SVGD collision backend (`svgd_collision_backend=clearances`, one
+    `CalcRobotClearances` call) equals the program's own `MinimumDistanceLowerBoundConstraint`
+    on the mobile scenes -- the platform's pairs included (its construction refuses a pair-set
+    mismatch; here the values and gradients are compared, and the base gradient must be live)."""
+    from pydrake.common import Parallelism
+    from src.svgd.collision_backend import (ClearanceEvaluator, CollisionEvaluator,
+                                            clearances_unavailable_reason)
+    reason = clearances_unavailable_reason()
+    if reason is not None:
+        print("SKIP clearances backend:", reason)
+        return
+    for robot in ("panda", "soft"):
+        for task in ("pose", "mug"):
+            p = program(robot, task, "numerical")
+            rng = np.random.default_rng(7)
+            Q = np.stack([p.GridToPlantQ(p.base_start_grid.Draw(rng)) for _ in range(16)])
+            va, ga = CollisionEvaluator.from_program(p).eval(Q)
+            vc, gc = ClearanceEvaluator.from_program(p, parallelism=Parallelism(1)).eval(Q)
+            assert np.all(np.isfinite(va)) and np.all(np.isfinite(vc)), (robot, task)
+            assert np.max(np.abs(va - vc)) < 1e-12, (robot, task, np.max(np.abs(va - vc)))
+            assert np.max(np.abs(ga - gc)) < 1e-10, (robot, task, np.max(np.abs(ga - gc)))
+            assert np.max(np.abs(gc[:, p.BaseSlots()])) > 0, (robot, task)
+    print("PASS clearances backend == autodiff constraint on the mobile scenes (platform in)")
+
+
 GROUPS = {"fast": [test_layout_and_formulation, test_row_parity, test_local_pose_matches_the_program,
                    test_gradients_match_autodiff, test_region_scale_and_validation,
                    test_kernels_bcz_and_bq, test_native_draws,
                    test_eager_steps_are_finite_and_descend,
-                   test_structure_signature_separates_mobile_from_fixed],
+                   test_structure_signature_separates_mobile_from_fixed,
+                   test_clearances_backend_covers_the_platform],
           "slow": [test_compiled_step_matches_eager]}
 
 
