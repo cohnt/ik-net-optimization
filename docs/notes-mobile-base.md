@@ -132,6 +132,6 @@ and rule. Seconds never sit beside the V100 record. Ask the orchestrator before 
 - **Pilot ready, not run (2026-11-26).**
   - 8 rows x {learned, joint} x {AL-SVGD, IPOPT} x 3 rules x 64 cells, on `rtx3090`.
   - Manifests and ops are in `cluster/MOBILE_BASE_RUNBOOK.md`.
-  - It waits on Thomas's go, its placement, and the iiwa `n4` chart (SuperCloud only).
+  - It waits on Thomas's go only (n4 chart in place, placement CSAIL RTX 3090, 2026-11-26).
 - **The `clearances` backend covers the platform**: equal to the autodiff constraint, values exact
   and gradients to 3e-13, on all four robots and both tasks (pinned in `tests/test_mobile_svgd.py`).

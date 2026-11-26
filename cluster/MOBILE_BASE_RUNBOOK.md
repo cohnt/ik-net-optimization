@@ -28,10 +28,11 @@ Design and rulings: `docs/notes-mobile-base.md`. Cluster ops: `cluster/CSAIL_RUN
 
 ## Blockers (2026-11-26)
 
-- **The iiwa `n4` chart** (`models/iiwa14/iiwa14__n4__step620000.pkl` + sidecar) exists only on
-  SuperCloud. Fetching it is Tommy's call (a copied-back pickle). Never substitute `n6`.
-- **Placement**: CSAIL vision-shared bills the lab account. Tommy decides it together with obstacles' OBST.
-- Thomas's go on the pilot.
+- Resolved: the iiwa `n4` chart is in the worktree (sha256 a55e9c39..., copied from SuperCloud; Tommy
+  OK'd this one pickle as-is, 2026-11-26). A 1x1 mobile iiwa item ran on it. Never substitute `n6`.
+- Resolved: placement is CSAIL RTX 3090 under the lab account, Tommy's choice for obstacles' OBST.
+- **Open: Thomas's go on the pilot.** Then send learned-ik-orchestrator the ask: smoke 9 items, then
+  pilot 72 items, `MAX_RUNNING` 8.
 
 ## Local checks done before the smoke
 
