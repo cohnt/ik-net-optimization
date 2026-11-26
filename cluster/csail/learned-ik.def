@@ -74,11 +74,12 @@ From: {{ BASE }}
     python3 -m venv /opt/lik/venv
     PIP="/opt/lik/venv/bin/pip --disable-pip-version-check --no-cache-dir"
     $PIP install --quiet --upgrade pip
-    $PIP install --quiet numpy==2.5.2 klampt==0.10.1.post1 roma==1.6.1 \
+    # setuptools==78.1.0 (the laptop venv's): ikflow does `import pkg_resources`, which setuptools >= 81 no longer ships.
+    $PIP install --quiet setuptools==78.1.0 numpy==2.5.2 klampt==0.10.1.post1 roma==1.6.1 \
         more-itertools==11.1.0 FrEIA==0.2 tqdm==4.70.0 pyyaml==6.0.3 \
         matplotlib==3.11.1 meshcat==0.3.2 PyOpenGL==3.1.10 nvidia-ml-py
     PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages /opt/lik/venv/bin/python -c \
-        "import klampt, pydrake.all, pydrake.planning, pydrake.solvers, roma, FrEIA; print('fail-fast imports ok (klampt, pydrake)')"
+        "import pkg_resources, klampt, pydrake.all, pydrake.planning, pydrake.solvers, roma, FrEIA; print('fail-fast imports ok (klampt, pydrake)')"
 
     echo "===== [4/6] torch, then the rest of setup_supercloud.sh step 5 ====="
     $PIP install --quiet --index-url https://download.pytorch.org/whl/cu126 "{{ TORCH_SPEC }}"
