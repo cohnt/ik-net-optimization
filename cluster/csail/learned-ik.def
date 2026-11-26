@@ -1,0 +1,171 @@
+Bootstrap: docker
+From: {{ BASE }}
+
+# The learned-ik environment on CSAIL's Slurm cluster (cluster/CSAIL_RUNBOOK.md). Built ON the cluster, as a job
+# (cluster/csail/build_image_job.sh); never on the laptop, never on a login node.
+#
+# WHY AN IMAGE. CSAIL's nodes are Ubuntu 22.04 (glibc 2.35); the project's Drake pin is the NOBLE nightly tarball
+# (glibc 2.39), so it cannot run natively there. Ubuntu 24.04 inside the image matches the SuperCloud nodes, which
+# is what the pin and the setup recipe (cluster/setup_supercloud.sh, the source of truth) were made for.
+#
+# WHAT IS PINNED, all of it copied from cluster/setup_supercloud.sh:
+#   Drake      RELEASE 1.58.0 (Thomas, 2026-11-25: the pin moves off the 09-18 nightly, which expired and is now
+#              unfetchable; 1.58.0 carries PR 25002 and #25073/CalcRobotClearances), the noble TARBALL (Drake on
+#              PYTHONPATH, the layout SuperCloud uses), NOT the PyPI wheel. DRAKE_VERSION / DRAKE_URL / DRAKE_SHA256 /
+#              DRAKE_COMMIT below are the ONE place the pin lives for this image: build_image_job.sh reads them from
+#              here, checks DRAKE_SHA256 against the release's published .sha256, and the build refuses unless
+#              share/doc/drake/VERSION.TXT names DRAKE_VERSION and DRAKE_COMMIT.
+#   torch      TORCH_SPEC from the cu126 index (SuperCloud's V100s force cu126; identical builds everywhere so
+#              timings differ by hardware only).
+#   the rest   the exact pins of setup_supercloud.sh step 5. jrl is the one unpinned line there (GitHub HEAD at
+#              setup time); here it is pinned to the commit the laptop's venv runs, JRL_COMMIT.
+#   ikflow     the vendored fork (third_party/ikflow, cohnt/ikflow), --no-deps (its metadata pins torch==2.0.1).
+# The build ends by writing `pip freeze` to /opt/lik/freeze.txt so the image can be diffed against SuperCloud's.
+#
+# NO CREDENTIALS, no wandb key: nothing here reads one.
+#
+# Build inputs, passed as absolute paths with --build-arg by build_image_job.sh: DRAKE_TARBALL (the pin's tarball,
+# sha256-checked by the job and again below) and IKFLOW_SRC (third_party/ikflow of the VERIFIED staged tree).
+
+%arguments
+    BASE=ubuntu:24.04
+    DRAKE_VERSION=1.58.0
+    DRAKE_URL=https://github.com/RobotLocomotion/drake/releases/download/v1.58.0/drake-1.58.0-noble.tar.gz
+    DRAKE_SHA256=91f5e2807b10b1ec117cf2037419d3dc50b8ba8a341f509f2d4696a9e27c63b9
+    DRAKE_COMMIT=09bc913cf1af0cdde31073d5f1f7f66ca35ee0d8
+    TORCH_SPEC=torch==2.14.0
+    JRL_COMMIT=5032d22db0608d36729c41d974d6bc8f9c5b41cf
+    DRAKE_TARBALL=drake.tar.gz
+    IKFLOW_SRC=third_party/ikflow
+    CONSTRAINTS=cluster/csail/constraints.txt
+
+%files
+    {{ DRAKE_TARBALL }} /opt/lik/drake.tar.gz
+    {{ IKFLOW_SRC }} /opt/lik/ikflow
+    {{ CONSTRAINTS }} /opt/lik/constraints.txt
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    export LC_ALL=C.UTF-8
+    # An unprivileged (single-uid) build cannot drop to apt's sandbox user.
+    APT="apt-get -o APT::Sandbox::User=root -o Dpkg::Options::=--force-unsafe-io"
+
+    echo "===== [1/6] Drake pin: {{ DRAKE_VERSION }} ====="
+    cd /opt/lik
+    echo "{{ DRAKE_SHA256 }}  drake.tar.gz" | sha256sum -c -
+    tar xzf drake.tar.gz && rm -f drake.tar.gz
+    GOT=$(cat /opt/lik/drake/share/doc/drake/VERSION.TXT)
+    [ "$GOT" = "{{ DRAKE_VERSION }} {{ DRAKE_COMMIT }}" ] || { echo "drake is not the pin: '$GOT'"; exit 1; }
+    echo "drake pin ok: $GOT"
+
+    echo "===== [2/6] system packages ====="
+    $APT update
+    # The tarball ships the list of its own runtime packages for this release. Dropped from it: the notebook
+    # tooling (jupyter-notebook, python3-ipywidgets: hundreds of MB, no part of the solve) -- everything else stays.
+    LIST=/opt/lik/drake/share/drake/setup/ubuntu/packages-noble-binary.txt
+    [ -f "$LIST" ] || { echo "no $LIST in the tarball"; exit 1; }
+    DRAKE_PKGS=$(grep -vE '^[[:space:]]*(#|$)' "$LIST" | grep -vxE 'jupyter-notebook|python3-ipywidgets' | tr '\n' ' ')
+    echo "drake runtime packages: $DRAKE_PKGS"
+    $APT install -y --no-install-recommends \
+        ca-certificates curl git build-essential python3 python3-dev python3-venv python3-pip \
+        libfmt9 libspdlog1.12 libgl1 libegl1 $DRAKE_PKGS
+    $APT clean && rm -rf /var/lib/apt/lists/*
+
+    echo "===== [3/6] venv + the small pinned deps, FAIL-FAST import check (a missing system library shows here) ====="
+    # Every pip step: -c constraints.txt = the laptop venv's whole pin set (torch aside). EVERY step is followed by an
+    # import check of what it installed, so a missing package or system library fails within minutes, not after an hour.
+    python3 -m venv /opt/lik/venv
+    PIP="/opt/lik/venv/bin/pip --disable-pip-version-check --no-cache-dir"
+    pipc() { $PIP install -c /opt/lik/constraints.txt "$@"; }   # `-c` is an option of `pip install`, not of pip
+    PY=/opt/lik/venv/bin/python
+    export PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages CUDA_VISIBLE_DEVICES=
+    $PIP install --quiet --upgrade pip
+    # setuptools==78.1.0 (the laptop venv's): ikflow does `import pkg_resources`, which setuptools >= 81 no longer ships.
+    # roma and FrEIA depend on torch, which is installed from the cu126 index in the next stage: they come after it
+    # (with the constraints' torch pin, pip would otherwise look for 2.14.0+cu126 on PyPI and fail to resolve).
+    pipc --quiet setuptools==78.1.0 numpy==2.5.2 klampt==0.10.1.post1 \
+        more-itertools==11.1.0 tqdm==4.70.0 pyyaml==6.0.3 \
+        matplotlib==3.11.1 meshcat==0.3.2 PyOpenGL==3.1.10 nvidia-ml-py
+    $PY -c "import pkg_resources, numpy, yaml, tqdm, more_itertools, meshcat, OpenGL, matplotlib, pynvml, klampt; \
+import pydrake.all, pydrake.planning, pydrake.solvers; print('fail-fast imports ok (klampt, pydrake, small deps)')"
+
+    echo "===== [4/6] torch, then the rest of setup_supercloud.sh step 5 ====="
+    pipc --quiet --index-url https://download.pytorch.org/whl/cu126 "{{ TORCH_SPEC }}"
+    $PY -c "import torch; print('torch', torch.__version__, torch.version.cuda); assert torch.__version__ == '2.14.0+cu126', torch.__version__"
+    pipc --quiet roma==1.6.1 FrEIA==0.2
+    $PY -c "import roma, FrEIA, torch; assert torch.__version__ == '2.14.0+cu126'; print('roma, FrEIA ok, torch unchanged')"
+    # CPU jaxlib only: the flow owns the GPU.
+    pipc --quiet "jax[cpu]==0.11.2" soromox==0.5.0 optimistix==0.1.0 \
+        equinox==0.13.8 diffrax==0.7.2 lineax==0.1.1
+    $PY -c "import jax, soromox, optimistix, equinox, diffrax, lineax; assert jax.default_backend() == 'cpu'; print('jax stack ok')"
+    pipc --quiet pytorch-lightning==2.6.5 wandb==0.29.0
+    $PY -c "import pytorch_lightning, wandb; import torch; assert torch.__version__ == '2.14.0+cu126'; print('lightning/wandb ok, torch unchanged')"
+    # --no-deps on jrl and ikflow: their metadata pins torch==2.0.1 and would replace the cu126 build.
+    # GitHub is reachable but flaky from compute nodes (the Engaging build saw connect timeouts): bounded retry, same pin.
+    for TRY in 1 2 3 4 5; do
+        $PIP install --quiet --no-deps "jrl @ git+https://github.com/jstmn/Jrl.git@{{ JRL_COMMIT }}" && break
+        [ "$TRY" -lt 5 ] && { echo "jrl install failed (try $TRY); retrying"; sleep $((TRY * 20)); } || { echo "jrl install failed 5 times"; exit 1; }
+    done
+    $PY -c "import jrl, jrl.robot, jrl.robots, jrl.config, jrl.urdf_utils; print('jrl ok')"
+    $PIP install --quiet --no-deps -e /opt/lik/ikflow
+    $PY -c "import ikflow, ikflow.model_loading, ikflow.ikflow_solver, ikflow.model; assert '/opt/lik/ikflow' in ikflow.model_loading.__file__; print('ikflow ok')"
+    unset PYTHONPATH CUDA_VISIBLE_DEVICES
+    $PIP freeze --all > /opt/lik/freeze.pre-warm.txt
+
+
+    echo "===== [5/6] caches (compute nodes' HOME is per job; the runner links these in) ====="
+    export HOME=/opt/lik/home
+    mkdir -p "$HOME/.cache"
+    export PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages
+    export CUDA_VISIBLE_DEVICES=""
+    /opt/lik/venv/bin/python - <<'PYWARM'
+from ikflow.model_loading import get_ik_solver
+get_ik_solver("panda__full__lp191_5.25m")
+print("panda weights cached")
+import jrl.robots
+for name in ("panda", "iiwa14"):
+    jrl.robots.get_robot(name)
+    print("jrl urdf cache warmed:", name)
+# Drake's remote `drake_models` package (the meshes every scene references) is fetched lazily on first use.
+from pydrake.multibody.parsing import PackageMap
+print("drake_models at", PackageMap().GetPath("drake_models"))
+PYWARM
+    chmod -R a+rX /opt/lik
+
+    echo "===== [6/6] verification ====="
+    /opt/lik/venv/bin/python - <<'PYVERIFY'
+import torch, numpy
+print("torch", torch.__version__, "cuda", torch.version.cuda, "arch", torch.cuda.get_arch_list())
+assert torch.version.cuda and torch.version.cuda.startswith("12.6"), "not a cu126 build"
+import pydrake
+from pydrake.solvers import SnoptSolver, IpoptSolver
+print("pydrake from", pydrake.__file__)
+assert IpoptSolver().available(), "IPOPT unavailable"
+from pydrake.planning import CollisionChecker
+assert hasattr(CollisionChecker, "CalcRobotClearances"), "no CalcRobotClearances (svgd_collision_backend=clearances)"
+print("SNOPT", SnoptSolver().available(), "| IPOPT", IpoptSolver().available())
+import ikflow, ikflow.model_loading, jrl, FrEIA, klampt
+assert "/opt/lik/ikflow" in ikflow.model_loading.__file__, ikflow.model_loading.__file__
+import jax, soromox, optimistix
+assert jax.default_backend() == "cpu", jax.default_backend()
+print("ikflow/jrl/FrEIA/klampt/jax import OK; numpy", numpy.__version__)
+PYVERIFY
+    /opt/lik/venv/bin/pip freeze --all > /opt/lik/freeze.txt
+    cp /opt/lik/drake/share/doc/drake/VERSION.TXT /opt/lik/drake.VERSION.TXT
+    echo "{{ DRAKE_VERSION }} {{ DRAKE_COMMIT }}" > /opt/lik/DRAKE_PIN
+
+%environment
+    export LC_ALL=C.UTF-8
+    export PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}
+    export PATH=/opt/lik/venv/bin:$PATH
+    export LIK_IMAGE=1
+
+%labels
+    Project learned-ik
+    DrakeVersion {{ DRAKE_VERSION }}
+    DrakeCommit {{ DRAKE_COMMIT }}
+
+%help
+    The learned-ik environment (Ubuntu 24.04, Drake 1.58.0 tarball, torch cu126). Run with --nv.
+    /opt/lik/venv/bin/python is the interpreter; /opt/lik/freeze.txt is the pip freeze.

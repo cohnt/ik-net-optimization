@@ -266,15 +266,12 @@ arms within a run. **The whole axis is CLOSED. Do not re-sweep it.**
   method-class decision and Thomas's.
 - **Grasp containment is closed** on both axes; the containment verdicts stand as measured under IPOPT.
 
-**ONE DRAKE, AND IT IS THE PIN**: the nightly `drake-0.0.20260918-noble.tar.gz` at `$ROOT/drake`, no
-second install (Thomas, twice: *"Run everything on the current nightly"* — a regression is reported
-upstream, never pinned around; archive pairing is no reason to keep an old install). A nightly because
-**PR 25002** (sixteen NLopt options) is in no release; `CheckNloptOptions` refuses only under
-`which_solver == "nlopt"`. **Nightlies expire ~2026-11-02: move to 1.58.0 once it carries PR 25002.**
-One stated exception: the svgd rounds' clearance wheel (`DRAKE_ENV=crc`, `~/learned-ik/venv-crc`,
-`CalcRobotClearances`), a strict speed improvement, cluster only. The API is in master (#25073,
-2026-10-12) and the default local pydrake: **never point local code at a non-default Drake** (Thomas,
-2026-10-20); the cluster exception goes when the pin moves.
+**ONE DRAKE, AND IT IS THE PIN: release 1.58.0** (Thomas, 2026-11-25; it carries PR 25002's sixteen
+NLopt options and #25073 `CalcRobotClearances`): the CSAIL/Engaging images use its tarball and published
+sha256. SuperCloud still runs the old nightly at `$ROOT/drake` plus the svgd clearance exception
+(`DRAKE_ENV=crc`, `venv-crc`) until it moves; both go then. No second install: a regression is reported
+upstream, never pinned around (Thomas). `CheckNloptOptions` refuses only under `which_solver == "nlopt"`.
+**Never point local code at a non-default Drake** (Thomas, 2026-10-20).
 
 ## AL-SVGD, the fourth method class (long form: `docs/notes-svgd.md`; evidence `docs/svgd-solver.md`)
 
@@ -400,10 +397,10 @@ to the flow and joint space, screw 0, paired 0/480; soft PCS ties only via low-s
 **Mechanism: the latent collapses** (decoder returns E[q | pose], useless across disconnected
 branches). Long form `docs/notes-chart.md`; ops `cluster/CVAE_RUNBOOK.md`.
 
-**Chart rung two: LOInK (2026-10-22), DISMISSED (Thomas, 2026-10-26)**: a bi-Lipschitz chart
-`G^{-1}` with a structured latent. No rigid-arm chart fits at `K = 1` (one-branch retraining changed
-nothing); soft12 learns but no chart fits (0/20 cells); a decode is ~100x the flow per iteration.
-Tag `archive/chart-loink`; long form `docs/notes-chart.md`, `docs/loink-replication.md`.
+**Chart rung two: LOInK (2026-10-22 to 10-26), DISMISSED (Thomas)**: a bi-Lipschitz network with a
+structured latent. No chart fits on the rigid arms (`K = 1`, even retrained on one IK branch) or soft12
+(`K = 6`, cells 0/20), and a decode costs 1-9 s per IPOPT iteration, ~100x the flow. Tag
+`archive/chart-loink`; long form `docs/notes-chart.md`, `docs/loink-replication.md`.
 
 ## Other robots (long form: `docs/notes-robots.md`)
 
@@ -453,14 +450,12 @@ Measured: chart ladder `n6` stands; `p025_n6` shows the gain-ceiling runaway (a 
 chart). `p050`'s dataset is rebuilt (bit-identical); the other rungs' are still gone. Ops and screens
 `cluster/SCREW_ARM_RUNBOOK.md`; `python scripts/report_screw.py`. The curvilinear rail is deferred.
 
-**The cuspidal arm** (`cusp7`, `src/cusp_arm/`, branch `cuspidal-arm`, started 2026-11-25): no IK
-branch label is global on a cuspidal arm, so does the learned latent beat an analytic chart? The
-6R is **published, not ours** (Tommy): the simplified KUKA Transpressor of Feeß & Weiß (arXiv
-2602.14794; up to 16 IK solutions, cuspidality proven) at its example values x0.16 m, plus a tool
-pitch at the wrist end (every locked slice is the 6R); iiwa-like limits about an arm-up zero (DH
-theta offsets). **No analytic arm** (its branch tracking cannot be trusted), **one rung**, the
-arm's cuspidality taken as known. The paper's printed `det J` does not match its own table
-(`kinematics.det_j_6r` is derived). Notes `docs/notes-robots.md`; ops `cluster/CUSP_ARM_RUNBOOK.md`.
+**The cuspidal arm** (`cusp7`, `src/cusp_arm/`, branch `cuspidal-arm`, 2026-11-25): no IK branch
+label is global, so does the learned latent beat an analytic chart? The 6R is **published, not ours**
+(Tommy): Feeß & Weiß's simplified Transpressor (arXiv 2602.14794; up to 16 IK solutions)
+x0.16 m, plus a wrist-end tool pitch (each locked slice is the 6R); iiwa-like limits, arm-up zero.
+**No analytic arm** (branch tracking untrustworthy), **one rung**, cuspidality taken as known; the
+paper's `det J` is wrong (`det_j_6r` derived). `docs/notes-robots.md`, `cluster/CUSP_ARM_RUNBOOK.md`.
 
 ## Running on MIT SuperCloud (long form: `docs/notes-cluster.md`; playbook `cluster/README.md`)
 
@@ -477,6 +472,13 @@ the merger or grid construction.** Collect with `collect_results.sh --stage <tok
 `cluster/condense_staging.py --apply`; readers read `results/` only. **Cluster-wide
 checks on the shared account are scoped by JOB name; a guard nobody has seen refuse is untested.**
 Maintenance: second Tuesday monthly.
+
+**CSAIL and Engaging** (2026-11-25, Thomas): development campaigns' evals run as small preemptible GPU
+jobs there; SuperCloud volta takes long training. **One GPU type per campaign, one solve per GPU, A/B never
+split across hardware** (`provenance()` records `gpu_name`, `cpu_model`); these seconds never sit beside
+the record's V100 rows (paper rows get one unifying rerun). Apptainer images pin every pip package
+(`constraints.txt`); rehearse `%post` locally in docker (`--cpus=1 --memory=3g`) before a build job.
+Ops: `cluster/CSAIL_RUNBOOK.md`, `cluster/ENGAGING_RUNBOOK.md`.
 
 **Local compute must never take the laptop down** (Thomas, 2026-10-09: *"If a pytest sweep crashes my
 machine, that is unacceptable"*). **No process pools in this project** (except `run_fast.py`'s 4 at

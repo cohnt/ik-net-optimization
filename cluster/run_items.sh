@@ -297,7 +297,7 @@ Worker() {
         fi
 
         mkdir "$CLAIM" 2>/dev/null || { SKIP=$((SKIP + 1)); continue; }
-        echo "$TAGID $(date -Is)" > "$CLAIM/owner"
+        echo "$TAGID $(date -Is) ${SLURM_JOB_ID:-}" > "$CLAIM/owner"   # 3rd field: the Slurm job (cluster/csail/job.sh frees claims of dead/requeued jobs by it)
 
         ## ONE Drake per JOB, never per item. The record's Drake is this project's pin, exported
         ## as PYTHONPATH above. A per-item `DRAKE=nightly` sentinel used to select a second
