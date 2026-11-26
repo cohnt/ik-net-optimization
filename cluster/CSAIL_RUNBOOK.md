@@ -68,7 +68,7 @@ and every later submit excludes it automatically; report job id, node, PCI bus I
 ## A campaign: pinned hardware, many items, frequent preemption
 
 ```bash
-GPU=l40s bash cluster/csail/submit.sh cluster/<manifest>.txt <image name> [tasks]
+GPU=l40s bash cluster/csail/submit.sh cluster/<manifest>.txt <image name> [tasks]   # MAX_RUNNING=<n> caps how many run at once (default: tasks)
 bash cluster/csail/poll.sh [<c12>]                         # read-only; every 5-10 min at most
 bash cluster/csail/collect.sh [<c12>]                      # data only, into results/ (merge + condense as SuperCloud)
 ```
