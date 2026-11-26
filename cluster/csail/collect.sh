@@ -22,6 +22,10 @@ C12="${1:-$(git -C "$REPO_ROOT" rev-parse HEAD | cut -c1-12)}"
 [[ "$C12" =~ ^[0-9a-f]{12}$ ]] || { echo "bad commit id" >&2; exit 2; }
 ROOT="$(csail_tree_root "$C12")"
 PY="${COLLECT_PYTHON:-$REPO_ROOT/.venv/bin/python}"
+## A git worktree has no .venv of its own: fall back to the main checkout's (the git common dir's parent).
+if [ -z "${COLLECT_PYTHON:-}" ] && [ ! -x "$PY" ]; then
+    PY="$(cd "$REPO_ROOT" && cd "$(git rev-parse --git-common-dir)/.." && pwd)/.venv/bin/python"
+fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 STAGING="$REPO_ROOT/results/_cluster_staging/$STAMP"
