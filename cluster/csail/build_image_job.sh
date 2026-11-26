@@ -76,6 +76,7 @@ SECONDS=0
 apptainer build "${FR[@]}" \
     --build-arg "DRAKE_TARBALL=$TAR" \
     --build-arg "IKFLOW_SRC=$REPO/third_party/ikflow" \
+    --build-arg "CONSTRAINTS=$REPO/cluster/csail/constraints.txt" \
     "$OUT.tmp" "$DEF" || Fail "apptainer build failed (mode: ${FR[*]:-unprivileged})" 30
 mv -f "$OUT.tmp" "$OUT"
 echo "built in $SECONDS s: $(du -h "$OUT" | cut -f1)"

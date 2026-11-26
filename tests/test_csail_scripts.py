@@ -414,6 +414,20 @@ def t_dry_runs():
             if f.endswith(".sh"):
                 r = subprocess.run(["bash", "-n", f"{REPO}/cluster/csail/{f}"], capture_output=True, text=True)
                 check(r.returncode == 0, f"bash -n {f}", r.stderr)
+        # the .def's %post: arguments substituted, then bash -n; every {{ }} must have a %arguments default
+        import re
+        text = open(f"{REPO}/cluster/csail/learned-ik.def").read()
+        dargs = dict(re.findall(r"^    ([A-Z0-9_]+)=(.*)$", text.split("%arguments")[1].split("%files")[0], re.M))
+        used = set(re.findall(r"\{\{ (\w+) \}\}", text))
+        check(used <= set(dargs), "every {{ VAR }} of the .def has a %arguments default", str(used - set(dargs)))
+        post = re.sub(r"\{\{ (\w+) \}\}", lambda m: dargs.get(m.group(1), ""), text.split("%post\n")[1].split("\n%environment")[0])
+        pf = fx.S + "/post.sh"
+        open(pf, "w").write(post)
+        r = subprocess.run(["bash", "-n", pf], capture_output=True, text=True)
+        check(r.returncode == 0, "bash -n of the .def's %post", r.stderr)
+        check(os.path.exists(f"{REPO}/cluster/csail/constraints.txt") and "torch==2.14.0+cu126" in open(f"{REPO}/cluster/csail/constraints.txt").read()
+              and not any(ln.startswith(("-e ", "jrl @", "nvidia-", "triton")) for ln in open(f"{REPO}/cluster/csail/constraints.txt")),
+              "constraints.txt: image torch pin present; no editable/jrl/nvidia/triton lines")
         r = staged(fx)
         sha = [ln for ln in r[1].splitlines() if ln.startswith("EXPECT_MANIFEST_SHA=")][0].split("=")[1]
         root = fx.root()
@@ -448,7 +462,7 @@ def t_dry_runs():
         check(all(os.path.exists(f"{fx.CSR}/images/{base}{x}") for x in (".sif", ".sif.sha256", ".freeze.txt")),
               "sif, sha256 and freeze are written")
         bl = open(fx.S + "/apptainer.log").read()
-        check("--build-arg DRAKE_TARBALL=" in bl and "--build-arg IKFLOW_SRC=" in bl, "build passes the tarball and ikflow paths", bl)
+        check("--build-arg DRAKE_TARBALL=" in bl and "--build-arg IKFLOW_SRC=" in bl and "--build-arg CONSTRAINTS=" in bl, "build passes the tarball and ikflow paths", bl)
         os.remove(f"{fx.CSR}/cache/drake-1.58.0-noble.tar.gz")
         open(f"{fx.bin}/curl", "w").write("#!/bin/bash\nexit 22\n")
         os.chmod(f"{fx.bin}/curl", 0o755)
