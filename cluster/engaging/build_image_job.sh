@@ -24,6 +24,8 @@ mkdir -p "$EB/image"
 export APPTAINER_TMPDIR="$TMPDIR/atmp" APPTAINER_CACHEDIR="$TMPDIR/acache"
 mkdir -p "$APPTAINER_TMPDIR" "$APPTAINER_CACHEDIR"
 cd "$TMPDIR" || exit 2
+## lik.def's %files copies constraints.txt (the pip pins) from the build's cwd; it comes from the verified tree.
+cp "$REPO/cluster/engaging/constraints.txt" constraints.txt || Fail "no constraints.txt"
 BIND=()
 if [ -n "${DRAKE_TARBALL:-}" ]; then
     [ -f "$DRAKE_TARBALL" ] || Fail "DRAKE_TARBALL $DRAKE_TARBALL not found"

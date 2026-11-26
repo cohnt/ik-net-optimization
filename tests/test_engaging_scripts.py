@@ -60,7 +60,7 @@ class Fx:
             os.makedirs(d)
         shutil.copytree(os.path.join(REPO, "cluster"), os.path.join(self.R, "cluster"),
                         ignore=shutil.ignore_patterns("manifest_stage*", "__pycache__", "*.txt", "*.md"))
-        for m in ("manifest_engaging_smoke.txt", "manifest_engaging_requeue.txt"):
+        for m in ("manifest_engaging_smoke.txt", "manifest_engaging_requeue.txt", "constraints.txt"):
             shutil.copy(os.path.join(REPO, "cluster", "engaging", m), os.path.join(self.R, "cluster", "engaging", m))
         os.makedirs(os.path.join(self.R, "models", "panda"))
         open(os.path.join(self.R, "models", "panda", "a.yaml"), "w").write("a: 1\n")
@@ -112,6 +112,17 @@ def t_syntax_and_pin():
           "lik.def fetches the noble tarball and checks the PUBLISHED .sha256")
     check(not re.search(r"pip install[^\n]*\bdrake==", d), "lik.def does not install the PyPI wheel")
     check("index-url https://download.pytorch.org/whl/cu126 torch==2.14.0" in d, "lik.def: torch 2.14.0 from the cu126 index")
+    cons = open(os.path.join(REPO, "cluster", "engaging", "constraints.txt")).read().splitlines()
+    body = [l for l in cons if l.strip() and not l.startswith("#")]
+    check("torch==2.14.0+cu126" in body and "setuptools==78.1.0" in body and "numpy==2.5.2" in body,
+          "constraints.txt pins torch 2.14.0+cu126, setuptools 78.1.0 (pkg_resources) and numpy 2.5.2")
+    check(not [l for l in body if re.match(r"^(-e |nvidia-|cuda-|triton)|@ |file:|/home/", l)],
+          "constraints.txt has no editable/local/URL entry and nothing tied to the laptop's CUDA build")
+    check(all(re.match(r"^[A-Za-z0-9_.\[\]-]+==\S+$", l) for l in body), "constraints.txt is all name==version lines")
+    check("%files" in d and "constraints.txt /opt/lik/constraints.txt" in d, "lik.def copies the constraints file into the image")
+    bad = [l.strip() for l in d.splitlines() if re.search(r"\$P install|pip install", l) and "-c /opt/lik/constraints.txt" not in l and "PI=" not in l and not l.strip().startswith("#")]
+    check(not bad, "every pip install in lik.def runs under the constraints file", str(bad))
+    check("import setuptools, pkg_resources" in d, "lik.def imports pkg_resources right after the install (ikflow needs it)")
     pins = set(re.findall(r"([A-Za-z0-9_.\[\]-]+==[0-9][0-9A-Za-z.+]*)", sc.split("[5/6]")[1].split("[6/6]")[0]))
     pins = {p.replace('"', "") for p in pins if not p.startswith("torch==2.")}
     missing = sorted(p for p in pins if p not in d)
