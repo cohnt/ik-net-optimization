@@ -259,6 +259,14 @@ def checks_manifests():
                         continue
                     a = a[:-4]
             else:
+                # r120 alone raises the sampler's abort threshold (Tommy, 2026-11-26): it only stops sampling,
+                # accepted draws are unchanged (gen_manifest.PILLAR_R120_MAX_REJECTIONS)
+                cap = ["--max-target-rejections", "500000"]
+                if (a[-2:] == cap) != (m.group(3) == "120"):
+                    bad.append(("max-target-rejections only and exactly on r120", i))
+                    continue
+                if m.group(3) == "120":
+                    a = a[:-2]
                 scene = {"000": "hardened", "040": "pillars_r040", "080": "pillars_r080",
                          "120": "pillars_r120"}[m.group(3)]
                 j = a.index("--scene")
