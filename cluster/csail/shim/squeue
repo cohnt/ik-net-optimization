@@ -1,0 +1,8 @@
+#!/bin/bash
+# A stand-in for `squeue -h -j <id> -o %L` INSIDE the image, where Slurm's client is absent. run_items.sh's
+# JobSecondsLeft() calls exactly that to refuse an item the job cannot finish. cluster/csail/job.sh puts this
+# directory first on the container's PATH and exports JOB_END_EPOCH (from the host's squeue, read at attempt start).
+# It answers every call with the time left; the caller only ever asks that one question.
+[ -n "${JOB_END_EPOCH:-}" ] || exit 0
+left=$(( JOB_END_EPOCH - $(date +%s) )); [ "$left" -gt 0 ] || left=0
+printf '%d:%02d:%02d\n' $((left / 3600)) $((left % 3600 / 60)) $((left % 60))
