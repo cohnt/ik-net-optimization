@@ -58,9 +58,18 @@ assert os.path.realpath(ikflow.__file__).startswith(os.path.realpath(repo) + "/t
 print("ikflow", ikflow.__file__, "jrl", jrl.__file__)
 
 if warm:
-    from ikflow.model_loading import get_ik_solver
-    get_ik_solver("panda__full__lp191_5.25m")
-    print("panda weights cached")
+    from ikflow.model_loading import MODEL_DESCRIPTIONS, download_model, get_ik_solver
+    if cpu_only:
+        # A pure yes/no plumbing check on a CPU node: place the weights in the cache and read the robot's model
+        # (no network built, no forward pass, no solve); the GPU job loads the whole solver.
+        path = download_model(MODEL_DESCRIPTIONS["panda__full__lp191_5.25m"]["model_weights_url"])
+        assert os.path.isfile(path), path
+        import jrl.robots
+        jrl.robots.get_robot("panda"); jrl.robots.get_robot("iiwa14")
+        print("panda weights cached at", path, "; panda and iiwa14 robot models load")
+    else:
+        get_ik_solver("panda__full__lp191_5.25m")
+        print("panda weights cached")
     sys.path.insert(0, repo)
     from src.utils import BuildEnv, RepoDir
     for scene in ("models/panda/panda_finray_collision.yaml", "models/iiwa14/iiwa14_collision.yaml",
