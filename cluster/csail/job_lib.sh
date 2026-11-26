@@ -45,7 +45,29 @@ lik_gpu_check() {
 lik_gpu_fault() {
     echo "GPU FAULT on $(hostname): $1"
     echo "$(date -Is) $(hostname -s) job $JOBTAG: $1" >> "$LIK_CS_ROOT/bad_nodes.log"   # -s: the Slurm node name
+    lik_exclude_from_array "$(hostname -s)"
     exit 3
+}
+## THE BLACK HOLE: a node whose GPU fails in seconds frees its slot at once, Slurm puts the array's next pending
+## task there, and a throttled array drains onto it (OBST 3212436: 46 of 48 tasks in a minute on torralba-3090-3).
+## So the failing task adds its node to its OWN array's ExcNodeList, which every still-pending task inherits.
+## Fail-safe: any trouble here is logged and the task exits 3 as before (bad_nodes.log still has the node).
+lik_exclude_from_array() {
+    local node="$1" arr="${SLURM_ARRAY_JOB_ID:-}" cur new
+    [ -n "$arr" ] || { echo "not an array job: no ExcNodeList update"; return 0; }
+    cur=$(scontrol show job -o "$arr" 2>/dev/null | grep -o 'ExcNodeList=[^ ]*' | head -1 | cut -d= -f2)
+    case "$cur" in "(null)") cur="" ;; esac
+    if [ -n "$cur" ] && scontrol show hostnames "$cur" 2>/dev/null | grep -qx "$node"; then
+        echo "array $arr already excludes $node"; return 0
+    fi
+    new="${cur:+$cur,}$node"
+    if scontrol update JobId="$arr" ExcNodeList="$new" 2>&1 | sed 's/^/scontrol: /'; [ "${PIPESTATUS[0]}" -eq 0 ]; then
+        echo "excluded $node from array $arr's pending tasks (ExcNodeList=$new)"
+    else
+        echo "scontrol update of array $arr's ExcNodeList to $new returned nonzero (logged only: running tasks" \
+             "refuse it, pending ones may still have taken it; bad_nodes.log has $node either way)"
+    fi
+    return 0
 }
 
 ## apptainer exec with a clean environment: only what the payload needs crosses in. --nv for the GPU, no HOME
