@@ -34,13 +34,14 @@ mandatory for new checkpoints rather than merely convenient.
 
 import json
 import os
-import pickle
 import re
 import warnings
 
 from ikflow.model import IkflowModelParameters
 from ikflow.ikflow_solver import IKFlowSolver
 from jrl.robots import get_robot
+
+from src.weights_io import IsNpz, LoadStateDict
 
 ## Register this project's own robots BEFORE anything resolves one by name. This module is
 ## the single funnel every by-name lookup passes through -- the programs, all three
@@ -196,6 +197,29 @@ def VerifyArch(declared, state_dict, source):
             "\nLoading this checkpoint would silently produce a different chart.")
 
 
+def _LoadNpzIntoSolver(solver, state_dict):
+    """What `IKFlowSolver.load_state_dict(filename)` does, minus its `pickle.load`.
+
+    ikflow's method takes a FILENAME and unpickles it, so a `.npz` cannot go through it. This
+    mirrors its body (compiled models' `_orig_mod.` key prefix, the loaded flag, the compile
+    warm-up) with the already-converted dict; `tests/test_weights_npz.py` pins the equivalence.
+    """
+    if solver._do_compile_model:
+        prefixed = {}
+        for k, v in state_dict.items():
+            assert not k.startswith("_orig_mod.")
+            prefixed[f"_orig_mod.{k}"] = v
+        state_dict = prefixed
+    solver.nn_model.load_state_dict(state_dict)
+    solver._model_weights_loaded = True
+    if solver._do_compile_model:
+        from ikflow.config import DEFAULT_TORCH_DTYPE, DEVICE
+        import torch
+        y = torch.randn(500, 7, device=DEVICE, dtype=DEFAULT_TORCH_DTYPE)
+        for i in [10, 20, 50, 100, 75, 150, 499]:
+            solver.generate_ik_solutions(y[0:i])
+
+
 def LoadFlowSolver(robot_name, checkpoint, fallback_arch=None, compile_model=None):
     """Build an `IKFlowSolver` at the architecture `checkpoint` was trained at.
 
@@ -207,8 +231,7 @@ def LoadFlowSolver(robot_name, checkpoint, fallback_arch=None, compile_model=Non
         fallback_arch = LEGACY_ARCH_BY_ROBOT.get(robot_name, LEGACY_IIWA_ARCH)
     arch, source = ReadArch(checkpoint, fallback=fallback_arch)
 
-    with open(checkpoint, "rb") as f:
-        state_dict = pickle.load(f)
+    state_dict = LoadStateDict(checkpoint)
     VerifyArch(arch, state_dict, source)
 
     hyper_parameters = IkflowModelParameters()
@@ -216,7 +239,10 @@ def LoadFlowSolver(robot_name, checkpoint, fallback_arch=None, compile_model=Non
     hyper_parameters.__dict__["robot_name"] = robot_name
 
     solver = IKFlowSolver(hyper_parameters, get_robot(robot_name), compile_model=compile_model)
-    solver.load_state_dict(checkpoint)
+    if IsNpz(checkpoint):
+        _LoadNpzIntoSolver(solver, state_dict)
+    else:
+        solver.load_state_dict(checkpoint)
     # Attach the resolved architecture so downstream code can *record* what it actually
     # loaded rather than what was requested. IKFlowSolver itself keeps no hparams.
     solver.arch = dict(arch, robot_name=robot_name)

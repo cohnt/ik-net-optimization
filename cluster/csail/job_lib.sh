@@ -44,7 +44,7 @@ lik_gpu_check() {
 }
 lik_gpu_fault() {
     echo "GPU FAULT on $(hostname): $1"
-    echo "$(date -Is) $(hostname) job $JOBTAG: $1" >> "$LIK_CS_ROOT/bad_nodes.log"
+    echo "$(date -Is) $(hostname -s) job $JOBTAG: $1" >> "$LIK_CS_ROOT/bad_nodes.log"   # -s: the Slurm node name
     exit 3
 }
 

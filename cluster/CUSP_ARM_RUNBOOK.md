@@ -72,3 +72,7 @@ not from this tree's staged copy; byte-identical at 20:21 on 2026-11-25. Both ch
 **ikflow e94c144** (the submodule pin at `~/learned-ik`'s staged d1f6de2 and at this tree's 3794fd7;
 cluster file-tree hash `3c132746...`). The orchestrator froze `~/learned-ik` (repo, venv, drake)
 until n4 ends; report n4's end to lift it. Record GPU type, cluster and ikflow commit per checkpoint.
+
+The in-job export (staged 3794fd7) writes `.pkl` only. Before any chart leaves SuperCloud, re-export
+from a restaged tree with `export_ckpt_to_pkl.py --format both` (or `convert_pkl_to_npz.py` on the
+job-written `.pkl`), as a job; only the `.npz` + `.arch.json` come back (no cluster pickles on the laptop).
