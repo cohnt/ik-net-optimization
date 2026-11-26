@@ -64,14 +64,31 @@ lik_container() {
     apptainer exec --nv --cleanenv --no-home --bind "$LIK_CS_ROOT" --bind /tmp "${envs[@]}" "$IMAGE" "$@"
 }
 
-## Seconds this attempt has left, read from the host's squeue (the container has none).
+## The epoch this attempt's walltime ends, read from the host's squeue (the container has none; its shim answers
+## from JOB_END_EPOCH). An array task is asked for as <array>_<task>: the highest task carries the array MASTER id
+## as its SLURM_JOB_ID, and `squeue -j <master>` lists EVERY task of the array, one line each; glued together they
+## parsed to nothing and that task claimed items with no limit (mobile-base 3211402_1, 2026-11-26). Anything but
+## exactly one well-formed time is fatal: a job never runs without knowing its end.
 lik_end_epoch() {
-    local L; L=$(squeue -h -j "${SLURM_JOB_ID:-0}" -o %L 2>/dev/null | tr -d '[:space:]')
+    local id="${SLURM_JOB_ID:-}" out="" n=0 L try
+    [ -n "${SLURM_ARRAY_JOB_ID:-}" ] && [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && id="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+    [ -n "$id" ] || lik_no_end "no SLURM_JOB_ID"
+    for try in 1 2 3; do   # a busy slurmctld can fail one query
+        out=$(squeue -h -j "$id" -o %L 2>&1); n=$(printf '%s\n' "$out" | grep -c .)
+        L=$(printf '%s' "$out" | tr -d '[:space:]')
+        [ "$n" -eq 1 ] && [[ "$L" =~ ^([0-9]+-)?[0-9]+(:[0-9]+){0,2}$ ]] && break
+        L=""; [ "$try" -eq 3 ] || sleep "${LIK_END_RETRY_S:-10}"
+    done
+    [ -n "$L" ] || lik_no_end "squeue -h -j $id -o %L answered $n line(s): '$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)'"
     JOB_END_EPOCH=""
-    case "$L" in ""|UNLIMITED|NOT_SET|INVALID) return 0 ;; esac
     local D=0 A B C; case "$L" in *-*) D="${L%%-*}"; L="${L#*-}" ;; esac
     IFS=: read -r A B C <<< "$L"
     case "$L" in *:*:*) : ;; *:*) C="$B"; B="$A"; A=0 ;; *) C="$A"; B=0; A=0 ;; esac
     JOB_END_EPOCH=$(( $(date +%s) + 10#${D:-0} * 86400 + 10#${A:-0} * 3600 + 10#${B:-0} * 60 + 10#${C:-0} ))
     export JOB_END_EPOCH
+    echo "job end: $(date -Is -d "@$JOB_END_EPOCH") (squeue -j $id: $(printf '%s' "$out" | tr -d '[:space:]') left)"
+}
+lik_no_end() {
+    echo "CANNOT DETERMINE JOB END TIME: $1. Refusing to claim items without knowing the walltime (exit 5)."
+    exit 5
 }

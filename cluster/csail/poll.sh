@@ -4,7 +4,8 @@
 #   bash cluster/csail/poll.sh [<12-hex commit> [<manifest basename>]]      (default: HEAD, all manifests)
 #
 # Prints: our lik_* jobs in the queue (with reason, so a PENDING task says why), sacct attempts (REQUEUED rows are
-# preemptions), per-manifest items done / claimed, HARDWARE, the last lines of the newest job logs, and the machine
+# preemptions), "!!" lines for loud exits (NOTHING CLAIMED, CANNOT DETERMINE JOB END TIME),
+# per-manifest items done / claimed, HARDWARE, the last lines of the newest job logs, and the machine
 # records (node / GPU / CPU model) of every attempt. Only OUR jobs are listed (--me, name prefix lik_).
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +21,8 @@ echo '--- queue (ours, lik_*) ---'
 squeue --me -h -o '%.12i %.9T %.10M %.22j %R' | grep -E ' lik_' | head -60
 echo '--- sacct, last 2 days (REQUEUED = preempted) ---'
 sacct -X -S now-2days -o JobID%16,JobName%28,Partition%20,State%12,Elapsed,NodeList%18,ExitCode --state=R,PD,CD,F,RQ,CA,TO,NF,PR 2>/dev/null | grep -E 'lik_|JobID|----' | tail -60
+echo '--- loud exits: a task that claimed nothing while items remain (rc 4), or ran blind of its walltime (rc 5) ---'
+grep -H -E 'NOTHING CLAIMED|CANNOT DETERMINE JOB END TIME' logs/*.out 2>/dev/null | sed 's/^/!! /' | tail -20
 echo '--- sentinels ---'
 ls check.*.DONE 2>/dev/null | while read f; do echo \"\$f: \$(cat \$f)\"; done
 echo '--- manifests: items done / claimed / HARDWARE ---'

@@ -25,7 +25,8 @@
 #   copies them every 60 s as well, since with GraceTime 0 the trap may never get to run.
 #
 # Exit: 0 when no item of the manifest is left unclaimed-and-unfinished by this task; 1 if run_items reported a
-# failed item; 3 GPU fault; 1 on an integrity STOP.
+# failed item; 3 GPU fault; 1 on an integrity STOP; 4 "NOTHING CLAIMED" (claimed no item while some remain
+# unclaimed: the walltime cannot fit ITEM_TIMEOUT + 300); 5 the job's end time cannot be read from squeue.
 set -uo pipefail
 # Slurm runs a COPY of this script from its spool directory, so BASH_SOURCE says nothing about the tree: use the root.
 HERE="${LIK_ROOT:?LIK_ROOT unset}/repo/cluster/csail"
@@ -76,6 +77,13 @@ lik_unclaimed() {   # items that are neither done nor claimed
     echo "$n"
 }
 lik_done_count() { local id n=0; for id in "${IDS[@]}"; do [ -f "$STATE/$id.done" ] && n=$((n + 1)); done; echo "$n"; }
+lik_own_claims() {   # claims (finished or not) whose owner is this Slurm job id (run_items.sh writes it as field 3)
+    local id n=0
+    for id in "${IDS[@]}"; do
+        [ -d "$STATE/$id.claim" ] && [ "$(awk '{print $3}' "$STATE/$id.claim/owner" 2>/dev/null)" = "${SLURM_JOB_ID:-}" ] && n=$((n + 1))
+    done
+    echo "$n"
+}
 
 ## ---- logs and the TERM trap -----------------------------------------------------------------------------------
 lik_sync_logs() { local f; for f in "$TMPDIR"/worker_*.log; do [ -f "$f" ] && cp -f "$f" "$LOGD/a$ATTEMPT.$(basename "$f")"; done; return 0; }
@@ -92,6 +100,7 @@ trap on_term TERM
 trap 'pkill -P $SYNCER 2>/dev/null; kill $SYNCER 2>/dev/null; lik_sync_logs; lik_cleanup' EXIT
 
 lik_release_stale self
+OWN0=$(lik_own_claims)
 RC=0
 for ROUND in $(seq 1 "${MAX_ROUNDS:-50}"); do
     [ "$ROUND" -eq 1 ] || lik_release_stale others
@@ -105,5 +114,14 @@ for ROUND in $(seq 1 "${MAX_ROUNDS:-50}"); do
     ## Not enough job time left for even one more item: stop; the requeue or a sibling finishes the rest.
     NOW=$(date +%s); [ -z "${JOB_END_EPOCH:-}" ] || [ $(( JOB_END_EPOCH - NOW )) -gt $(( ${ITEM_TIMEOUT:-28800} + 300 )) ] || break
 done
-echo "===== job $JOBTAG attempt $ATTEMPT leaving at $(date -Is): $(lik_done_count)/${#IDS[@]} done, $(lik_unclaimed) unclaimed, rc $RC ====="
+## LOUD, never a quiet rc 0: this attempt claimed nothing while unclaimed items remain (smoke 3211413: a 2 h job
+## with ITEM_TIMEOUT 28800 left every item for "the next job" and showed COMPLETED). Nothing left to claim, the
+## normal tail of an array, stays rc 0 and quiet.
+LEFT_END=$(lik_unclaimed)
+if [ "$RC" -eq 0 ] && [ "$(lik_own_claims)" -eq "$OWN0" ] && [ "$LEFT_END" -gt 0 ]; then
+    echo "NOTHING CLAIMED: job $JOBTAG attempt $ATTEMPT claimed no item while $LEFT_END remain unclaimed" \
+         "(job end $(date -Is -d "@${JOB_END_EPOCH:-0}"), ITEM_TIMEOUT ${ITEM_TIMEOUT:-28800} s + 300 needed); see the worker log"
+    RC=4
+fi
+echo "===== job $JOBTAG attempt $ATTEMPT leaving at $(date -Is): $(lik_done_count)/${#IDS[@]} done, $LEFT_END unclaimed, rc $RC ====="
 exit $RC
