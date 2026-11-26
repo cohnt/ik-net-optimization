@@ -23,9 +23,9 @@ ln -sfn /opt/lik/home/.cache/ikflow "$CHK_HOME/.cache/ikflow"; ln -sfn /opt/lik/
 lik_container env "HOME=$CHK_HOME" /opt/lik/venv/bin/python - <<'PYEOF' || fail "project imports / scene" 4
 import os, sys
 sys.path.insert(0, os.environ["LEARNED_IK_ROOT"] + "/repo")
-import ikflow, jrl, FrEIA, klampt, jax
-assert "/opt/lik/ikflow" in ikflow.__file__, ikflow.__file__
-print("ikflow (vendored fork):", ikflow.__file__)
+import ikflow, ikflow.model_loading, jrl, FrEIA, klampt, jax
+assert "/opt/lik/ikflow" in ikflow.model_loading.__file__, ikflow.model_loading.__file__
+print("ikflow (vendored fork):", ikflow.model_loading.__file__)
 from src.utils import BuildEnv, RepoDir
 BuildEnv(meshcat=None, directives_file=os.path.join(RepoDir(), "models/panda/panda_finray_collision_hardened.yaml"))
 print("hardened Panda scene builds")

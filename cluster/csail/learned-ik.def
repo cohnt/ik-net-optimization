@@ -82,15 +82,19 @@ From: {{ BASE }}
     export PYTHONPATH=/opt/lik/drake/lib/python3.12/site-packages CUDA_VISIBLE_DEVICES=
     $PIP install --quiet --upgrade pip
     # setuptools==78.1.0 (the laptop venv's): ikflow does `import pkg_resources`, which setuptools >= 81 no longer ships.
-    pipc --quiet setuptools==78.1.0 numpy==2.5.2 klampt==0.10.1.post1 roma==1.6.1 \
-        more-itertools==11.1.0 FrEIA==0.2 tqdm==4.70.0 pyyaml==6.0.3 \
+    # roma and FrEIA depend on torch, which is installed from the cu126 index in the next stage: they come after it
+    # (with the constraints' torch pin, pip would otherwise look for 2.14.0+cu126 on PyPI and fail to resolve).
+    pipc --quiet setuptools==78.1.0 numpy==2.5.2 klampt==0.10.1.post1 \
+        more-itertools==11.1.0 tqdm==4.70.0 pyyaml==6.0.3 \
         matplotlib==3.11.1 meshcat==0.3.2 PyOpenGL==3.1.10 nvidia-ml-py
-    $PY -c "import pkg_resources, numpy, yaml, tqdm, more_itertools, meshcat, OpenGL, matplotlib, pynvml, klampt, roma, FrEIA; \
+    $PY -c "import pkg_resources, numpy, yaml, tqdm, more_itertools, meshcat, OpenGL, matplotlib, pynvml, klampt; \
 import pydrake.all, pydrake.planning, pydrake.solvers; print('fail-fast imports ok (klampt, pydrake, small deps)')"
 
     echo "===== [4/6] torch, then the rest of setup_supercloud.sh step 5 ====="
     pipc --quiet --index-url https://download.pytorch.org/whl/cu126 "{{ TORCH_SPEC }}"
     $PY -c "import torch; print('torch', torch.__version__, torch.version.cuda); assert torch.__version__ == '2.14.0+cu126', torch.__version__"
+    pipc --quiet roma==1.6.1 FrEIA==0.2
+    $PY -c "import roma, FrEIA, torch; assert torch.__version__ == '2.14.0+cu126'; print('roma, FrEIA ok, torch unchanged')"
     # CPU jaxlib only: the flow owns the GPU.
     pipc --quiet "jax[cpu]==0.11.2" soromox==0.5.0 optimistix==0.1.0 \
         equinox==0.13.8 diffrax==0.7.2 lineax==0.1.1
@@ -105,7 +109,7 @@ import pydrake.all, pydrake.planning, pydrake.solvers; print('fail-fast imports 
     done
     $PY -c "import jrl, jrl.robot, jrl.robots, jrl.config, jrl.urdf_utils; print('jrl ok')"
     $PIP install --quiet --no-deps -e /opt/lik/ikflow
-    $PY -c "import ikflow, ikflow.model_loading, ikflow.ikflow_solver, ikflow.model; assert '/opt/lik/ikflow' in ikflow.__file__; print('ikflow ok')"
+    $PY -c "import ikflow, ikflow.model_loading, ikflow.ikflow_solver, ikflow.model; assert '/opt/lik/ikflow' in ikflow.model_loading.__file__; print('ikflow ok')"
     unset PYTHONPATH CUDA_VISIBLE_DEVICES
     $PIP freeze --all > /opt/lik/freeze.pre-warm.txt
 
@@ -141,8 +145,8 @@ assert IpoptSolver().available(), "IPOPT unavailable"
 from pydrake.planning import CollisionChecker
 assert hasattr(CollisionChecker, "CalcRobotClearances"), "no CalcRobotClearances (svgd_collision_backend=clearances)"
 print("SNOPT", SnoptSolver().available(), "| IPOPT", IpoptSolver().available())
-import ikflow, jrl, FrEIA, klampt
-assert "/opt/lik/ikflow" in ikflow.__file__, ikflow.__file__
+import ikflow, ikflow.model_loading, jrl, FrEIA, klampt
+assert "/opt/lik/ikflow" in ikflow.model_loading.__file__, ikflow.model_loading.__file__
 import jax, soromox, optimistix
 assert jax.default_backend() == "cpu", jax.default_backend()
 print("ikflow/jrl/FrEIA/klampt/jax import OK; numpy", numpy.__version__)
