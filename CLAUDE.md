@@ -80,6 +80,8 @@ mandatory `<name>.arch.json` sidecar (`scripts/training/export_ckpt_to_pkl.py`);
 cross-checks every field recoverable from shapes and **raises** on contradiction. **`rnvp_clamp` is
 the one field no check can catch.** **Hold `dim_latent_space` at each robot's baseline** (iiwa 8,
 Panda 7): it is the decision-variable count, so varying it changes the problem, not the chart.
+A bit-identical `.npz` beside each `.pkl` loads with no pickle (`convert_pkl_to_npz.py`); never load a
+cluster pickle without Thomas's OK. The upstream Panda chart is still an unchecked pickle download.
 
 **Gradients.** `VarsToQ` is dual-path: float = plain forward pass; AutoDiffXd = `self.jacobian_gen`
 (one reverse pass gives `dq/dvars` and `q`), chain-ruled into fresh AutoDiffXd. Both go through the

@@ -44,3 +44,6 @@ models/screw7_p*/*.pkl
 cpp/build/
 ## Untrained cVAE plumbing charts (scripts/training/export_cvae.py --untrained), same rule.
 models/*/*__cvae*untrained__*
+
+## Pickle-free chart weights (scripts/training/convert_pkl_to_npz.py): large, kept beside the .pkl, never committed.
+models/**/*.npz
