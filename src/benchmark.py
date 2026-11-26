@@ -417,6 +417,23 @@ def provenance():
         out["device"] = str(DEVICE)
     except Exception:
         pass
+    ## The hardware itself, since evals now also run on preemptible GPUs of several types
+    ## (Engaging, CSAIL; Tommy 2026-11-25): a campaign's A/B must sit on ONE GPU type and CPU
+    ## model, and only these two fields can show afterwards that it did.
+    try:
+        import torch
+        if torch.cuda.is_available():
+            out["gpu_name"] = torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith("model name"):
+                    out["cpu_model"] = line.split(":", 1)[1].strip()
+                    break
+    except Exception:
+        pass
     try:
         # A source build reports "unknown"/0.0.0 here while a release tarball reports its
         # tag, which is exactly the distinction worth recording: the laptop runs a local

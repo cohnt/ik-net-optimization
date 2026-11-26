@@ -1,0 +1,8 @@
+# learned-ik CSAIL plumbing smoke: the smallest real grid, Panda grasp (hardened scene, shelf-contained targets),
+# learned + numerical arms, IPOPT, --compile --set flow_cuda_graph=True, the default ikflow Panda weights
+# (panda__full__lp191_5.25m, warmed into the image). PLUMBING, NOT A MEASUREMENT: timing from CSAIL is never
+# compared with SuperCloud's, and these grids are far too small for any verdict.
+# format: <id>|<env assignments or ->|<script>|<args>   (cluster/gen_manifest.py; the id is the run's tag)
+# _b is longer on purpose: the preemption test requeues the job while it runs, and it must resume from its JSONL.
+csail_smoke_b|-|scripts/panda/panda_benchmark.py|--targets 6 --guesses 3 --wall-time 60 --arms learned,numerical --seed 1 --compile --tag csail_smoke_b --task mug --start native --solver ipopt --target-placement shelf --config latent --set correction_cost_weight=10.0 --scene hardened --shelf-inset 0.1 --set flow_cuda_graph=True --set max_iter=1000000
+csail_smoke_a|-|scripts/panda/panda_benchmark.py|--targets 2 --guesses 2 --wall-time 60 --arms learned,numerical --seed 1 --compile --tag csail_smoke_a --task mug --start native --solver ipopt --target-placement shelf --config latent --set correction_cost_weight=10.0 --scene hardened --shelf-inset 0.1 --set flow_cuda_graph=True --set max_iter=1000000
