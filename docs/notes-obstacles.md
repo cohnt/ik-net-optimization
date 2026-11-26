@@ -63,6 +63,42 @@ before any solve. **Never re-ladder, never select a rung, and report every rung.
   Sampler acceptance falls with radius; measure it with `scripts/probe_shelf_acceptance.py
   --scene`, against the trip criterion at `MAX_CONSECUTIVE_REJECTIONS`.
 
+## Geometry probe (2026-11-25, before any solve)
+
+`scripts/probe_obstacles.py`: every row x {rung 0, OBST 8/16/32/64, pillars r040/080/120},
+`--prepare-only` on the record grid (60 x 8, seed 1). It measures scenes, not methods.
+
+- **Rung 0 is the record** on all 8 rows: `grid_hash` and fingerprint equal.
+- **OBST.** All 60 certificates pass on every row and rung. Witness clearance is at least
+  0.0300 m, and the constraint value at q* is at most 0.9971.
+  - Rungs 8, 16 and 32 are complete on every target.
+  - Rung 64 leaves 2-4 targets per row short, with at least 51-60 obstacles (the per-target
+    cap of 1000 candidates).
+  - Guesses that start in collision, of 480:
+
+    | Rung | Count |
+    | --- | --- |
+    | 0 | 0-2 (the mug precedent) |
+    | 8 | 3-17 |
+    | 32 | 14-33 |
+    | 64 | 21-44 |
+
+- **PILLAR.** Target acceptance falls with radius (rung 0 -> r040 -> r080 -> r120):
+
+  | Robot | Rung 0 | r040 | r080 | r120 |
+  | --- | --- | --- | --- | --- |
+  | Panda | 1.8e-3 | 4.8e-4 | 1.5e-4 | ~5e-5 |
+  | iiwa | 3.3e-3 | 8.4e-4 | 2.4e-4 | ~4e-5 |
+  | screw | 3.0e-3 | 8.5e-4 | 4.7e-4 | 1.5e-4 |
+  | soft PCS | 4.8e-3 | 2.2e-3 | 1.4e-3 | 4.1e-4 |
+
+  - **r120 trips the sampler's guard on seed 1 for Panda (10 of 60 targets) and iiwa (7 of
+    60), both tasks.** The rung cannot be built at `MAX_CONSECUTIVE_REJECTIONS = 50000`.
+  - P(trip over 60 targets) is above the plan's 1% criterion on Panda r080 (2-3%) and screw
+    r120 (3-4%), though seed 1 passes on both.
+  - No pillar guess starts in collision: guesses are drawn on the pillar scene.
+  - **How to proceed on r120 is Thomas's call.** The ladder is unchanged.
+
 ## Traps
 
 - **AL-SVGD rebuilds its scene from `SceneSpec`**, in its collision checker, its clearances
