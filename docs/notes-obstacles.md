@@ -97,7 +97,11 @@ before any solve. **Never re-ladder, never select a rung, and report every rung.
   - P(trip over 60 targets) is above the plan's 1% criterion on Panda r080 (2-3%) and screw
     r120 (3-4%), though seed 1 passes on both.
   - No pillar guess starts in collision: guesses are drawn on the pillar scene.
-  - **How to proceed on r120 is Thomas's call.** The ladder is unchanged.
+  - **Ruling (Thomas, 2026-11-26): r120 raises the sampler's abort threshold to 500000**
+    (`--max-target-rejections`, r120 items only, `cluster/gen_manifest.py`). The threshold
+    only stops the sampler; accepted draws are unchanged. Re-probed, all 60 targets build:
+    Panda 3.2-3.4e-5 acceptance, 1.7-1.9M draws, 9-10 min on one core; iiwa 4.3-4.5e-5,
+    1.3-1.4M draws, about 5 min. P(trip over 60) is below 1e-5. The ladder is unchanged.
 
 ## Traps
 
