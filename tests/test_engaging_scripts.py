@@ -301,8 +301,8 @@ def t_job_dryrun():
               "dry run: plumb_job.sh with PLUMB_CPU=1 (mit_quicktest) reaches its end and writes plumb-cpu.DONE", r.stdout[-600:] + r.stderr[-800:])
         alog = open(os.path.join(fx.S, "apptainer.log")).read()
         r2 = fx.sh(f"bash {croot}/repo/cluster/engaging/plumb_job.sh", dict(env, PLUMB_CPU="1", PLUMB_DIAG="1", LIK_EXPECT_GPU=""), cwd=croot)
-        check(r2.returncode == 0 and "--- F:" in r2.stdout and open(done).read().startswith("OK diag"),
-              "dry run: PLUMB_DIAG=1 runs all six mount probes and exits 0", r2.stdout[-500:] + r2.stderr[-500:])
+        check(r2.returncode == 0 and "--- K:" in r2.stdout and open(done).read().startswith("OK diag"),
+              "dry run: PLUMB_DIAG=1 runs all eleven mount probes and exits 0", r2.stdout[-500:] + r2.stderr[-500:])
         check("--nv" not in alog.splitlines()[-1] and "--cpu" in alog.splitlines()[-1], "dry run: the CPU plumb drops --nv and passes --cpu", alog[-600:])
         check('--home "$HOME:/lik-home"' in open(os.path.join(REPO, "cluster", "engaging", "py_in_image.sh")).read(),
               "py_in_image.sh mounts HOME at /lik-home (a bare --home would hide the project tree)")

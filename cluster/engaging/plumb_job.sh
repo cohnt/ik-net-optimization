@@ -31,8 +31,15 @@ if [ "${PLUMB_DIAG:-0}" = 1 ]; then
     run "B: -B LIK_BIND, default home" "${A[@]}" -B "$LIK_BIND" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
     run "C: --no-home -B LIK_BIND" "${A[@]}" --no-home -B "$LIK_BIND" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
     run "D: -B LIK_BIND:LIK_BIND --pwd tree" "${A[@]}" -B "$LIK_BIND:$LIK_BIND" --pwd "$REPO" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
-    run "E: no bind at all, default home" "${A[@]}" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
+    run "E: THE SKILL PATTERN: no bind at all, default home (real HOME)" "${A[@]}" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
     run "F: --contain -B LIK_BIND" "${A[@]}" --contain -B "$LIK_BIND" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
+    run "G: --home HOME:/lik-home -B REPO_TREE:REPO_TREE (explicit tree bind)" "${A[@]}" --home "$EB/home-cache:/lik-home" -B "$LIK_CROOT:$LIK_CROOT" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
+    # The engaging-cluster skill's own pattern is E (plain `apptainer exec img python`: home and /tmp bound by default).
+    # H = E run the way the failing jobs ran it: HOME in the environment overridden to the cache home.
+    run "H: skill pattern with HOME env overridden to the cache home (how the failing jobs ran)" env HOME="$EB/home-cache" "${A[@]}" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
+    run "I: H plus -B LIK_BIND" env HOME="$EB/home-cache" "${A[@]}" -B "$LIK_BIND" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
+    run "J: diffik's spelling: --cleanenv --home DIR(inside the tree root) -B TREE_ROOT" apptainer exec --cleanenv --home "$EB/home-cache" -B "$LIK_BIND" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
+    run "K: J without --cleanenv (host env passed in)" apptainer exec --home "$EB/home-cache" -B "$LIK_BIND" "$LIK_SIF" /opt/lik/venv/bin/python -c "$PROBE" "$T"
     echo "OK diag $(date -Is)" > "$EB/plumb-cpu.DONE"; exit 0
 fi
 ## HOME = the warm cache's home, so ikflow/Drake caches land where benchmark jobs symlink from.
