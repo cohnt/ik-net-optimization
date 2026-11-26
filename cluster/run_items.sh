@@ -212,7 +212,8 @@ Watch() {
 ## --- one worker ------------------------------------------------------------
 Worker() {
     local LOCAL=$1
-    local TAGID; TAGID="$(hostname)_p$LOCAL"
+    ## LIK_TAG_SUFFIX (unset on SuperCloud/CSAIL): cluster/engaging gives each array task its own log/sentinel names.
+    local TAGID; TAGID="$(hostname)_p$LOCAL${LIK_TAG_SUFFIX:-}"
     local LOG="$TMPDIR/worker_$LOCAL.log"
 
     ## Per-worker HOME.  jrl/urdf_utils.py unconditionally truncates and rewrites
