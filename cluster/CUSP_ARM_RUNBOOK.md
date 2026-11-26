@@ -68,4 +68,7 @@ status-quo-style table and the time-matched report.
 | 2026-11-25 20:22 | 6332385 | `cusp_train_cusp7_n4`, as above, afterany 6332384 | PENDING (Dependency) |
 
 ikflow comes from `~/learned-ik/repo/third_party/ikflow` (the symlinked venv's editable install),
-not from this tree's staged copy; byte-identical at 20:21 on 2026-11-25. Re-check before n4 starts.
+not from this tree's staged copy; byte-identical at 20:21 on 2026-11-25. Both charts train on
+**ikflow e94c144** (the submodule pin at `~/learned-ik`'s staged d1f6de2 and at this tree's 3794fd7;
+cluster file-tree hash `3c132746...`). The orchestrator froze `~/learned-ik` (repo, venv, drake)
+until n4 ends; report n4's end to lift it. Record GPU type, cluster and ikflow commit per checkpoint.
