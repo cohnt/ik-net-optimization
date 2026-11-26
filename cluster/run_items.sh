@@ -68,17 +68,30 @@ PinGpu() {   ## $1 = worker index; empty $SLURM_GPUS means "no GPU was allocated
     export CUDA_VISIBLE_DEVICES="$(echo "$SLURM_GPUS" | cut -d, -f$(( $1 % n + 1 )))"
 }
 
-## Seconds of wall clock this Slurm job has left, or "" when that cannot be known (no
-## SLURM_JOB_ID, squeue absent, unparseable output) -- in which case the caller treats the
-## budget as unlimited, so a laptop or login-node run behaves exactly as it did before.
+## Seconds of wall clock this Slurm job has left, or "" outside Slurm (no SLURM_JOB_ID, or no
+## squeue) or for a job without a limit -- the caller then treats the budget as unlimited, so a
+## laptop or login-node run behaves exactly as it did before.
 ## squeue's %L is D-HH:MM:SS / HH:MM:SS / MM:SS, and "UNLIMITED" for a job without a limit.
+## Inside an array, ask for THIS task (`<array>_<task>`): the highest task carries the array
+## master id as SLURM_JOB_ID, and `squeue -j <master>` lists every task, one line each (CSAIL
+## smoke 3211402, 2026-11-26). Under Slurm, anything but exactly one well-formed answer fails
+## CLOSED (0 s left: claim nothing) rather than reading as "no limit".
 JobSecondsLeft() {
     [ -n "${SLURM_JOB_ID:-}" ] || return 0
     command -v squeue >/dev/null 2>&1 || return 0
-    local L; L="$(squeue -h -j "$SLURM_JOB_ID" -o %L 2>/dev/null | tr -d '[:space:]')"
+    ## LIK_SQUEUE_JOB: a wrapper that cannot pass SLURM_ARRAY_* through (Engaging's --cleanenv
+    ## container) names the task itself.
+    local Q="$SLURM_JOB_ID"
+    [ -n "${SLURM_ARRAY_JOB_ID:-}" ] && [ -n "${SLURM_ARRAY_TASK_ID:-}" ] \
+        && Q="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+    Q="${LIK_SQUEUE_JOB:-$Q}"
+    local OUT; OUT="$(squeue -h -j "$Q" -o %L 2>/dev/null)"
+    [ "$(printf '%s\n' "$OUT" | grep -c .)" -eq 1 ] || { echo 0; return 0; }
+    local L; L="$(printf '%s' "$OUT" | tr -d '[:space:]')"
     case "$L" in
-        ""|UNLIMITED|NOT_SET|INVALID) return 0 ;;
+        UNLIMITED|NOT_SET) return 0 ;;
     esac
+    [[ "$L" =~ ^([0-9]+-)?[0-9]+(:[0-9]+){0,2}$ ]] || { echo 0; return 0; }
     local D=0
     case "$L" in *-*) D="${L%%-*}"; L="${L#*-}" ;; esac
     local A B C
@@ -199,7 +212,8 @@ Watch() {
 ## --- one worker ------------------------------------------------------------
 Worker() {
     local LOCAL=$1
-    local TAGID; TAGID="$(hostname)_p$LOCAL"
+    ## LIK_TAG_SUFFIX (unset on SuperCloud/CSAIL): cluster/engaging gives each array task its own log/sentinel names.
+    local TAGID; TAGID="$(hostname)_p$LOCAL${LIK_TAG_SUFFIX:-}"
     local LOG="$TMPDIR/worker_$LOCAL.log"
 
     ## Per-worker HOME.  jrl/urdf_utils.py unconditionally truncates and rewrites

@@ -541,6 +541,7 @@ help (Wenger's orthogonal 3R arms are quartic-solvable and cuspidal: the quartic
 at its radicals' branch cuts). The 7/21 notes asked whether the learned latent, which never
 separates branches, does better there. Tommy (2026-11-25): **no analytic arm** -- "the whole point
 is we can't trust the branch tracking of an analytic baseline". Arms are learned and joint space.
+**One rung, the cuspidal arm only**: no non-cuspidal control, no fibre-topology tools (Tommy).
 
 **The robot** (`src/cusp_arm/params.py` is the robot, rendered as SDF and torch FK):
 - **6R: published, not invented** (Tommy asked for a known cuspidal 6R with 16 solutions). The

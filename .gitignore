@@ -46,3 +46,6 @@ cpp/build/
 models/*/*__cvae*untrained__*
 ## The cuspidal arm, same rule.
 models/cusp7/*.pkl
+
+## Pickle-free chart weights (scripts/training/convert_pkl_to_npz.py): large, kept beside the .pkl, never committed.
+models/**/*.npz

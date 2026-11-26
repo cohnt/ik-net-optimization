@@ -80,6 +80,8 @@ mandatory `<name>.arch.json` sidecar (`scripts/training/export_ckpt_to_pkl.py`);
 cross-checks every field recoverable from shapes and **raises** on contradiction. **`rnvp_clamp` is
 the one field no check can catch.** **Hold `dim_latent_space` at each robot's baseline** (iiwa 8,
 Panda 7): it is the decision-variable count, so varying it changes the problem, not the chart.
+A bit-identical `.npz` beside each `.pkl` loads with no pickle (`convert_pkl_to_npz.py`); never load a
+cluster pickle without Thomas's OK. The upstream Panda chart is still an unchecked pickle download.
 
 **Gradients.** `VarsToQ` is dual-path: float = plain forward pass; AutoDiffXd = `self.jacobian_gen`
 (one reverse pass gives `dq/dvars` and `q`), chain-ruled into fresh AutoDiffXd. Both go through the
@@ -450,12 +452,8 @@ Measured: chart ladder `n6` stands; `p025_n6` shows the gain-ceiling runaway (a 
 chart). `p050`'s dataset is rebuilt (bit-identical); the other rungs' are still gone. Ops and screens
 `cluster/SCREW_ARM_RUNBOOK.md`; `python scripts/report_screw.py`. The curvilinear rail is deferred.
 
-**The cuspidal arm** (`cusp7`, `src/cusp_arm/`, branch `cuspidal-arm`, 2026-11-25): no IK branch
-label is global, so does the learned latent beat an analytic chart? The 6R is **published, not ours**
-(Tommy): Feeß & Weiß's simplified Transpressor (arXiv 2602.14794; up to 16 IK solutions)
-x0.16 m, plus a wrist-end tool pitch (each locked slice is the 6R); iiwa-like limits, arm-up zero.
-**No analytic arm** (branch tracking untrustworthy), **one rung**, cuspidality taken as known; the
-paper's `det J` is wrong (`det_j_6r` derived). `docs/notes-robots.md`, `cluster/CUSP_ARM_RUNBOOK.md`.
+**The cuspidal arm** (`cusp7`, branch `cuspidal-arm`): published Transpressor 6R + tool pitch, no
+analytic arm. `docs/notes-robots.md`.
 
 ## Running on MIT SuperCloud (long form: `docs/notes-cluster.md`; playbook `cluster/README.md`)
 
