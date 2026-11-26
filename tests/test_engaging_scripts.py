@@ -205,11 +205,11 @@ def t_requeue_claims():
             os.makedirs(os.path.join(st, i + ".claim"))
             if owner is not None:
                 open(os.path.join(st, i + ".claim", "owner"), "w").write(owner)
-        claim("dead", "host_p0_j77 2026-11-25T00:00:00 job=77")        # this job's previous attempt
-        claim("dead2", "host_p0_j77 2026-11-25T00:00:00 job=77")
-        claim("other", "host_p0_j78 2026-11-25T00:00:00 job=78")       # another live task
-        claim("other7", "host_p0_j770 2026-11-25T00:00:00 job=770")    # id with a shared prefix
-        claim("finished", "host_p0_j77 2026-11-25T00:00:00 job=77"); open(os.path.join(st, "finished.done"), "w").close()
+        claim("dead", "host_p0_j77 2026-11-25T00:00:00 77")        # this job's previous attempt
+        claim("dead2", "host_p0_j77 2026-11-25T00:00:00 77")
+        claim("other", "host_p0_j78 2026-11-25T00:00:00 78")       # another live task
+        claim("other7", "host_p0_j770 2026-11-25T00:00:00 770")    # id with a shared prefix
+        claim("finished", "host_p0_j77 2026-11-25T00:00:00 77"); open(os.path.join(st, "finished.done"), "w").close()
         claim("sc", "host_p0 2026-11-25T00:00:00")                      # a SuperCloud-style claim: never touched
         r = fx.sh(f"export LIK_CROOT={fx.root}/x; source {fx.R}/cluster/engaging/job_lib.sh && SLURM_JOB_ID=77 eg_release_own_claims {st}")
         left = sorted(f[:-6] for f in os.listdir(st) if f.endswith(".claim"))
@@ -223,14 +223,14 @@ def t_requeue_claims():
         man = os.path.join(root, "manifest_T.txt"); open(man, "w").write("itemA|-|fake.py|x\n")
         base = dict(MANIFEST=man, PROCS="1", LEARNED_IK_ROOT=root, TEST_REPO=repo, TEST_STATE_DIR=state, TEST_PYTHON=sys.executable,
                     LEARNED_IK_RESULTS=os.path.join(root, "results"), TMPDIR=tmp)
-        r = fx.sh(f"bash {REPO}/cluster/run_items.sh", dict(base, LIK_CLAIM_JOB="5", LIK_TAG_SUFFIX="_j5"))
-        own = open(os.path.join(state, "manifest_T", "itemA.claim", "owner")).read()
-        check(re.search(r" job=5$", own.strip()) is not None, "run_items.sh records job=<id> in the claim (LIK_CLAIM_JOB)", own + r.stderr)
+        r = fx.sh(f"bash {REPO}/cluster/run_items.sh", dict(base, LIK_TAG_SUFFIX="_j5"))
+        # (the claim owner's 3rd field, the Slurm job id, is checked in t_job_dryrun: SLURM_JOB_ID switches run_items.sh
+        # out of its TEST_REPO mode, so it cannot be set here)
         check(any(f.endswith("_p0_j5.SENTINEL") for f in os.listdir(os.path.join(state, "manifest_T"))), "per-task sentinel names (LIK_TAG_SUFFIX)")
         shutil.rmtree(state); os.makedirs(state)
         r = fx.sh(f"bash {REPO}/cluster/run_items.sh", base)
         own = open(os.path.join(state, "manifest_T", "itemA.claim", "owner")).read()
-        check("job=" not in own and any(re.search(r"_p0\.SENTINEL$", f) for f in os.listdir(os.path.join(state, "manifest_T"))),
+        check(len(own.split()) == 2 and any(re.search(r"_p0\.SENTINEL$", f) for f in os.listdir(os.path.join(state, "manifest_T"))),
               "without the env, claims and file names are exactly SuperCloud's", own)
     finally:
         fx.close()
@@ -293,7 +293,7 @@ def t_job_dryrun():
         # a stale claim of THIS job's previous attempt (the requeue trap), seen by the bench dry run
         st = os.path.join(croot, "state", "manifest_engaging_smoke", "eg_SMOKE_panda_mug_ipopt.claim")
         os.makedirs(st)
-        open(os.path.join(st, "owner"), "w").write("host_p0_j900 2026-11-25T00:00:00 job=900")
+        open(os.path.join(st, "owner"), "w").write("host_p0_j900 2026-11-25T00:00:00 900")
         for job, extra in (("build_image_job.sh", {}), ("plumb_job.sh", {}),
                            ("bench_job.sh", {"MANIFEST": "cluster/engaging/manifest_engaging_smoke.txt"})):
             r = fx.sh(f"bash {croot}/repo/cluster/engaging/{job}", dict(env, **extra), cwd=croot)
@@ -310,7 +310,7 @@ def t_job_dryrun():
                 check(os.path.exists(os.path.join(croot, "state", "manifest_engaging_smoke", "eg_SMOKE_panda_mug_ipopt.done")),
                       "dry run: the item ran through the worker and is .done")
                 own = open(os.path.join(croot, "state", "manifest_engaging_smoke", "eg_SMOKE_panda_mug_ipopt.claim", "owner")).read()
-                check("job=900" in own, "dry run: the new claim carries job=900", own)
+                check(own.split()[2:] == ["900"], "dry run: the new claim carries job id 900 as field 3", own)
     finally:
         fx.close()
 

@@ -298,9 +298,7 @@ Worker() {
         fi
 
         mkdir "$CLAIM" 2>/dev/null || { SKIP=$((SKIP + 1)); continue; }
-        ## LIK_CLAIM_JOB (unset on SuperCloud): the claiming job's id, so a REQUEUED job (same id) can release
-        ## the claims of its dead previous attempt (cluster/engaging/job_lib.sh eg_release_own_claims).
-        echo "$TAGID $(date -Is)${LIK_CLAIM_JOB:+ job=$LIK_CLAIM_JOB}" > "$CLAIM/owner"
+        echo "$TAGID $(date -Is) ${SLURM_JOB_ID:-}" > "$CLAIM/owner"   # 3rd field: the Slurm job (cluster/csail/job.sh and cluster/engaging/job_lib.sh free claims of dead/requeued jobs by it)
 
         ## ONE Drake per JOB, never per item. The record's Drake is this project's pin, exported
         ## as PYTHONPATH above. A per-item `DRAKE=nightly` sentinel used to select a second

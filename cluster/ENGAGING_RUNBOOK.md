@@ -79,7 +79,7 @@ cannot finish.
 
 **The requeue trap.** A requeued job keeps its job id and restarts from the top of the script; its dead
 attempt's claims have no `.done`, so every worker would skip those items. `run_items.sh` (env-gated:
-`LIK_CLAIM_JOB`, `LIK_TAG_SUFFIX`; SuperCloud unchanged) writes `job=<id>` into each claim, and
+`LIK_TAG_SUFFIX`; SuperCloud unchanged) writes the Slurm job id as the 3rd field of each claim's owner file (shared with CSAIL's `job.sh`), and
 `bench_job.sh` calls `eg_release_own_claims` before draining: it removes exactly this job id's claims
 that lack `.done`, never another job's. The item then resumes from its per-cell JSONL
 (`LEARNED_IK_RESUME=1`). A job that died without a requeue (walltime, node failure, `scancel`) leaves

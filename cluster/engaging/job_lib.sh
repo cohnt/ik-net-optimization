@@ -67,8 +67,8 @@ eg_hardware_check() {
 ## Release the claims left by THIS JOB'S PREVIOUS ATTEMPT. THE REQUEUE TRAP: run_items.sh claims an item
 ## with `mkdir <id>.claim`; a preempted job is requeued under the SAME job id, restarts from the top of
 ## the script, and its dead attempt's claims (no .done) would otherwise orphan those items: every
-## worker, this one included, sees "claimed" and skips. run_items.sh writes `job=<id>` into each
-## claim's owner file when LIK_CLAIM_JOB is set, so the claims of this job id are exactly the dead
+## worker, this one included, sees "claimed" and skips. run_items.sh writes the Slurm job id as the 3rd field of each
+## claim's owner file (shared with cluster/csail/job.sh), so the claims of this job id are exactly the dead
 ## attempt's (a requeued job's old processes are gone before it restarts). Other jobs' claims are never
 ## touched; a claim from a job that died WITHOUT a requeue is cluster/engaging/collect.sh --reclaim's.
 ## $1 = the manifest's state dir.
@@ -79,7 +79,7 @@ eg_release_own_claims() {
         [ -d "$c" ] || continue
         id=$(basename "$c" .claim)
         [ -f "$state/$id.done" ] && continue
-        if grep -q " job=${SLURM_JOB_ID}\( \|\$\)" "$c/owner" 2>/dev/null; then
+        if [ "$(awk '{print $3}' "$c/owner" 2>/dev/null)" = "$SLURM_JOB_ID" ]; then
             rm -rf "$c"; n=$((n + 1)); echo "released stale claim of this job's previous attempt: $id"
         fi
     done
