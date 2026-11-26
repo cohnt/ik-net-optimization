@@ -53,7 +53,8 @@ CONFIGS = {
     "obst64": ["--scene", "hardened", "--obstacles", "per_target", "--obstacle-count", "64"],
     "pillars_r040": ["--scene", "pillars_r040", "--obstacles", "none"],
     "pillars_r080": ["--scene", "pillars_r080", "--obstacles", "none"],
-    "pillars_r120": ["--scene", "pillars_r120", "--obstacles", "none"],
+    "pillars_r120": ["--scene", "pillars_r120", "--obstacles", "none",
+                     "--max-target-rejections", "500000"],   # Thomas, 2026-11-26
 }
 
 

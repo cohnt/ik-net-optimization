@@ -5126,6 +5126,7 @@ def stage_OVR(which):
 OBST_RUNGS = (0, 8, 16, 32, 64)
 PILLAR_RUNGS = (("000", None), ("040", "pillars_r040"), ("080", "pillars_r080"),
                 ("120", "pillars_r120"))
+PILLAR_R120_MAX_REJECTIONS = 500000   # P(trip over 60 targets) ~1e-7 at acceptance 4e-5
 OBST_SOURCES = (("PAPER", "ipopt", None), ("SVGD_R2", "ipopt", None),
                 ("SVGD_R29", "svgd", "pin4"), ("SVGD_R30", "svgd", "pin4kq"))
 
@@ -5176,12 +5177,18 @@ def stage_OBST():
 
 
 def stage_PILLAR():
-    """Pillar scenes (radius 0 = the record's scene, 0.04 / 0.08 / 0.12 m) x the same 24 runs."""
+    """Pillar scenes (radius 0 = the record's scene, 0.04 / 0.08 / 0.12 m) x the same 24 runs.
+
+    r120 raises the target sampler's abort threshold to PILLAR_R120_MAX_REJECTIONS (Thomas,
+    2026-11-26): at 50000 it trips on seed 1 for Panda and iiwa (acceptance ~4-5e-5). The
+    threshold only stops the sampler; every draw it accepts is unchanged."""
     items = []
     src = _obst_source_items()
     for ri, (label, scene) in enumerate(PILLAR_RUNGS):
+        extra = (["--max-target-rejections", str(PILLAR_R120_MAX_REJECTIONS)]
+                 if scene == "pillars_r120" else [])
         for it, stage, kind in src:
-            items.append(_obst_swap(it, stage, f"PILLAR{label}", [], scene,
+            items.append(_obst_swap(it, stage, f"PILLAR{label}", extra, scene,
                                     2 * ri + (0 if kind == "ipopt" else 1)))
     return items
 
