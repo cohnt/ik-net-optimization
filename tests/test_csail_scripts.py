@@ -282,6 +282,16 @@ def t_submit():
         fx.write("cluster/untracked.txt", "i|-|x|--tag i\n")
         r = fx.script("submit.sh", "cluster/untracked.txt", "img", GPU="l40s")
         expect("an uncommitted manifest is refused (dirty tree first)", r, 2)
+        # MAX_RUNNING throttles the array separately from its size (default: = tasks, as above)
+        os.remove(f"{fx.R}/cluster/untracked.txt")
+        n = len(sb())
+        for bad in ("0", "5", "x"):
+            r = fx.script("submit.sh", "cluster/m_six.txt", "img", "4", GPU="l40s", MAX_RUNNING=bad)
+            expect(f"MAX_RUNNING={bad} with 4 tasks is refused", r, 2, "MAX_RUNNING", absent=("submitted",))
+        check(len(sb()) == n, "and makes no sbatch call")
+        r = fx.script("submit.sh", "cluster/m_six.txt", "img", "4", GPU="l40s", MAX_RUNNING="2")
+        expect("MAX_RUNNING=2 with 4 tasks submits", r, 0, "JOB=4242", "array 0-3%2")
+        check("--array=0-3%2" in sb()[-1], "sbatch carries --array=0-3%2", sb()[-1])
     finally:
         fx.close()
 

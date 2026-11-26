@@ -16,7 +16,9 @@
 #                  --constraint (nvidia_l40s ...), and EXPECT_GPU, which each job checks against nvidia-smi. A
 #                  CAMPAIGN NEVER MIXES GPU TYPES: the first submission writes state/<manifest>/HARDWARE and a
 #                  later one with another kind is refused.
-#   tasks          array size (default min(items, 8)); the array is throttled to that many running at once.
+#   tasks          array size (default min(items, 8)).
+#   MAX_RUNNING    how many array tasks run at once (default: tasks). tasks > MAX_RUNNING queues more task-days than
+#                  run concurrently, so a long campaign drains without a resubmit (tasks that find nothing exit).
 #   TIME           default 1-00:00:00 (the partitions' limit). CPUS (default 8), MEM (default 48G).
 #   ITEM_TIMEOUT   per-item backstop in s (default 28800); a task only claims an item that fits in its remaining time.
 #   EXCLUDE_NODES  comma list added to the exclusions (the lab node and nodes with a recorded GPU fault are always in).
@@ -43,6 +45,8 @@ ITEMS=$(grep -vcE '^[[:space:]]*(#|$)' "$REPO_ROOT/$MANIFEST")
 [ "$ITEMS" -gt 0 ] || { echo "no items in $MANIFEST" >&2; exit 2; }
 TASKS="${3:-$(( ITEMS < 8 ? ITEMS : 8 ))}"
 [[ "$TASKS" =~ ^[0-9]+$ ]] && [ "$TASKS" -ge 1 ] && [ "$TASKS" -le 64 ] || { echo "tasks must be 1..64" >&2; exit 2; }
+MAX_RUNNING="${MAX_RUNNING:-$TASKS}"
+[[ "$MAX_RUNNING" =~ ^[0-9]+$ ]] && [ "$MAX_RUNNING" -ge 1 ] && [ "$MAX_RUNNING" -le "$TASKS" ] || { echo "MAX_RUNNING must be 1..tasks ($TASKS)" >&2; exit 2; }
 TIME="${TIME:-1-00:00:00}"; CPUS="${CPUS:-8}"; MEM="${MEM:-48G}"; ITEM_TIMEOUT="${ITEM_TIMEOUT:-28800}"
 [[ "$TIME" =~ ^[0-9:-]+$ && "$CPUS" =~ ^[0-9]+$ && "$MEM" =~ ^[0-9]+[GM]$ && "$ITEM_TIMEOUT" =~ ^[0-9]+$ ]] || { echo "bad TIME/CPUS/MEM/ITEM_TIMEOUT" >&2; exit 2; }
 ## DRAKE_ENV=crc items (the old clearances wheel) have no place here: the image's Drake 1.58.0 has CalcRobotClearances.
@@ -67,11 +71,11 @@ if [ -n "$HW" ] && [ "$HW" != "$GPU" ]; then
 fi
 
 NAME="lik_${STNAME:0:24}_$(date +%H%M%S)"
-echo "PLAN: array 0-$((TASKS - 1))%$TASKS of $NAME, $ITEMS item(s); $GPU_OPTS --gpus=1 --cpus-per-task=$CPUS --mem=$MEM --time=$TIME; one solve per GPU; preemptible"
+echo "PLAN: array 0-$((TASKS - 1))%$MAX_RUNNING of $NAME, $ITEMS item(s); $GPU_OPTS --gpus=1 --cpus-per-task=$CPUS --mem=$MEM --time=$TIME; one solve per GPU; preemptible"
 cs_run "mkdir -p $ROOT/state/$STNAME && [ -s $ROOT/state/$STNAME/HARDWARE ] || echo $GPU > $ROOT/state/$STNAME/HARDWARE" || exit 8
 JOB=$(csail_sbatch "$ROOT" "$NAME" '%x-%A_%a' \
     "LIK_ROOT=$ROOT LIK_CS_ROOT=$CS_ROOT EXPECT_MANIFEST_SHA=$EXPECT_MANIFEST_SHA IMAGE=$CS_ROOT/images/$IMGNAME.sif IMAGE_SHA256=$IMGSHA EXPECT_GPU=$EXPECT_GPU MANIFEST=$MANIFEST PROCS=1 ITEM_TIMEOUT=$ITEM_TIMEOUT" \
-    "$GPU_OPTS --gpus=1 --cpus-per-task=$CPUS --mem=$MEM --time=$TIME --array=0-$((TASKS - 1))%$TASKS" \
+    "$GPU_OPTS --gpus=1 --cpus-per-task=$CPUS --mem=$MEM --time=$TIME --array=0-$((TASKS - 1))%$MAX_RUNNING" \
     "$ROOT/repo/cluster/csail/job.sh") || exit 1
 echo "submitted $NAME as array job $JOB (state $ROOT/state/$STNAME, results $ROOT/results, logs $ROOT/logs/)"
 echo "JOB=$JOB ROOT=$ROOT"
