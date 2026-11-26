@@ -392,16 +392,10 @@ measure and report as a stated deviation, not adopt. **Damping an exact Jacobian
 inconsistent**; damping belongs on the Newton step, which Drake's IPOPT does not expose. **Suppressing
 the runaway does not buy success.**
 
-**Chart ablation, rung one CLOSED (branch `chart-cvae`, merged to main 2026-10-21).** The
-program reaches its network only through `src/charts/` (`LoadChart`; `FlowChart` bit-identical to the
-old calls), built so later families plug in. Rung: a standard cVAE decoder as the chart, learned
-and fixed decoder variance x K = flow width / redundancy, IPOPT + AL-SVGD. **Verdict: a loss.**
-Every rigid native row loses to the flow and to joint space under both solvers; screw 0 on every
-probe; paired start 0/480 everywhere; iiwa K=8 learned variance diverged (recorded, not
-benchmarked). Soft PCS ties the flow with cheaper cells only because the decoder returns a
-low-strain configuration. **Mechanism: every chart's latent is collapsed** (active-unit screen):
-the decoder returns E[q | pose], unusable where the IK fibre is disconnected branches. Long form
-`docs/notes-chart.md`; ops `cluster/CVAE_RUNBOOK.md`.
+**Chart ablation, rung one CLOSED (`chart-cvae`, merged 2026-10-21).** The program reaches its
+network only through `src/charts/` (`LoadChart`). A cVAE decoder as the chart **loses** (every rigid
+native row, screw 0, paired 0/480): **every chart's latent is collapsed**, the decoder returns
+E[q | pose]. Long form `docs/notes-chart.md`; ops `cluster/CVAE_RUNBOOK.md`.
 
 **Chart rung two: LOInK (2026-10-22 to 10-26), DISMISSED (Thomas)**: a bi-Lipschitz network with a
 structured latent. No chart fits on the rigid arms (`K = 1`, even retrained on one IK branch) or soft12
@@ -434,15 +428,10 @@ DOF ladder measures the baseline. **Learned FK is CLOSED on both soft arms** (Th
 cannot change who wins and an expensive forward model is what keeps the comparison fair; the hook
 stays, unused. Tables `docs/soft-arm-ladders.md`; ops `cluster/SOFT_ARM_RUNBOOK.md`.
 
-**The GVS push-rod arm** — merged 2026-10-05, **outside the record, does not replace the soft PCS arm**
-(Thomas: *"the GVS arm doesn't help our story"*). Tapered three-segment GVS rod driven by nine
-normalized rod forces; forward map is **SoRoMoX's own static equilibrium** (Thomas: *"the point is to
-use that repo"* — SoRoMoX is the model, not an oracle; test the wrapper). Redundancy enforced
-(`ninputs > 6`) and measured; the taper avoids the vacuity trap (a uniform rod zeroes higher Legendre
-orders). Joint-space failures are force saturation. IPOPT and SNOPT only, no NLopt (Thomas: *"it's a
-waste of time"*). At record conditions (o1 REMEASURE, o2 GVSO2 2026-10-22): learned 10 / tie 6 /
-loss 0, no rung separates. `GVS_ARM_XLA_THREADS=1`. Notes `docs/gvs-arm.md`, tables `docs/gvs-arm-tables.md`,
-ops `cluster/GVS_ARM_RUNBOOK.md`.
+**The GVS push-rod arm** — merged 2026-10-05, **outside the record** (Thomas: *"the GVS arm doesn't
+help our story"*). Nine rod forces; the forward map is **SoRoMoX's own static equilibrium** (the model,
+not an oracle). IPOPT and SNOPT only. Learned 10 / tie 6 / loss 0. `GVS_ARM_XLA_THREADS=1`. Notes
+`docs/gvs-arm.md`, tables `docs/gvs-arm-tables.md`, ops `cluster/GVS_ARM_RUNBOOK.md`.
 
 **The screw-joint arm** (`screw7_p*`, `src/screw_arm/`) — **always "screw", never "helix"**. A
 generality demonstration: a screw joint makes FK non-algebraic, so no algebraic IK applies. Invented
