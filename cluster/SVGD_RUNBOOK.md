@@ -3,6 +3,8 @@
 The operational half. The design is the SVGD block of `cluster/gen_manifest.py`; the method and
 its per-row analysis rule are `docs/svgd-solver.md`. The cluster playbook is `cluster/README.md`.
 
+> **`DRAKE_ENV=crc` is RETIRED (2026-11-27, Drake 1.58.0 has `CalcRobotClearances`).** Every `DRAKE_ENV=crc` prefix below is history: drop it. `submit_bench.sh` and `run_items.sh` refuse a set `DRAKE_ENV`; a clearance manifest is submitted like any other and gets `DRAKE_NUM_THREADS` from `run_items.sh`. `venv-crc`, `home-crc`, `make_venv_crc.sh`, `verify_venv_crc.sh` are gone.
+
 ## What it is
 
 Panda `n6` only, at the record's Panda conditions: hardened scene, shelf-contained targets at the
@@ -356,7 +358,7 @@ DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R9.txt 4
 DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R10.txt 4
 ```
 
-## From R11 on: the clearance collision row, under `DRAKE_ENV=crc`
+## From R11 on: the clearance collision row (ran under `DRAKE_ENV=crc`, retired)
 
 Thomas, 2026-10-11: the batched clearance row (`svgd_collision_backend=clearances`,
 `src/svgd/collision_backend.py`) is a strict improvement and the svgd rounds use it from now on.
@@ -376,14 +378,11 @@ success (10/10 on both backends, both tasks). It is an EXECUTION setting like `s
 selftest does not count it as a round's one factor, and the reporter names it in full in every
 setting diff.
 
-**The pinned nightly predates the binding** (Drake master has it since #25073, 2026-10-12; the wheel is
-Thomas's branch `calc-robot-clearances`, commit 15a2c97228), so
-these four manifests run under the second environment, `~/learned-ik/venv-crc`: the project venv's
-exact freeze plus that branch's wheel, with the tarball OFF `PYTHONPATH` (`cluster/README.md`, "A
-second Drake for the svgd clearance row"). Submit them with **`DRAKE_ENV=crc`**; `submit_bench.sh`
-refuses them without it, refuses `DRAKE_ENV=crc` on any manifest that is not all-clearances, and
-refuses `crc` until `~/learned-ik/verify_venv_crc.DONE` reads `OK`. Under `crc`, `run_items.sh` sets
-`DRAKE_NUM_THREADS` = the job's CPUs / PROCS (logged in each worker's header); without it the worker's `OMP_NUM_THREADS=1`
+**History: the old nightly predated the binding** (Drake master has it since #25073, 2026-10-12; release
+1.58.0 carries it), so R6-R31 ran under a second environment, `~/learned-ik/venv-crc` (the project venv's
+freeze plus Thomas's `calc-robot-clearances` wheel, commit 15a2c97228). That environment is retired;
+now a clearance manifest runs in the default env and `run_items.sh` sets `DRAKE_NUM_THREADS` = the
+job's CPUs / PROCS for it (logged in each worker's header); without it the worker's `OMP_NUM_THREADS=1`
 would leave the row on one thread (~1.2x). A tree whose code predates the option (or a pydrake
 without the binding) refuses `clearances` when `ProgramOptions` is built, so every cell would fail
 instantly: hence the guards.

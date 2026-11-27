@@ -64,11 +64,10 @@ running in the partition, not a per-job cap — so:
 
 ```
 ~/learned-ik/
-    drake/       own Drake nightly 0.0.20260918 tarball, the project's PIN (needs
-                 PR 25002 for the adopted NLopt inner-optimizer options). Nightlies
-                 publish no .sha256, so setup verifies against a hash recorded in the
-                 repo -- the bytes the local tests ran against. Artifacts expire after
-                 45 days (~2026-11-02): move to 1.58.0 once it carries PR 25002.
+    drake/       own Drake release 1.58.0 tarball, the project's PIN (PR 25002's NLopt options,
+                 #25073 CalcRobotClearances); .drake-ok holds "drake 1.58.0 <commit>". Setup
+                 verifies the recorded AND the published .sha256. An older install is moved
+                 aside by hand (drake-0.0.20260918/), never deleted: that nightly is gone upstream.
     sysdeps/     own dpkg-deb -x of libfmt9 + libspdlog1.12 (runtime only)
     venv/        own cp312 venv: torch cu126, ikflow, jrl, ...
     home/        a fake HOME holding the pre-warmed ikflow + jrl caches
@@ -79,59 +78,51 @@ running in the partition, not a per-job cap — so:
                            launch.log-<jobid>, wandb/ (offline)
     results/pole/<run>/    per-checkpoint screening: pole exposure + chart accuracy
     calib/       calibration logs
-    wheels/      drake-0.0.20261011+crc.15a2c97 (Thomas's `calc-robot-clearances` branch)
-    venv-crc/    venv/'s exact freeze + that wheel; DRAKE_ENV=crc only (below)
-    home-crc/    venv-crc's own drake_models cache (the ikflow cache is linked from home/)
-    venv-crc-build/  its build/verify logs and the pip freezes that prove "exact"
-    scratch-crc/ the svgd tip the verification test ran from; not a campaign tree
 ```
 
 `repo/models/<robot>/` is where a finished rung's exported `.pkl` + `.arch.json` land, under
 the name the benchmark manifest expects — so the two halves meet there and nowhere else.
 
-### A second Drake for the svgd clearance row: `DRAKE_ENV=crc`
+### Moving SuperCloud's Drake to 1.58.0 (operator procedure; the `DRAKE_ENV=crc` second Drake is retired)
 
-The record runs on ONE Drake, the tarball pin, and that does not change. The svgd solver's
-batched clearance collision row (`--set svgd_collision_backend=clearances`) needs
-`CollisionChecker.CalcRobotClearances`, which the pinned nightly predates (it is in master since #25073, 2026-10-12;
-the wheel is Thomas's branch `calc-robot-clearances`), and Thomas ruled on 2026-10-11 that the svgd rounds use it from R11 on. So there is a
-second environment, selected per STAGE (never per item) by `DRAKE_ENV`:
+The record, and every stage since, runs on ONE Drake. The svgd rounds' batched clearance row
+(`svgd_collision_backend=clearances`, needs `CollisionChecker.CalcRobotClearances`) used to need a
+second venv (`venv-crc`, `DRAKE_ENV=crc`); release 1.58.0 carries the binding, so that exception, its
+scripts and its refusals in `submit_bench.sh` / `run_items.sh` are gone. A clearance manifest is
+submitted like any other; `run_items.sh` gives it `DRAKE_NUM_THREADS` (the job's CPUs / PROCS) because
+every worker pins `OMP_NUM_THREADS=1`. A set `DRAKE_ENV` is refused by both scripts.
 
-| | unset (every stage of record, the IPOPT twins, svgd R1-R10) | `DRAKE_ENV=crc` |
-| --- | --- | --- |
-| python | `venv/bin/python` | `venv-crc/bin/python` |
-| pydrake | the tarball, on `PYTHONPATH` | the wheel, inside the venv; `PYTHONPATH` unset |
-| `LD_LIBRARY_PATH` | `+ sysdeps/` (the tarball's libfmt/spdlog) | untouched (the wheel bundles its libs) |
-| drake_models cache | `home/.cache/drake` | `home-crc/.cache/drake` |
-| `DRAKE_NUM_THREADS` | unset | the job's CPUs / PROCS, overridable; logged per worker |
-
-`DRAKE_NUM_THREADS` is there because every worker pins `OMP_NUM_THREADS=1` and Drake's
-`Parallelism::Max()` honours that, which would leave the batched row on one thread (~1.2x instead
-of 7-10x); its results are bitwise independent of the thread count. Unset, `run_items.sh`
-behaves exactly as before and `submit_bench.sh` generates a byte-identical launcher.
+**The venv does NOT need rebuilding**: it holds no Drake (Drake is on `PYTHONPATH`), so a move is the
+tarball plus the drake_models cache. `setup_supercloud.sh` with `DRAKE_ONLY=1` skips every pip step.
+Nothing may be running from the old tree; no job may be queued that will start before it ends.
+Nothing is deleted: the old nightly cannot be re-fetched.
 
 ```bash
-## build (download partition, one job at a time) and verify (debug-cpu, no internet) -- once:
-sc_rsync -a <the .whl> "$SC_DEST:learned-ik/wheels/"
-sc_run 'cd ~/learned-ik/scratch-crc && LLsub ./cluster/make_venv_crc.sh -s 8 -q download'
-sc_run 'cd ~/learned-ik/scratch-crc && LLsub ./cluster/verify_venv_crc.sh -s 8 -q debug-cpu'
-sc_run 'cat ~/learned-ik/make_venv_crc.DONE ~/learned-ik/verify_venv_crc.DONE'   # OK, OK
-## a stage that carries the clearance row:
-DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R11.txt 4
+## 1. on the login node (a rename only, no job running):
+sc_run 'cd ~/learned-ik && mv drake drake-0.0.20260918 && mv .drake-ok .drake-ok-0.0.20260918'
+##    (other trees that symlinked ~/learned-ik/drake, e.g. ~/learned-ik-gvs, now dangle: re-point them)
+## 2. stage the committed tree as usual (cluster/stage_code.sh), then the setup job, `download` partition
+##    (needs internet; one job at a time). It downloads, checks the recorded + published sha256 and
+##    VERSION.TXT, extracts, writes .drake-ok, re-warms the drake_models cache (always, additive: the
+##    old cache entry stays), and imports pydrake. It REFUSES, touching nothing, if drake/ is not 1.58.0.
+JOB_ENV="DRAKE_ONLY=1" bash cluster/submit_job.sh cluster/setup_supercloud.sh -s 8 -q download
+##    -> ~/learned-ik/setup.DONE must read OK
+## 3. imports and availability, no solve (debug-cpu, no internet): VERSION.TXT, pydrake from ~/learned-ik/drake,
+##    SNOPT / IPOPT / NLopt available, all ten PR 25002 NLopt option accessors, CalcRobotClearances present
+bash cluster/submit_job.sh cluster/verify_drake_imports.sh -s 8 -q debug-cpu
+##    -> ~/learned-ik/verify_drake_imports.DONE reads OK
+## 4. tiny solves + one CalcRobotClearances call on a two-body plant (small CPU job, xeon-p8, no GPU, no
+##    network). Optionally the same job converts charts pkl -> npz (relative paths, comma/space separated;
+##    only pickles Thomas has OK'd):
+JOB_ENV="NPZ_CONVERT=models/cusp7/cusp7__n6__step620000.pkl,models/cusp7/cusp7__n4__step620000.pkl" \
+    bash cluster/submit_job.sh cluster/verify_drake_solves.sh -s 8 -q xeon-p8
+##    -> verify_drake_solves.DONE reads OK; verify_npz_convert.DONE reads OK (only when NPZ_CONVERT was set)
 ```
 
-`make_venv_crc.sh` installs the old venv's `pip freeze` with `--no-deps` (torch's `+cu126` from
-its index), copies ikflow's editable hooks so both venvs resolve the same staged fork, then
-installs the wheel and fails unless the freeze gained exactly `drake`, `pydot` and `Mosek` and
-lost or changed nothing. `verify_venv_crc.sh` runs, in the worker's crc environment, the solver
-and plant smoke from `drake-on-supercloud.md`, every svgd-context scene offline from
-`home-crc`, and `tests/test_collision_clearances.py` (which must not take its SKIP branch).
-**`submit_bench.sh` refuses** a manifest with clearances items without `DRAKE_ENV=crc`, a
-`DRAKE_ENV=crc` manifest any of whose items lacks them, and `crc` while `verify_venv_crc.DONE`
-is not `OK`. A crc run is identifiable after the fact: its metadata's `drake_path` is inside
-`venv-crc`, and `drake_version_txt` reads `0.0.20261011+crc.15a2c97 15a2c97...` (the wheel has no
-`pydrake.__version__`, so `drake_version` is `unknown`; `src/benchmark.py` reads the wheel's
-`pydrake/doc/drake/VERSION.TXT` where the tarball's path is absent).
+Each step writes its own sentinel (`FAIL <reason>` on failure; the log is next to it). A run records its
+Drake: `drake_version_txt` reads `1.58.0 09bc913c...`. Wall clocks measured on 1.58.0 are never put
+beside the record's nightly seconds without a unifying rerun. The CSAIL/Engaging images check the same
+pin (`cluster/csail/learned-ik.def`, `cluster/engaging/plumb_check.py`).
 
 ## Order of operations: a benchmark stage
 

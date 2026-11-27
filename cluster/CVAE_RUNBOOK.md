@@ -1,6 +1,8 @@
 # The cVAE chart ablation: the run's own record
 
 What is submitted, in what order, what it depends on, and what a resuming session checks first.
+
+> **`DRAKE_ENV=crc` is RETIRED (2026-11-27, Drake 1.58.0 has `CalcRobotClearances`).** Every `DRAKE_ENV=crc` prefix below is history: drop it. `submit_bench.sh` and `run_items.sh` refuse a set `DRAKE_ENV`; a clearance manifest is submitted like any other and gets `DRAKE_NUM_THREADS` from `run_items.sh`. `venv-crc`, `home-crc`, `make_venv_crc.sh`, `verify_venv_crc.sh` are gone.
 The design is the plan (branch `chart-cvae`): the record's learned formulation with the IKFlow
 chart replaced by a standard conditional VAE's decoder, everything else unchanged. Findings go to
 `CLAUDE.md` / `docs/notes-chart.md`; tables to `docs/chart-ablation-tables.md`; this file is

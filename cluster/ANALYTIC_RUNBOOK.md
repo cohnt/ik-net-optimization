@@ -1,5 +1,7 @@
 # Stages ANALYTIC: the analytic + optimization arm on the Panda and the iiwa
 
+> **`DRAKE_ENV=crc` is RETIRED (2026-11-27, Drake 1.58.0 has `CalcRobotClearances`).** Every `DRAKE_ENV=crc` prefix below is history: drop it. `submit_bench.sh` and `run_items.sh` refuse a set `DRAKE_ENV`; a clearance manifest is submitted like any other and gets `DRAKE_NUM_THREADS` from `run_items.sh`. `venv-crc`, `home-crc`, `make_venv_crc.sh`, `verify_venv_crc.sh` are gone.
+
 The operational half. The design is the ANALYTIC block of `cluster/gen_manifest.py`; the
 formulation is `src/analytic_program.py`. **Nothing here is submitted until Thomas says go**
 (2026-10-12), even once maintenance ends.

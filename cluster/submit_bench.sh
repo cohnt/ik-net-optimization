@@ -20,14 +20,9 @@
 # otherwise the rung still fires off the previous training job and runs concurrently,
 # which would both contend for the cap and corrupt the wall-clock-capped measurement.
 #
-# DRAKE_ENV=crc runs the whole manifest under ~/learned-ik/venv-crc (Drake from the
-# `calc-robot-clearances` wheel; cluster/run_items.sh says what changes). It is a per-STAGE
-# switch and is checked against the manifest: every item carrying
-# `svgd_collision_backend=clearances` needs it, and it is refused for any manifest whose items do
-# not ALL carry it -- so the record and the IPOPT twins can never run on the wheel by accident, and
-# a clearances item never reaches a pydrake that would refuse it cell by cell. Unset, the generated
-# launcher is byte-identical to before the switch existed.
-#   DRAKE_ENV=crc PROCS=2 bash cluster/submit_bench.sh manifest_stageSVGD_R11.txt 4
+# ONE Drake (release 1.58.0): the old DRAKE_ENV=crc second environment is retired, and a manifest
+# whose items set `svgd_collision_backend=clearances` is submitted like any other (run_items.sh gives
+# it DRAKE_NUM_THREADS). A leftover DRAKE_ENV is refused.
 #
 # PROCS comes from the calibration, not a guess: the benchmark is wall-clock capped, so
 # concurrent workers that contend for CPU change WHAT IS MEASURED (20 workers/node cost
@@ -53,6 +48,7 @@ DEP_DIRECTIVE="${DEPENDENCY:+1}"
 EXCLUDE_NODES="${EXCLUDE_NODES:-}"
 EXC_DIRECTIVE="${EXCLUDE_NODES:+1}"
 DRAKE_ENV="${DRAKE_ENV:-}"
+[ -z "$DRAKE_ENV" ] || { echo "REFUSING: DRAKE_ENV=$DRAKE_ENV is retired (one Drake, 1.58.0); unset it" >&2; exit 4; }
 
 LOCAL="$(_sc_repo_root)/cluster/$MANIFEST"
 [ -f "$LOCAL" ] || { echo "no such local manifest: $LOCAL" >&2; exit 1; }
@@ -69,7 +65,6 @@ case "$PARTITION" in
     xeon-p8)
         NODE_CPUS=48; GRES_DIRECTIVE="## no GPU on $PARTITION"
         [ "${MPS:-0}" = 0 ] || { echo "REFUSING: MPS=1 on $PARTITION, which has no GPU" >&2; exit 4; }
-        [ -z "$DRAKE_ENV" ] || { echo "REFUSING: DRAKE_ENV=$DRAKE_ENV is for the svgd (GPU) stages" >&2; exit 4; }
         GPU_ITEMS=$(grep -vE '^[[:space:]]*(#|$)' "$LOCAL" \
             | grep -cE -- '(--compile( |$)|flow_cuda_graph=True|--solver svgd|--arms [^ ]*learned)')
         [ "$GPU_ITEMS" -eq 0 ] || {
@@ -80,29 +75,6 @@ case "$PARTITION" in
         echo "REFUSING: unknown PARTITION='$PARTITION' (xeon-g6-volta or xeon-p8)" >&2; exit 4 ;;
 esac
 
-
-## The Drake environment must match the manifest, both ways (header).
-N_ITEMS=$(grep -vcE '^[[:space:]]*(#|$)' "$LOCAL")
-N_CLR=$(grep -vE '^[[:space:]]*(#|$)' "$LOCAL" | grep -c -- 'svgd_collision_backend=clearances')
-case "$DRAKE_ENV" in
-    "")
-        [ "$N_CLR" -eq 0 ] || {
-            echo "REFUSING: $N_CLR item(s) of $MANIFEST set svgd_collision_backend=clearances, which" >&2
-            echo "  only the calc-robot-clearances Drake has. Submit with DRAKE_ENV=crc." >&2
-            exit 4; } ;;
-    crc)
-        [ "$N_CLR" -eq "$N_ITEMS" ] && [ "$N_ITEMS" -gt 0 ] || {
-            echo "REFUSING: DRAKE_ENV=crc, but only $N_CLR of $N_ITEMS item(s) of $MANIFEST set" >&2
-            echo "  svgd_collision_backend=clearances. The wheel is for those stages only; every other" >&2
-            echo "  stage (the record, the IPOPT twins) stays on the tarball pin." >&2
-            exit 4; }
-        sc_run "test -x ~/$SC_ROOT/venv-crc/bin/python && test -f ~/$SC_ROOT/verify_venv_crc.DONE && grep -qx OK ~/$SC_ROOT/verify_venv_crc.DONE" || {
-            echo "REFUSING: ~/$SC_ROOT/venv-crc is missing or not verified (cluster/make_venv_crc.sh," >&2
-            echo "  then cluster/verify_venv_crc.sh, whose sentinel must read OK)." >&2
-            exit 4; } ;;
-    *)
-        echo "REFUSING: unknown DRAKE_ENV='$DRAKE_ENV' (unset, or 'crc')" >&2; exit 4 ;;
-esac
 
 ## Refuse rather than launch jobs that cannot work -- a manifest that is not on the cluster
 ## produces jobs that start, find nothing, and exit silently, which reads as "submitted and
@@ -154,7 +126,7 @@ else
 fi
 
 LAUNCH_R="\$HOME/$SC_ROOT/results/_bench_launch_${MANIFEST%.txt}.sh"
-echo "Submitting $NJOBS job(s): PROCS=$PROCS MPS=${MPS:-0} PARTITION=$PARTITION DEP='${DEPENDENCY:-none}'${DRAKE_ENV:+ DRAKE_ENV=$DRAKE_ENV}"
+echo "Submitting $NJOBS job(s): PROCS=$PROCS MPS=${MPS:-0} PARTITION=$PARTITION DEP='${DEPENDENCY:-none}'"
 
 sc_run "cat > $LAUNCH_R && chmod +x $LAUNCH_R" <<LAUNCH
 #!/bin/bash
@@ -179,7 +151,7 @@ done
 ## state/ (the mkdir-based item claims) and results/ from it, and a fallback to the default
 ## tree would have two campaigns claiming items in one state directory.
 LEARNED_IK_ROOT="\$HOME/$SC_ROOT" \
-MANIFEST=cluster/$MANIFEST PROCS=$PROCS MPS=${MPS:-0} ${DRAKE_ENV:+DRAKE_ENV=$DRAKE_ENV }"\$HOME/$SC_ROOT/repo/cluster/run_items.sh"
+MANIFEST=cluster/$MANIFEST PROCS=$PROCS MPS=${MPS:-0} "\$HOME/$SC_ROOT/repo/cluster/run_items.sh"
 LAUNCH
 
 for i in $(seq 1 "$NJOBS"); do
