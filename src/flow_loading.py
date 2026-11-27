@@ -254,3 +254,25 @@ def WriteArch(checkpoint, arch, provenance=None):
     with open(sidecar, "w") as f:
         json.dump(payload, f, indent=2, sort_keys=True, default=str)
     return sidecar
+
+
+UPSTREAM_PANDA_NAME = "panda__full__lp191_5.25m"
+
+
+def UpstreamPandaCheckpoint():
+    """`models/panda/panda__full__lp191_5.25m.npz` if it exists (made by
+    `scripts/training/convert_pkl_to_npz.py` from ikflow's downloaded pickle; its sidecar is
+    tracked), else None."""
+    from src.utils import RepoDir
+    path = os.path.join(RepoDir(), "models", "panda", UPSTREAM_PANDA_NAME + ".npz")
+    return path if os.path.exists(path) else None
+
+
+def LoadUpstreamPandaSolver(compile_model=None):
+    """The upstream Panda chart as an `IKFlowSolver`: from the pickle-free `.npz` through
+    `LoadFlowSolver` when it is present, else `get_ik_solver` (ikflow's pickle download)."""
+    checkpoint = UpstreamPandaCheckpoint()
+    if checkpoint is not None:
+        return LoadFlowSolver("panda", checkpoint, compile_model=compile_model)
+    from ikflow.model_loading import get_ik_solver
+    return get_ik_solver(UPSTREAM_PANDA_NAME, compile_model=compile_model)[0]
