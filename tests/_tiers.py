@@ -77,10 +77,10 @@ _UPSTREAM_PANDA = []
 
 def upstream_panda_chart():
     """The upstream Panda chart a Panda program loads when no `model=` is passed
-    (`get_ik_solver("panda__full__lp191_5.25m")`, exactly that call), loaded once per process.
+    (`LoadUpstreamPandaSolver()`, exactly that call), loaded once per process.
     Passing it as `model=` is the program's own default path minus the reload, which is ~1.8 s
     of every build (klampt parses the robot, the weights unpickle)."""
     if not _UPSTREAM_PANDA:
-        from ikflow.model_loading import get_ik_solver
-        _UPSTREAM_PANDA.append(get_ik_solver("panda__full__lp191_5.25m")[0])
+        from src.flow_loading import LoadUpstreamPandaSolver
+        _UPSTREAM_PANDA.append(LoadUpstreamPandaSolver())
     return _UPSTREAM_PANDA[0]

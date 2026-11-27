@@ -140,9 +140,33 @@ def test_cvae_npz_matches_pkl_bit_for_bit(chart=CVAE):
     print(f"PASS {rel}: {len(a)} cVAE tensors bit-identical")
 
 
+def test_upstream_panda_npz_matches_download_bit_for_bit():
+    """The upstream chart: `LoadUpstreamPandaSolver` (the `.npz`, no pickle) against ikflow's own
+    `get_ik_solver` (its downloaded pickle). Skips when either is absent -- never downloads."""
+    from src.flow_loading import UPSTREAM_PANDA_NAME, UpstreamPandaCheckpoint, LoadUpstreamPandaSolver
+    npz = UpstreamPandaCheckpoint()
+    from ikflow.config import MODELS_DIR
+    from ikflow.model_loading import MODEL_DESCRIPTIONS, get_ik_solver, model_filename
+    cached = os.path.join(MODELS_DIR, model_filename(MODEL_DESCRIPTIONS[UPSTREAM_PANDA_NAME]["model_weights_url"]))
+    if npz is None or not os.path.exists(cached):
+        print("SKIP upstream panda chart: .npz or the ikflow cached pickle absent")
+        return
+    ref = get_ik_solver(UPSTREAM_PANDA_NAME)[0]
+    with _scale(_no_pickle()):
+        new = LoadUpstreamPandaSolver()
+    a, b = ref.nn_model.state_dict(), new.nn_model.state_dict()
+    assert list(a) == list(b)
+    for k in a:
+        assert a[k].dtype == b[k].dtype and torch.equal(a[k], b[k]), k
+    qa, qb = _outputs(ref), _outputs(new)
+    assert torch.equal(qa, qb), f"outputs differ by {(qa - qb).abs().max().item()}"
+    print(f"PASS upstream panda: {len(a)} tensors and the float64 forward pass are bit-identical")
+
+
 GROUPS = {"fast": [test_npz_roundtrip_and_object_arrays_refused,
                    test_flow_npz_matches_pkl_bit_for_bit,
-                   test_cvae_npz_matches_pkl_bit_for_bit]}
+                   test_cvae_npz_matches_pkl_bit_for_bit,
+                   test_upstream_panda_npz_matches_download_bit_for_bit]}
 
 
 def main():

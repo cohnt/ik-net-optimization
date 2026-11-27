@@ -1,0 +1,18 @@
+{
+  "coeff_fn_config": 3,
+  "coeff_fn_internal_size": 1024,
+  "coupling_layer": "glow",
+  "dim_latent_space": 7,
+  "nb_nodes": 12,
+  "permute_random_enabled": true,
+  "provenance": {
+    "derivation": "ikflow model_descriptions.yaml entry panda__full__lp191_5.25m (nb_nodes, dim_latent_space, coeff_fn_config, coeff_fn_internal_size, rnvp_clamp) plus IkflowModelParameters defaults for the rest, exactly the hyperparameters get_ik_solver builds with",
+    "npz_made_by": "scripts/training/convert_pkl_to_npz.py",
+    "source_pkl": "panda__lyric-puddle-191__global_step%3D5.25M.pkl (ikflow download, sha256 1ca739a595c31779292778aedd3e431cb697b48c3a2a4ea7c59e7fde1faa3d59)"
+  },
+  "rnvp_clamp": 2.5,
+  "robot_name": "panda",
+  "sigmoid_on_output": false,
+  "softflow_enabled": true,
+  "softflow_noise_scale": 0.01
+}

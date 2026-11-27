@@ -19,6 +19,7 @@ from pydrake.all import (
 from src.panda_analytic_ik import Analytic_IK_Panda
 from src.analytic_program import AnalyticProgramMixin
 from src.charts.loading import LoadChart, WrapChart
+from src.flow_loading import LoadUpstreamPandaSolver
 
 
 #: The joint-space arm's variable bound BEFORE unification (2026-10-08): +-10 rad on every
@@ -67,9 +68,9 @@ class PandaIKProgram(IKFlowProgram):
         else:
             # The upstream pretrained chart, whose hyperparameters ikflow reads from its
             # own model_descriptions.yaml.
-            model_name = "panda__full__lp191_5.25m"
-            solver, _ = get_ik_solver(model_name)
-            self.ik_solver = WrapChart(solver)
+            # Pickle-free `.npz` under models/panda when present, ikflow's pickle download
+            # otherwise (`LoadUpstreamPandaSolver`).
+            self.ik_solver = WrapChart(LoadUpstreamPandaSolver())
 
         self.options = options
         self.ConfigureNetworkDtype()
