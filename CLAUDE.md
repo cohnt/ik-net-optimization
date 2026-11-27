@@ -268,11 +268,12 @@ arms within a run. **The whole axis is CLOSED. Do not re-sweep it.**
   method-class decision and Thomas's.
 - **Grasp containment is closed** on both axes; the containment verdicts stand as measured under IPOPT.
 
-**ONE DRAKE, AND IT IS THE PIN: release 1.58.0** (Thomas, 2026-11-25; it carries PR 25002's sixteen
-NLopt options and #25073 `CalcRobotClearances`): the CSAIL/Engaging images use its tarball and published
-sha256. SuperCloud still runs the old nightly at `$ROOT/drake` plus the svgd clearance exception
-(`DRAKE_ENV=crc`, `venv-crc`) until it moves; both go then. No second install: a regression is reported
-upstream, never pinned around (Thomas). `CheckNloptOptions` refuses only under `which_solver == "nlopt"`.
+**ONE DRAKE, AND IT IS THE PIN: release 1.58.0** (Thomas, 2026-11-25; has PR 25002's NLopt options
+and #25073 `CalcRobotClearances`): CSAIL/Engaging images and `setup_supercloud.sh` use its
+tarball and published sha256 (live move: `cluster/README.md`, "Moving SuperCloud's Drake").
+`DRAKE_ENV=crc` is retired: clearance stages run in the default env. No second install: a
+regression is reported upstream, never pinned around (Thomas). `CheckNloptOptions` refuses only under
+`which_solver == "nlopt"`.
 **Never point local code at a non-default Drake** (Thomas, 2026-10-20).
 
 ## AL-SVGD, the fourth method class (long form: `docs/notes-svgd.md`; evidence `docs/svgd-solver.md`)
