@@ -443,7 +443,7 @@ def provenance():
         ## because nothing in the record said which build produced them.
         stamp = os.path.join(GetDrakePath(), "..", "doc", "drake", "VERSION.TXT")
         if not os.path.exists(stamp):
-            ## A pip WHEEL (cluster venv-crc, DRAKE_ENV=crc) keeps it at pydrake/doc/drake, beside
+            ## A pip WHEEL (the retired cluster venv-crc, historical records) keeps it at pydrake/doc/drake, beside
             ## a share/drake GetDrakePath, and has no pydrake.__version__; the tarball keeps the
             ## path above, so its record is unchanged.
             stamp = os.path.join(os.path.dirname(pydrake.__file__), "doc", "drake", "VERSION.TXT")
