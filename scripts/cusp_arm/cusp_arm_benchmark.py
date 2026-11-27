@@ -10,7 +10,7 @@ and joint space.
 
 Usage:
     python scripts/cusp_arm/cusp_arm_benchmark.py --task mug --targets 15 --guesses 2 \\
-        --wall-time 20 --checkpoint models/cusp7/cusp7__n6__step620000.pkl
+        --wall-time 20 --checkpoint models/cusp7/cusp7__n6__step620000.npz
 """
 import argparse
 import hashlib
@@ -108,7 +108,7 @@ def parse_args():
     p.add_argument("--robot", default=PRIMARY, choices=sorted(SPECS),
                    help="the robot; cusp7 is the only rung (no non-cuspidal control).")
     p.add_argument("--checkpoint", required=True,
-                   help="path to this rung's IKFlow .pkl. REQUIRED: this robot has no "
+                   help="path to this rung's IKFlow chart (.npz, pickle-free; .pkl still loads). REQUIRED: this robot has no "
                         "published chart to fall back on, and a missing one is not an error "
                         "you would notice -- it is a column of zeros. The architecture comes "
                         "from the checkpoint's own .arch.json sidecar. Recorded in the run "

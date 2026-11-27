@@ -2683,8 +2683,10 @@ def stage_GVSO2():
 #: n6; CUSPCHART is the n4 rung, reported, never selected from. Allotment estimate borrows the screw
 #: arm's record walls (cusp7 has none yet).
 CUSP_PRIMARY = "cusp7"
-CUSP_ADOPTED = ("n6", f"models/{CUSP_PRIMARY}/{CUSP_PRIMARY}__n6__step620000.pkl")
-CUSP_N4 = ("n4", f"models/{CUSP_PRIMARY}/{CUSP_PRIMARY}__n4__step620000.pkl")
+## The pickle-free .npz (converted on SuperCloud by job 6346105, bit-identical to the exported .pkl):
+## no cusp benchmark loads a cluster pickle.
+CUSP_ADOPTED = ("n6", f"models/{CUSP_PRIMARY}/{CUSP_PRIMARY}__n6__step620000.npz")
+CUSP_N4 = ("n4", f"models/{CUSP_PRIMARY}/{CUSP_PRIMARY}__n4__step620000.npz")
 CUSP_SOLVERS = "ipopt,snopt"
 
 
@@ -5276,7 +5278,7 @@ def _ladder_paths_match_export():
                    | {ck for *_, ck in CVAE_RUNGS}
                    | {ck for *_, ck in CVAEF_RUNGS}
                    | {SCREWREDO_CKPT}
-                   | {CUSP_ADOPTED[1], CUSP_N4[1]}) - PRE_EXISTING
+                   | {c[:-len('.npz')] + '.pkl' for c in (CUSP_ADOPTED[1], CUSP_N4[1])}) - PRE_EXISTING
     fails = []
     for ckpt in sorted(benchmarked - set(trained)):
         fails.append(f"{ckpt} is benchmarked but no ladder_runs.txt / chart_runs.txt row would export it")
