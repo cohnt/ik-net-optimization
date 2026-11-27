@@ -19,8 +19,8 @@ learned arm under IPOPT on the same cells; joint-space svgd is an ablation, not 
 information inside the solver (kernel SPACE is the one deliberate exception; `svgd_stop_select_objective`
 was approved as a second, about regularisers as a class, and measured inert); AL is the formulation and
 SVGD the optimizer, one dynamics; `--solver svgd`; K stays a separate parameter (2026-10-11, do not
-re-propose the one-loop strip-down); "resample" is the term; the clearances wheel is a strict
-improvement every svgd round uses (the one stated exception to ONE DRAKE); compute footprint (GPU + 40
+re-propose the one-loop strip-down); "resample" is the term; the clearance row (`CalcRobotClearances`) is a strict
+improvement every svgd round uses (once on a wheel, the stated exception to ONE DRAKE; since 1.58.0 plain default env); compute footprint (GPU + 40
 threads vs one core) is a paper explanation, not a fairness worry; **the augmented Lagrangian with its
 true dual update stays the method** (2026-10-16: *"more flexible (and arguably more principled) ... leaves
 a lot of future directions open, like ADMM"*) although the pure quadratic penalty ties it on every row.

@@ -76,7 +76,7 @@ if [ $(( ITEM_TIMEOUT + 300 )) -ge "$TIME_S" ]; then
          "Lower ITEM_TIMEOUT or raise TIME." >&2
     exit 2
 fi
-## DRAKE_ENV=crc items (the old clearances wheel) have no place here: the image's Drake 1.58.0 has CalcRobotClearances.
+## The image's Drake 1.58.0 has CalcRobotClearances (DRAKE_ENV=crc is retired everywhere).
 if grep -vE '^[[:space:]]*(#|$)' "$REPO_ROOT/$MANIFEST" | grep -qE '(^|[ |])DRAKE=nightly'; then echo "REFUSING: a per-item DRAKE= selector (one Drake per job)" >&2; exit 2; fi
 
 COMMIT=$(git -C "$REPO_ROOT" rev-parse HEAD); C12=${COMMIT:0:12}; ROOT="$(csail_tree_root "$C12")"

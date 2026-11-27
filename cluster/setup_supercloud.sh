@@ -34,53 +34,49 @@ echo "===== learned-ik setup on $(hostname) at $(date -Is) ====="
 cd "$ROOT"
 source "$ROOT/repo/cluster/verify_staged_tree.sh" || exit 1; lik_job_check "$ROOT/repo"   # code integrity: the repo it installs from == laptop manifest (README)
 
-## THE PROJECT'S DRAKE PIN, moved off release 1.56.0 to this nightly on 2026-09-19 by
-## Thomas's decision, because the adopted NLopt configuration needs PR 25002
-## (`local_optimizer_ftol_rel` and four siblings), which no release carries yet -- 1.57.0 was
-## cut before it and still declares six NLopt options against this nightly's sixteen.
-##
-## Justified empirically rather than assumed: stage NLOPTTUNE's `default` column ran on this
-## nightly against an archive produced on 1.56.0 and reproduced it EXACTLY on eleven of twelve
-## rows, one cell on the twelfth, on matching grid_hashes. So the bump does not move a fielded
-## column.
-##
-## TWO THINGS THAT MAKE THIS PIN TEMPORARY.  Nightlies publish no `.sha256`, so this verifies
-## against a hash recorded here -- the exact bytes the local tests ran against, which is
-## strictly stronger than trusting the URL.  And Drake EXPIRES nightly artifacts after 45 days,
-## so this URL dies around 2026-11-02 and a fresh setup after that cannot fetch it.
-##
-## MOVE TO 1.58.0 the moment it lands carrying PR 25002 (expected mid-October), restore the
-## published-checksum path below. (cluster/install_drake_nightly.sh is already gone: the
-## nightly IS the pin, installed here at $ROOT/drake, so a second install has no purpose --
-## every arm of every campaign runs on the current pin.)
-DRAKE_STAMP="0.0.20260918"
-DRAKE_SHA256="a6ce34cdaeb3dd9b9d0e8c9d37eb35407d967541482455fc2a9ad31b98c746a8"
-DRAKE_URL="https://drake-packages.csail.mit.edu/drake/nightly/drake-${DRAKE_STAMP}-noble.tar.gz"
-## PR 25002's merge commit, which this nightly carries as its tip; check share/doc/drake/VERSION.TXT.
-DRAKE_COMMIT="5a73436cd6941519684786d409c67ce25ce16305"
+## THE PROJECT'S DRAKE PIN: release 1.58.0 (Thomas, 2026-11-25). It carries PR 25002 (the sixteen
+## NLopt options the adopted NLopt configuration needs) and #25073 (CollisionChecker.CalcRobotClearances,
+## which AL-SVGD's `svgd_collision_backend=clearances` needs), so this is the ONE Drake: the old
+## nightly 0.0.20260918 (expired upstream, unrecoverable) and the DRAKE_ENV=crc wheel are retired.
+## The CSAIL and Engaging images pin the same tarball (cluster/csail/learned-ik.def).
+## A release publishes a `.sha256`; this checks the download against the hash recorded here AND
+## against the published one, so a changed upstream asset is caught as well as a corrupt download.
+## share/doc/drake/VERSION.TXT of the release reads "<version> <commit>" (the form the CSAIL def and
+## cluster/engaging/plumb_check.py check).
+DRAKE_VERSION="1.58.0"
+DRAKE_SHA256="91f5e2807b10b1ec117cf2037419d3dc50b8ba8a341f509f2d4696a9e27c63b9"
+DRAKE_URL="https://github.com/RobotLocomotion/drake/releases/download/v${DRAKE_VERSION}/drake-${DRAKE_VERSION}-noble.tar.gz"
+DRAKE_COMMIT="09bc913cf1af0cdde31073d5f1f7f66ca35ee0d8"
+DRAKE_STAMP_TXT="drake ${DRAKE_VERSION} ${DRAKE_COMMIT}"   # what $ROOT/.drake-ok must contain
+
+## DRAKE_ONLY=1 (JOB_ENV="DRAKE_ONLY=1"): redo only the Drake tarball, the sysdeps check and the
+## model-cache warm-up. The venv holds NO Drake (Drake is on PYTHONPATH), so a Drake move needs no
+## venv rebuild; this skips every pip step so nothing in the venv (jrl is unpinned) can move.
+DRAKE_ONLY="${DRAKE_ONLY:-0}"
 
 Fail() { echo "SETUP FAILED: $*"; echo "FAIL $*" > "$DONE"; exit 1; }
 
 ## ---------------------------------------------------------------- 1. Drake --
-echo "===== [1/6] Drake tarball ====="
-if [ -d "$ROOT/drake" ] && [ -f "$ROOT/.drake-ok" ]; then
-    echo "drake/ already present and verified -- skipping"
+echo "===== [1/6] Drake tarball ($DRAKE_VERSION) ====="
+if [ -d "$ROOT/drake" ] && [ "$(cat "$ROOT/.drake-ok" 2>/dev/null)" = "$DRAKE_STAMP_TXT" ]; then
+    echo "drake/ already present and verified as $DRAKE_VERSION -- skipping"
+elif [ -e "$ROOT/drake" ] || [ -e "$ROOT/.drake-ok" ]; then
+    ## NEVER delete or overwrite an installed Drake: the previous nightly (0.0.20260918) is
+    ## unrecoverable upstream. The operator moves it aside; this script only adds.
+    Fail "$ROOT/drake (or .drake-ok) exists but is not '$DRAKE_STAMP_TXT' (.drake-ok reads: '$(cat "$ROOT/.drake-ok" 2>/dev/null)').
+   Nothing was touched. Move the old install aside (nothing may be running on it), then resubmit:
+     cd $ROOT && mv drake drake-0.0.20260918 && mv .drake-ok .drake-ok-0.0.20260918"
 else
-    if ! wget -q -O drake.tar.gz "$DRAKE_URL"; then
-        Fail "drake download failed. Drake expires nightly artifacts after 45 days, so
-   $DRAKE_STAMP may simply be gone -- it is unrecoverable if so. Move the pin to the first
-   RELEASE carrying PR 25002 (1.58.0 or later) and restore the published-.sha256 path."
-    fi
+    wget -q -O drake.tar.gz "$DRAKE_URL" || Fail "drake download failed: $DRAKE_URL"
     ACTUAL=$(sha256sum drake.tar.gz | cut -d' ' -f1)
-    ## Our OWN recorded hash: a nightly has no published checksum file, so this pins the exact
-    ## bytes the tests ran against rather than whatever the URL serves today.
-    [ "$DRAKE_SHA256" = "$ACTUAL" ] || Fail "drake checksum: $DRAKE_SHA256 vs $ACTUAL"
-    ## The nightly tarball's top-level directory is `drake/`, same as a release tarball's.
+    [ "$DRAKE_SHA256" = "$ACTUAL" ] || Fail "drake checksum vs the recorded pin: $DRAKE_SHA256 vs $ACTUAL"
+    PUBLISHED=$(wget -q -O - "${DRAKE_URL}.sha256" | cut -d' ' -f1)
+    [ "$PUBLISHED" = "$ACTUAL" ] || Fail "drake checksum vs the release's published .sha256: '$PUBLISHED' vs $ACTUAL"
     tar xzf drake.tar.gz && rm -f drake.tar.gz
-    GOT=$(cut -d' ' -f2 < "$ROOT/drake/share/doc/drake/VERSION.TXT" 2>/dev/null)
-    [ "$GOT" = "$DRAKE_COMMIT" ] || Fail "drake is not PR 25002's commit: got '$GOT'"
-    touch "$ROOT/.drake-ok"
-    echo "drake $DRAKE_STAMP ($DRAKE_COMMIT) extracted to $ROOT/drake"
+    GOT=$(cat "$ROOT/drake/share/doc/drake/VERSION.TXT" 2>/dev/null)
+    [ "$GOT" = "$DRAKE_VERSION $DRAKE_COMMIT" ] || Fail "drake is not the pin: VERSION.TXT reads '$GOT'"
+    echo "$DRAKE_STAMP_TXT" > "$ROOT/.drake-ok"
+    echo "drake $DRAKE_VERSION ($DRAKE_COMMIT) extracted to $ROOT/drake"
 fi
 
 ## ------------------------------------------------------------- 2. sysdeps --
@@ -88,6 +84,9 @@ fi
 # tarball links, and there is no sudo. Extract the official Ubuntu noble .debs
 # (sha512-verified) into a user prefix. RUNTIME libs only: unlike the sibling
 # project this repo builds no C++, so the -dev packages and Eigen are not needed.
+# The CSAIL/Engaging images install the same two libs for the 1.58.0 noble tarball (plus the
+# tarball's own package list, which gridos may lack more of): step 6 imports pydrake, so a
+# missing lib fails there rather than silently.
 echo "===== [2/6] vendored runtime libs ====="
 MIRROR="http://archive.ubuntu.com/ubuntu/pool/universe"
 DEBS="\
@@ -113,7 +112,10 @@ cd "$ROOT"
 # System python3 (3.12.3) is the only cp312 interpreter here, but ships without
 # ensurepip (plain venv fails) and is PEP-668 externally-managed (--user refused).
 echo "===== [3/6] venv ====="
-if [ -x "$ROOT/venv/bin/pip" ]; then
+if [ "$DRAKE_ONLY" = 1 ]; then
+    [ -x "$ROOT/venv/bin/pip" ] || Fail "DRAKE_ONLY=1 but no venv at $ROOT/venv"
+    echo "DRAKE_ONLY=1: venv left alone"
+elif [ -x "$ROOT/venv/bin/pip" ]; then
     echo "venv already present: $("$ROOT/venv/bin/python" --version)"
 else
     python3 -m venv --without-pip "$ROOT/venv" || Fail "venv creation"
@@ -137,7 +139,9 @@ import sys, torch
 sys.exit(0 if "sm_70" in torch.cuda.get_arch_list() else 1)
 PYCHK
 }
-if "$PY" -c "import torch" 2>/dev/null && HasSm70; then
+if [ "$DRAKE_ONLY" = 1 ]; then
+    echo "DRAKE_ONLY=1: torch left alone"
+elif "$PY" -c "import torch" 2>/dev/null && HasSm70; then
     echo "torch already installed with sm_70: $("$PY" -c 'import torch;print(torch.__version__)')"
 else
     IDX="https://download.pytorch.org/whl/cu126"
@@ -156,6 +160,7 @@ fi
 # the cu126 build installed above. Install from GitHub, not PyPI -- the PyPI
 # ikflow (0.0.8) predates the jkinpylib -> jrl rename this repo depends on.
 echo "===== [5/6] python deps ====="
+if [ "$DRAKE_ONLY" = 1 ]; then echo "DRAKE_ONLY=1: pip steps skipped"; else
 # Pinned to this workstation's versions. The unpinned resolve happened to land on
 # exactly these, but that is luck, not reproducibility -- and numpy in particular has
 # broken this project's sibling before (2.5 removed 2-D np.cross). torch is the one
@@ -200,6 +205,7 @@ import ikflow, os, sys
 path = os.path.realpath(ikflow.__file__)
 sys.exit(0 if "repo/third_party/ikflow" in path else 1)
 PYFORK
+fi   # DRAKE_ONLY
 
 # Warm the model caches. Compute nodes have no internet, and ikflow computes its
 # MODELS_DIR from expanduser("~") at import, so HOME must point at the tree the
@@ -223,7 +229,9 @@ PYWARM
 # Compute nodes have no internet, so a job would die inside ProcessModelDirectives with
 # "Network is unreachable". Warm it here by actually building every scene. It has to be
 # warmed with the CLUSTER's Drake, not copied from the laptop: the cache key includes the
-# models commit that Drake version pins, and the two builds differ.
+# models commit that Drake version pins, and the two builds differ. It runs on EVERY invocation
+# (never skipped because a cache exists) and only ADDS: a new Drake pins a new models commit, so
+# the old nightly's cache entry stays in place beside the new one.
 echo "--- warming the Drake model cache (drake_models) into $ROOT/home"
 # $PWD is $ROOT here (this script cd'd there), not the repo, so pass the repo explicitly.
 HOME="$ROOT/home" CUDA_VISIBLE_DEVICES="" LEARNED_IK_REPO="$ROOT/repo" \
@@ -257,9 +265,17 @@ from pydrake.solvers import SnoptSolver, IpoptSolver
 print("pydrake OK from", pydrake.__file__)
 assert IpoptSolver().available(), "IPOPT unavailable"
 print("SNOPT", SnoptSolver().available(), "| IPOPT", IpoptSolver().available())
+import os
+vt = open(os.path.join(os.environ["PYTHONPATH"].split(":")[0], "../../../share/doc/drake/VERSION.TXT")).read().split()
+assert vt[:2] == ["1.58.0", "09bc913cf1af0cdde31073d5f1f7f66ca35ee0d8"], vt   # the pin
+print("Drake VERSION.TXT", vt)
 import ikflow, jrl, FrEIA, klampt, numpy
 print("ikflow/jrl/FrEIA/klampt import OK; numpy", numpy.__version__)
 PYVERIFY
+
+# Plumbing beyond imports (NLopt option names, CalcRobotClearances, tiny solves) is verified on
+# compute nodes with no internet: cluster/verify_drake_imports.sh (debug-cpu) and
+# cluster/verify_drake_solves.sh (xeon-p8); cluster/README.md, "Moving SuperCloud's Drake".
 
 # The iiwa checkpoint is gitignored and 204 MB, so it is rsynced by
 # cluster/stage_code.sh rather than downloaded here. Report whether it arrived.

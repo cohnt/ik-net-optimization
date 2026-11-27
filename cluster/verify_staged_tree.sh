@@ -32,8 +32,8 @@ LIK_STAGE_EXCLUDES=(
     '/ikflow_solver_log.txt' '/ipopt_output.txt'
 )
 LIK_STAGE_PROTECT=(
-    'models/*/*__step*.pkl' 'models/*/*__step*.arch.json'
-    'models/*/*__global_step*.pkl' 'models/*/*__global_step*.arch.json'
+    'models/*/*__step*.pkl' 'models/*/*__step*.arch.json' 'models/*/*__step*.npz'
+    'models/*/*__global_step*.pkl' 'models/*/*__global_step*.arch.json' 'models/*/*__global_step*.npz'
     'models/*/*__fk_surrogate.pt' 'models/*/*__fk_surrogate.json' 'models/*/.FK_SURROGATE.DONE'
     '/LLSUB.*/***' '/*.log-[0-9]*' '/slurm-*.out'     ## LLsub/sbatch output lands in the tree root
 )
@@ -70,9 +70,9 @@ SNIP
 
 ## lik_build_manifest <repo_root> <out.sha256> <rsync --exclude args...>: a local rsync dry run lists what
 ## the real rsync ships; each file must be git-tracked (incl. submodule) or allowlisted gitignored payload
-## (checkpoints, sidecars, FK surrogates), then is sha256'd. Also writes <out minus .sha256>.large.
+## (checkpoints incl. pickle-free .npz copies, sidecars, FK surrogates), then is sha256'd. Also writes <out minus .sha256>.large.
 lik_payload_ok() {
-    case "$1" in models/*/*.pkl|models/*/*.arch.json|models/*/*__fk_surrogate.*) return 0 ;; esac
+    case "$1" in models/*/*.pkl|models/*/*.npz|models/*/*.arch.json|models/*/*__fk_surrogate.*) return 0 ;; esac
     return 1
 }
 lik_build_manifest() {

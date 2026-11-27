@@ -187,7 +187,7 @@ need btw, work with what you have, don't write new logging stuff in Drake or any
 
 ### ONE DRAKE, AND IT IS THE PIN
 
-The nightly `drake-0.0.20260918-noble.tar.gz` at `$ROOT/drake`; no second install, no per-item
+Release 1.58.0 (2026-11-25; the 0.0.20260918 nightly it replaces expired upstream) at `$ROOT/drake` on SuperCloud, the same tarball in the CSAIL/Engaging images; no second install, no per-item
 version sentinel, no `stage_DRAKEBUMP` (all three deleted 2026-09-19). Thomas, ruling for the second
 time:
 
@@ -201,10 +201,12 @@ So **archive pairing is not a reason to keep an old install**. A nightly is need
 optimizer selectable; no release carries it, and `local_optimizer_ftol_rel` is absent from 1.56.0, so
 `CheckNloptOptions`'s refusal is scoped to `which_solver == "nlopt"` -- unconditional, it would refuse
 `ProgramOptions()` itself and kill every IPOPT and SNOPT cell over options they never emit. Nightly
-artifacts **expire after 45 days (~2026-11-02)**, so **move the pin to 1.58.0 the moment it carries
-PR 25002** and restore the published-checksum path.
+artifacts expire after 45 days (the 09-18 one did, ~2026-11-02); **the pin moved to 1.58.0 on 2026-11-25**
+and `setup_supercloud.sh` verifies the published checksum again.
 
-**One stated exception, for the svgd rounds only (Thomas, 2026-10-11).** The batched collision row
+**The svgd clearance exception (Thomas, 2026-10-11) is RETIRED with the 1.58.0 move (2026-11-27):
+release 1.58.0 has the binding, the clearance stages run in the default env, `venv-crc` is gone. What
+it was.** The batched collision row
 needs `CollisionChecker::CalcRobotClearances`, which the pinned nightly predates (master since #25073,
 2026-10-12), so a wheel built from his
 branch `calc-robot-clearances` (`0.0.20261011+crc.15a2c97`) lives in a SECOND cluster venv,
@@ -212,8 +214,8 @@ branch `calc-robot-clearances` (`0.0.20261011+crc.15a2c97`) lives in a SECOND cl
 `cluster/submit_bench.sh`; refused on a manifest without the clearance row and vice versa). The
 IPOPT / SNOPT / NLopt record stages and every svgd IPOPT twin stay on the pinned nightly; a run
 records which Drake it ran under (`drake_version_txt`). It is a strict speed improvement (the row is
-bitwise the same functional, 7-10x per configuration), not a second pin: when Drake ships the API,
-the wheel and the venv go.
+bitwise the same functional, 7-10x per configuration), not a second pin: Drake shipped the API,
+so the wheel and the venv went.
 
 ### The grasp-containment lever is closed on both axes
 

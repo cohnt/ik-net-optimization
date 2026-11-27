@@ -3161,8 +3161,8 @@ def svgd_pinned(stage):
 #: like (a), it is an EXECUTION setting rather than part of the method, and it is not counted as a
 #: round's one factor. Locally it is 7-10x per configuration and 3.5-4.6x lower end-to-end wall at
 #: identical success (docs/svgd-solver.md, "Batched clearance row"). It needs Thomas's Drake branch
-#: `calc-robot-clearances`, which only ~/learned-ik/venv-crc carries, so these stages are submitted
-#: with DRAKE_ENV=crc (cluster/run_items.sh; submit_bench.sh refuses either half without the other).
+#: `calc-robot-clearances`; since 2026-11-25 Drake release 1.58.0 (#25073) carries it, so these stages run
+#: in the default environment (the DRAKE_ENV=crc venv is retired; run_items.sh sets DRAKE_NUM_THREADS for them).
 #: Only rounds that had NOT finished when it landed: R1-R5 and the IPOPT twins (R2, R7IPOPT) keep the
 #: default row and the tarball pin. R6-R10 were queued on the default row when it landed; Thomas
 #: (2026-10-11 14:45, "restage everything using batch clearances") had them cancelled (R6 at 72 of
@@ -4118,7 +4118,7 @@ def paper_allotment():
 ##
 ## TWO MANIFESTS PER STAGE, because the Drake environment is per submission (submit_bench.sh refuses
 ## a mix): `CVAE` = the IPOPT rows + the acceptance item on the tarball pin; `CVAE_SVGD` = the AL-SVGD
-## rows on the clearance row, DRAKE_ENV=crc. Both at PROCS=2, no MPS (paper conditions, as the record).
+## rows on the clearance row. Both at PROCS=2, no MPS (paper conditions, as the record).
 ## `CVAESMOKE` / `CVAESMOKE_SVGD`: every item family at CVAE_SMOKE_CELLS of the same grid (`--cells`,
 ## so the cells are the record's), one item per logical run, tag `sc_CVAESMOKE_..._<n>_180_...`.
 ##   64 logical runs: 4 robots x {grasp, pose} x {paired, native} x {IPOPT, AL-SVGD} x 2 rungs.
@@ -4303,7 +4303,7 @@ def _cvae_selftest():
         n_clr = sum("svgd_collision_backend=clearances" in it["args"] for it in items)
         if n_clr != (len(items) if which.endswith("_SVGD") else 0):
             fails.append(f"{which}: {n_clr} of {len(items)} items carry the clearance row; "
-                         "submit_bench.sh needs all (DRAKE_ENV=crc) or none")
+                         "the clearance row is all of a stage's svgd items or none")
         twins = svgd_twins if which.endswith("_SVGD") else ipopt_twins
         for it in items:
             a, tag = it["args"], _svgd_flag(it["args"], "--tag")
@@ -4425,11 +4425,11 @@ def _cvae_selftest():
 ##     `_pin4` suffix on the svgd rows (parse_tag's six-token tail, as stage CVAE).
 ## Same sharding as the twins (8 / 24 / 24 per run).
 ##
-## THREE MANIFESTS, because PROCS / MPS / DRAKE_ENV are per submission and the twins ran under three:
+## THREE MANIFESTS, because PROCS / MPS are per submission and the twins ran under three:
 ##   SCREWREDO        IPOPT + SNOPT, 8 runs x 8 shards, PROCS=2 no MPS (stage PAPER's condition);
 ##   SCREWREDO_NLOPT  NLopt, 4 runs x 24 shards, PROCS=8 MPS=1 (stage REMEASURE_NLOPT's condition;
 ##                    NLopt is clock-bound, so its learned wall must be measured where the record's was);
-##   SCREWREDO_SVGD   AL-SVGD, 4 runs x 24 shards, DRAKE_ENV=crc PROCS=2 (R29's condition).
+##   SCREWREDO_SVGD   AL-SVGD, 4 runs x 24 shards, PROCS=2 (R29's condition).
 
 SCREWREDO_RUNG = "n6r"
 SCREWREDO_CKPT = f"models/{SCREW_PRIMARY}/{SCREW_PRIMARY}__{SCREWREDO_RUNG}__step620000.pkl"
@@ -4518,7 +4518,7 @@ def _screwredo_selftest():
         n_clr = sum("svgd_collision_backend=clearances" in it["args"] for it in items)
         if n_clr != (len(items) if which == "SCREWREDO_SVGD" else 0):
             fails.append(f"{which}: {n_clr} of {len(items)} items carry the clearance row; "
-                         "submit_bench.sh needs all (DRAKE_ENV=crc) or none")
+                         "the clearance row is all of a stage's svgd items or none")
         for it in items:
             a, tag = it["args"], _svgd_flag(it["args"], "--tag")
             m = tag_re.match(tag)
@@ -4681,11 +4681,11 @@ def stage_ANALYTIC_SMOKE():
     return items
 
 
-#: The analytic arm under AL-SVGD: R20's `pin2` items (the fielded pin, clearance row, crc venv,
+#: The analytic arm under AL-SVGD: R20's `pin2` items (the fielded pin, clearance row,
 #: PROCS=2) on the Panda and iiwa contexts with --arms swapped and the kernel named, as the
 #: analytic arm must (`cz` is learned-only): `pin2kx` its own normalised decision vector, `pin2kq`
 #: the configuration (Thomas, 2026-10-12: run both). Both clip ladders (tags ANALYTICS /
-#: ANALYTICST). Submit with DRAKE_ENV=crc PROCS=2; R20's IPOPT twins are the record's PAPER rows.
+#: ANALYTICST). Submit with PROCS=2; R20's IPOPT twins are the record's PAPER rows.
 ANALYTIC_SVGD_KERNELS = {"pin2kx": "x", "pin2kq": "q"}
 #: MEASURED mean seconds per cell, summed over the run's analytic arms, per (robot, task, start):
 #: laptop smokes 2026-10-13 (8 cells, 30 s clock, kernels x and q alike), a clock stop charged the
@@ -4762,7 +4762,7 @@ def analytic_allotment():
     sv = stage_ANALYTIC_SVGD()
     secs = sum(i["seconds"] for i in sv)
     print(f"  {'ANALYTIC_SVGD':<16}{2:>6}{len({i['id'].rsplit('_shard', 1)[0] for i in sv}):>6}"
-          f"{len(sv):>7}{secs / 3600:>9.1f}{secs / 3600 / 2:>8.1f}   (DRAKE_ENV=crc)")
+          f"{len(sv):>7}{secs / 3600:>9.1f}{secs / 3600 / 2:>8.1f}   ")
     sm = stage_ANALYTIC_SMOKE()
     print(f"  {'ANALYTIC_SMOKE':<16}{2:>6}{len(sm):>6}{len(sm):>7}"
           f"{sum(i['seconds'] for i in sm) / 3600:>9.1f}{sum(i['seconds'] for i in sm) / 3600 / 2:>8.1f}")
@@ -7183,7 +7183,7 @@ def selftest():
               "joint space on screw7_p050 + soft12, 12 logical runs / 288 items)")
         print(f"ok   the clearance collision row (svgd_collision_backend=clearances) on exactly "
               f"{'/'.join(SVGD_CLEARANCE_STAGES)}, every svgd item of each, none elsewhere "
-              f"(submit those with DRAKE_ENV=crc)")
+              f"(default environment)")
 
     ## Stage PAPER: stage REMEASURE's primary items, identical args modulo the tag, minus GVS and
     ## minus Panda IPOPT (SVGD_R2 has those); 28 logical runs; no control, no NLopt; schedule.
