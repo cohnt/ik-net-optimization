@@ -580,3 +580,26 @@ are the screw arm's, pointed at this spec (`ScrewArmIKProgram.ResolveSpec`); the
 is a no-op on an all-revolute chain. Tests: `tests/test_cusp_arm_kinematics.py` (fidelity to the
 paper's DH product, torch == Drake, `det J`), `tests/test_cusp_arm_program.py`. Charts:
 `cusp7_n6` pre-registered and fielded, `cusp7_n4` measured, no n8 (gain-ceiling rule).
+
+**Measured (2026-11-28; stages CUSP, SVGD_CUSP, CUSPCHART; tables `docs/cusp-arm-tables.md`).** The
+record's conditions, IPOPT + SNOPT + AL-SVGD (no NLopt), one solve per V100, Drake 1.58.0.
+- **Success, chart n6, single start**: learned wins 11 of 12 solver x row cells and loses none
+  (IPOPT 4/4; SNOPT 3 + a tie on grasp paired; AL-SVGD 4/4). Joint space is weak on this arm: IPOPT
+  391 (grasp) and 172 (pose) of 480.
+- **Cost (shared cells)**: IPOPT grasp learned dearer (7.24 v 3.14 native); IPOPT pose native and
+  every SNOPT row learned cheaper. AL-SVGD: learned cheaper on grasp (ratio 1.32-1.34), tie on pose.
+- **Time-matched joint space** (Drake solvers): learned survives on IPOPT grasp (both starts), IPOPT
+  pose native and SNOPT grasp native; joint space takes IPOPT pose paired, SNOPT grasp paired and
+  both SNOPT pose rows.
+- **AL-SVGD 2x2**: the proposed method is 480/480 on all 4 rows, beats every corner on success
+  except a tie with learned + IPOPT on grasp native; no corner reaches 99% time-matched except that
+  one (99.2%).
+- **Cap check**: no row budget-bound (max 20 of 480, SNOPT grasp joint space). Joint-space AL-SVGD
+  is CLOCK-bound on grasp (42 / 43 of 480): 14 whole targets, zero feasible particles after 2-3k
+  outer steps, `svgd_outer_iters` already 1e6, so the answer at the fielded clock stands (no re-run).
+  The record's AL-SVGD rows had no clock stops.
+- **Chart rung**: learned n4 never beats n6 (n6 better on 3 rows: IPOPT pose paired, both SNOPT pose
+  rows; 5 ties); n6, the pre-registered chart, stands.
+- **Acceptance**: one scene fingerprint per task; joint space identical between protocols (4/4) and
+  between stages CUSP and CUSPCHART (8/8), clock-stopped cells exempt from the q check (their last
+  iterate depends on timing; feasibility matched everywhere).

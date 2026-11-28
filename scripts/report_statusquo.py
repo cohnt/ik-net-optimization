@@ -332,7 +332,7 @@ RECORD_BLOCKS = METRIC_BLOCKS + ((SVGD, "PS"),)
 
 
 def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, per solver)",
-                  runtime_only=False, runtime_note=None, blocks=METRIC_BLOCKS):
+                  runtime_only=False, runtime_note=None, blocks=METRIC_BLOCKS, svgd_source=None):
     """The four headline tables: success rate, cost, runtime, iterations.
 
     `runtime_only` prints Table 3 alone (the one table that differs at paper conditions);
@@ -414,7 +414,8 @@ def metric_tables(runs, heading="=== HEADLINE TABLES (learned vs joint space, pe
     print("  a trailing * marks the best in the row. Every row prints, zeros included.")
     if SVGD in dict(blocks):
         print("  PS = AL-SVGD (particle, the svgd branch's fielded pin): each arm its own run, learned")
-        print("  from stage SVGD_R29 (_pin4), joint space from SVGD_R30 (_pin4kq, kernel q); the V4 pin.")
+        print("  " + (svgd_source or "from stage SVGD_R29 (_pin4), joint space from SVGD_R30 (_pin4kq, "
+                             "kernel q); the V4 pin."))
     if runtime_only:
         emit_runtime(emit, runtime_note)
         return
@@ -572,26 +573,29 @@ SVGD_JOINT = {}
 SVGD_JOINT_DEFAULT = "sc_SVGD_R30_{robot}_{rung}_svgd_{row}_480_180_{start}_pin4kq"
 
 
-def load_svgd_record(record_runs, cells=CELLS):
+def load_svgd_record(record_runs, cells=CELLS, robots=None, learned_tpl=None, joint_tpl=None):
     """AL-SVGD's 16 rows: {`sc_SVGD_<robot>_<rung>_svgd_<row>_<cells>_180_<start>`: a summary whose
     records hold the learned arm of the SVGD_R29 `_pin4` run and the numerical arm of the SVGD_R30 `_pin4kq`
     run}. Refuses (SystemExit) unless the two runs share grid_hash and scene_fingerprint with each
     other AND with the row's IPOPT run in `record_runs`, hold `cells` records each, cover the same
     (target, guess) cells and carry one wall-clock cap. A row with a run missing is skipped and
-    counted in the second return."""
+    counted in the second return. `robots` / `learned_tpl` / `joint_tpl` default to the record's
+    (SVGD_ROBOTS, SVGD_LEARNED, SVGD_JOINT); the cuspidal arm passes its own (--cusp)."""
+    robots = SVGD_ROBOTS if robots is None else robots
+    learned_tpl = SVGD_LEARNED if learned_tpl is None else learned_tpl
     ipopt = {}
     for tag, s in record_runs.items():
         t = parse_tag(tag)
         if t["solver"] == "ipopt":
             ipopt[(t["robot"], t["row"], t["start"])] = s
     out, missing = {}, []
-    for robot, (rung, d) in SVGD_ROBOTS.items():
+    for robot, (rung, d) in robots.items():
         for row in STATUS_QUO_ROWS:
             for start in ("native", "paired"):
                 f = dict(robot=robot, rung=rung, row=row, start=start)
                 got = {}
-                for arm, tag in (("learned", SVGD_LEARNED.format(**f)),
-                                 ("numerical", SVGD_JOINT.get(robot, SVGD_JOINT_DEFAULT).format(**f))):
+                jt = joint_tpl or SVGD_JOINT.get(robot, SVGD_JOINT_DEFAULT)
+                for arm, tag in (("learned", learned_tpl.format(**f)), ("numerical", jt.format(**f))):
                     path = f"results/{d}/benchmark/{tag}/summary.json"
                     if not os.path.exists(path):
                         missing.append(path)
@@ -682,6 +686,8 @@ def _load_legacy_record(cells):
 
 def main(argv):
     legacy, paper, runtime = "--legacy" in argv, "--paper" in argv, "--runtime" in argv
+    if "--cusp" in argv:
+        return cusp_report()
     if runtime and not paper:
         raise SystemExit("--runtime prints the paper-conditions Table 3 only; it needs --paper")
     only = [a for a in argv if not a.startswith("--")]
@@ -799,6 +805,128 @@ def main(argv):
         svgd_acceptance(table_runs)
     if not (legacy or paper):
         beside_record(want)
+    return 0
+
+
+#: The cuspidal arm (branch cuspidal-arm, 2026-11-27): stages CUSP (chart n6, pre-registered) and
+#: SVGD_CUSP (the V4 pin on n6), and CUSPCHART (chart n4, IPOPT + SNOPT). The record's conditions
+#: (cluster/gen_manifest.py); NOT the record, so its rows print under --cusp only.
+CUSP_SVGD_ROBOTS = {"cusp7": ("n6", "cusp_arm")}
+CUSP_SVGD_LEARNED = "sc_SVGD_CUSP_{robot}_{rung}_svgd_{row}_480_180_{start}_pin4"
+CUSP_SVGD_JOINT = "sc_SVGD_CUSP_{robot}_{rung}_svgd_{row}_480_180_{start}_pin4kq"
+CUSP_DRAKE_BLOCKS = (("ipopt", "IP"), ("snopt", "SQP"))
+CUSP_BLOCKS = CUSP_DRAKE_BLOCKS + ((SVGD, "PS"),)
+
+
+def _same_q(a, b):
+    """(agree, clock-stopped cells exempted): the joint-space records of two runs agree cell for cell
+    -- same feasibility everywhere, same q to 1e-12 on every cell that stopped on its own. A cell the
+    180 s clock stopped in BOTH runs returns whatever iterate the clock caught, which depends on
+    timing, so its q is exempt (its feasibility is not)."""
+    A, B = by_cell(a, "numerical"), by_cell(b, "numerical")
+    if set(A) != set(B):
+        return False, 0
+    exempt = 0
+    for k in A:
+        qa, qb = A[k].get("q"), B[k].get("q")
+        if bool(A[k]["feasible"]) != bool(B[k]["feasible"]):
+            return False, exempt
+        if A[k].get("timed_out") and B[k].get("timed_out"):
+            exempt += 1
+            continue
+        if (qa is None) != (qb is None):
+            return False, exempt
+        if qa is not None and (len(qa) != len(qb) or max(abs(x - y) for x, y in zip(qa, qb)) > 1e-12):
+            return False, exempt
+    return True, exempt
+
+
+def cusp_report():
+    """`--cusp`: the cuspidal arm's tables, by the record's rules, outside the record."""
+    runs = load("sc_CUSP_cusp7_", cells=CELLS)
+    chart = load("sc_CUSPCHART_cusp7_", cells=CELLS)
+    if not runs:
+        print("no merged 480-cell sc_CUSP_ runs under results/")
+        return 1
+    svgd_runs, missing = load_svgd_record(runs, robots=CUSP_SVGD_ROBOTS,
+                                          learned_tpl=CUSP_SVGD_LEARNED, joint_tpl=CUSP_SVGD_JOINT)
+    print(f"THE CUSPIDAL ARM (cusp7) -- {CELLS} cells, 180 s cap, seed 1; OUTSIDE the record")
+    print("Published simplified KUKA Transpressor 6R (Feess & Weiss) + a tool pitch, iiwa-like limits; no")
+    print("  analytic arm. The record's conditions: hardened scene, shelf-contained at the fingertips,")
+    print("  --compile + flow_cuda_graph, lifted budgets (IPOPT max_iter 1e6; SNOPT 1e5 majors, 1e8")
+    print("  minors), correction_cost_weight 10, PROCS=2 no MPS (one solve per V100), Drake 1.58.0.")
+    print(f"Chart n6 (pre-registered): stage CUSP, {len(runs)} of 8 IPOPT + SNOPT runs; stage SVGD_CUSP,")
+    print(f"  {len(svgd_runs)} of 4 AL-SVGD rows, each TWO runs (learned _pin4, joint space _pin4kq kernel q),")
+    print("  the V4 pin, clearance collision row; grid_hash and scene_fingerprint checked against IPOPT.")
+    if missing:
+        print(f"  MISSING: {len(missing)} AL-SVGD summary file(s), e.g. {missing[0]}")
+    print(f"Chart n4: stage CUSPCHART, {len(chart)} of 8 IPOPT + SNOPT runs, printed as its own block.")
+    print("No NLopt (new robots field IPOPT and SNOPT only), so there is no AL column.")
+
+    table_runs = {**runs, **svgd_runs}
+    src = "_pin4, joint space _pin4kq (kernel q), both from stage SVGD_CUSP; the V4 pin."
+    metric_tables(table_runs, heading="=== HEADLINE TABLES -- cusp7 n6 (learned vs joint space)",
+                  blocks=CUSP_BLOCKS, svgd_source=src,
+                  runtime_note="every column at PROCS=2, no MPS; PS on the clearance collision row")
+    print("\n=== PER-SOLVER DETAIL -- cusp7 n6 (discordant counts, McNemar p, timeouts)")
+    for solver, _ in CUSP_BLOCKS:
+        print(f"\n=== {SOLVER_NAME[solver]}   [{CONFIG[solver]}]")
+        if not row_table(table_runs, solver, STATUS_QUO_ROWS, "cusp7 n6"):
+            print("  (no rows found)")
+    cap_check(table_runs, CUSP_BLOCKS)
+    if svgd_runs:
+        svgd_acceptance(table_runs)
+
+    if chart:
+        metric_tables(chart, heading="\n=== HEADLINE TABLES -- cusp7 n4 (chart rung; learned vs joint space)",
+                      blocks=CUSP_DRAKE_BLOCKS,
+                      runtime_note="every column at PROCS=2, no MPS")
+        print("\n=== PER-SOLVER DETAIL -- cusp7 n4")
+        for solver, _ in CUSP_DRAKE_BLOCKS:
+            print(f"\n=== {SOLVER_NAME[solver]}   [{CONFIG[solver]}]")
+            if not row_table(chart, solver, STATUS_QUO_ROWS, "cusp7 n4"):
+                print("  (no rows found)")
+        cap_check(chart, CUSP_DRAKE_BLOCKS)
+
+        print("\n\n=== CHART RUNG: learned n4 against learned n6, same cells (exact McNemar)")
+        print(f"  {'row':<44}{'n6':>6}{'n4':>6}{'n6+':>6}{'n4+':>6}{'p':>10}{'better':>8}")
+        for tag6, s6 in sorted(runs.items()):
+            tag4 = tag6.replace("sc_CUSP_cusp7_n6_", "sc_CUSPCHART_cusp7_n4_")
+            s4 = chart.get(tag4)
+            if s4 is None:
+                continue
+            if s4["metadata"].get("grid_hash") != s6["metadata"].get("grid_hash"):
+                raise SystemExit(f"REFUSING to pair {tag6} with {tag4}: grid_hash differs")
+            A, B = by_cell(s6, "learned"), by_cell(s4, "learned")
+            shared = [k for k in A if k in B]
+            b = sum(1 for k in shared if A[k]["feasible"] and not B[k]["feasible"])
+            w = sum(1 for k in shared if B[k]["feasible"] and not A[k]["feasible"])
+            p = mcnemar(b, w)
+            t = parse_tag(tag6)
+            better = "tie" if p >= 0.05 else ("n6" if b > w else "n4")
+            print(f"  {t['solver'] + ' ' + ROW_NAME[t['row']] + ' ' + t['start']:<44}"
+                  f"{sum(A[k]['feasible'] for k in shared):>6}{sum(B[k]['feasible'] for k in shared):>6}"
+                  f"{b:>6}{w:>6}{p:>10.3g}{better:>8}")
+
+    print("\n\n=== ACCEPTANCE (Drake solvers)")
+    print("  identical = same feasibility on every cell, same q to 1e-12 on every cell that stopped on")
+    print("  its own; a cell the clock stopped in both runs is exempt from the q check (counted).")
+    pairs = same = ex = 0
+    for tag, s in sorted(runs.items()):
+        if tag.endswith("_native"):
+            other = runs.get(tag[:-len("native")] + "paired")
+            if other is not None:
+                ok, e = _same_q(s, other)
+                pairs, same, ex = pairs + 1, same + ok, ex + e
+    print(f"--- joint space identical between protocols: {same}/{pairs} pairs ({ex} clock-stopped cells exempt)")
+    pairs = same = ex = 0
+    for tag, s in sorted(runs.items()):
+        s4 = chart.get(tag.replace("sc_CUSP_cusp7_n6_", "sc_CUSPCHART_cusp7_n4_"))
+        if s4 is not None:
+            ok, e = _same_q(s, s4)
+            pairs, same, ex = pairs + 1, same + ok, ex + e
+    print("--- joint space identical between stages CUSP (n6) and CUSPCHART (n4), which never")
+    print(f"    evaluates the chart: {same}/{pairs} runs ({ex} clock-stopped cells exempt)")
     return 0
 
 
@@ -933,7 +1061,7 @@ def flags(all_rows, want, remeasure=False):
 def cap_check(runs, blocks):
     """CLAUDE.md, the cap check: read BOTH clock stops and iteration-budget stops, never timeouts
     alone. Per solver class and arm, over the 16 rows."""
-    print("\n\n=== CAP CHECK (per solver class and arm, over the 16 rows)")
+    print("\n\n=== CAP CHECK (per solver class and arm, over the rows above)")
     print("  clock = timed_out, or svgd.stop_reason == 'wall_clock'; budget = hit_iteration_cap or")
     print("  hit_eval_cap, or svgd.stop_reason == 'step_cap'. A row with >= %d of %d cells at a BUDGET"
           % (BUDGET_CELLS, CELLS))

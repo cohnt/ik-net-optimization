@@ -447,7 +447,9 @@ chart). `p050`'s dataset is rebuilt (bit-identical); the other rungs' are still 
 `cluster/SCREW_ARM_RUNBOOK.md`; `python scripts/report_screw.py`. The curvilinear rail is deferred.
 
 **The cuspidal arm** (`cusp7`, branch `cuspidal-arm`): published Transpressor 6R + tool pitch, no
-analytic arm. `docs/notes-robots.md`.
+analytic arm. Measured 2026-11-28 (chart n6, `docs/cusp-arm-tables.md`): single start, learned wins 11
+of 12 rows (IPOPT 4, SNOPT 3 + 1 tie, AL-SVGD 4), loses none; learned AL-SVGD 480/480 on every row;
+joint-space AL-SVGD is clock-bound on grasp (42-43 of 480). n4 never beats n6. `docs/notes-robots.md`.
 
 ## Running on MIT SuperCloud (long form: `docs/notes-cluster.md`; playbook `cluster/README.md`)
 
