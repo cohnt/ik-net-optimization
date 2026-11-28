@@ -34,6 +34,9 @@
 set -uo pipefail
 source "$(dirname "$0")/ssh_common.sh"
 REPO_ROOT="$(_sc_repo_root)"
+## A git worktree has no .venv of its own: fall back to the main checkout's (the common git dir's parent).
+LOCAL_PY="$REPO_ROOT/.venv/bin/python"
+[ -x "$LOCAL_PY" ] || LOCAL_PY="$(dirname "$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)")/.venv/bin/python"
 
 ## A literal last component, so the remote shell lists `state/` and stats one path per
 ## manifest -- never a readdir of a manifest's thousands of claim and done entries (an
@@ -259,7 +262,7 @@ done < <(ls -1d "$REPO_ROOT"/results/_cluster_staging/[0-9]*-[0-9]*/ 2>/dev/null
          | grep -v "^$STAGING/\?$")
 ## ALSO holds two elements per directory (the flag and the path), hence the halving.
 echo "merging: searching $STAGING plus $(( ${#ALSO[@]} / 2 )) prior staging directory/ies"
-"$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/cluster/merge_shard_summaries.py" "$STAGING" "${ALSO[@]}"
+"$LOCAL_PY" "$REPO_ROOT/cluster/merge_shard_summaries.py" "$STAGING" "${ALSO[@]}"
 
 # Only now is it safe to advance the incremental watermark: everything above has to
 # have succeeded, or the next run must re-fetch what this one failed to bring back.
@@ -274,4 +277,4 @@ fetch_kills
 ## is closed with `--apply --promote-unmerged`. Empty the trash only after a check. Read
 ## cluster/condense_staging.py's docstring before changing any of this.
 echo
-"$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/cluster/condense_staging.py" --apply
+"$LOCAL_PY" "$REPO_ROOT/cluster/condense_staging.py" --apply
