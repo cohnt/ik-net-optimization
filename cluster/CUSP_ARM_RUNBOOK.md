@@ -66,7 +66,7 @@ status-quo-style table and the time-matched report.
 | 2026-11-25 20:22 | 6332384 | `cusp_train_cusp7_n6`, 620k steps, 4 volta nodes, 20 h wall, after 6331107 | COMPLETED 21:55:37 to 13:30:12 (15h35m) on d-8-7-2,d-10-1-1,d-10-6-1,d-10-10-1, 8x V100-PCIE-32GB, SuperCloud, ikflow e94c144; 620k steps, val_l2 0.0171, val_ang 0.133, pole max 10.4 (gt1000 0/4000); exported `cusp7__n6__step620000.pkl` + `.arch.json` |
 | 2026-11-25 20:22 | 6332385 | `cusp_train_cusp7_n4`, as above, afterany 6332384 | COMPLETED 13:30:40 to 01:00:25 (11h30m) on d-8-7-2,d-9-8-2,d-10-1-1,d-10-6-1, 8x V100, SuperCloud, ikflow e94c144; 620k steps, val_l2 0.0335, val_ang 0.290, pole max 41.7 (gt1000 0/4000); exported `cusp7__n4__step620000.pkl` + `.arch.json`. `~/learned-ik` freeze lifted |
 | 2026-11-27 16:29 | 6346105 | `verify_drake_solves.sh` + `NPZ_CONVERT` (n6, n4), xeon-p8 8 cores, tree at 0d6b6a2 (Drake 1.58.0) | COMPLETED; both sentinels OK; npz sha256 n6 c01766e8..., n4 a693d3bd... (bit-identical); copied back .npz + .arch.json only, hashes match. Tommy OK'd the pickle read |
-| 2026-11-27 16:55 | 6346164-67 | stage `CUSP` (n6, IPOPT + SNOPT), 64 items, 4 x 1 volta node, 12 h, PROCS=2, staged f9e7a3d (Drake 1.58.0) | PENDING |
+| 2026-11-27 16:55 | 6346164-67 | stage `CUSP` (n6, IPOPT + SNOPT), 64 items, 4 x 1 volta node, 12 h, PROCS=2, staged f9e7a3d (Drake 1.58.0) | RUNNING from 19:08 on d-8-8-2, d-8-11-1, d-9-4-1, d-10-2-1 |
 | 2026-11-27 16:55 | 6346168-71 | stage `SVGD_CUSP` (n6, pin4 / pin4kq), 192 items, as above | PENDING |
 | 2026-11-27 16:55 | 6346172-75 | stage `CUSPCHART` (n4, IPOPT + SNOPT), 64 items, as above | PENDING |
 
